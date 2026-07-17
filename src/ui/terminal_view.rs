@@ -76,6 +76,8 @@ pub struct TerminalView {
     rows: usize,
     font: Font,
     _drain: Option<Task<()>>,
+    // 是否已自动聚焦过一次（打开/切回时需重新聚焦则置 false）。
+    focused_once: bool,
 }
 
 impl TerminalView {
@@ -116,6 +118,7 @@ impl TerminalView {
             rows,
             font,
             _drain: None,
+            focused_once: false,
         });
 
         // drain：在主线程上从 event_rx 取事件喂给 Term。
@@ -124,10 +127,22 @@ impl TerminalView {
             while let Ok(ev) = event_rx.recv().await {
                 let applied = weak.update(cx, |this, cx| {
                     match ev {
-                        SessionEvent::Connected => this.state = ConnState::Connected,
-                        SessionEvent::Output(b) => this.parser.advance(&mut this.term, &b),
-                        SessionEvent::Error(e) => this.state = ConnState::Error(e),
-                        SessionEvent::Closed => this.state = ConnState::Closed,
+                        SessionEvent::Connected => {
+                            log::info!("terminal: connected");
+                            this.state = ConnState::Connected;
+                        }
+                        SessionEvent::Output(b) => {
+                            log::trace!("pty output ({}B): {}", b.len(), debug_bytes(&b));
+                            this.parser.advance(&mut this.term, &b);
+                        }
+                        SessionEvent::Error(e) => {
+                            log::warn!("terminal: error {e}");
+                            this.state = ConnState::Error(e);
+                        }
+                        SessionEvent::Closed => {
+                            log::info!("terminal: closed");
+                            this.state = ConnState::Closed;
+                        }
                     }
                     cx.notify();
                 });
@@ -144,27 +159,31 @@ impl TerminalView {
     /// 发送输入字节到远端。
     fn send_input(&self, bytes: Vec<u8>) {
         // async_channel 的 try_send 非阻塞；满了就丢弃（终端输入不应阻塞 UI）。
-        let _ = self.input_tx.try_send(InputCmd::Write(bytes));
+        log::trace!("pty write: {}", debug_bytes(&bytes));
+        if let Err(e) = self.input_tx.try_send(InputCmd::Write(bytes)) {
+            log::warn!("input_tx send failed (channel closed/full?): {e}");
+        }
+    }
+
+    /// 请求在下次 render 时自动聚焦终端（用于打开/切回 tab）。
+    pub fn request_focus(&mut self) {
+        self.focused_once = false;
     }
 
     /// 根据当前尺寸调整远端 PTY 窗口。
-    fn maybe_resize(&mut self, bounds: Size, window: &Window) {
+    fn maybe_resize(&mut self, bounds: Size) {
+        // cell_w 由 render 阶段测量；若尚未测量则跳过（不应发生）。
         if self.cell_w.as_f32() <= 0.0 {
-            // 首次：用 "M" 测量等宽字宽。
-            let run = TextRun {
-                len: 1,
-                font: self.font.clone(),
-                color: hsla(0., 0., 1., 1.),
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            };
-            let shaped = window.text_system().shape_line("M".into(), px(FONT_SIZE), &[run], None);
-            self.cell_w = shaped.width().max(px(1.0));
+            return;
         }
         let new_cols = ((bounds.w / self.cell_w.as_f32()).floor() as usize).max(1);
         let new_rows = ((bounds.h / self.line_h.as_f32()).floor() as usize).max(1);
         if new_cols != self.cols || new_rows != self.rows {
+            log::debug!(
+                "maybe_resize: PTY {}x{} -> {}x{} (bounds={}x{}, cell_w={})",
+                self.cols, self.rows, new_cols, new_rows,
+                bounds.w as u32, bounds.h as u32, self.cell_w.as_f32()
+            );
             self.cols = new_cols;
             self.rows = new_rows;
             self.term.resize(TermSize {
@@ -178,14 +197,21 @@ impl TerminalView {
     }
 
     fn handle_key_down(&mut self, ev: &KeyDownEvent, _: &mut Window, _: &mut Context<Self>) {
-        if let Some(bytes) = encode_keystroke(&ev.keystroke) {
-            self.send_input(bytes);
+        let ks = &ev.keystroke;
+        match encode_keystroke(ks) {
+            Some(bytes) => self.send_input(bytes),
+            None => log::debug!("unhandled keystroke: key={} key_char={:?}", ks.key, ks.key_char),
         }
     }
 }
 
 impl Render for TerminalView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 打开/切回 tab 时自动聚焦终端，确保键盘输入直达 PTY（否则 on_key_down 不会触发）。
+        if !self.focused_once && !matches!(self.state, ConnState::Error(_)) {
+            self.focus.focus(window, cx);
+            self.focused_once = true;
+        }
         let focus = self.focus.clone();
         let entity = cx.entity();
 
@@ -199,6 +225,21 @@ impl Render for TerminalView {
             ConnState::Connected => None,
         };
 
+        // 确保字体度量已测量：paint 闭包在 render 时就捕获 cell_w，
+        // 必须此时拿到的不是 0，否则首帧光标/布局会错位（视觉上像「刷新」）。
+        if self.cell_w.as_f32() <= 0.0 {
+            let run = TextRun {
+                len: 1,
+                font: self.font.clone(),
+                color: hsla(0., 0., 1., 1.),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let shaped = window.text_system().shape_line("M".into(), px(FONT_SIZE), &[run], None);
+            self.cell_w = shaped.width().max(px(1.0));
+        }
+
         // 捕获绘制所需的克隆。
         let bg = bg_of(&self.term);
         let font = self.font.clone();
@@ -209,17 +250,14 @@ impl Render for TerminalView {
         let default_fg = fg_of(&self.term);
 
         let canvas_el = canvas(
-            move |bounds, window, cx| {
-                // prepaint：测量 + 可能 resize。
+            move |bounds, _window, cx| {
+                // prepaint：可能 resize。
                 if let Some(t) = weak.upgrade() {
                     let _ = t.update(cx, |this, _cx| {
-                        this.maybe_resize(
-                            Size {
-                                w: bounds.size.width.as_f32(),
-                                h: bounds.size.height.as_f32(),
-                            },
-                            window,
-                        );
+                        this.maybe_resize(Size {
+                            w: bounds.size.width.as_f32(),
+                            h: bounds.size.height.as_f32(),
+                        });
                     });
                 }
                 bounds
@@ -237,7 +275,11 @@ impl Render for TerminalView {
                     );
                 }
             },
-        );
+        )
+        // 关键：canvas 必须显式占满父容器，否则默认 Style 的尺寸为 auto，
+        // 在 flex 父容器里会塌缩成 0，导致 maybe_resize 算出 rows=1，
+        // 多行输出全部滚出视口（只看得见最后一行的提示符）。
+        .size_full();
 
         let mut root = div()
             .id("terminal-root")
@@ -306,6 +348,15 @@ fn snapshot_visible(term: &Term<NoopListener>) -> Snapshot {
     let top_visible = Line(-(display_offset as i32));
     let colors = term.colors();
 
+    log::trace!(
+        "snapshot_visible: display_offset={} top_visible={} cols={} rows={} total_lines={}",
+        display_offset,
+        top_visible.0,
+        cols,
+        rows,
+        grid.total_lines()
+    );
+
     let mut out_rows: Vec<Vec<RenderCell>> = Vec::with_capacity(rows);
     for r in 0..rows {
         let line = Line(top_visible.0 + r as i32);
@@ -353,6 +404,26 @@ fn paint_snapshot(
 ) {
     let cell_wf = cell_w.as_f32();
     let line_hf = line_h.as_f32();
+
+    // 诊断：打印每帧实际拿到的 snapshot 内容（非空行），用于判断
+    // 是「读不到内容」还是「画不出来」。trace 级别，避免 debug 下日志爆炸。
+    if log::log_enabled!(log::Level::Trace) {
+        log::trace!(
+            "paint_snapshot: {} rows, bounds={}x{} cell_w={} line_h={}",
+            snapshot.rows.len(),
+            bounds.size.width.as_f32() as u32,
+            bounds.size.height.as_f32() as u32,
+            cell_wf,
+            line_hf
+        );
+        for (r, row) in snapshot.rows.iter().enumerate() {
+            let s: String = row.iter().map(|c| if c.spacer { ' ' } else { c.ch }).collect();
+            let t = s.trim_end();
+            if !t.is_empty() {
+                log::trace!("  snapshot row {:2}: {:?}", r, t);
+            }
+        }
+    }
 
     // 背景填充整个视口。
     window.paint_quad(quad(
@@ -448,7 +519,9 @@ fn paint_snapshot(
             None,
         );
         let origin = Point::new(bounds.origin.x, bounds.origin.y + px(r as f32 * line_hf));
-        let _ = shaped.paint(origin, line_h, TextAlign::Left, None, window, cx);
+        if let Err(e) = shaped.paint(origin, line_h, TextAlign::Left, None, window, cx) {
+            log::warn!("paint row {r} failed: {e}");
+        }
     }
 
     // 光标：实心块。
@@ -597,6 +670,21 @@ fn dimen(c: Hsla) -> Hsla {
 }
 
 // ─── 输入编码 ───────────────────────────────────────────────────────────────
+/// 调试用：把字节流转成可读字符串（控制字符转义，ESC 显示为 \x1b）。
+fn debug_bytes(b: &[u8]) -> String {
+    let mut out = String::with_capacity(b.len());
+    for &byte in b {
+        match byte {
+            b'\r' => out.push_str("\\r"),
+            b'\n' => out.push_str("\\n"),
+            b'\t' => out.push_str("\\t"),
+            0x20..=0x7e => out.push(byte as char),
+            _ => out.push_str(&format!("\\x{:02x}", byte)),
+        }
+    }
+    out
+}
+
 /// 临时尺寸结构（避免与 gpui::Size 命名冲突的内部用）。
 struct Size {
     w: f32,
@@ -678,4 +766,141 @@ fn esc(suffix: &str, m: &Modifiers) -> Vec<u8> {
         code += 8;
     }
     format!("\x1b[1;{code}{suffix}").into_bytes()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alacritty_terminal::index::{Column, Line};
+
+    /// 隔离测试：把真实 shell 输出（含 OSC 标题 / 颜色 / bracketed-paste /
+    /// \r\n 换行）喂给 `vte::ansi::Processor + alacritty Term`，验证 grid 里
+    /// 是否真的写入了 `ls` 的结果。用于把「解析」与「渲染」两个环节分开定位。
+    #[test]
+    fn term_parses_real_shell_ls_output() {
+        let config = Config {
+            scrolling_history: SCROLLBACK,
+            ..Default::default()
+        };
+        let size = TermSize { cols: 80, rows: 10 };
+        let mut term: Term<NoopListener> = Term::new(config, &size, NoopListener);
+        let mut parser: Processor = Processor::new();
+
+        // 取自 connect_and_run_ls 诊断的真实字节流（提示符 + echo ls + 结果 + 新提示符）。
+        let bytes: &[u8] = b"\x1b[?2004h\x1b]0;ubuntu@vps: ~\x07\x1b[01;32mubuntu@vps\x1b[00m:\x1b[01;34m~\x1b[00m$ ls\r\n\x1b[?2004l\r\x1b[0m\x1b[01;34mbackup\x1b[0m  \x1b[01;34mcard\x1b[0m  \x1b[01;34medunest\x1b[0m\r\n\x1b[?2004h\x1b]0;ubuntu@vps: ~\x07\x1b[01;32mubuntu@vps\x1b[00m:\x1b[01;34m~\x1b[00m$ ";
+
+        parser.advance(&mut term, bytes);
+
+        // 打印整个屏幕 + scrollback 顶部若干行，便于诊断。
+        let grid = term.grid();
+        let cols = grid.columns();
+        let screen = grid.screen_lines();
+        println!("=== screen {}x{} ===", cols, screen);
+        let mut screen_text = String::new();
+        for r in 0..screen {
+            let row = &grid[Line(r as i32)];
+            let s: String = (0..cols).map(|c| row[Column(c)].c).collect();
+            let t = s.trim_end();
+            if !t.is_empty() {
+                println!("row {:2}: {:?}", r, t);
+            }
+            screen_text.push_str(&s);
+        }
+
+        assert!(screen_text.contains("backup"), "grid missing 'backup'");
+        assert!(screen_text.contains("card"), "grid missing 'card'");
+    }
+
+    /// 关键测试：模拟 GUI 的 maybe_resize 流程 —— 先解析输出，再 resize term，
+    /// 然后用 snapshot_visible 的逻辑（display_offset 决定可见区）检查 ls 结果
+    /// 是否还在可见区。用于定位「resize 后内容消失」类问题。
+    #[test]
+    fn term_resize_keeps_ls_visible() {
+        let config = Config {
+            scrolling_history: SCROLLBACK,
+            ..Default::default()
+        };
+        let mut term: Term<NoopListener> =
+            Term::new(config, &TermSize { cols: 80, rows: 10 }, NoopListener);
+        let mut parser: Processor = Processor::new();
+
+        let bytes: &[u8] = b"\x1b[?2004h\x1b]0;ubuntu@vps: ~\x07\x1b[01;32mubuntu@vps\x1b[00m:\x1b[01;34m~\x1b[00m$ ls\r\n\x1b[?2004l\r\x1b[0m\x1b[01;34mbackup\x1b[0m  \x1b[01;34mcard\x1b[0m\r\n\x1b[?2004h\x1b]0;ubuntu@vps: ~\x07\x1b[01;32mubuntu@vps\x1b[00m:\x1b[01;34m~\x1b[00m$ ";
+        parser.advance(&mut term, bytes);
+
+        let grid = term.grid();
+        println!(
+            "before resize: display_offset={} total={} screen={}",
+            grid.display_offset(),
+            grid.total_lines(),
+            grid.screen_lines()
+        );
+
+        // 模拟 maybe_resize：80x10 -> 100x30。
+        term.resize(TermSize { cols: 100, rows: 30 });
+
+        let grid = term.grid();
+        println!(
+            "after resize: display_offset={} total={} screen={}",
+            grid.display_offset(),
+            grid.total_lines(),
+            grid.screen_lines()
+        );
+
+        // 用 snapshot_visible 的逻辑读取可见区。
+        let display_offset = grid.display_offset();
+        let cols = grid.columns();
+        let rows = grid.screen_lines();
+        let top_visible = Line(-(display_offset as i32));
+        let mut all = String::new();
+        for r in 0..rows {
+            let line = Line(top_visible.0 + r as i32);
+            let row = &grid[line];
+            let s: String = (0..cols).map(|c| row[Column(c)].c).collect();
+            let t = s.trim_end();
+            if !t.is_empty() {
+                println!("visible row {:2}: {:?}", r, t);
+            }
+            all.push_str(&s);
+        }
+
+        assert!(all.contains("backup"), "after resize, visible area missing 'backup'");
+        assert!(all.contains("card"), "after resize, visible area missing 'card'");
+    }
+
+    /// 验证把字节流切成极小 chunk（模拟 drain 分批 advance）后，
+    /// parser 仍能把 ls 结果正确写入 grid（跨 chunk 的 OSC/CSI 不断）。
+    #[test]
+    fn term_parses_chunked_output() {
+        let config = Config {
+            scrolling_history: SCROLLBACK,
+            ..Default::default()
+        };
+        let mut term: Term<NoopListener> =
+            Term::new(config, &TermSize { cols: 80, rows: 10 }, NoopListener);
+        let mut parser: Processor = Processor::new();
+
+        let bytes: &[u8] = b"\x1b[?2004h\x1b]0;ubuntu@vps: ~\x07\x1b[01;32mubuntu@vps\x1b[00m:\x1b[01;34m~\x1b[00m$ ls\r\n\x1b[?2004l\r\x1b[0m\x1b[01;34mbackup\x1b[0m  \x1b[01;34mcard\x1b[0m\r\n\x1b[?2004h\x1b]0;ubuntu@vps: ~\x07\x1b[01;32mubuntu@vps\x1b[00m:\x1b[01;34m~\x1b[00m$ ";
+
+        // 最严格：每字节一个 chunk。
+        for chunk in bytes.chunks(1) {
+            parser.advance(&mut term, chunk);
+        }
+
+        let grid = term.grid();
+        let cols = grid.columns();
+        let screen = grid.screen_lines();
+        let mut screen_text = String::new();
+        for r in 0..screen {
+            let row = &grid[Line(r as i32)];
+            let s: String = (0..cols).map(|c| row[Column(c)].c).collect();
+            let t = s.trim_end();
+            if !t.is_empty() {
+                println!("chunked row {:2}: {:?}", r, t);
+            }
+            screen_text.push_str(&s);
+        }
+
+        assert!(screen_text.contains("backup"), "chunked: missing backup");
+        assert!(screen_text.contains("card"), "chunked: missing card");
+    }
 }

@@ -161,6 +161,7 @@ impl AppShell {
     fn switch_tab(&mut self, idx: usize, cx: &mut Context<Self>) {
         if idx < self.tabs.len() {
             self.active_tab = Some(idx);
+            self.refocus_active_terminal(cx);
             cx.notify();
         }
     }
@@ -194,12 +195,24 @@ impl AppShell {
         self.pool.pending_prompt_connection(cx)
     }
 
+    /// 把焦点交还给当前活动终端 tab（切换 tab / 关闭模态后调用）。
+    fn refocus_active_terminal(&self, cx: &mut Context<Self>) {
+        if let Some(idx) = self.active_tab {
+            if let Some(tab) = self.tabs.get(idx) {
+                if let Pane::Terminal(t) = &tab.pane {
+                    t.update(cx, |t, _| t.request_focus());
+                }
+            }
+        }
+    }
+
     /// 回填凭据（None = 取消）。
     fn resolve_credential(&mut self, value: Option<String>, cx: &mut Context<Self>) {
         if let Some(c) = self.pending_connection(cx) {
             c.update(cx, |conn, _| conn.resolve_credential(value));
         }
         self.prompt_input.clear();
+        self.refocus_active_terminal(cx);
         cx.notify();
     }
 
@@ -208,6 +221,7 @@ impl AppShell {
         if let Some(c) = self.pending_connection(cx) {
             c.update(cx, |conn, _| conn.resolve_host_key(decision));
         }
+        self.refocus_active_terminal(cx);
         cx.notify();
     }
 }

@@ -950,4 +950,95 @@ mod tests {
         eprintln!("[test] connected={}, preview={:?}", connected, preview);
         assert!(connected, "failed to connect/authenticate to {target}");
     }
+
+    /// 诊断用：连接真实主机，开终端，等提示符出现后发送 `ls\r`，
+    /// 把完整字节流（转义序列可视化）打印出来，用于排查「命令输出丢失」类问题。
+    ///
+    /// 运行：`cargo test -- --ignored --nocapture connect_and_run_ls`
+    #[test]
+    #[ignore]
+    fn connect_and_run_ls() {
+        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
+            .try_init();
+        let target = std::env::var("CROSSH_TEST_HOST").unwrap_or_else(|_| "txvps".to_string());
+        let cfg = Arc::new(SshConfig::from_default_location().unwrap());
+        let host = cfg.resolve(&target);
+        let methods = default_auth_for(&host);
+
+        let (cmd_tx, cmd_rx) = async_channel::bounded::<ConnCmd>(64);
+        let (conn_event_tx, conn_event_rx) = async_channel::bounded::<ConnEvent>(64);
+        let cfg_for_task = cfg.clone();
+        runtime().spawn(async move {
+            let _ = run_connection(host, methods, cfg_for_task, cmd_rx, conn_event_tx).await;
+        });
+
+        let (input_tx, event_rx) = async_channel::bounded::<InputCmd>(64);
+        let (term_event_tx, term_event_rx) = async_channel::bounded::<SessionEvent>(64);
+        cmd_tx
+            .try_send(ConnCmd::OpenTerminal {
+                cols: 80,
+                rows: 24,
+                input_rx: event_rx,
+                event_tx: term_event_tx,
+            })
+            .unwrap();
+
+        let rt = runtime();
+        let output = rt.block_on(async move {
+            let mut connected = false;
+            let mut all: Vec<u8> = Vec::new();
+            let mut sent = false;
+            let timer = tokio::time::sleep(Duration::from_secs(10));
+            tokio::pin!(timer);
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = &mut timer => break,
+                    cev = conn_event_rx.recv() => {
+                        if let Ok(ConnEvent::NeedHostKey { reply, .. }) = cev {
+                            let _ = reply.send(HostKeyDecision::AcceptOnce);
+                        }
+                    }
+                    tev = term_event_rx.recv() => match tev {
+                        Ok(SessionEvent::Connected) => connected = true,
+                        Ok(SessionEvent::Output(b)) => {
+                            all.extend_from_slice(&b);
+                            // 收到提示符后发送 ls。
+                            if connected && !sent {
+                                let s = String::from_utf8_lossy(&all);
+                                if s.contains("$ ") || s.contains("# ") {
+                                    sent = true;
+                                    let _ = input_tx
+                                        .send(InputCmd::Write(b"ls\r".to_vec()))
+                                        .await;
+                                }
+                            }
+                        }
+                        Ok(SessionEvent::Error(e)) => {
+                            eprintln!("[test] err: {e}");
+                            break;
+                        }
+                        Ok(SessionEvent::Closed) => break,
+                        Err(_) => break,
+                    }
+                }
+            }
+            drop(input_tx);
+            all
+        });
+        drop(cmd_tx);
+
+        // 转义序列可视化：ESC 显式标出，方便看清屏/光标类指令。
+        let readable: String = output
+            .iter()
+            .map(|&byte| match byte {
+                b'\r' => "\\r".into(),
+                b'\n' => "\\n\n".into(),
+                0x1b => "<ESC>".into(),
+                0x20..=0x7e => (byte as char).to_string(),
+                _ => format!("\\x{:02x}", byte),
+            })
+            .collect();
+        eprintln!("[test] full output ({} bytes):\n{}", output.len(), readable);
+    }
 }
