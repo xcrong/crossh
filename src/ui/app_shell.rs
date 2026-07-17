@@ -304,7 +304,15 @@ impl Render for AppShell {
 }
 
 fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
-    let mut list = div().flex().flex_col().gap_1().py_2();
+    let mut list = div()
+        .id("host-list")
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .py_2()
+        .overflow_y_scroll();
 
     for (idx, entry) in shell.entries.iter().enumerate() {
         let alias = entry.alias.clone();
@@ -313,7 +321,13 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
         let badge = state_badget(&state);
         let active = shell.active_tab.is_some();
 
-        let mut entry_div = div().id(idx).px_3().py_1().text_sm().cursor_pointer();
+        let mut entry_div = div()
+            .id(idx)
+            .flex_shrink_0()
+            .px_3()
+            .py_1()
+            .text_sm()
+            .cursor_pointer();
         if active {
             entry_div = entry_div.bg(rgb(0x2a2a3a));
         }
