@@ -284,6 +284,8 @@ impl Render for TerminalView {
         let mut root = div()
             .id("terminal-root")
             .size_full()
+            .px_3()
+            .py_2()
             .bg(bg)
             .track_focus(&focus)
             .on_key_down(cx.listener(TerminalView::handle_key_down))
