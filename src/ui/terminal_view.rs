@@ -82,6 +82,9 @@ pub struct TerminalView {
     sel_end: Option<(usize, usize)>,
     /// 累积滚动偏移（trackpad 累加用）。
     scroll_acc: f32,
+    /// 光标闪烁状态（true = 显示，false = 隐藏）。
+    cursor_blink_on: bool,
+    _blink_task: Option<Task<()>>,
 }
 
 impl TerminalView {
@@ -126,6 +129,8 @@ impl TerminalView {
             sel_start: None,
             sel_end: None,
             scroll_acc: 0.,
+            cursor_blink_on: true,
+            _blink_task: None,
         });
 
         // drain：在主线程上从 event_rx 取事件喂给 Term。
@@ -159,6 +164,27 @@ impl TerminalView {
             }
         });
         entity.update(cx, |this, _cx| this._drain = Some(drain));
+
+        // 光标闪烁：每 530ms 切换一次状态。
+        let weak2 = entity.downgrade();
+        let blink: Task<()> = cx.spawn(async move |cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(530))
+                    .await;
+                if weak2.update(cx, |this, cx| {
+                    this.cursor_blink_on = !this.cursor_blink_on;
+                    cx.notify();
+                })
+                .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        entity.update(cx, |this, _cx| {
+            this._blink_task = Some(blink);
+        });
 
         entity
     }
@@ -466,7 +492,9 @@ impl Render for TerminalView {
                     let snapshot = {
                         let this = t.read(cx);
                         let sel = this.sel_start.zip(this.sel_end);
-                        snapshot_visible(&this.term, sel, this.cols)
+                        let show_cur = this.cursor_blink_on
+                            && this.term.mode().contains(TermMode::SHOW_CURSOR);
+                        snapshot_visible(&this.term, sel, this.cols, show_cur)
                     };
                     paint_snapshot(
                         &snapshot, bounds, cell_w, line_h, &font, default_fg, bg, window, cx,
@@ -550,13 +578,16 @@ struct Snapshot {
     display_offset: usize,
     /// 历史总行数（滚动条用）。
     history_len: usize,
+    /// 光标是否可见（闪烁控制 + DECTCEM）。
+    cursor_visible: bool,
 }
 
 /// 把 Term 可见区快照成 owned 数据。
 fn snapshot_visible(
     term: &Term<NoopListener>,
     selection: Option<((usize, usize), (usize, usize))>,
-    _cols: usize,
+    cols: usize,
+    cursor_visible: bool,
 ) -> Snapshot {
     let grid = term.grid();
     let display_offset = grid.display_offset();
@@ -606,7 +637,7 @@ fn snapshot_visible(
 
     let display_offset = grid.display_offset();
     let history_len = grid.history_size();
-    Snapshot { rows: out_rows, cursor, selection, cols, display_offset, history_len }
+    Snapshot { rows: out_rows, cursor, selection, cols, display_offset, history_len, cursor_visible }
 }
 
 /// 根据快照绘制。
@@ -808,23 +839,25 @@ fn paint_snapshot(
         }
     }
 
-    // 光标：实心块。
-    if let Some((col, row)) = snapshot.cursor {
-        if row < snapshot.rows.len() {
-            let x = bounds.origin.x + px(col as f32 * cell_wf);
-            let y = bounds.origin.y + px(row as f32 * line_hf);
-            let cb = Bounds {
-                origin: Point::new(x, y),
-                size: gpui::size(cell_w, line_h),
-            };
-            window.paint_quad(quad(
-                cb,
-                Corners::default(),
-                default_fg,
-                Edges::default(),
-                hsla(0., 0., 0., 0.),
-                gpui::BorderStyle::default(),
-            ));
+    // 光标：实心块（受 blink + DECTCEM 控制）。
+    if snapshot.cursor_visible {
+        if let Some((col, row)) = snapshot.cursor {
+            if row < snapshot.rows.len() {
+                let x = bounds.origin.x + px(col as f32 * cell_wf);
+                let y = bounds.origin.y + px(row as f32 * line_hf);
+                let cb = Bounds {
+                    origin: Point::new(x, y),
+                    size: gpui::size(cell_w, line_h),
+                };
+                window.paint_quad(quad(
+                    cb,
+                    Corners::default(),
+                    default_fg,
+                    Edges::default(),
+                    hsla(0., 0., 0., 0.),
+                    gpui::BorderStyle::default(),
+                ));
+            }
         }
     }
 
