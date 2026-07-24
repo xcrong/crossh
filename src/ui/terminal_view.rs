@@ -85,6 +85,8 @@ pub struct TerminalView {
     /// 光标闪烁状态（true = 显示，false = 隐藏）。
     cursor_blink_on: bool,
     _blink_task: Option<Task<()>>,
+    /// 最近一帧检测到的 URL（用于点击跳转）。
+    detected_urls: Vec<(usize, usize, usize, String)>,
 }
 
 impl TerminalView {
@@ -131,6 +133,7 @@ impl TerminalView {
             scroll_acc: 0.,
             cursor_blink_on: true,
             _blink_task: None,
+            detected_urls: Vec::new(),
         });
 
         // drain：在主线程上从 event_rx 取事件喂给 Term。
@@ -256,15 +259,25 @@ impl TerminalView {
             return;
         }
         if let Some((col, row)) = self.pos_to_grid(ev.position) {
+            // Cmd+Click → 检查 URL 跳转
+            if ev.modifiers.platform && ev.button == MouseButton::Left {
+                if let Some(url) = self.url_at(col, row) {
+                    log::info!("opening URL: {url}");
+                    std::process::Command::new("open")
+                        .arg(&url)
+                        .spawn()
+                        .ok();
+                    return;
+                }
+            }
+
             let mode = *self.term.mode();
             if mode.intersects(TermMode::MOUSE_MODE) {
-                // 鼠标追踪激活 → 编码为 SGR 序列发送
                 let btn = mouse_button_for_event(MouseButton::Left, false);
                 let bytes = encode_sgr_mouse(btn, col, row, false, &ev.modifiers);
                 self.send_input(bytes);
                 return;
             }
-            // 选中文本（仅左键）
             if ev.button == MouseButton::Left {
                 self.sel_start = Some((col, row));
                 self.sel_end = Some((col, row));
@@ -394,6 +407,16 @@ impl TerminalView {
         }
     }
 
+    /// 检查 (col, row) 是否在某个检测到的 URL 上。
+    fn url_at(&self, col: usize, row: usize) -> Option<String> {
+        for &(r, cs, ce, ref url) in &self.detected_urls {
+            if r == row && col >= cs && col < ce {
+                return Some(url.clone());
+            }
+        }
+        None
+    }
+
     /// 从 grid 中提取选择区域内的文本。
     fn extract_selection_text(
         &self,
@@ -496,6 +519,9 @@ impl Render for TerminalView {
                             && this.term.mode().contains(TermMode::SHOW_CURSOR);
                         snapshot_visible(&this.term, sel, this.cols, show_cur)
                     };
+                    // 保存 URL 供点击跳转。
+                    let urls = snapshot.urls.clone();
+                    let _ = weak2.update(cx, |this, _| { this.detected_urls = urls; });
                     paint_snapshot(
                         &snapshot, bounds, cell_w, line_h, &font, default_fg, bg, window, cx,
                     );
@@ -565,6 +591,7 @@ struct RenderCell {
     bold: bool,
     italic: bool,
     spacer: bool,
+    is_url: bool,
 }
 
 /// 可见视口快照 + 光标位置 + 选择区域。
@@ -580,6 +607,8 @@ struct Snapshot {
     history_len: usize,
     /// 光标是否可见（闪烁控制 + DECTCEM）。
     cursor_visible: bool,
+    /// 可见区内的 URL：(row_in_viewport, col_start, col_end, url_string)。
+    urls: Vec<(usize, usize, usize, String)>,
 }
 
 /// 把 Term 可见区快照成 owned 数据。
@@ -619,6 +648,7 @@ fn snapshot_visible(
                 bold: cell.flags.contains(CellFlags::BOLD),
                 italic: cell.flags.contains(CellFlags::ITALIC),
                 spacer: cell.flags.contains(CellFlags::WIDE_CHAR_SPACER),
+                is_url: false,
             });
         }
         out_rows.push(out);
@@ -637,7 +667,48 @@ fn snapshot_visible(
 
     let display_offset = grid.display_offset();
     let history_len = grid.history_size();
-    Snapshot { rows: out_rows, cursor, selection, cols, display_offset, history_len, cursor_visible }
+    // URL 检测与标记。
+    let mut urls: Vec<(usize, usize, usize, String)> = Vec::new();
+    for vy in 0..rows.min(out_rows.len()) {
+        let line_text: String = out_rows[vy].iter().map(|c| if c.spacer { ' ' } else { c.ch }).collect();
+        let line_len = line_text.len();
+        let mut pos = 0;
+        while pos < line_len {
+            let rest = &line_text[pos..];
+            let (offset, _) = match rest.find("https://").or_else(|| rest.find("http://")).or_else(|| rest.find("www.")) {
+                Some(idx) => (idx, ()),
+                None => break,
+            };
+            let url_start = pos + offset;
+            let mut url_end = url_start + 4;
+            while url_end < line_len {
+                let c = line_text.as_bytes()[url_end] as char;
+                if c.is_whitespace() || c == '"' || c == '\'' || c == '>' || c == '<' || c == ')' || c == ']' {
+                    break;
+                }
+                url_end += 1;
+            }
+            // 去掉尾部的标点。
+            while url_end > url_start + 4 {
+                let c = line_text.as_bytes()[url_end - 1] as char;
+                if c == '.' || c == ',' || c == ';' || c == ':' || c == '!' || c == '?' {
+                    url_end -= 1;
+                } else {
+                    break;
+                }
+            }
+            if url_end > url_start + 4 {
+                let url_str = &line_text[url_start..url_end];
+                urls.push((vy, url_start, url_end, url_str.to_string()));
+                for c in url_start..url_end.min(out_rows[vy].len()) {
+                    out_rows[vy][c].is_url = true;
+                }
+            }
+            pos = url_end;
+        }
+    }
+
+    Snapshot { rows: out_rows, cursor, selection, cols, display_offset, history_len, cursor_visible, urls }
 }
 
 /// 根据快照绘制。
@@ -727,6 +798,7 @@ fn paint_snapshot(
         let mut cur_bg: Option<Hsla> = None;
         let mut cur_bold = false;
         let mut cur_italic = false;
+        let mut cur_url = false;
         let mut run_start_byte: usize = 0;
 
         // 绘制选择高亮背景。
@@ -767,11 +839,21 @@ fn paint_snapshot(
                          fg: Hsla,
                          bg: Option<Hsla>,
                          bold: bool,
-                         italic: bool| {
+                         italic: bool,
+                         is_url: bool| {
             let len = end - start;
             if len == 0 {
                 return;
             }
+            let underline = if is_url {
+                Some(gpui::UnderlineStyle {
+                    thickness: px(1.0),
+                    color: Some(fg),
+                    wavy: false,
+                })
+            } else {
+                None
+            };
             runs.push(TextRun {
                 len,
                 font: Font {
@@ -783,7 +865,7 @@ fn paint_snapshot(
                 },
                 color: fg,
                 background_color: bg,
-                underline: None,
+                underline,
                 strikethrough: None,
             });
         };
@@ -792,8 +874,12 @@ fn paint_snapshot(
             if cell.spacer {
                 continue;
             }
-            if Some(cell.fg) != cur_fg || cell.bg != cur_bg || cell.bold != cur_bold
-                || cell.italic != cur_italic
+            // 把 URL 颜色与下划线纳入属性变化追踪。
+            let cell_is_url = cell.is_url;
+            let cell_url_fg = if cell_is_url { Some(rgb_to_hsla(Rgb { r: 0x4f, g: 0xaf, b: 0xff })) } else { None };
+            let cell_fg_effective = cell_url_fg.unwrap_or(cell.fg);
+            if Some(cell_fg_effective) != cur_fg || cell.bg != cur_bg || cell.bold != cur_bold
+                || cell.italic != cur_italic || cell_is_url != cur_url
             {
                 let _ = flush_run(
                     &text,
@@ -804,12 +890,14 @@ fn paint_snapshot(
                     cur_bg,
                     cur_bold,
                     cur_italic,
+                    cur_url,
                 );
                 run_start_byte = text.len();
-                cur_fg = Some(cell.fg);
+                cur_fg = Some(cell_fg_effective);
                 cur_bg = cell.bg;
                 cur_bold = cell.bold;
                 cur_italic = cell.italic;
+                cur_url = cell_is_url;
             }
             text.push(cell.ch);
         }
@@ -822,6 +910,7 @@ fn paint_snapshot(
             cur_bg,
             cur_bold,
             cur_italic,
+            cur_url,
         );
 
         if text.is_empty() {
