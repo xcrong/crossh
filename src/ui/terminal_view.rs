@@ -8,17 +8,18 @@
 //! Term 只在 gpui 主线程被触碰（drain 与 paint 都在主线程）。
 
 use alacritty_terminal::event::{Event, EventListener};
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::term::cell::Flags as CellFlags;
-use alacritty_terminal::term::{Config, Term};
+use alacritty_terminal::term::{Config, Term, TermMode};
 use async_channel::{Receiver, Sender};
 use gpui::{
     canvas, px, App, AppContext, Bounds, Context, Corners, Edges, Entity, FocusHandle, Font,
-    FontWeight, Hsla, InteractiveElement, IntoElement, KeyDownEvent, Modifiers, ParentElement,
-    Pixels, Point, Render, SharedString, StatefulInteractiveElement, Styled, TextAlign, Task,
-    TextRun, Window, div, hsla, quad, rgb,
+    FontWeight, Hsla, InteractiveElement, IntoElement, KeyDownEvent, Modifiers, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
+    ScrollDelta, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, TextAlign,
+    Task, TextRun, Window, div, hsla, quad, rgb,
 };
 use vte::ansi::{Color, NamedColor, Processor, Rgb};
 
@@ -30,7 +31,7 @@ const FONT_SIZE: f32 = 14.0;
 const SCROLLBACK: usize = 1000;
 
 /// 连接状态。
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Debug, PartialEq)]
 pub enum ConnState {
     #[default]
     Connecting,
@@ -69,15 +70,18 @@ pub struct TerminalView {
     input_tx: Sender<InputCmd>,
     pub state: ConnState,
     focus: FocusHandle,
-    // 字体度量（首次绘制时计算）。
     cell_w: Pixels,
     line_h: Pixels,
     cols: usize,
     rows: usize,
     font: Font,
     _drain: Option<Task<()>>,
-    // 是否已自动聚焦过一次（打开/切回时需重新聚焦则置 false）。
     focused_once: bool,
+    /// 文本选择：viewport 内 (col, row) 起点/终点。
+    sel_start: Option<(usize, usize)>,
+    sel_end: Option<(usize, usize)>,
+    /// 累积滚动偏移（trackpad 累加用）。
+    scroll_acc: f32,
 }
 
 impl TerminalView {
@@ -119,6 +123,9 @@ impl TerminalView {
             font,
             _drain: None,
             focused_once: false,
+            sel_start: None,
+            sel_end: None,
+            scroll_acc: 0.,
         });
 
         // drain：在主线程上从 event_rx 取事件喂给 Term。
@@ -196,12 +203,202 @@ impl TerminalView {
         }
     }
 
-    fn handle_key_down(&mut self, ev: &KeyDownEvent, _: &mut Window, _: &mut Context<Self>) {
+    fn handle_key_down(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
+        // Cmd+C / Cmd+V
+        if ks.modifiers.platform && !ks.modifiers.alt && !ks.modifiers.control {
+            match ks.key.as_str() {
+                "c" => {
+                    self.copy_selection(cx);
+                    return;
+                }
+                "v" => {
+                    self.paste_clipboard(cx);
+                    return;
+                }
+                _ => {}
+            }
+        }
         match encode_keystroke(ks) {
             Some(bytes) => self.send_input(bytes),
             None => log::debug!("unhandled keystroke: key={} key_char={:?}", ks.key, ks.key_char),
         }
+    }
+
+    fn handle_mouse_down(&mut self, ev: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.state != ConnState::Connected {
+            return;
+        }
+        if let Some((col, row)) = self.pos_to_grid(ev.position) {
+            let mode = *self.term.mode();
+            if mode.intersects(TermMode::MOUSE_MODE) {
+                // 鼠标追踪激活 → 编码为 SGR 序列发送
+                let btn = mouse_button_for_event(MouseButton::Left, false);
+                let bytes = encode_sgr_mouse(btn, col, row, false, &ev.modifiers);
+                self.send_input(bytes);
+                return;
+            }
+            // 选中文本（仅左键）
+            if ev.button == MouseButton::Left {
+                self.sel_start = Some((col, row));
+                self.sel_end = Some((col, row));
+                cx.notify();
+            }
+        }
+    }
+
+    fn handle_mouse_up(&mut self, ev: &MouseUpEvent, _: &mut Window, _cx: &mut Context<Self>) {
+        if self.state != ConnState::Connected {
+            return;
+        }
+        let mode = *self.term.mode();
+        if mode.intersects(TermMode::MOUSE_MODE) {
+            // SGR 释放
+            if let Some((col, row)) = self.pos_to_grid(ev.position) {
+                let bytes = encode_sgr_mouse(0, col, row, true, &ev.modifiers);
+                self.send_input(bytes);
+            }
+        }
+    }
+
+    fn handle_mouse_move(&mut self, ev: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.state != ConnState::Connected {
+            return;
+        }
+        let mode = *self.term.mode();
+        if mode.intersects(TermMode::MOUSE_MODE) && ev.pressed_button == Some(MouseButton::Left) {
+            if let Some((col, row)) = self.pos_to_grid(ev.position) {
+                let bytes = encode_sgr_mouse(32, col, row, false, &ev.modifiers);
+                self.send_input(bytes);
+            }
+            return;
+        }
+        // 拖拽扩展选择
+        if self.sel_start.is_some() && ev.pressed_button == Some(MouseButton::Left) {
+            if let Some((col, row)) = self.pos_to_grid(ev.position) {
+                self.sel_end = Some((col, row));
+                cx.notify();
+            }
+        }
+    }
+
+    fn handle_scroll_wheel(&mut self, ev: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let mode = *self.term.mode();
+
+        let delta = match ev.delta {
+            ScrollDelta::Lines(d) => d.y,
+            ScrollDelta::Pixels(d) => {
+                self.scroll_acc += d.y.as_f32();
+                let n = (self.scroll_acc / self.line_h.as_f32()) as i32;
+                self.scroll_acc -= n as f32 * self.line_h.as_f32();
+                n as f32
+            }
+        };
+
+        if delta == 0.0 { return; }
+        let steps = (delta.abs() as usize).max(1).min(8);
+        let dir = if delta > 0.0 { 64 } else { 65 }; // SGR 滚轮上/下
+
+        if mode.intersects(TermMode::MOUSE_MODE) {
+            for _ in 0..steps {
+                let bytes = encode_sgr_mouse(dir, self.cols / 2, self.rows / 2, false, &ev.modifiers);
+                self.send_input(bytes);
+            }
+            return;
+        }
+
+        let alt = mode.contains(TermMode::ALT_SCREEN);
+        if alt && mode.contains(TermMode::ALTERNATE_SCROLL) {
+            let key = if delta > 0.0 { b'A' } else { b'B' };
+            for _ in 0..steps {
+                self.send_input(vec![0x1b, b'O', key]);
+            }
+            return;
+        }
+
+        let n = steps as i32 * if delta > 0.0 { 1 } else { -1 };
+        self.term.scroll_display(Scroll::Delta(n));
+        cx.notify();
+    }
+
+    /// 像素位置 → grid (col, row)，考虑 cell 度量与内边距。
+    fn pos_to_grid(&self, pos: Point<Pixels>) -> Option<(usize, usize)> {
+        if self.cell_w.as_f32() <= 0. || self.line_h.as_f32() <= 0. {
+            return None;
+        }
+        let padding_x = px(12.); // .px_3() ≈ 12px
+        let padding_y = px(8.);  // .py_2() ≈ 8px
+        let x = (pos.x - padding_x).as_f32().max(0.);
+        let y = (pos.y - padding_y).as_f32().max(0.);
+        let col = (x / self.cell_w.as_f32()) as usize;
+        let row = (y / self.line_h.as_f32()) as usize;
+        if col < self.cols && row < self.rows {
+            Some((col, row))
+        } else {
+            None
+        }
+    }
+
+    /// Cmd+C：将选中的文本复制到剪贴板。
+    fn copy_selection(&mut self, cx: &mut Context<Self>) {
+        let Some((sx, sy)) = self.sel_start else { return };
+        let Some((ex, ey)) = self.sel_end else { return };
+        if sx == ex && sy == ey { return; }
+
+        let text = self.extract_selection_text(sx, sy, ex, ey);
+        self.sel_start = None;
+        self.sel_end = None;
+        cx.notify();
+
+        if text.is_empty() { return; }
+        let item = gpui::ClipboardItem::new_string(text);
+        cx.write_to_clipboard(item);
+    }
+
+    /// Cmd+V：从剪贴板读取文本并发送到 PTY。
+    fn paste_clipboard(&mut self, _cx: &mut Context<Self>) {
+        if self.state != ConnState::Connected { return; }
+        let item = _cx.read_from_clipboard();
+        if let Some(text) = item.and_then(|it| {
+            it.entries.into_iter().find_map(|e| {
+                if let gpui::ClipboardEntry::String(s) = e { Some(s.text) } else { None }
+            })
+        }) {
+            self.send_input(text.into_bytes());
+        }
+    }
+
+    /// 从 grid 中提取选择区域内的文本。
+    fn extract_selection_text(
+        &self,
+        sx: usize, sy: usize,
+        ex: usize, ey: usize,
+    ) -> String {
+        let grid = self.term.grid();
+        let display_offset = grid.display_offset();
+        let top_line = -(display_offset as i32);
+        let _rows = self.term.screen_lines();
+
+        let (y0, y1) = if sy <= ey { (sy, ey) } else { (ey, sy) };
+        let (x0, x1) = if sy == ey && sx > ex { (ex, sx) } else if sy < ey { (sx, ex) } else { (ex, sx) };
+
+        let mut out = String::new();
+        for vy in y0..=y1 {
+            let line_idx = top_line + vy as i32;
+            let line = &grid[Line(line_idx)];
+            let start_col = if vy == y0 { x0 } else { 0 };
+            let end_col = if vy == y1 { x1.min(self.cols.saturating_sub(1)) } else { self.cols - 1 };
+            for c in start_col..=end_col {
+                let ch = line[Column(c)].c;
+                if ch != '\0' {
+                    out.push(ch);
+                }
+            }
+            if vy < y1 {
+                out.push('\n');
+            }
+        }
+        out
     }
 }
 
@@ -268,7 +465,8 @@ impl Render for TerminalView {
                 if let Some(t) = weak2.upgrade() {
                     let snapshot = {
                         let this = t.read(cx);
-                        snapshot_visible(&this.term)
+                        let sel = this.sel_start.zip(this.sel_end);
+                        snapshot_visible(&this.term, sel, this.cols)
                     };
                     paint_snapshot(
                         &snapshot, bounds, cell_w, line_h, &font, default_fg, bg, window, cx,
@@ -289,6 +487,12 @@ impl Render for TerminalView {
             .bg(bg)
             .track_focus(&focus)
             .on_key_down(cx.listener(TerminalView::handle_key_down))
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::handle_mouse_down))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::handle_mouse_down))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::handle_mouse_up))
+            .on_mouse_up(MouseButton::Right, cx.listener(Self::handle_mouse_up))
+            .on_mouse_move(cx.listener(Self::handle_mouse_move))
+            .on_scroll_wheel(cx.listener(Self::handle_scroll_wheel))
             .on_click({
                 let focus = focus.clone();
                 move |_ev, window, cx| window.focus(&focus, cx)
@@ -335,14 +539,25 @@ struct RenderCell {
     spacer: bool,
 }
 
-/// 可见视口快照 + 光标位置。
+/// 可见视口快照 + 光标位置 + 选择区域。
 struct Snapshot {
     rows: Vec<Vec<RenderCell>>,
     cursor: Option<(usize, usize)>, // (col, row_within_viewport)
+    /// viewport 内 ((col,row), (col,row)) 选择起止。
+    selection: Option<((usize, usize), (usize, usize))>,
+    cols: usize,
+    /// 当前显示偏移（滚动条用）。
+    display_offset: usize,
+    /// 历史总行数（滚动条用）。
+    history_len: usize,
 }
 
 /// 把 Term 可见区快照成 owned 数据。
-fn snapshot_visible(term: &Term<NoopListener>) -> Snapshot {
+fn snapshot_visible(
+    term: &Term<NoopListener>,
+    selection: Option<((usize, usize), (usize, usize))>,
+    _cols: usize,
+) -> Snapshot {
     let grid = term.grid();
     let display_offset = grid.display_offset();
     let cols = term.columns();
@@ -389,7 +604,9 @@ fn snapshot_visible(term: &Term<NoopListener>) -> Snapshot {
         }
     };
 
-    Snapshot { rows: out_rows, cursor }
+    let display_offset = grid.display_offset();
+    let history_len = grid.history_size();
+    Snapshot { rows: out_rows, cursor, selection, cols, display_offset, history_len }
 }
 
 /// 根据快照绘制。
@@ -437,7 +654,41 @@ fn paint_snapshot(
         gpui::BorderStyle::default(),
     ));
 
+    // 选择高亮颜色。
+    let sel_bg = hsla(0.6, 0.5, 0.3, 0.4);
+
     for (r, row) in snapshot.rows.iter().enumerate() {
+        // 绘制选择高亮背景。
+        if let Some(((ax, ay), (bx, by))) = snapshot.selection {
+            let r0 = ay.min(by);
+            let r1 = ay.max(by);
+            if r >= r0 && r <= r1 {
+                let cols = snapshot.cols;
+                let (c0, c1) = if r == r0 && r == r1 {
+                    (ax.min(bx), ax.max(bx))
+                } else if r == r0 {
+                    (ax.min(bx), cols.saturating_sub(1))
+                } else if r == r1 {
+                    (0, ax.max(bx))
+                } else {
+                    (0, cols.saturating_sub(1))
+                };
+                if c0 <= c1 {
+                    let x = bounds.origin.x + px(c0 as f32 * cell_wf);
+                    let w = px((c1 - c0 + 1) as f32 * cell_wf);
+                    let y = bounds.origin.y + px(r as f32 * line_hf);
+                    window.paint_quad(quad(
+                        Bounds { origin: Point::new(x, y), size: gpui::size(w, line_h) },
+                        Corners::default(),
+                        sel_bg,
+                        Edges::default(),
+                        hsla(0., 0., 0., 0.),
+                        gpui::BorderStyle::default(),
+                    ));
+                }
+            }
+        }
+
         // 把同行同 (fg,bg,attrs) 的 cell 聚成一段 run，减少 shape 次数。
         let mut text = String::with_capacity(row.len());
         let mut runs: Vec<TextRun> = Vec::new();
@@ -446,6 +697,37 @@ fn paint_snapshot(
         let mut cur_bold = false;
         let mut cur_italic = false;
         let mut run_start_byte: usize = 0;
+
+        // 绘制选择高亮背景。
+        if let Some(((ax, ay), (bx, by))) = snapshot.selection {
+            let r0 = ay.min(by);
+            let r1 = ay.max(by);
+            if r >= r0 && r <= r1 {
+                let cols = snapshot.cols;
+                let (c0, c1) = if r == r0 && r == r1 {
+                    (ax.min(bx), ax.max(bx))
+                } else if r == r0 {
+                    (ax.min(bx), cols.saturating_sub(1))
+                } else if r == r1 {
+                    (0, ax.max(bx))
+                } else {
+                    (0, cols.saturating_sub(1))
+                };
+                if c0 <= c1 {
+                    let x = bounds.origin.x + px(c0 as f32 * cell_wf);
+                    let w = px((c1 - c0 + 1) as f32 * cell_wf);
+                    let y = bounds.origin.y + px(r as f32 * line_hf);
+                    window.paint_quad(quad(
+                        Bounds { origin: Point::new(x, y), size: gpui::size(w, line_h) },
+                        Corners::default(),
+                        sel_bg,
+                        Edges::default(),
+                        hsla(0., 0., 0., 0.),
+                        gpui::BorderStyle::default(),
+                    ));
+                }
+            }
+        }
 
         let flush_run = |_text: &str,
                          runs: &mut Vec<TextRun>,
@@ -544,6 +826,39 @@ fn paint_snapshot(
                 gpui::BorderStyle::default(),
             ));
         }
+    }
+
+    // 滚动条指示器（右侧窄条）。
+    let display_offset = snapshot.display_offset;
+    let history_len = snapshot.history_len;
+    if history_len > 0 && display_offset > 0 {
+        let sb_w = px(6.);
+        let sb_x = bounds.right() - sb_w;
+        let sb_h = bounds.size.height;
+        let thumb_h = sb_h * (snapshot.rows.len() as f32 / (history_len + snapshot.rows.len()) as f32);
+        let thumb_y = sb_h * ((history_len - display_offset) as f32 / history_len as f32);
+        window.paint_quad(quad(
+            Bounds {
+                origin: Point::new(sb_x, bounds.origin.y),
+                size: gpui::size(sb_w, sb_h),
+            },
+            Corners::default(),
+            hsla(0., 0., 0.2, 0.15),
+            Edges::default(),
+            hsla(0., 0., 0., 0.),
+            gpui::BorderStyle::default(),
+        ));
+        window.paint_quad(quad(
+            Bounds {
+                origin: Point::new(sb_x, bounds.origin.y + thumb_y),
+                size: gpui::size(sb_w, thumb_h.min(sb_h)),
+            },
+            Corners::default(),
+            hsla(0., 0., 0.5, 0.3),
+            Edges::default(),
+            hsla(0., 0., 0., 0.),
+            gpui::BorderStyle::default(),
+        ));
     }
 }
 
@@ -669,6 +984,29 @@ fn dimen(c: Hsla) -> Hsla {
         a: c.a * 0.6,
         ..c
     }
+}
+
+// ─── SGR 鼠标编码 ───────────────────────────────────────────────────────────
+/// 将鼠标按钮转换为 SGR 编码值（左=0, 中=1, 右=2）。
+fn mouse_button_for_event(btn: MouseButton, release: bool) -> u8 {
+    if release { return 3; }
+    match btn {
+        MouseButton::Left => 0,
+        MouseButton::Middle => 1,
+        MouseButton::Right => 2,
+        MouseButton::Navigate(_) => 0,
+    }
+}
+
+/// SGR 扩展鼠标序列：`ESC[<Cb;Cx;CyM`（按下）或 `ESC[<Cb;Cx;Cym`（释放）。
+fn encode_sgr_mouse(button: u8, col: usize, row: usize, release: bool, mods: &Modifiers) -> Vec<u8> {
+    let mut cb = button;
+    if mods.shift { cb |= 4; }
+    if mods.alt { cb |= 8; }
+    if mods.control { cb |= 16; }
+    let suffix = if release { 'm' } else { 'M' };
+    // 1-based 行列
+    format!("\x1b[<{};{};{}{}", cb, col + 1, row + 1, suffix).into_bytes()
 }
 
 // ─── 输入编码 ───────────────────────────────────────────────────────────────
