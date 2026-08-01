@@ -231,8 +231,12 @@ impl Connection {
         cols: u16,
         rows: u16,
     ) -> (Sender<InputCmd>, Receiver<SessionEvent>) {
-        let (input_tx, input_rx) = async_channel::bounded::<InputCmd>(64);
-        let (event_tx, event_rx) = async_channel::bounded::<SessionEvent>(64);
+        // 鼠标移动和复杂 TUI 的按键可能在一帧内产生大量小输入；容量太小会让
+        // UI 侧的非阻塞发送丢事件。TerminalView 仍会在满载时保留待发队列。
+        let (input_tx, input_rx) = async_channel::bounded::<InputCmd>(1024);
+        // 高刷新率 TUI 会连续产生许多小块输出；稍大的队列可吸收一帧内的
+        // 输出突发，UI drain 会按批次消费，避免远端读循环被短暂反压。
+        let (event_tx, event_rx) = async_channel::bounded::<SessionEvent>(256);
         let _ = self.cmd_tx.try_send(ConnCmd::OpenTerminal {
             cols,
             rows,
