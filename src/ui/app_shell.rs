@@ -38,7 +38,10 @@ enum Pane {
 
 /// 一个终端/SFTP 标签。
 struct Tab {
+    /// 重新打开终端时使用的原始目标（别名或 user@host:port）。
+    target: String,
     alias: String,
+    host_key: String,
     pane: Pane,
 }
 
@@ -49,6 +52,9 @@ pub struct AppShell {
     tabs: Vec<Tab>,
     active_tab: Option<usize>,
     status: Option<String>,
+    /// 侧栏搜索文本；未命中配置别名时也作为 QuickConnect 目标。
+    host_query: String,
+    host_focus: FocusHandle,
     /// 模态文本输入缓冲（密码/口令）。
     prompt_input: String,
     /// 模态输入框焦点。
@@ -77,6 +83,8 @@ impl AppShell {
             tabs: Vec::new(),
             active_tab: None,
             status: None,
+            host_query: String::new(),
+            host_focus: cx.focus_handle(),
             prompt_input: String::new(),
             modal_focus: cx.focus_handle(),
             last_had_prompt: false,
@@ -88,24 +96,26 @@ impl AppShell {
             Some(e) => e.clone(),
             None => return,
         };
-        let resolved = self.config.resolve(&entry.alias);
+        self.open_terminal_target(entry.alias.clone(), entry.alias, cx);
+    }
 
+    /// 按别名或 `user@host[:port]` 打开一个终端标签。
+    ///
+    /// 空认证候选也允许继续：Connection 会在认证失败前向 UI 请求密码，
+    /// 这样密码登录主机不会被侧栏提前拦截。
+    fn open_terminal_target(&mut self, target: String, alias: String, cx: &mut Context<Self>) {
+        let resolved = self.config.resolve(&target);
         let methods = default_auth_for(&resolved);
-        if methods.is_empty() {
-            self.status = Some(format!(
-                "未为 {} 配置认证方式（无私钥/agent），且未提供密码。",
-                entry.alias
-            ));
-            cx.notify();
-            return;
-        }
+        let host_key = ConnectionPool::key_for(&resolved);
 
         // 复用或新建连接，开一个终端 channel。
         let conn = self.pool.acquire(resolved, methods, self.config.clone(), cx);
         let (input_tx, event_rx) = conn.read(cx).open_terminal(100, 30);
         let terminal = TerminalView::from_bridge(input_tx, event_rx, 100, 30, cx);
         self.tabs.push(Tab {
-            alias: entry.alias.clone(),
+            target,
+            alias,
+            host_key,
             pane: Pane::Terminal(terminal),
         });
         self.active_tab = Some(self.tabs.len() - 1);
@@ -120,16 +130,14 @@ impl AppShell {
         };
         let resolved = self.config.resolve(&entry.alias);
         let methods = default_auth_for(&resolved);
-        if methods.is_empty() {
-            self.status = Some(format!("未为 {} 配置认证方式。", entry.alias));
-            cx.notify();
-            return;
-        }
+        let host_key = ConnectionPool::key_for(&resolved);
         let conn = self.pool.acquire(resolved.clone(), methods, self.config.clone(), cx);
         let (cmd_tx, event_rx) = conn.read(cx).open_sftp();
         let pane = SftpPane::from_bridge(cmd_tx, event_rx, cx);
         self.tabs.push(Tab {
+            target: entry.alias.clone(),
             alias: format!("{} (SFTP)", entry.alias),
+            host_key,
             pane: Pane::Sftp(pane),
         });
         self.active_tab = Some(self.tabs.len() - 1);
@@ -143,15 +151,13 @@ impl AppShell {
         };
         let resolved = self.config.resolve(&entry.alias);
         let methods = default_auth_for(&resolved);
-        if methods.is_empty() {
-            self.status = Some(format!("未为 {} 配置认证方式。", entry.alias));
-            cx.notify();
-            return;
-        }
+        let host_key = ConnectionPool::key_for(&resolved);
         let conn = self.pool.acquire(resolved.clone(), methods, self.config.clone(), cx);
         let pane = ForwardPane::new(conn, cx, &resolved);
         self.tabs.push(Tab {
+            target: entry.alias.clone(),
             alias: format!("{} (转发)", entry.alias),
+            host_key,
             pane: Pane::Forward(pane),
         });
         self.active_tab = Some(self.tabs.len() - 1);
@@ -188,6 +194,115 @@ impl AppShell {
             other => other,
         };
         cx.notify();
+    }
+
+    fn close_active_tab(&mut self, cx: &mut Context<Self>) {
+        if let Some(idx) = self.active_tab {
+            self.close_tab(idx, cx);
+        }
+    }
+
+    fn cycle_tab(&mut self, direction: isize, cx: &mut Context<Self>) {
+        let len = self.tabs.len();
+        if len == 0 {
+            return;
+        }
+        let current = self.active_tab.unwrap_or(0) as isize;
+        let next = (current + direction).rem_euclid(len as isize) as usize;
+        self.switch_tab(next, cx);
+    }
+
+    /// 从当前标签复制一个终端标签；没有活动标签时把焦点放到快速连接框。
+    fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(idx) = self.active_tab {
+            if let Some(tab) = self.tabs.get(idx) {
+                let target = tab.target.clone();
+                self.open_terminal_target(target.clone(), target, cx);
+                return;
+            }
+        }
+        self.host_query.clear();
+        self.host_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn open_query(&mut self, cx: &mut Context<Self>) {
+        let query = self.host_query.trim().to_string();
+        if query.is_empty() {
+            return;
+        }
+
+        let query_lower = query.to_ascii_lowercase();
+        let matching_idx = self
+            .entries
+            .iter()
+            .position(|entry| entry.alias.eq_ignore_ascii_case(&query))
+            .or_else(|| {
+                self.entries
+                    .iter()
+                    .position(|entry| host_entry_matches(entry, &query_lower))
+            });
+
+        if let Some(idx) = matching_idx {
+            self.open_host(idx, cx);
+        } else {
+            self.open_terminal_target(query.clone(), query, cx);
+        }
+    }
+
+    fn handle_host_search_key(
+        &mut self,
+        ev: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match ev.keystroke.key.as_str() {
+            "enter" | "return" => self.open_query(cx),
+            "escape" => {
+                self.host_query.clear();
+                cx.notify();
+            }
+            "backspace" => {
+                self.host_query.pop();
+                cx.notify();
+            }
+            _ => {
+                if let Some(ch) = printable_char(&ev.keystroke) {
+                    self.host_query.push(ch);
+                    cx.notify();
+                } else if ev.keystroke.key == "tab" {
+                    self.host_focus.focus(window, cx);
+                }
+            }
+        }
+    }
+
+    fn handle_shell_key_down(
+        &mut self,
+        ev: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(self.current_prompt(cx), PromptDisplay::None) {
+            return;
+        }
+        let ks = &ev.keystroke;
+        let primary = ks.modifiers.platform || ks.modifiers.control;
+        if !primary {
+            return;
+        }
+
+        match ks.key.as_str() {
+            "w" => self.close_active_tab(cx),
+            "t" => self.new_tab(window, cx),
+            "tab" => self.cycle_tab(if ks.modifiers.shift { -1 } else { 1 }, cx),
+            key if matches!(key, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9") => {
+                if let Ok(n) = ks.key.parse::<usize>() {
+                    self.switch_tab(n - 1, cx);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// 当前有待处理弹窗的连接（若有）。
@@ -285,14 +400,18 @@ impl Render for AppShell {
         self.last_had_prompt = has_prompt;
 
         let sidebar = render_sidebar(self, cx);
-        let main = render_main(self, cx);
+        // Materialize the opaque element before attaching the root listener so
+        // Rust 2024 does not keep `cx` borrowed through `render_main`.
+        let main = render_main(self, cx).into_any_element();
 
         let mut root = div()
+            .id("app-shell")
             .flex()
             .flex_row()
             .size_full()
             .bg(rgb(0x121214))
             .text_color(rgb(0xe6e6e6))
+            .on_key_down(cx.listener(AppShell::handle_shell_key_down))
             .child(sidebar)
             .child(main);
 
@@ -304,6 +423,15 @@ impl Render for AppShell {
 }
 
 fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
+    let query = shell.host_query.trim().to_ascii_lowercase();
+    let search_focus = shell.host_focus.clone();
+    let search_value = shell.host_query.clone();
+    let visible_count = shell
+        .entries
+        .iter()
+        .filter(|entry| query.is_empty() || host_entry_matches(entry, &query))
+        .count();
+
     let mut list = div()
         .id("host-list")
         .flex_1()
@@ -315,11 +443,17 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
         .overflow_y_scroll();
 
     for (idx, entry) in shell.entries.iter().enumerate() {
+        if !query.is_empty() && !host_entry_matches(entry, &query) {
+            continue;
+        }
         let alias = entry.alias.clone();
         let detail = entry.detail.clone();
         let state = shell.pool.state_for_key(&entry.key, cx);
         let badge = state_badget(&state);
-        let active = shell.active_tab.is_some();
+        let active = shell
+            .active_tab
+            .and_then(|active_idx| shell.tabs.get(active_idx))
+            .is_some_and(|tab| tab.host_key == entry.key);
 
         let mut entry_div = div()
             .id(idx)
@@ -391,6 +525,43 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
         list = list.child(entry_div);
     }
 
+    let search = div()
+        .id("host-search")
+        .mx_3()
+        .mb_2()
+        .px_2()
+        .py_1()
+        .flex()
+        .items_center()
+        .bg(rgb(0x121214))
+        .border_1()
+        .border_color(rgb(0x303036))
+        .text_xs()
+        .text_color(if search_value.is_empty() {
+            rgb(0x6a6a72)
+        } else {
+            rgb(0xe6e6e8)
+        })
+        .track_focus(&search_focus)
+        .on_click({
+            let search_focus = search_focus.clone();
+            move |_ev, window, cx| window.focus(&search_focus, cx)
+        })
+        .on_key_down(cx.listener(AppShell::handle_host_search_key))
+        .child(SharedString::from(if search_value.is_empty() {
+            "筛选主机或输入 user@host:port".to_string()
+        } else {
+            search_value
+        }));
+
+    let list_footer = if shell.entries.is_empty() {
+        "未找到 ~/.ssh/config 中的主机".to_string()
+    } else if visible_count == 0 {
+        "没有匹配的主机，按 Enter 进行快速连接".to_string()
+    } else {
+        format!("{} 个主机", visible_count)
+    };
+
     div()
         .w(px(220.))
         .h_full()
@@ -402,12 +573,26 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
         .child(
             div()
                 .px_4()
-                .py_3()
+                .pt_3()
+                .pb_2()
+                .flex()
+                .items_center()
+                .justify_between()
+                .text_xs()
+                .text_color(rgb(0x8c8c94))
+                .child(SharedString::from("Hosts"))
+                .child(SharedString::from(format!("{visible_count}"))),
+        )
+        .child(search)
+        .child(list)
+        .child(
+            div()
+                .px_3()
+                .py_2()
                 .text_xs()
                 .text_color(rgb(0x6a6a72))
-                .child(SharedString::from("Hosts")),
+                .child(SharedString::from(list_footer)),
         )
-        .child(list)
         .into_any_element()
 }
 
@@ -430,6 +615,16 @@ fn badge_color(state: &Option<ConnState>) -> gpui::Hsla {
         Some(ConnState::Connected) => hsla(0.33, 0.7, 0.5, 1.),
         Some(ConnState::Error(_)) => hsla(0., 0.8, 0.55, 1.),
         Some(ConnState::Closed) => hsla(0., 0., 0.3, 1.),
+    }
+}
+
+fn tab_badge_color(state: &Option<ConnState>) -> gpui::Hsla {
+    match state {
+        Some(ConnState::Connecting) => hsla(0.13, 0.8, 0.6, 1.),
+        Some(ConnState::Connected) => hsla(0.33, 0.7, 0.5, 1.),
+        Some(ConnState::Error(_)) => hsla(0., 0.8, 0.55, 1.),
+        Some(ConnState::Closed) => hsla(0., 0., 0.35, 1.),
+        None => hsla(0., 0., 0.35, 1.),
     }
 }
 
@@ -499,6 +694,7 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
 
     for (idx, tab) in shell.tabs.iter().enumerate() {
         let is_active = shell.active_tab == Some(idx);
+        let state = shell.pool.state_for_key(&tab.host_key, cx);
         let bg = if is_active {
             rgb(0x2a2a3a)
         } else {
@@ -519,12 +715,22 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
             .child(
                 div()
                     .id(("tab", idx))
+                    .flex()
+                    .items_center()
+                    .gap_1()
                     .px_2()
                     .py_1()
                     .cursor_pointer()
                     .text_xs()
                     .text_color(rgb(0xe6e6e6))
                     .hover(|s| s.bg(rgb(0x35355a)))
+                    .child(
+                        div()
+                            .w(px(6.))
+                            .h(px(6.))
+                            .rounded_full()
+                            .bg(tab_badge_color(&state)),
+                    )
                     .child(SharedString::from(alias))
                     .on_click(cx.listener(move |this, _ev, _w, cx| {
                         this.switch_tab(idx, cx);
@@ -546,7 +752,27 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
             );
         strip = strip.child(container);
     }
+
+    let host_focus = shell.host_focus.clone();
     strip
+        .child(div().flex_1())
+        .child(
+            div()
+                .id("new-tab")
+                .px_3()
+                .h_full()
+                .flex()
+                .items_center()
+                .cursor_pointer()
+                .text_color(rgb(0x8c8c94))
+                .hover(|s| s.bg(rgb(0x2a2a2e)).text_color(rgb(0xf5f5f7)))
+                .child(SharedString::from("+"))
+                .on_click(cx.listener(move |this, _ev, window, cx| {
+                    this.host_query.clear();
+                    host_focus.focus(window, cx);
+                    cx.notify();
+                })),
+        )
 }
 
 /// 渲染模态覆盖层。
@@ -770,6 +996,11 @@ fn build_entries(config: &SshConfig) -> Vec<HostEntry> {
         out.push(HostEntry { alias, detail, key });
     }
     out
+}
+
+fn host_entry_matches(entry: &HostEntry, query: &str) -> bool {
+    entry.alias.to_ascii_lowercase().contains(query)
+        || entry.detail.to_ascii_lowercase().contains(query)
 }
 
 /// 打开主窗口。在 main.rs 中调用。

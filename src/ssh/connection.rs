@@ -31,7 +31,7 @@ use super::forward::{
     start_remote_forward, stop_remote_forward, RemoteForwardRegistry,
 };
 use super::runtime::runtime;
-use super::session::{AuthChoice, InputCmd, SessionEvent};
+use super::session::{AuthChoice, InputCmd, SessionEvent, default_user_for};
 use super::sftp::{run_sftp_worker, SftpCmd, SftpEvent};
 
 /// UI 主机密钥决定（NeedHostKey 的回传）。
@@ -459,7 +459,8 @@ pub(crate) async fn connect_direct_and_auth(
     let sock_addr = (addr.as_str(), port);
     let mut handle: Handle<ClientHandler> = client::connect(config, sock_addr, handler).await?;
 
-    if !authenticate(&mut handle, &methods, event_tx).await? {
+    let user = default_user_for(host);
+    if !authenticate(&mut handle, &methods, &user, event_tx).await? {
         anyhow::bail!("authentication failed: all methods exhausted");
     }
 
@@ -489,7 +490,8 @@ async fn connect_and_authenticate(
                 remote_registry,
             )
             .await?;
-            if !authenticate(&mut handle, methods, event_tx).await? {
+            let user = default_user_for(host);
+            if !authenticate(&mut handle, methods, &user, event_tx).await? {
                 anyhow::bail!("authentication failed: all methods exhausted");
             }
             Ok((handle, Some(jump_handle)))
@@ -507,12 +509,10 @@ async fn connect_and_authenticate(
 async fn authenticate(
     handle: &mut Handle<ClientHandler>,
     methods: &[AuthChoice],
+    user: &str,
     event_tx: &Sender<ConnEvent>,
 ) -> anyhow::Result<bool> {
-    let default_user = methods
-        .first()
-        .map(|m| m.user().to_string())
-        .unwrap_or_else(|| "root".to_string());
+    let default_user = user.to_string();
 
     for method in methods {
         match method {

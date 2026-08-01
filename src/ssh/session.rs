@@ -44,7 +44,7 @@ impl AuthChoice {
 ///
 /// 顺序：显式密钥 → 默认密钥 → agent。
 pub fn default_auth_for(host: &HostConfig) -> Vec<AuthChoice> {
-    let user = host.user.clone().unwrap_or_else(whoami);
+    let user = default_user_for(host);
     let mut out: Vec<AuthChoice> = Vec::new();
     let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
 
@@ -84,6 +84,11 @@ pub fn default_auth_for(host: &HostConfig) -> Vec<AuthChoice> {
     }
 
     out
+}
+
+/// 返回 SSH 配置没有显式 User 时应使用的本地用户名。
+pub fn default_user_for(host: &HostConfig) -> String {
+    host.user.clone().unwrap_or_else(whoami)
 }
 
 fn whoami() -> String {

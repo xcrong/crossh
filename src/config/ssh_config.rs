@@ -405,11 +405,30 @@ fn split_target(target: &str) -> (Option<&str>, &str, Option<u16>) {
         Some((u, h)) => (Some(u), h),
         None => (None, target),
     };
-    let (host, port) = match rest.rsplit_once(':') {
-        Some((h, p)) => (h, p.parse::<u16>().ok()),
-        None => (rest, None),
-    };
-    (user, host, port)
+
+    // tty7 风格的 QuickConnect 也接受 `[::1]:2222`；去掉方括号后交给
+    // russh，避免把 IPv6 地址的内部冒号误判成端口分隔符。
+    if let Some(bracketed) = rest.strip_prefix('[') {
+        if let Some((host, suffix)) = bracketed.split_once(']') {
+            let port = suffix
+                .strip_prefix(':')
+                .and_then(|value| value.parse::<u16>().ok());
+            if suffix.is_empty() || port.is_some() {
+                return (user, host, port);
+            }
+        }
+    }
+
+    // 只有单冒号且尾部确实是数字时才解析为端口；裸 IPv6 和非法端口
+    // 保持完整主机名，避免丢失地址的一部分。
+    if let Some((host, port)) = rest.rsplit_once(':') {
+        if !host.contains(':') {
+            if let Ok(port) = port.parse::<u16>() {
+                return (user, host, Some(port));
+            }
+        }
+    }
+    (user, rest, None)
 }
 
 #[cfg(test)]
@@ -507,6 +526,23 @@ mod tests {
         assert_eq!(r.user.as_deref(), Some("root"));
         assert_eq!(r.host_name.as_deref(), Some("example.com"));
         assert_eq!(r.port, Some(2222));
+    }
+
+    #[test]
+    fn resolves_bracketed_ipv6_target() {
+        let c = SshConfig::default();
+        let r = c.resolve("root@[2001:db8::7]:2200");
+        assert_eq!(r.user.as_deref(), Some("root"));
+        assert_eq!(r.host_name.as_deref(), Some("2001:db8::7"));
+        assert_eq!(r.port, Some(2200));
+    }
+
+    #[test]
+    fn preserves_unbracketed_ipv6_target() {
+        let c = SshConfig::default();
+        let r = c.resolve("2001:db8::7");
+        assert_eq!(r.host_name.as_deref(), Some("2001:db8::7"));
+        assert_eq!(r.port, None);
     }
 
     #[test]

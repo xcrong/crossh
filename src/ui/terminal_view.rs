@@ -234,6 +234,11 @@ impl TerminalView {
 
     fn handle_key_down(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
+        // 这些组合由 AppShell 处理；不要在 macOS 的 Ctrl+Tab 或其它平台的
+        // Ctrl+W/Ctrl+T 情况下误发给远端 shell。
+        if is_shell_shortcut(ks) {
+            return;
+        }
         // Cmd+C / Cmd+V
         if ks.modifiers.platform && !ks.modifiers.alt && !ks.modifiers.control {
             match ks.key.as_str() {
@@ -615,7 +620,7 @@ struct Snapshot {
 fn snapshot_visible(
     term: &Term<NoopListener>,
     selection: Option<((usize, usize), (usize, usize))>,
-    cols: usize,
+    _cols: usize,
     cursor_visible: bool,
 ) -> Snapshot {
     let grid = term.grid();
@@ -1207,6 +1212,16 @@ pub fn encode_keystroke(ks: &gpui::Keystroke) -> Option<Vec<u8>> {
         }
     };
     Some(bytes)
+}
+
+fn is_shell_shortcut(ks: &gpui::Keystroke) -> bool {
+    if !(ks.modifiers.platform || ks.modifiers.control) {
+        return false;
+    }
+    matches!(
+        ks.key.as_str(),
+        "w" | "t" | "tab" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+    )
 }
 
 /// 计算带修饰键时的 CSI 修饰码（shift=1, alt=2, control=4, meta=8，再 +1）。
