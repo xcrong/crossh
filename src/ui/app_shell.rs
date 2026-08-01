@@ -2,7 +2,7 @@
 //!
 //! - 连接池：同主机复用一条已认证会话（开新终端 channel），全部终端关闭才断开。
 //! - 多标签：每点击主机新开一个终端标签；可切换/关闭。
-//! - sidebar 徽标：按主机显示连接状态（连接中/已连接/出错）。
+//! - sidebar：按连接状态分为可折叠的 Active 与 Bank 主机组。
 //! - 模态：池中任一连接出现 pending_prompt（未知主机密钥/凭据）时弹覆盖层。
 
 use std::sync::Arc;
@@ -55,6 +55,9 @@ pub struct AppShell {
     /// 侧栏搜索文本；未命中配置别名时也作为 QuickConnect 目标。
     host_query: String,
     host_focus: FocusHandle,
+    /// 主机分组折叠状态；Bank 默认收起，Active 默认展开。
+    bank_collapsed: bool,
+    active_collapsed: bool,
     /// 模态文本输入缓冲（密码/口令）。
     prompt_input: String,
     /// 模态输入框焦点。
@@ -85,6 +88,8 @@ impl AppShell {
             status: None,
             host_query: String::new(),
             host_focus: cx.focus_handle(),
+            bank_collapsed: true,
+            active_collapsed: false,
             prompt_input: String::new(),
             modal_focus: cx.focus_handle(),
             last_had_prompt: false,
@@ -305,6 +310,16 @@ impl AppShell {
         }
     }
 
+    fn toggle_bank_group(&mut self, cx: &mut Context<Self>) {
+        self.bank_collapsed = !self.bank_collapsed;
+        cx.notify();
+    }
+
+    fn toggle_active_group(&mut self, cx: &mut Context<Self>) {
+        self.active_collapsed = !self.active_collapsed;
+        cx.notify();
+    }
+
     /// 当前有待处理弹窗的连接（若有）。
     fn pending_connection(&self, cx: &Context<Self>) -> Option<Entity<Connection>> {
         self.pool.pending_prompt_connection(cx)
@@ -426,13 +441,79 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
     let query = shell.host_query.trim().to_ascii_lowercase();
     let search_focus = shell.host_focus.clone();
     let search_value = shell.host_query.clone();
-    let visible_count = shell
-        .entries
-        .iter()
-        .filter(|entry| query.is_empty() || host_entry_matches(entry, &query))
-        .count();
+    let active_tab_key = shell
+        .active_tab
+        .and_then(|active_idx| shell.tabs.get(active_idx))
+        .map(|tab| tab.host_key.clone());
 
-    let mut list = div()
+    let mut active_entries = Vec::new();
+    let mut bank_entries = Vec::new();
+    for (idx, entry) in shell.entries.iter().enumerate() {
+        if !query.is_empty() && !host_entry_matches(entry, &query) {
+            continue;
+        }
+        let state = shell.pool.state_for_key(&entry.key, cx);
+        let row = (idx, entry.clone(), state);
+        if is_active_connection(&row.2) {
+            active_entries.push(row);
+        } else {
+            bank_entries.push(row);
+        }
+    }
+
+    let active_count = active_entries.len();
+    let bank_count = bank_entries.len();
+    let visible_count = active_count + bank_count;
+
+    let mut active_list = div()
+        .id("active-host-list")
+        .flex()
+        .flex_col()
+        .gap_1();
+    if active_entries.is_empty() {
+        active_list = active_list.child(render_host_group_empty("No active connections"));
+    } else {
+        for (idx, entry, state) in active_entries {
+            let selected = active_tab_key.as_deref() == Some(entry.key.as_str());
+            active_list = active_list.child(render_host_entry(
+                idx, &entry, state, selected, cx,
+            ));
+        }
+    }
+
+    let mut bank_list = div().id("bank-host-list").flex().flex_col().gap_1();
+    if bank_entries.is_empty() {
+        bank_list = bank_list.child(render_host_group_empty("No hosts in bank"));
+    } else {
+        for (idx, entry, state) in bank_entries {
+            let selected = active_tab_key.as_deref() == Some(entry.key.as_str());
+            bank_list = bank_list.child(render_host_entry(idx, &entry, state, selected, cx));
+        }
+    }
+
+    // Searching should reveal matching hosts even when their group is collapsed.
+    let active_collapsed = shell.active_collapsed && query.is_empty();
+    let bank_collapsed = shell.bank_collapsed && query.is_empty();
+    let active_group = render_host_group(
+        "active",
+        "ACTIVE",
+        active_count,
+        active_collapsed,
+        active_list.into_any_element(),
+        AppShell::toggle_active_group,
+        cx,
+    );
+    let bank_group = render_host_group(
+        "bank",
+        "BANK",
+        bank_count,
+        bank_collapsed,
+        bank_list.into_any_element(),
+        AppShell::toggle_bank_group,
+        cx,
+    );
+
+    let list = div()
         .id("host-list")
         .flex_1()
         .min_h_0()
@@ -440,90 +521,9 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
         .flex_col()
         .gap_1()
         .py_2()
-        .overflow_y_scroll();
-
-    for (idx, entry) in shell.entries.iter().enumerate() {
-        if !query.is_empty() && !host_entry_matches(entry, &query) {
-            continue;
-        }
-        let alias = entry.alias.clone();
-        let detail = entry.detail.clone();
-        let state = shell.pool.state_for_key(&entry.key, cx);
-        let badge = state_badget(&state);
-        let active = shell
-            .active_tab
-            .and_then(|active_idx| shell.tabs.get(active_idx))
-            .is_some_and(|tab| tab.host_key == entry.key);
-
-        let mut entry_div = div()
-            .id(idx)
-            .flex_shrink_0()
-            .px_3()
-            .py_1()
-            .text_sm()
-            .cursor_pointer();
-        if active {
-            entry_div = entry_div.bg(rgb(0x2a2a3a));
-        }
-        entry_div = entry_div
-            .hover(|s| s.bg(rgb(0x232327)))
-            .on_click(cx.listener(move |this, _ev, _window, cx| {
-                this.open_host(idx, cx);
-            }))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .w(px(8.))
-                            .h(px(8.))
-                            .rounded_full()
-                            .bg(badge_color(&state)),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_color(rgb(0xf5f5f7))
-                            .child(SharedString::from(alias)),
-                    )
-                    .child(
-                        div()
-                            .id(("sftp-btn", idx))
-                            .px_1()
-                            .cursor_pointer()
-                            .text_xs()
-                            .text_color(rgb(0x888892))
-                            .hover(|s| s.text_color(rgb(0xe6e6e6)))
-                            .child(SharedString::from("📁"))
-                            .on_click(cx.listener(move |this, _ev, _w, cx| {
-                                this.open_sftp(idx, cx);
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id(("fwd-btn", idx))
-                            .px_1()
-                            .cursor_pointer()
-                            .text_xs()
-                            .text_color(rgb(0x888892))
-                            .hover(|s| s.text_color(rgb(0xe6e6e6)))
-                            .child(SharedString::from("⇄"))
-                            .on_click(cx.listener(move |this, _ev, _w, cx| {
-                                this.open_forward(idx, cx);
-                            })),
-                    ),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(0x888892))
-                    .child(SharedString::from(format!("{badge}{detail}"))),
-            );
-        list = list.child(entry_div);
-    }
+        .overflow_y_scroll()
+        .child(active_group)
+        .child(bank_group);
 
     let search = div()
         .id("host-search")
@@ -594,6 +594,152 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
                 .child(SharedString::from(list_footer)),
         )
         .into_any_element()
+}
+
+fn render_host_entry(
+    idx: usize,
+    entry: &HostEntry,
+    state: Option<ConnState>,
+    selected: bool,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    let alias = entry.alias.clone();
+    let detail = entry.detail.clone();
+    let badge = state_badget(&state);
+
+    let mut entry_div = div()
+        .id(("host-entry", idx))
+        .flex_shrink_0()
+        .px_3()
+        .py_1()
+        .text_sm()
+        .cursor_pointer();
+    if selected {
+        entry_div = entry_div.bg(rgb(0x2a2a3a));
+    }
+    entry_div = entry_div
+        .hover(|s| s.bg(rgb(0x232327)))
+        .on_click(cx.listener(move |this, _ev, _window, cx| {
+            this.open_host(idx, cx);
+        }))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .w(px(8.))
+                        .h(px(8.))
+                        .rounded_full()
+                        .bg(badge_color(&state)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .text_color(rgb(0xf5f5f7))
+                        .child(SharedString::from(alias)),
+                )
+                .child(
+                    div()
+                        .id(("sftp-btn", idx))
+                        .px_1()
+                        .cursor_pointer()
+                        .text_xs()
+                        .text_color(rgb(0x888892))
+                        .hover(|s| s.text_color(rgb(0xe6e6e6)))
+                        .child(SharedString::from("📁"))
+                        .on_click(cx.listener(move |this, _ev, _w, cx| {
+                            this.open_sftp(idx, cx);
+                        })),
+                )
+                .child(
+                    div()
+                        .id(("fwd-btn", idx))
+                        .px_1()
+                        .cursor_pointer()
+                        .text_xs()
+                        .text_color(rgb(0x888892))
+                        .hover(|s| s.text_color(rgb(0xe6e6e6)))
+                        .child(SharedString::from("⇄"))
+                        .on_click(cx.listener(move |this, _ev, _w, cx| {
+                            this.open_forward(idx, cx);
+                        })),
+                ),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(0x888892))
+                .child(SharedString::from(format!("{badge}{detail}"))),
+        );
+    entry_div.into_any_element()
+}
+
+fn render_host_group(
+    id: &'static str,
+    title: &'static str,
+    count: usize,
+    collapsed: bool,
+    children: AnyElement,
+    toggle: fn(&mut AppShell, &mut Context<AppShell>),
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    let caret = if collapsed { "▸" } else { "▾" };
+    let header = div()
+        .id(format!("host-group-header-{id}"))
+        .px_3()
+        .py_1()
+        .flex()
+        .items_center()
+        .gap_2()
+        .cursor_pointer()
+        .text_xs()
+        .text_color(rgb(0x8c8c94))
+        .hover(|s| s.bg(rgb(0x232327)).text_color(rgb(0xe6e6e6)))
+        .on_click(cx.listener(move |this, _ev, _window, cx| toggle(this, cx)))
+        .child(
+            div()
+                .w(px(10.))
+                .text_color(rgb(0x6a6a72))
+                .child(SharedString::from(caret)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .child(SharedString::from(title)),
+        )
+        .child(
+            div()
+                .text_color(rgb(0x6a6a72))
+                .child(SharedString::from(count.to_string())),
+        );
+
+    let mut group = div()
+        .id(format!("host-group-{id}"))
+        .flex()
+        .flex_col()
+        .flex_shrink_0()
+        .child(header);
+    if !collapsed {
+        group = group.child(children);
+    }
+    group.into_any_element()
+}
+
+fn render_host_group_empty(label: &'static str) -> AnyElement {
+    div()
+        .px_3()
+        .py_2()
+        .text_xs()
+        .text_color(rgb(0x6a6a72))
+        .child(SharedString::from(label))
+        .into_any_element()
+}
+
+fn is_active_connection(state: &Option<ConnState>) -> bool {
+    matches!(state, Some(ConnState::Connected))
 }
 
 /// 连接状态徽标文字。
@@ -1001,6 +1147,20 @@ fn build_entries(config: &SshConfig) -> Vec<HostEntry> {
 fn host_entry_matches(entry: &HostEntry, query: &str) -> bool {
     entry.alias.to_ascii_lowercase().contains(query)
         || entry.detail.to_ascii_lowercase().contains(query)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_connected_hosts_are_active() {
+        assert!(is_active_connection(&Some(ConnState::Connected)));
+        assert!(!is_active_connection(&Some(ConnState::Connecting)));
+        assert!(!is_active_connection(&Some(ConnState::Closed)));
+        assert!(!is_active_connection(&Some(ConnState::Error("failed".to_string()))));
+        assert!(!is_active_connection(&None));
+    }
 }
 
 /// 打开主窗口。在 main.rs 中调用。
