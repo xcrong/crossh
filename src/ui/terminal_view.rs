@@ -1562,10 +1562,12 @@ fn encode_keystroke_with_event(
     }
 
     if !has_modifiers {
-        return plain_special_key(key, mode);
-    }
-
-    if let Some(bytes) = modified_special_key(key, m) {
+        // A plain printable key is not a special key. Only return here when
+        // the lookup actually matched; otherwise continue to the text path.
+        if let Some(bytes) = plain_special_key(key, mode) {
+            return Some(bytes);
+        }
+    } else if let Some(bytes) = modified_special_key(key, m) {
         return Some(bytes);
     }
 
@@ -2070,6 +2072,18 @@ mod tests {
 
     #[test]
     fn encodes_control_and_printable_keys() {
+        assert_eq!(encode_keystroke(&keystroke("a")), Some(b"a".to_vec()));
+        assert_eq!(encode_keystroke(&keystroke("1")), Some(b"1".to_vec()));
+        assert_eq!(encode_keystroke(&keystroke("-")), Some(b"-".to_vec()));
+        assert_eq!(
+            encode_keystroke(&keystroke("é")),
+            Some("é".as_bytes().to_vec())
+        );
+        assert_eq!(
+            encode_keystroke_with_mode(&keystroke("a"), TermMode::DISAMBIGUATE_ESC_CODES),
+            Some(b"a".to_vec())
+        );
+        assert_eq!(encode_keystroke(&keystroke("space")), Some(b" ".to_vec()));
         assert_eq!(encode_keystroke(&keystroke("ctrl-c")), Some(vec![3]));
         assert_eq!(encode_keystroke(&keystroke("ctrl-@")), Some(vec![0]));
         assert_eq!(encode_keystroke(&keystroke("alt-x")), Some(b"\x1bx".to_vec()));
