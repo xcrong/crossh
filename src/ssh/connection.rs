@@ -533,7 +533,8 @@ async fn authenticate(
                         }
                     }
                     Err(keys::Error::KeyIsEncrypted) => {
-                        let prompt = format!("Passphrase for {}:", path.display());
+                        let prompt = rust_i18n::t!("prompt.passphrase_for", path = path.display())
+                            .to_string();
                         if let Some(pass) =
                             request_credential(event_tx, CredentialKind::Passphrase, prompt).await
                         {
@@ -548,7 +549,7 @@ async fn authenticate(
                                     if let Some(pass2) = request_credential(
                                         event_tx,
                                         CredentialKind::Passphrase,
-                                        "Wrong passphrase, retry:".into(),
+                                        rust_i18n::t!("prompt.wrong_passphrase_retry").to_string(),
                                     )
                                     .await
                                     {
@@ -583,7 +584,7 @@ async fn authenticate(
     }
 
     // 兜底：向 UI 索要密码（用户可取消）。
-    let prompt = format!("Password for {default_user}:");
+    let prompt = rust_i18n::t!("prompt.password_for", user = default_user).to_string();
     if let Some(pass) = request_credential(event_tx, CredentialKind::Password, prompt).await {
         if handle
             .authenticate_password(default_user.clone(), pass)

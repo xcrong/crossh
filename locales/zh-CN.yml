@@ -1,0 +1,114 @@
+_version: 1
+
+language:
+  system: 跟随系统
+  english: 英语
+  simplified_chinese: 简体中文
+
+sidebar:
+  active: 活跃
+  bank: 主机
+  local: 本地
+  no_active_connections: 暂无活动连接
+  no_hosts_in_bank: 暂无主机
+  no_projects: 暂无项目
+  search_placeholder: 筛选主机或输入 user@host:port
+  no_ssh_hosts: 未找到 ~/.ssh/config 中的主机
+  no_matches: 没有匹配项，按 Enter 快速连接
+  entry_count: "%{count} 个入口"
+
+tooltip:
+  new_terminal: 新建终端
+  open_sftp: 打开 SFTP
+  port_forwarding: 端口转发
+  new_project: 新建项目
+  close_tab: 关闭标签
+
+project:
+  choose_directory: 选择项目目录
+  open: 打开本地项目
+
+connection:
+  connecting_with_separator: "连接中 · "
+  connected_with_separator: "已连接 · "
+  error_with_separator: "出错 · "
+  closed_with_separator: "已断开 · "
+
+tab:
+  sftp: SFTP
+  forward: 转发
+
+empty_state:
+  title: 准备开始
+  description: 选择一个主机，或打开一个本地项目
+
+prompt:
+  changed_host_key_warning: "主机密钥已变更，可能存在中间人攻击。\n按计划默认拒绝连接。"
+  unknown_host_warning: 未知主机，请核对此指纹后决定。
+  host_key_title: 主机密钥确认
+  host_key_body: "%{warning}\n主机：%{host}:%{port}\n密钥类型：%{key_type}\n指纹：\n%{fingerprint}"
+  passphrase_title: 请输入私钥口令
+  password_title: 请输入密码
+  accept_once: 接受一次
+  accept_always: 总是接受
+  reject: 拒绝
+  confirm: 确定
+  cancel: 取消
+  passphrase_for: "请输入 %{path} 的私钥口令："
+  wrong_passphrase_retry: "私钥口令错误，请重试："
+  password_for: "请输入 %{user} 的密码："
+
+sftp:
+  channel_unavailable: SFTP 通道不可用
+  not_utf8: 该文件不是 UTF-8 文本文件
+  operation_failed: "%{label} 失败：%{message}"
+  save_succeeded: "保存成功：%{message}"
+  save_failed: "保存失败：%{message}"
+  closed: SFTP 已关闭
+  no_local_name: "无法为 %{name} 找到可用的本地文件名"
+  prepare_download: "准备下载：%{name}"
+  choose_upload_file: 选择要上传的文件
+  enter_local_path: 请输入本地文件路径
+  local_file_missing: "本地文件不存在：%{path}"
+  prepare_upload: "准备上传：%{name}"
+  unsaved_changes: 有未保存修改，请先保存或放弃
+  editor_file_too_large: 文件内容超过编辑器大小上限
+  saving: 正在保存…
+  file_list: 文件列表
+  read_only: 只读
+  editing: 编辑中
+  enter_editing: 进入编辑
+  saving_short: 保存中…
+  save: 保存
+  discard: 放弃
+  reading_short: 读取中…
+  reading_remote: 正在读取远端文件…
+  saving_remote: 正在保存远端文件…
+  unsaved_changes_short: 有未保存修改
+  cannot_edit: 无法编辑此文件
+  saved: 已保存
+  parent: 上级
+  local_path_placeholder: 本地文件路径（回车上传）
+  upload: 上传
+  choose_file: 选择文件
+  loading: 加载中…
+  file_too_large: "文件过大（%{size}，上限 %{limit}）"
+
+forward:
+  stopping: "正在停止 %{kind} %{listen}"
+  started: "已启动 %{kind} %{listen}"
+  start_failed: "启动 %{kind} %{listen} 失败：%{error}"
+  connection_closed: 连接已关闭
+  title: 端口转发
+  source: 来自 ~/.ssh/config
+  no_config: 该主机未配置 LocalForward、RemoteForward 或 DynamicForward。
+  local: 本地 (-L)
+  remote: 远端 (-R)
+  dynamic: 动态 (-D SOCKS5)
+  kind_local: 本地
+  kind_remote: 远端
+  kind_dynamic: 动态
+
+terminal:
+  connecting: 连接中…
+  closed: 会话已关闭。

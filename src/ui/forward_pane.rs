@@ -11,6 +11,7 @@ use gpui::{
 };
 
 use crate::config::ForwardSpec;
+use crate::i18n;
 use crate::ssh::{Connection, ForwardKind};
 use crate::ui::{icons, theme};
 
@@ -47,7 +48,15 @@ impl ForwardPane {
             let listen = spec.listen.clone();
             self.active.remove(&(kind, spec.clone()));
             self.conn.read(cx).stop_forward(spec, kind);
-            self.push_msg(cx, format!("停止 {:?} {}", kind, listen));
+            self.push_msg(
+                cx,
+                rust_i18n::t!(
+                    "forward.stopping",
+                    kind = forward_kind_label(kind),
+                    listen = listen
+                )
+                .to_string(),
+            );
         } else {
             // 启动：发命令并等回执。
             let rx = self.conn.read(cx).start_forward(spec.clone(), kind);
@@ -57,13 +66,30 @@ impl ForwardPane {
                 let _ = weak.update(cx, |this, cx| match res {
                     Ok(Ok(())) => {
                         this.active.insert(key.clone());
-                        this.push_msg(cx, format!("已启动 {:?} {}", key.0, key.1.listen));
+                        this.push_msg(
+                            cx,
+                            rust_i18n::t!(
+                                "forward.started",
+                                kind = forward_kind_label(key.0),
+                                listen = key.1.listen
+                            )
+                            .to_string(),
+                        );
                     }
                     Ok(Err(e)) => {
-                        this.push_msg(cx, format!("启动 {:?} {} 失败: {e}", key.0, key.1.listen));
+                        this.push_msg(
+                            cx,
+                            rust_i18n::t!(
+                                "forward.start_failed",
+                                kind = forward_kind_label(key.0),
+                                listen = key.1.listen,
+                                error = e
+                            )
+                            .to_string(),
+                        );
                     }
                     Err(_) => {
-                        this.push_msg(cx, "连接已关闭".into());
+                        this.push_msg(cx, i18n::text("forward.connection_closed"));
                     }
                 });
             });
@@ -102,12 +128,12 @@ impl Render for ForwardPane {
                 .child(
                     icons::icon(icons::IconName::ArrowLeftRight, 17.).text_color(theme::accent()),
                 )
-                .child(SharedString::from("端口转发"))
+                .child(SharedString::from(i18n::text("forward.title")))
                 .child(
                     div()
                         .text_xs()
                         .text_color(theme::faint_text())
-                        .child(SharedString::from("来自 ~/.ssh/config")),
+                        .child(SharedString::from(i18n::text("forward.source"))),
                 ),
         );
 
@@ -121,15 +147,13 @@ impl Render for ForwardPane {
                     .border_color(theme::border())
                     .text_sm()
                     .text_color(theme::muted_text())
-                    .child(SharedString::from(
-                        "该主机未配置 LocalForward / RemoteForward / DynamicForward。",
-                    )),
+                    .child(SharedString::from(i18n::text("forward.no_config"))),
             );
         }
 
         col = render_section(
             col,
-            "本地 (-L)",
+            i18n::text("forward.local"),
             ForwardKind::Local,
             &self.local,
             &self.active,
@@ -137,7 +161,7 @@ impl Render for ForwardPane {
         );
         col = render_section(
             col,
-            "远端 (-R)",
+            i18n::text("forward.remote"),
             ForwardKind::Remote,
             &self.remote,
             &self.active,
@@ -145,7 +169,7 @@ impl Render for ForwardPane {
         );
         col = render_section(
             col,
-            "动态 (-D SOCKS5)",
+            i18n::text("forward.dynamic"),
             ForwardKind::Dynamic,
             &self.dynamic,
             &self.active,
@@ -181,10 +205,18 @@ fn section_id(kind: ForwardKind) -> &'static str {
     }
 }
 
+fn forward_kind_label(kind: ForwardKind) -> String {
+    i18n::text(match kind {
+        ForwardKind::Local => "forward.kind_local",
+        ForwardKind::Remote => "forward.kind_remote",
+        ForwardKind::Dynamic => "forward.kind_dynamic",
+    })
+}
+
 /// 渲染一组转发规则（标题 + 每条开关行）。
 fn render_section(
     mut col: gpui::Div,
-    title: &str,
+    title: String,
     kind: ForwardKind,
     specs: &[ForwardSpec],
     active: &HashSet<(ForwardKind, ForwardSpec)>,
@@ -198,7 +230,7 @@ fn render_section(
             .px_1()
             .text_xs()
             .text_color(theme::muted_text())
-            .child(SharedString::from(title.to_string())),
+            .child(SharedString::from(title)),
     );
     for (i, spec) in specs.iter().enumerate() {
         let on = active.contains(&(kind, spec.clone()));

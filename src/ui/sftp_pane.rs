@@ -10,6 +10,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, Task, Window, div, px, rgb,
 };
 
+use crate::i18n;
 use crate::ssh::{MAX_EDITOR_FILE_BYTES, RemoteEntry, SftpCmd, SftpEvent};
 use crate::ui::{icons, theme};
 
@@ -21,7 +22,11 @@ struct Progress {
     total: Option<u64>,
 }
 
-const SFTP_CHANNEL_UNAVAILABLE: &str = "SFTP 通道不可用";
+const SFTP_CHANNEL_UNAVAILABLE: &str = "sftp channel unavailable";
+
+fn sftp_channel_unavailable() -> String {
+    i18n::text("sftp.channel_unavailable")
+}
 
 const SUPPORTED_TEXT_EXTENSIONS: &[&str] = &[
     "bash", "c", "cc", "conf", "config", "cpp", "css", "csv", "fish", "go", "h", "hh", "hpp",
@@ -174,7 +179,7 @@ impl SftpPane {
             cmd_tx: cmd_tx.clone(),
             cwd: ".".to_string(),
             entries: Vec::new(),
-            message: (!initial_list_ok).then(|| SFTP_CHANNEL_UNAVAILABLE.to_string()),
+            message: (!initial_list_ok).then(sftp_channel_unavailable),
             loading: initial_list_ok,
             upload_input: String::new(),
             progress: None,
@@ -211,7 +216,7 @@ impl SftpPane {
                                         editor.error = None;
                                     }
                                     Err(_) => {
-                                        editor.error = Some("该文件不是 UTF-8 文本文件".into());
+                                        editor.error = Some(i18n::text("sftp.not_utf8").into());
                                     }
                                 }
                             }
@@ -233,7 +238,12 @@ impl SftpPane {
                             this.message = Some(if ok {
                                 format!("{label}: {message}")
                             } else {
-                                format!("{label} 失败: {message}")
+                                rust_i18n::t!(
+                                    "sftp.operation_failed",
+                                    label = label,
+                                    message = message
+                                )
+                                .to_string()
                             });
                             // 传输完成后刷新当前目录。
                             this.request_list(this.cwd.clone());
@@ -255,9 +265,9 @@ impl SftpPane {
                                 }
                             }
                             this.message = Some(if ok {
-                                format!("保存成功: {message}")
+                                rust_i18n::t!("sftp.save_succeeded", message = message).to_string()
                             } else {
-                                format!("保存失败: {message}")
+                                rust_i18n::t!("sftp.save_failed", message = message).to_string()
                             });
                         }
                         SftpEvent::Error(e) => {
@@ -278,9 +288,9 @@ impl SftpPane {
                             if let Some(editor) = &mut this.editor {
                                 editor.loading = false;
                                 editor.saving = false;
-                                editor.error = Some("SFTP 已关闭".into());
+                                editor.error = Some(i18n::text("sftp.closed").into());
                             }
-                            this.message = Some("SFTP 已关闭".into());
+                            this.message = Some(i18n::text("sftp.closed"));
                         }
                     }
                     cx.notify();
@@ -299,7 +309,7 @@ impl SftpPane {
         self.message = None;
         if try_send_command(&self.cmd_tx, SftpCmd::List { path }).is_err() {
             self.loading = false;
-            self.message = Some(SFTP_CHANNEL_UNAVAILABLE.to_string());
+            self.message = Some(sftp_channel_unavailable());
         }
     }
 
@@ -327,13 +337,13 @@ impl SftpPane {
         let remote = Self::join(&self.cwd, name);
         let target = downloads_dir().join(name);
         let Some(local) = unique_local_path(&target) else {
-            self.message = Some(format!("无法为 {} 找到可用的本地文件名", name));
+            self.message = Some(rust_i18n::t!("sftp.no_local_name", name = name).to_string());
             return;
         };
         if try_send_command(&self.cmd_tx, SftpCmd::Download { remote, local }).is_err() {
-            self.message = Some(SFTP_CHANNEL_UNAVAILABLE.to_string());
+            self.message = Some(sftp_channel_unavailable());
         } else {
-            self.message = Some(format!("准备下载: {name}"));
+            self.message = Some(rust_i18n::t!("sftp.prepare_download", name = name).to_string());
         }
     }
 
@@ -347,8 +357,8 @@ impl SftpPane {
         let mut editor = RemoteEditor::loading(remote.clone(), name.to_string(), cx.focus_handle());
         if try_send_command(&self.cmd_tx, SftpCmd::ReadFile { remote }).is_err() {
             editor.loading = false;
-            editor.error = Some(SFTP_CHANNEL_UNAVAILABLE.to_string());
-            self.message = Some(SFTP_CHANNEL_UNAVAILABLE.to_string());
+            editor.error = Some(sftp_channel_unavailable());
+            self.message = Some(sftp_channel_unavailable());
         } else {
             self.message = None;
         }
@@ -360,7 +370,7 @@ impl SftpPane {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("选择要上传的文件".into()),
+            prompt: Some(i18n::text("sftp.choose_upload_file").into()),
         });
         let task = cx.spawn(async move |weak, cx| {
             let Ok(Ok(Some(paths))) = paths_receiver.await else {
@@ -381,13 +391,14 @@ impl SftpPane {
     fn do_upload(&mut self, cx: &mut Context<Self>) {
         let input = self.upload_input.trim();
         if input.is_empty() {
-            self.message = Some("请输入本地文件路径".into());
+            self.message = Some(i18n::text("sftp.enter_local_path"));
             cx.notify();
             return;
         }
         let local = std::path::PathBuf::from(crate::config::expand_tilde(input));
         if !local.is_file() {
-            self.message = Some(format!("本地文件不存在: {}", local.display()));
+            self.message =
+                Some(rust_i18n::t!("sftp.local_file_missing", path = local.display()).to_string());
             cx.notify();
             return;
         }
@@ -397,9 +408,9 @@ impl SftpPane {
             .unwrap_or_else(|| "upload.bin".into());
         let remote = Self::join(&self.cwd, &basename);
         if try_send_command(&self.cmd_tx, SftpCmd::Upload { local, remote }).is_err() {
-            self.message = Some(SFTP_CHANNEL_UNAVAILABLE.to_string());
+            self.message = Some(sftp_channel_unavailable());
         } else {
-            self.message = Some(format!("准备上传: {basename}"));
+            self.message = Some(rust_i18n::t!("sftp.prepare_upload", name = basename).to_string());
             self.upload_input.clear();
         }
         cx.notify();
@@ -431,7 +442,7 @@ impl SftpPane {
 
     fn close_editor(&mut self, cx: &mut Context<Self>) {
         if self.editor.as_ref().is_some_and(|editor| editor.dirty) {
-            self.message = Some("有未保存修改，请先保存或放弃".into());
+            self.message = Some(i18n::text("sftp.unsaved_changes"));
         } else {
             self.editor = None;
             self.message = None;
@@ -454,19 +465,19 @@ impl SftpPane {
         };
         if contents.len() as u64 > MAX_EDITOR_FILE_BYTES {
             if let Some(editor) = &mut self.editor {
-                editor.error = Some("文件内容超过编辑器大小上限".into());
+                editor.error = Some(i18n::text("sftp.editor_file_too_large").into());
             }
             cx.notify();
             return;
         }
         if try_send_command(&self.cmd_tx, SftpCmd::WriteFile { remote, contents }).is_err() {
-            self.message = Some(SFTP_CHANNEL_UNAVAILABLE.to_string());
+            self.message = Some(sftp_channel_unavailable());
         } else {
             if let Some(editor) = &mut self.editor {
                 editor.saving = true;
                 editor.error = None;
             }
-            self.message = Some("正在保存…".into());
+            self.message = Some(i18n::text("sftp.saving").to_string());
         }
         cx.notify();
     }
@@ -591,7 +602,7 @@ impl SftpPane {
                     .text_xs()
                     .text_color(theme::text())
                     .child(icons::icon(icons::IconName::ArrowLeft, 14.))
-                    .child(SharedString::from("文件列表"))
+                    .child(SharedString::from(i18n::text("sftp.file_list")))
                     .on_click(cx.listener(|this, _ev, _window, cx| {
                         this.close_editor(cx);
                     })),
@@ -614,9 +625,9 @@ impl SftpPane {
                         theme::accent()
                     })
                     .child(SharedString::from(if read_only {
-                        "只读"
+                        i18n::text("sftp.read_only")
                     } else {
-                        "编辑中"
+                        i18n::text("sftp.editing")
                     })),
             );
 
@@ -637,7 +648,7 @@ impl SftpPane {
                     .text_xs()
                     .text_color(theme::text())
                     .child(icons::icon(icons::IconName::Pencil, 14.))
-                    .child(SharedString::from("进入编辑"))
+                    .child(SharedString::from(i18n::text("sftp.enter_editing")))
                     .on_click(cx.listener(|this, _ev, window, cx| {
                         this.enter_editor_edit(window, cx);
                     })),
@@ -658,7 +669,7 @@ impl SftpPane {
                     .text_xs()
                     .text_color(theme::text())
                     .child(icons::icon(icons::IconName::ShieldAlert, 14.))
-                    .child(SharedString::from("只读"))
+                    .child(SharedString::from(i18n::text("sftp.read_only")))
                     .on_click(cx.listener(|this, _ev, _window, cx| {
                         this.leave_editor_edit(cx);
                     })),
@@ -680,9 +691,9 @@ impl SftpPane {
                         .text_color(theme::canvas())
                         .child(icons::icon(icons::IconName::Save, 14.))
                         .child(SharedString::from(if saving {
-                            "保存中…"
+                            i18n::text("sftp.saving_short")
                         } else {
-                            "保存"
+                            i18n::text("sftp.save")
                         }))
                         .on_click(cx.listener(|this, _ev, _window, cx| {
                             this.save_editor(cx);
@@ -703,7 +714,7 @@ impl SftpPane {
                         .text_xs()
                         .text_color(theme::text())
                         .child(icons::icon(icons::IconName::X, 14.))
-                        .child(SharedString::from("放弃"))
+                        .child(SharedString::from(i18n::text("sftp.discard")))
                         .on_click(cx.listener(|this, _ev, _window, cx| {
                             this.discard_editor(cx);
                         })),
@@ -737,7 +748,7 @@ impl SftpPane {
                 div()
                     .text_xs()
                     .text_color(theme::muted_text())
-                    .child(SharedString::from("读取中…")),
+                    .child(SharedString::from(i18n::text("sftp.reading_short"))),
             );
         } else if let Some(error) = error.clone() {
             body = body.child(
@@ -786,15 +797,15 @@ impl SftpPane {
         }
 
         let footer_text = if loading {
-            "正在读取远端文件…".to_string()
+            i18n::text("sftp.reading_remote")
         } else if saving {
-            "正在保存远端文件…".to_string()
+            i18n::text("sftp.saving_remote")
         } else if dirty {
-            "有未保存修改".to_string()
+            i18n::text("sftp.unsaved_changes_short")
         } else if error.is_some() {
-            "无法编辑此文件".to_string()
+            i18n::text("sftp.cannot_edit")
         } else {
-            "已保存".to_string()
+            i18n::text("sftp.saved")
         };
         div()
             .size_full()
@@ -935,7 +946,7 @@ impl Render for SftpPane {
                     .text_xs()
                     .text_color(theme::text())
                     .child(icons::icon(icons::IconName::ArrowUp, 14.))
-                    .child(SharedString::from("上级"))
+                    .child(SharedString::from(i18n::text("sftp.parent")))
                     .on_click(cx.listener(|this, _ev, _w, cx| {
                         let p = Self::parent_of(&this.cwd);
                         this.request_list(p);
@@ -1070,7 +1081,7 @@ impl Render for SftpPane {
             })
             .on_key_down(cx.listener(SftpPane::handle_input_key))
             .child(SharedString::from(if upload_val.is_empty() {
-                "本地文件路径（回车上传）".to_string()
+                i18n::text("sftp.local_path_placeholder")
             } else {
                 upload_val
             }));
@@ -1106,7 +1117,7 @@ impl Render for SftpPane {
                             .text_xs()
                             .text_color(theme::canvas())
                             .child(icons::icon(icons::IconName::Upload, 14.))
-                            .child(SharedString::from("上传"))
+                            .child(SharedString::from(i18n::text("sftp.upload")))
                             .on_click(cx.listener(|this, _ev, _w, cx| {
                                 this.do_upload(cx);
                             })),
@@ -1126,7 +1137,7 @@ impl Render for SftpPane {
                             .text_xs()
                             .text_color(theme::text())
                             .child(icons::icon(icons::IconName::FolderOpen, 14.))
-                            .child(SharedString::from("选择文件"))
+                            .child(SharedString::from(i18n::text("sftp.choose_file")))
                             .on_click(cx.listener(|this, _ev, _w, cx| {
                                 this.choose_upload_file(cx);
                             })),
@@ -1153,7 +1164,7 @@ impl Render for SftpPane {
                 div()
                     .text_xs()
                     .text_color(theme::muted_text())
-                    .child(SharedString::from("加载中…")),
+                    .child(SharedString::from(i18n::text("sftp.loading"))),
             );
         } else if let Some(msg) = &self.message {
             bottom = bottom.child(

@@ -31,6 +31,7 @@ use gpui::{
 };
 use vte::ansi::{Color, NamedColor, Processor, Rgb};
 
+use crate::i18n;
 use crate::ssh::{InputCmd, SessionEvent};
 use crate::ui::theme;
 
@@ -948,11 +949,11 @@ impl Render for TerminalView {
 
         // 状态分支：未连接时显示提示。
         let status_overlay = match &self.state {
-            ConnState::Connecting => Some("Connecting…"),
+            ConnState::Connecting => Some(i18n::text("terminal.connecting")),
             ConnState::Error(e) => {
                 return connecting_or_error_view(e, &focus).into_any_element();
             }
-            ConnState::Closed => Some("Session closed."),
+            ConnState::Closed => Some(i18n::text("terminal.closed")),
             ConnState::Connected => None,
         };
 

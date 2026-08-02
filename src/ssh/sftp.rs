@@ -133,11 +133,12 @@ pub async fn run_sftp_worker(
 async fn read_file(sftp: &SftpSession, remote: &str) -> Result<Vec<u8>, String> {
     let metadata = sftp.metadata(remote).await.map_err(|e| e.to_string())?;
     if metadata.len() > MAX_EDITOR_FILE_BYTES {
-        return Err(format!(
-            "文件过大（{}，上限 {}）",
-            format_bytes(metadata.len()),
-            format_bytes(MAX_EDITOR_FILE_BYTES)
-        ));
+        return Err(rust_i18n::t!(
+            "sftp.file_too_large",
+            size = format_bytes(metadata.len()),
+            limit = format_bytes(MAX_EDITOR_FILE_BYTES)
+        )
+        .to_string());
     }
 
     let mut remote_file = sftp.open(remote).await.map_err(|e| e.to_string())?;
@@ -153,11 +154,12 @@ async fn read_file(sftp: &SftpSession, remote: &str) -> Result<Vec<u8>, String> 
 /// 保存编辑器内容，远端 `create` 会覆盖原文件。
 async fn write_file(sftp: &SftpSession, remote: &str, contents: &[u8]) -> Result<String, String> {
     if contents.len() as u64 > MAX_EDITOR_FILE_BYTES {
-        return Err(format!(
-            "文件过大（{}，上限 {}）",
-            format_bytes(contents.len() as u64),
-            format_bytes(MAX_EDITOR_FILE_BYTES)
-        ));
+        return Err(rust_i18n::t!(
+            "sftp.file_too_large",
+            size = format_bytes(contents.len() as u64),
+            limit = format_bytes(MAX_EDITOR_FILE_BYTES)
+        )
+        .to_string());
     }
 
     let mut remote_file = sftp.create(remote).await.map_err(|e| e.to_string())?;

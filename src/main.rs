@@ -5,6 +5,7 @@
 
 mod button;
 mod config;
+mod i18n;
 mod local;
 mod ssh;
 mod ui;
@@ -14,6 +15,8 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use gpui::App;
+
+rust_i18n::i18n!("locales", fallback = "en");
 
 /// 持久化日志路径。放在 /tmp，系统重启自动清空，无需手动维护。
 const LOG_PATH: &str = "/tmp/crossh/run.log";
@@ -41,6 +44,7 @@ fn main() {
     });
     app.run(move |cx: &mut App| {
         cx.init_colors();
+        i18n::init(cx);
         ui::app_shell::open_main_window(cx);
     });
 }

@@ -20,6 +20,7 @@ use gpui::{
 };
 
 use crate::config::SshConfig;
+use crate::i18n::{self, LanguagePreference};
 use crate::local;
 use crate::ssh::{
     Connection, ConnectionPool, CredentialKind, HostKeyDecision, PendingPrompt, default_auth_for,
@@ -96,6 +97,9 @@ pub struct AppShell {
     modal_focus: FocusHandle,
     /// 上一帧是否有活动模态（用于在弹窗出现时自动聚焦）。
     last_had_prompt: bool,
+    /// 当前语言偏好；实际 locale 由 i18n 全局状态维护。
+    language_preference: LanguagePreference,
+    language_menu_open: bool,
     /// 侧栏宽度与拖动状态；只影响布局，不改变导航状态。
     sidebar_width: Rc<Cell<f32>>,
     sidebar_dragging: Rc<Cell<bool>>,
@@ -114,6 +118,7 @@ impl AppShell {
         };
         let config = Arc::new(config);
         let entries = build_entries(&config);
+        let language_preference = i18n::preference(cx);
 
         cx.new(|cx| Self {
             config,
@@ -134,6 +139,8 @@ impl AppShell {
             prompt_input: String::new(),
             modal_focus: cx.focus_handle(),
             last_had_prompt: false,
+            language_preference,
+            language_menu_open: false,
             sidebar_width: Rc::new(Cell::new(theme::SIDEBAR_WIDTH)),
             sidebar_dragging: Rc::new(Cell::new(false)),
             sidebar_scroll: gpui::ScrollHandle::new(),
@@ -189,7 +196,7 @@ impl AppShell {
         let pane = SftpPane::from_bridge(cmd_tx, event_rx, cx);
         self.remote_tabs.push(Tab {
             target: entry.alias.clone(),
-            alias: format!("{} (SFTP)", entry.alias),
+            alias: entry.alias,
             host_key,
             pane: Pane::Sftp(pane),
         });
@@ -211,7 +218,7 @@ impl AppShell {
         let pane = ForwardPane::new(conn, cx, &resolved);
         self.remote_tabs.push(Tab {
             target: entry.alias.clone(),
-            alias: format!("{} (转发)", entry.alias),
+            alias: entry.alias,
             host_key,
             pane: Pane::Forward(pane),
         });
@@ -415,11 +422,11 @@ impl AppShell {
         }
 
         let query_lower = query.to_ascii_lowercase();
-        if matches!(query_lower.as_str(), "project" | "projects") {
+        if matches!(query_lower.as_str(), "project" | "projects" | "项目") {
             self.choose_project_directory(cx);
             return;
         }
-        if query_lower == "local" {
+        if matches!(query_lower.as_str(), "local" | "本地") {
             self.activate_local_dir(current_local_cwd(), cx);
             return;
         }
@@ -453,7 +460,7 @@ impl AppShell {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("选择项目目录".into()),
+            prompt: Some(i18n::text("project.choose_directory").into()),
         });
         let task = cx.spawn(async move |weak, cx| {
             let Ok(Ok(Some(paths))) = paths_receiver.await else {
@@ -537,6 +544,32 @@ impl AppShell {
 
     fn toggle_projects_group(&mut self, cx: &mut Context<Self>) {
         self.projects_collapsed = !self.projects_collapsed;
+        cx.notify();
+    }
+
+    fn toggle_language_menu(&mut self, cx: &mut Context<Self>) {
+        self.language_menu_open = !self.language_menu_open;
+        cx.notify();
+    }
+
+    fn set_language(&mut self, preference: LanguagePreference, cx: &mut Context<Self>) {
+        if self.language_preference == preference {
+            self.language_menu_open = false;
+            cx.notify();
+            return;
+        }
+        i18n::set_preference(cx, preference);
+        self.language_preference = preference;
+        self.language_menu_open = false;
+
+        // 子面板不会因为 AppShell 自身重绘而自动重新 render，因此显式通知它们。
+        for tab in &self.remote_tabs {
+            match &tab.pane {
+                Pane::Terminal(_) => {}
+                Pane::Sftp(pane) => pane.update(cx, |_, cx| cx.notify()),
+                Pane::Forward(pane) => pane.update(cx, |_, cx| cx.notify()),
+            }
+        }
         cx.notify();
     }
 
@@ -749,7 +782,10 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
             .entry(local_dir_name_key(&dir.cwd))
             .or_insert(0usize) += 1;
     }
-    let project_query = matches!(query.as_str(), "local" | "project" | "projects");
+    let project_query = matches!(
+        query.as_str(),
+        "local" | "project" | "projects" | "本地" | "项目"
+    );
     let show_projects = query.is_empty() || project_query || !project_dirs.is_empty();
 
     let mut active_entries = Vec::new();
@@ -774,7 +810,9 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
 
     let mut active_list = div().id("active-host-list").flex().flex_col().gap_1();
     if active_entries.is_empty() {
-        active_list = active_list.child(render_host_group_empty("No active connections"));
+        active_list = active_list.child(render_host_group_empty(i18n::text(
+            "sidebar.no_active_connections",
+        )));
     } else {
         for (idx, entry, state) in active_entries {
             let selected = active_remote_key.as_deref() == Some(entry.key.as_str());
@@ -784,7 +822,9 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
 
     let mut bank_list = div().id("bank-host-list").flex().flex_col().gap_1();
     if bank_entries.is_empty() {
-        bank_list = bank_list.child(render_host_group_empty("No hosts in bank"));
+        bank_list = bank_list.child(render_host_group_empty(i18n::text(
+            "sidebar.no_hosts_in_bank",
+        )));
     } else {
         for (idx, entry, state) in bank_entries {
             let selected = active_remote_key.as_deref() == Some(entry.key.as_str());
@@ -794,7 +834,8 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
 
     let mut project_list = div().id("project-list").flex().flex_col().gap_1();
     if project_dirs.is_empty() {
-        project_list = project_list.child(render_host_group_empty("No projects"));
+        project_list =
+            project_list.child(render_host_group_empty(i18n::text("sidebar.no_projects")));
     } else {
         for (idx, dir) in project_dirs.iter().enumerate() {
             let selected = is_active_local_dir(shell, dir);
@@ -817,7 +858,7 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
     let bank_collapsed = shell.bank_collapsed && query.is_empty();
     let active_group = render_host_group(
         "active",
-        "ACTIVE",
+        i18n::text("sidebar.active"),
         active_count,
         active_collapsed,
         active_list.into_any_element(),
@@ -827,7 +868,7 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
     );
     let bank_group = render_host_group(
         "bank",
-        "BANK",
+        i18n::text("sidebar.bank"),
         bank_count,
         bank_collapsed,
         bank_list.into_any_element(),
@@ -838,7 +879,7 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
     let projects_group = if show_projects {
         Some(render_host_group(
             "projects",
-            "LOCAL",
+            i18n::text("sidebar.local"),
             project_count,
             shell.projects_collapsed && query.is_empty(),
             project_list.into_any_element(),
@@ -867,7 +908,7 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
     list = list.child(active_group).child(bank_group);
 
     let search_placeholder = if search_value.is_empty() {
-        "筛选主机或输入 user@host:port".to_string()
+        i18n::text("sidebar.search_placeholder")
     } else {
         search_value
     };
@@ -907,11 +948,11 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
         );
 
     let list_footer = if visible_count == 0 && shell.entries.is_empty() && !show_projects {
-        "未找到 ~/.ssh/config 中的主机".to_string()
+        i18n::text("sidebar.no_ssh_hosts")
     } else if visible_count == 0 {
-        "没有匹配的入口，按 Enter 快速连接".to_string()
+        i18n::text("sidebar.no_matches")
     } else {
-        format!("{visible_count} 个入口")
+        rust_i18n::t!("sidebar.entry_count", count = visible_count).to_string()
     };
 
     let width = shell
@@ -992,6 +1033,54 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
             }
         });
 
+    let mut titlebar = div()
+        .relative()
+        .h(px(theme::TITLEBAR_HEIGHT))
+        .flex_shrink_0()
+        .px_3()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(icons::icon(icons::IconName::Terminal, 15.).text_color(theme::accent()))
+        .child(
+            div()
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme::text())
+                .child(SharedString::from("crossh")),
+        )
+        .child(div().flex_1())
+        .child(
+            div()
+                .id("language-toggle")
+                .h(px(24.))
+                .px_2()
+                .flex()
+                .items_center()
+                .gap_1()
+                .rounded(px(theme::RADIUS_SM))
+                .cursor_pointer()
+                .text_xs()
+                .text_color(theme::muted_text())
+                .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
+                .child(SharedString::from(i18n::language_short_label(
+                    shell.language_preference.resolve(),
+                )))
+                .child(icons::icon(icons::IconName::ChevronDown, 11.))
+                .on_click(cx.listener(|this, _ev, _window, cx| {
+                    this.toggle_language_menu(cx);
+                })),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::faint_text())
+                .child(SharedString::from(format!("{visible_count}"))),
+        );
+    if shell.language_menu_open {
+        titlebar = titlebar.child(render_language_menu(shell, cx));
+    }
+
     div()
         .relative()
         .flex_shrink_0()
@@ -1008,32 +1097,7 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
                 .size_full()
                 .flex()
                 .flex_col()
-                .child(
-                    div()
-                        .h(px(theme::TITLEBAR_HEIGHT))
-                        .flex_shrink_0()
-                        .px_3()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            icons::icon(icons::IconName::Terminal, 15.).text_color(theme::accent()),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme::text())
-                                .child(SharedString::from("crossh")),
-                        )
-                        .child(div().flex_1())
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme::faint_text())
-                                .child(SharedString::from(format!("{visible_count}"))),
-                        ),
-                )
+                .child(titlebar)
                 .child(search)
                 .child(list)
                 .child(
@@ -1050,6 +1114,56 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
         )
         .child(resize_handle)
         .into_any_element()
+}
+
+fn render_language_menu(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
+    let current = shell.language_preference;
+    let mut menu = div()
+        .id("language-menu")
+        .absolute()
+        .top(px(theme::TITLEBAR_HEIGHT - 2.))
+        .right(px(8.))
+        .w(px(168.))
+        .p_1()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .bg(theme::raised())
+        .border_1()
+        .border_color(theme::border_strong())
+        .rounded(px(theme::RADIUS_SM))
+        .shadow_md();
+
+    for preference in LanguagePreference::ALL {
+        let selected = preference == current;
+        let option_id = format!("language-option-{:?}", preference);
+        let option = div()
+            .id(option_id)
+            .h(px(28.))
+            .px_2()
+            .flex()
+            .items_center()
+            .rounded(px(theme::RADIUS_SM))
+            .cursor_pointer()
+            .text_xs()
+            .text_color(if selected {
+                theme::accent()
+            } else {
+                theme::text()
+            })
+            .bg(if selected {
+                theme::accent_soft()
+            } else {
+                theme::raised()
+            })
+            .hover(|s| s.bg(theme::surface()).text_color(theme::text()))
+            .child(SharedString::from(i18n::preference_label(preference)))
+            .on_click(cx.listener(move |this, _ev, _window, cx| {
+                this.set_language(preference, cx);
+            }));
+        menu = menu.child(option);
+    }
+    menu.into_any_element()
 }
 
 fn local_dir_name(path: &Path) -> String {
@@ -1080,7 +1194,7 @@ fn local_dir_label(path: &Path, duplicate_name: bool) -> String {
 
 fn local_dir_matches_query(dir: &LocalDir, query: &str) -> bool {
     query.is_empty()
-        || matches!(query, "local" | "project" | "projects")
+        || matches!(query, "local" | "project" | "projects" | "本地" | "项目")
         || dir
             .cwd
             .to_string_lossy()
@@ -1179,7 +1293,7 @@ fn render_local_dir(
                 .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
                 .tooltip(|_window, cx| {
                     cx.new(|_| LocalPathTooltip {
-                        path: SharedString::from("新建终端"),
+                        path: SharedString::from(i18n::text("tooltip.new_terminal")),
                     })
                     .into()
                 })
@@ -1278,7 +1392,7 @@ fn render_host_entry(
                         .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
                         .tooltip(|_window, cx| {
                             cx.new(|_| LocalPathTooltip {
-                                path: SharedString::from("打开 SFTP"),
+                                path: SharedString::from(i18n::text("tooltip.open_sftp")),
                             })
                             .into()
                         })
@@ -1302,7 +1416,7 @@ fn render_host_entry(
                         .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
                         .tooltip(|_window, cx| {
                             cx.new(|_| LocalPathTooltip {
-                                path: SharedString::from("端口转发"),
+                                path: SharedString::from(i18n::text("tooltip.port_forwarding")),
                             })
                             .into()
                         })
@@ -1330,7 +1444,7 @@ fn render_host_entry(
 
 fn render_host_group(
     id: &'static str,
-    title: &'static str,
+    title: String,
     count: usize,
     collapsed: bool,
     children: AnyElement,
@@ -1384,7 +1498,7 @@ fn render_host_group(
                 .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
                 .tooltip(|_window, cx| {
                     cx.new(|_| LocalPathTooltip {
-                        path: SharedString::from("新建项目"),
+                        path: SharedString::from(i18n::text("tooltip.new_project")),
                     })
                     .into()
                 })
@@ -1408,7 +1522,7 @@ fn render_host_group(
     group.into_any_element()
 }
 
-fn render_host_group_empty(label: &'static str) -> AnyElement {
+fn render_host_group_empty(label: String) -> AnyElement {
     div()
         .px_2()
         .py_2()
@@ -1471,10 +1585,10 @@ fn state_priority(state: &ConnState) -> u8 {
 fn state_badget(state: &Option<ConnState>) -> String {
     match state {
         None => String::new(),
-        Some(ConnState::Connecting) => "连接中 · ".to_string(),
-        Some(ConnState::Connected) => "已连接 · ".to_string(),
-        Some(ConnState::Error(_)) => "出错 · ".to_string(),
-        Some(ConnState::Closed) => "已断开 · ".to_string(),
+        Some(ConnState::Connecting) => i18n::text("connection.connecting_with_separator"),
+        Some(ConnState::Connected) => i18n::text("connection.connected_with_separator"),
+        Some(ConnState::Error(_)) => i18n::text("connection.error_with_separator"),
+        Some(ConnState::Closed) => i18n::text("connection.closed_with_separator"),
     }
 }
 
@@ -1485,6 +1599,14 @@ fn tab_badge_color(state: &Option<ConnState>) -> gpui::Hsla {
         Some(ConnState::Error(_)) => hsla(0., 0.8, 0.55, 1.),
         Some(ConnState::Closed) => hsla(0., 0., 0.35, 1.),
         None => hsla(0., 0., 0.35, 1.),
+    }
+}
+
+fn tab_label(tab: &Tab) -> String {
+    match &tab.pane {
+        Pane::Terminal(_) => tab.alias.clone(),
+        Pane::Sftp(_) => format!("{} ({})", tab.alias, i18n::text("tab.sftp")),
+        Pane::Forward(_) => format!("{} ({})", tab.alias, i18n::text("tab.forward")),
     }
 }
 
@@ -1592,13 +1714,13 @@ fn render_empty_state(cx: &mut Context<AppShell>) -> AnyElement {
                         .text_lg()
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme::text())
-                        .child(SharedString::from("准备开始")),
+                        .child(SharedString::from(i18n::text("empty_state.title"))),
                 )
                 .child(
                     div()
                         .text_sm()
                         .text_color(theme::muted_text())
-                        .child(SharedString::from("选择一个主机，或打开一个本地项目")),
+                        .child(SharedString::from(i18n::text("empty_state.description"))),
                 )
                 .child(
                     div()
@@ -1615,7 +1737,7 @@ fn render_empty_state(cx: &mut Context<AppShell>) -> AnyElement {
                         .text_color(theme::canvas())
                         .hover(|style| style.bg(rgb(0x82e3bf)))
                         .child(icons::icon(icons::IconName::FolderOpen, 14.))
-                        .child(SharedString::from("打开本地项目"))
+                        .child(SharedString::from(i18n::text("project.open")))
                         .on_click(cx.listener(|this, _ev, _window, cx| {
                             this.choose_project_directory(cx);
                         })),
@@ -1642,7 +1764,7 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                 let tab = &shell.remote_tabs[idx];
                 let is_active = active_idx == idx;
                 let state = shell.pool.state_for_key(&tab.host_key, cx);
-                let alias = tab.alias.clone();
+                let alias = tab_label(tab);
                 // 容器不绑定 click；标签名与关闭按钮分别绑定，避免事件叠加。
                 let mut container = div()
                     .flex()
@@ -1696,7 +1818,7 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                             .hover(|s| s.bg(theme::raised()).text_color(theme::danger()))
                             .tooltip(|_window, cx| {
                                 cx.new(|_| LocalPathTooltip {
-                                    path: SharedString::from("关闭标签"),
+                                    path: SharedString::from(i18n::text("tooltip.close_tab")),
                                 })
                                 .into()
                             })
@@ -1772,7 +1894,7 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                             .hover(|s| s.bg(theme::raised()).text_color(theme::danger()))
                             .tooltip(|_window, cx| {
                                 cx.new(|_| LocalPathTooltip {
-                                    path: SharedString::from("关闭标签"),
+                                    path: SharedString::from(i18n::text("tooltip.close_tab")),
                                 })
                                 .into()
                             })
@@ -1809,7 +1931,7 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
             })
             .tooltip(|_window, cx| {
                 cx.new(|_| LocalPathTooltip {
-                    path: SharedString::from("新建终端"),
+                    path: SharedString::from(i18n::text("tooltip.new_terminal")),
                 })
                 .into()
             })
@@ -1833,31 +1955,39 @@ fn render_prompt_modal(
         PromptDisplay::None => return div().into_any_element(),
     };
 
-    let (title, body, is_credential): (String, String, bool) = match prompt {
+    let (title, body, is_credential): (String, String, bool) = match &prompt {
         PromptDisplay::HostKey {
-            ref host,
+            host,
             port,
-            ref key_type,
-            ref fingerprint,
+            key_type,
+            fingerprint,
             changed,
         } => {
-            let warn = if changed {
-                "⚠️ 主机密钥已变更（可能存在中间人攻击）。\n按计划默认拒绝。"
+            let warning = if *changed {
+                i18n::text("prompt.changed_host_key_warning")
             } else {
-                "未知主机，请核对此指纹后决定。"
+                i18n::text("prompt.unknown_host_warning")
             };
             (
-                "主机密钥确认".to_string(),
-                format!("{warn}\n主机: {host}:{port}\n密钥类型: {key_type}\n指纹:\n{fingerprint}"),
+                i18n::text("prompt.host_key_title"),
+                rust_i18n::t!(
+                    "prompt.host_key_body",
+                    warning = warning,
+                    host = host,
+                    port = port,
+                    key_type = key_type,
+                    fingerprint = fingerprint
+                )
+                .to_string(),
                 false,
             )
         }
-        PromptDisplay::Credential { kind, ref prompt } => {
+        PromptDisplay::Credential { kind, prompt } => {
             let title = match kind {
-                CredentialKind::Passphrase => "请输入私钥口令",
-                CredentialKind::Password => "请输入密码",
+                CredentialKind::Passphrase => i18n::text("prompt.passphrase_title"),
+                CredentialKind::Password => i18n::text("prompt.password_title"),
             };
-            (title.to_string(), prompt.clone(), true)
+            (title, prompt.clone(), true)
         }
         PromptDisplay::None => unreachable!(),
     };
@@ -1870,22 +2000,27 @@ fn render_prompt_modal(
                     .child(host_key_button(
                         shell,
                         cx,
-                        "接受一次",
+                        i18n::text("prompt.accept_once"),
                         HostKeyDecision::AcceptOnce,
                     ))
                     .child(host_key_button(
                         shell,
                         cx,
-                        "总是接受",
+                        i18n::text("prompt.accept_always"),
                         HostKeyDecision::AcceptAlways,
                     ));
             }
-            buttons = buttons.child(host_key_button(shell, cx, "拒绝", HostKeyDecision::Reject));
+            buttons = buttons.child(host_key_button(
+                shell,
+                cx,
+                i18n::text("prompt.reject"),
+                HostKeyDecision::Reject,
+            ));
         }
         PromptDisplay::Credential { .. } => {
             buttons = buttons
-                .child(cred_button(shell, cx, "确定", true))
-                .child(cred_button(shell, cx, "取消", false));
+                .child(cred_button(shell, cx, i18n::text("prompt.confirm"), true))
+                .child(cred_button(shell, cx, i18n::text("prompt.cancel"), false));
         }
         PromptDisplay::None => {}
     }
@@ -1997,10 +2132,10 @@ fn printable_char(ks: &Keystroke) -> Option<char> {
 fn host_key_button(
     shell: &mut AppShell,
     cx: &mut Context<AppShell>,
-    label: &str,
+    label: String,
     decision: HostKeyDecision,
 ) -> impl IntoElement {
-    let id = SharedString::from(label.to_string());
+    let id = SharedString::from(label.clone());
     let icon = match decision {
         HostKeyDecision::Reject => icons::IconName::XCircle,
         HostKeyDecision::AcceptOnce | HostKeyDecision::AcceptAlways => icons::IconName::Check,
@@ -2028,7 +2163,7 @@ fn host_key_button(
             theme::canvas()
         })
         .child(icons::icon(icon, 14.))
-        .child(SharedString::from(label.to_string()))
+        .child(SharedString::from(label))
         .on_click(cx.listener(move |this, _ev, _w, cx| {
             this.resolve_host_key(decision, cx);
         }))
@@ -2037,10 +2172,10 @@ fn host_key_button(
 fn cred_button(
     shell: &mut AppShell,
     cx: &mut Context<AppShell>,
-    label: &str,
+    label: String,
     submit: bool,
 ) -> impl IntoElement {
-    let id = SharedString::from(label.to_string());
+    let id = SharedString::from(label.clone());
     let _ = shell;
     div()
         .id(id)
@@ -2071,7 +2206,7 @@ fn cred_button(
             },
             14.,
         ))
-        .child(SharedString::from(label.to_string()))
+        .child(SharedString::from(label))
         .on_click(cx.listener(move |this, _ev, _w, cx| {
             if submit {
                 let val = std::mem::take(&mut this.prompt_input);
