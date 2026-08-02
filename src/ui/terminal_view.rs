@@ -7,10 +7,12 @@
 //!
 //! Term 只在 gpui 主线程被触碰（drain 与 paint 都在主线程）。
 
+use std::cell::Cell as StdCell;
 use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
@@ -33,10 +35,16 @@ use vte::ansi::{Color, NamedColor, Processor, Rgb};
 
 use crate::i18n::{self, AppSettings};
 use crate::ssh::{InputCmd, SessionEvent};
+use crate::ui::context_menu::{
+    ContextMenuState, MenuEntry, MenuItem, TerminalMenuAction, render_context_menu,
+};
 use crate::ui::theme;
 
 /// 终端字体大小（像素）。
 const FONT_SIZE: f32 = 14.0;
+/// 终端根 div 的内边距（渲染时 `px_3` / `py_2`，用于把窗口坐标换算成根内坐标）。
+const TERMINAL_PADDING_X: f32 = 12.0;
+const TERMINAL_PADDING_Y: f32 = 8.0;
 /// 滚动历史行数上限（控内存）。
 #[cfg(test)]
 const SCROLLBACK: usize = 1000;
@@ -204,6 +212,10 @@ pub struct TerminalView {
     detected_urls: Vec<(usize, usize, usize, String)>,
     /// 终端行的旁路时间戳；绝不写入 PTY 或 alacritty 的字符网格。
     line_timestamps: TerminalTimestampState,
+    /// 当前打开的右键上下文菜单。
+    context_menu: Option<ContextMenuState<TerminalMenuAction>>,
+    /// canvas 在窗口坐标中的 bounds（右键菜单定位/外点关闭用）。
+    anchor_bounds: Rc<StdCell<Option<Bounds<Pixels>>>>,
 }
 
 impl TerminalView {
@@ -291,6 +303,8 @@ impl TerminalView {
             _blink_task: None,
             detected_urls: Vec::new(),
             line_timestamps: TerminalTimestampState::default(),
+            context_menu: None,
+            anchor_bounds: Rc::new(StdCell::new(None)),
         });
 
         // drain：在主线程上从 event_rx 取事件喂给 Term。
@@ -491,12 +505,20 @@ impl TerminalView {
 
     fn handle_key_down(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
+        // 右键菜单打开时拦截所有按键（Escape 关闭菜单），避免键位漏到远端。
+        if self.context_menu.is_some() {
+            if ks.key == "escape" {
+                self.close_context_menu(cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
         // 这些组合由 AppShell 处理；不要在 macOS 的 Ctrl+Tab 或其它平台的
         // Ctrl+W/Ctrl+T 情况下误发给远端 shell。
         if is_shell_shortcut(ks) {
             return;
         }
-        // Cmd+C / Cmd+V
+        // Cmd+C / Cmd+V / Cmd+A
         if ks.modifiers.platform && !ks.modifiers.alt && !ks.modifiers.control {
             match ks.key.as_str() {
                 "c" => {
@@ -506,6 +528,12 @@ impl TerminalView {
                 }
                 "v" => {
                     self.paste_clipboard(cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "a" => {
+                    self.select_all();
+                    cx.notify();
                     cx.stop_propagation();
                     return;
                 }
@@ -519,7 +547,11 @@ impl TerminalView {
                 self.send_input(bytes);
                 // macOS 会在 key callback 未消费时继续把事件交给
                 // NSTextInputContext；终端已将它编码写入 PTY，必须阻止第二次文本提交。
-                cx.stop_propagation();
+                // 例外：无修饰的 Escape 需要继续冒泡给 AppShell（关闭右键菜单），
+                // 且它不产生文本，不会触发重复提交。
+                if ks.key != "escape" {
+                    cx.stop_propagation();
+                }
             }
             None => log::debug!(
                 "unhandled keystroke: key={} key_char={:?}",
@@ -562,7 +594,12 @@ impl TerminalView {
         }
     }
 
-    fn handle_mouse_down(&mut self, ev: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn handle_mouse_down(
+        &mut self,
+        ev: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.state != ConnState::Connected {
             return;
         }
@@ -581,6 +618,24 @@ impl TerminalView {
         }
 
         let mode = *self.term.mode();
+
+        // 右键：鼠模式开启时转发给远端应用，否则打开本地上下文菜单。
+        if ev.button == MouseButton::Right {
+            if mode.intersects(TermMode::MOUSE_MODE) && !ev.modifiers.shift {
+                if let Some(button) = mouse_button_code(ev.button)
+                    && let Some(bytes) =
+                        encode_mouse_report(button, col, row, true, &ev.modifiers, mode)
+                {
+                    self.send_input(bytes);
+                    self.remote_mouse_button = Some(button);
+                }
+            } else {
+                let url = self.url_at(col, row);
+                self.open_terminal_context_menu(ev.position, url, window, cx);
+            }
+            return;
+        }
+
         // Shift 保留本地选择，即使远端应用开启了鼠标模式。
         if mode.intersects(TermMode::MOUSE_MODE) && !ev.modifiers.shift {
             if let Some(button) = mouse_button_code(ev.button)
@@ -788,6 +843,110 @@ impl TerminalView {
             };
             self.send_input(bytes);
         }
+    }
+
+    /// 全选当前视口（配合 Cmd+A / 右键菜单）。
+    fn select_all(&mut self) {
+        if self.cols == 0 || self.rows == 0 {
+            return;
+        }
+        self.sel_start = Some((0, 0));
+        self.sel_end = Some((self.cols.saturating_sub(1), self.rows.saturating_sub(1)));
+    }
+
+    /// 右键打开上下文菜单；同时在窗口注册一次「点击终端外即关闭」的监听。
+    fn open_terminal_context_menu(
+        &mut self,
+        position: Point<Pixels>,
+        url: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let has_selection = self.sel_start.zip(self.sel_end).is_some();
+        let connected = self.state == ConnState::Connected;
+        let mut entries = vec![
+            MenuEntry::Item(MenuItem {
+                id: "copy".into(),
+                label: i18n::text("context_menu.copy"),
+                shortcut_hint: Some("⌘C".into()),
+                disabled: !has_selection,
+                danger: false,
+                action: TerminalMenuAction::Copy,
+            }),
+            MenuEntry::Item(MenuItem {
+                id: "paste".into(),
+                label: i18n::text("context_menu.paste"),
+                shortcut_hint: Some("⌘V".into()),
+                disabled: !connected,
+                danger: false,
+                action: TerminalMenuAction::Paste,
+            }),
+            MenuEntry::Item(MenuItem {
+                id: "select-all".into(),
+                label: i18n::text("context_menu.select_all"),
+                shortcut_hint: Some("⌘A".into()),
+                disabled: false,
+                danger: false,
+                action: TerminalMenuAction::SelectAll,
+            }),
+        ];
+        if let Some(url) = url {
+            entries.push(MenuEntry::Separator);
+            entries.push(MenuEntry::Item(MenuItem {
+                id: "open-url".into(),
+                label: i18n::text("context_menu.open_link"),
+                shortcut_hint: None,
+                disabled: false,
+                danger: false,
+                action: TerminalMenuAction::OpenUrl(url),
+            }));
+        }
+        self.context_menu = Some(ContextMenuState { position, entries });
+
+        // 点击终端区域外（侧栏/标签条）时关闭菜单；区域内由 scrim 负责。
+        let weak = cx.entity().downgrade();
+        let anchor = self.anchor_bounds.clone();
+        window.on_mouse_event({
+            let weak = weak.clone();
+            move |ev: &MouseDownEvent, _phase, window, cx| {
+                let closed = weak
+                    .update(cx, |this, _| {
+                        let outside = anchor
+                            .get()
+                            .is_some_and(|bounds| !bounds.contains(&ev.position));
+                        if this.context_menu.is_some() && outside {
+                            this.context_menu = None;
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false);
+                if closed {
+                    window.refresh();
+                }
+            }
+        });
+        cx.notify();
+    }
+
+    fn close_context_menu(&mut self, cx: &mut Context<Self>) {
+        if self.context_menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn dispatch_menu_action(&mut self, action: TerminalMenuAction, cx: &mut Context<Self>) {
+        match action {
+            TerminalMenuAction::Copy => self.copy_selection(cx),
+            TerminalMenuAction::Paste => self.paste_clipboard(cx),
+            TerminalMenuAction::SelectAll => self.select_all(),
+            TerminalMenuAction::OpenUrl(url) => {
+                log::info!("opening URL: {url}");
+                std::process::Command::new("open").arg(&url).spawn().ok();
+            }
+        }
+        self.close_context_menu(cx);
     }
 
     /// 检查 (col, row) 是否在某个检测到的 URL 上。
@@ -1037,6 +1196,7 @@ impl Render for TerminalView {
                 // prepaint：可能 resize。
                 if let Some(t) = weak.upgrade() {
                     t.update(cx, |this, _cx| {
+                        this.anchor_bounds.set(Some(bounds));
                         let terminal_bounds = terminal_bounds_for(bounds, show_timestamps);
                         this.content_origin = terminal_bounds.origin;
                         this.maybe_resize(Size {
@@ -1143,6 +1303,26 @@ impl Render for TerminalView {
                     .text_color(theme::warning())
                     .child(SharedString::from(msg)),
             );
+        }
+        // 右键菜单（需在 status overlay 之后以保证 z 序最高）。
+        if let Some(menu) = self.context_menu.clone() {
+            let canvas_origin = self
+                .anchor_bounds
+                .get()
+                .map(|bounds| bounds.origin)
+                .unwrap_or_else(|| Point::new(px(0.), px(0.)));
+            let anchor = Point::new(
+                canvas_origin.x - px(TERMINAL_PADDING_X),
+                canvas_origin.y - px(TERMINAL_PADDING_Y),
+            );
+            root = root.child(render_context_menu(
+                &menu,
+                anchor,
+                window,
+                cx,
+                |this, action, _window, cx| this.dispatch_menu_action(action, cx),
+                |this, cx| this.close_context_menu(cx),
+            ));
         }
         root.into_any_element()
     }

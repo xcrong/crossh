@@ -3,15 +3,22 @@
 //! 通过 `Connection::open_sftp` 拿到 `(cmd_tx, event_rx)` 后由本面板持有；
 //! 主线程 drain `event_rx` 更新列表/进度。下载落到 ~/Downloads（重名自动加序号）。
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use async_channel::{Receiver, Sender};
 use gpui::{
-    AnyElement, App, AppContext, ClipboardEntry, Context, Entity, FocusHandle, InteractiveElement,
-    IntoElement, KeyDownEvent, Keystroke, ParentElement, PathPromptOptions, Render, ScrollHandle,
-    SharedString, StatefulInteractiveElement, Styled, Task, Window, div, px, rgb,
+    AnyElement, App, AppContext, Bounds, ClipboardEntry, Context, Entity, FocusHandle, FontWeight,
+    InteractiveElement, IntoElement, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent,
+    ParentElement, PathPromptOptions, Pixels, Point, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement, Styled, Task, Window, canvas, div, px, rgb,
 };
 
 use crate::i18n;
 use crate::ssh::{MAX_EDITOR_FILE_BYTES, RemoteEntry, SftpCmd, SftpEvent};
+use crate::ui::context_menu::{
+    ContextMenuState, MenuEntry, MenuItem, SftpMenuAction, render_context_menu,
+};
 use crate::ui::{icons, theme};
 
 /// 传输进度快照。
@@ -145,6 +152,20 @@ impl RemoteEditor {
     }
 }
 
+/// 路径输入模态（重命名 / 新建目录）。
+struct PendingPathInput {
+    /// Some(旧名) = 重命名；None = 新建目录。
+    rename_from: Option<String>,
+    value: String,
+    focus: FocusHandle,
+}
+
+/// 删除确认模态。
+struct ConfirmDelete {
+    name: String,
+    is_dir: bool,
+}
+
 pub struct SftpPane {
     cmd_tx: Sender<SftpCmd>,
     cwd: String,
@@ -159,6 +180,14 @@ pub struct SftpPane {
     editor_scroll: ScrollHandle,
     _drain: Option<Task<()>>,
     _picker: Option<Task<()>>,
+    /// 当前打开的右键上下文菜单。
+    context_menu: Option<ContextMenuState<SftpMenuAction>>,
+    /// 根 div 在窗口坐标中的 bounds（右键菜单定位/外点关闭用）。
+    anchor_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// 重命名 / 新建目录输入模态。
+    pending_path_input: Option<PendingPathInput>,
+    /// 删除确认模态。
+    confirm_delete: Option<ConfirmDelete>,
 }
 
 impl SftpPane {
@@ -189,6 +218,10 @@ impl SftpPane {
             editor_scroll: ScrollHandle::new(),
             _drain: None,
             _picker: None,
+            context_menu: None,
+            anchor_bounds: Rc::new(Cell::new(None)),
+            pending_path_input: None,
+            confirm_delete: None,
         });
 
         let weak = entity.downgrade();
@@ -348,6 +381,10 @@ impl SftpPane {
     }
 
     fn open_file_or_download(&mut self, name: &str, cx: &mut Context<Self>) {
+        // 进入编辑器视图前清掉浮层，避免残留。
+        self.context_menu = None;
+        self.pending_path_input = None;
+        self.confirm_delete = None;
         if !is_supported_text_file(name) {
             self.download(name);
             return;
@@ -555,6 +592,407 @@ impl SftpPane {
                 }
             }
         }
+    }
+
+    /// 右键打开上下文菜单；同时在窗口注册一次「点击面板外即关闭」的监听。
+    fn open_context_menu(
+        &mut self,
+        position: Point<Pixels>,
+        entries: Vec<MenuEntry<SftpMenuAction>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.context_menu = Some(ContextMenuState { position, entries });
+        let weak = cx.entity().downgrade();
+        let anchor = self.anchor_bounds.clone();
+        window.on_mouse_event({
+            let weak = weak.clone();
+            move |ev: &MouseDownEvent, _phase, window, cx| {
+                let closed = weak
+                    .update(cx, |this, _| {
+                        let outside = anchor
+                            .get()
+                            .is_some_and(|bounds| !bounds.contains(&ev.position));
+                        if this.context_menu.is_some() && outside {
+                            this.context_menu = None;
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false);
+                if closed {
+                    window.refresh();
+                }
+            }
+        });
+        cx.notify();
+    }
+
+    fn close_context_menu(&mut self, cx: &mut Context<Self>) {
+        if self.context_menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn dispatch_menu_action(
+        &mut self,
+        action: SftpMenuAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            SftpMenuAction::Navigate(name) => {
+                let path = Self::join(&self.cwd, &name);
+                self.request_list(path);
+            }
+            SftpMenuAction::Download(name) => self.download(&name),
+            SftpMenuAction::UploadHere(name) => {
+                let path = Self::join(&self.cwd, &name);
+                self.request_list(path);
+                window.focus(&self.focus, cx);
+            }
+            SftpMenuAction::Rename(name) => {
+                self.confirm_delete = None;
+                let focus = cx.focus_handle();
+                self.pending_path_input = Some(PendingPathInput {
+                    rename_from: Some(name.clone()),
+                    value: name,
+                    focus: focus.clone(),
+                });
+                window.focus(&focus, cx);
+            }
+            SftpMenuAction::NewDir => {
+                self.confirm_delete = None;
+                let focus = cx.focus_handle();
+                self.pending_path_input = Some(PendingPathInput {
+                    rename_from: None,
+                    value: String::new(),
+                    focus: focus.clone(),
+                });
+                window.focus(&focus, cx);
+            }
+            SftpMenuAction::Delete { name, is_dir } => {
+                self.pending_path_input = None;
+                self.confirm_delete = Some(ConfirmDelete { name, is_dir });
+            }
+            SftpMenuAction::Refresh => self.request_list(self.cwd.clone()),
+        }
+        self.close_context_menu(cx);
+    }
+
+    /// 提交路径输入（Enter）：重命名或新建目录。
+    fn submit_path_input(&mut self, cx: &mut Context<Self>) {
+        let Some(input) = &self.pending_path_input else {
+            return;
+        };
+        let value = input.value.trim().to_string();
+        if value.is_empty() {
+            self.pending_path_input = None;
+            cx.notify();
+            return;
+        }
+        let remote = Self::join(&self.cwd, &value);
+        let command = match &input.rename_from {
+            Some(from) => SftpCmd::Rename {
+                from: Self::join(&self.cwd, from),
+                to: remote,
+            },
+            None => SftpCmd::Mkdir { path: remote },
+        };
+        self.pending_path_input = None;
+        if try_send_command(&self.cmd_tx, command).is_err() {
+            self.message = Some(sftp_channel_unavailable());
+        }
+        cx.notify();
+    }
+
+    fn cancel_path_input(&mut self, cx: &mut Context<Self>) {
+        if self.pending_path_input.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn handle_path_input_key(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let ks = &ev.keystroke;
+        match ks.key.as_str() {
+            "enter" | "return" => self.submit_path_input(cx),
+            "escape" => self.cancel_path_input(cx),
+            "backspace" => {
+                if let Some(input) = &mut self.pending_path_input {
+                    input.value.pop();
+                }
+                cx.notify();
+            }
+            _ => {
+                if let Some(ch) = printable_char(ks)
+                    && let Some(input) = &mut self.pending_path_input
+                {
+                    input.value.push(ch);
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    fn confirm_delete_submit(&mut self, cx: &mut Context<Self>) {
+        let Some(confirm) = self.confirm_delete.take() else {
+            return;
+        };
+        let remote = Self::join(&self.cwd, &confirm.name);
+        if try_send_command(&self.cmd_tx, SftpCmd::Remove { path: remote }).is_err() {
+            self.message = Some(sftp_channel_unavailable());
+        }
+        cx.notify();
+    }
+
+    fn cancel_delete(&mut self, cx: &mut Context<Self>) {
+        if self.confirm_delete.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// 根级 Escape：关闭菜单 / 模态。
+    fn handle_root_key(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if ev.keystroke.key != "escape" {
+            return;
+        }
+        if self.context_menu.is_some() {
+            self.close_context_menu(cx);
+        } else if self.pending_path_input.is_some() {
+            self.cancel_path_input(cx);
+        } else if self.confirm_delete.is_some() {
+            self.cancel_delete(cx);
+        }
+    }
+
+    /// 路径输入模态（重命名 / 新建目录）；未打开时返回空元素。
+    fn render_path_input_modal(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(input) = &self.pending_path_input else {
+            return div().into_any_element();
+        };
+        let focus = input.focus.clone();
+        let value = input.value.clone();
+        let is_rename = input.rename_from.is_some();
+        let title = if is_rename {
+            i18n::text("context_menu.rename")
+        } else {
+            i18n::text("context_menu.new_folder")
+        };
+
+        let input_el = div()
+            .id("sftp-path-input")
+            .w_full()
+            .h(px(34.))
+            .px_3()
+            .flex()
+            .items_center()
+            .mt_2()
+            .bg(theme::canvas())
+            .border_1()
+            .border_color(theme::border_strong())
+            .rounded(px(theme::RADIUS_SM))
+            .text_sm()
+            .text_color(theme::text())
+            .track_focus(&focus)
+            .tab_stop(true)
+            .focus(|style| style.border_color(theme::focus_ring()))
+            .on_click({
+                let focus = focus.clone();
+                move |_ev, window, cx| window.focus(&focus, cx)
+            })
+            .on_key_down(cx.listener(SftpPane::handle_path_input_key))
+            .child(SharedString::from(if value.is_empty() {
+                i18n::text("sftp.name_placeholder")
+            } else {
+                value
+            }));
+
+        let mut buttons = div().flex().flex_row().gap_2().mt_4();
+        buttons = buttons
+            .child(
+                div()
+                    .id("sftp-path-confirm")
+                    .h(px(30.))
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .rounded(px(theme::RADIUS_SM))
+                    .cursor_pointer()
+                    .bg(theme::accent())
+                    .hover(|s| s.bg(rgb(0x82e3bf)))
+                    .text_xs()
+                    .text_color(theme::canvas())
+                    .child(SharedString::from(if is_rename {
+                        i18n::text("context_menu.rename")
+                    } else {
+                        i18n::text("context_menu.create")
+                    }))
+                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                        this.submit_path_input(cx);
+                    })),
+            )
+            .child(
+                div()
+                    .id("sftp-path-cancel")
+                    .h(px(30.))
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .rounded(px(theme::RADIUS_SM))
+                    .cursor_pointer()
+                    .bg(theme::raised())
+                    .hover(|s| s.bg(theme::border_strong()))
+                    .text_xs()
+                    .text_color(theme::text())
+                    .child(SharedString::from(i18n::text("prompt.cancel")))
+                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                        this.cancel_path_input(cx);
+                    })),
+            );
+
+        let card = div()
+            .w(px(360.))
+            .p_5()
+            .bg(theme::surface())
+            .border_1()
+            .border_color(theme::border_strong())
+            .rounded(px(theme::RADIUS_MD))
+            .shadow_md()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::text())
+                    .child(icons::icon(icons::IconName::Pencil, 17.).text_color(theme::info()))
+                    .child(SharedString::from(title)),
+            )
+            .child(input_el)
+            .child(buttons);
+
+        div()
+            .absolute()
+            .size_full()
+            .top_0()
+            .left_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(theme::scrim())
+            .id("sftp-path-scrim")
+            .on_click(cx.listener(|this, _ev, _window, cx| {
+                this.cancel_path_input(cx);
+            }))
+            .child(card)
+            .into_any_element()
+    }
+
+    /// 删除确认模态；未打开时返回空元素。
+    fn render_delete_confirm(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(confirm) = &self.confirm_delete else {
+            return div().into_any_element();
+        };
+        let name = confirm.name.clone();
+        let kind = if confirm.is_dir {
+            i18n::text("context_menu.folder")
+        } else {
+            i18n::text("context_menu.file")
+        };
+        let mut buttons = div().flex().flex_row().gap_2().mt_4();
+        buttons = buttons
+            .child(
+                div()
+                    .id("sftp-delete-confirm")
+                    .h(px(30.))
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .rounded(px(theme::RADIUS_SM))
+                    .cursor_pointer()
+                    .bg(theme::danger())
+                    .hover(|s| s.bg(rgb(0xf49b9b)))
+                    .text_xs()
+                    .text_color(theme::canvas())
+                    .child(SharedString::from(i18n::text("context_menu.delete")))
+                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                        this.confirm_delete_submit(cx);
+                    })),
+            )
+            .child(
+                div()
+                    .id("sftp-delete-cancel")
+                    .h(px(30.))
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .rounded(px(theme::RADIUS_SM))
+                    .cursor_pointer()
+                    .bg(theme::raised())
+                    .hover(|s| s.bg(theme::border_strong()))
+                    .text_xs()
+                    .text_color(theme::text())
+                    .child(SharedString::from(i18n::text("prompt.cancel")))
+                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                        this.cancel_delete(cx);
+                    })),
+            );
+
+        let card = div()
+            .w(px(380.))
+            .p_5()
+            .bg(theme::surface())
+            .border_1()
+            .border_color(theme::border_strong())
+            .rounded(px(theme::RADIUS_MD))
+            .shadow_md()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::text())
+                    .child(icons::icon(icons::IconName::Trash, 17.).text_color(theme::danger()))
+                    .child(SharedString::from(rust_i18n::t!(
+                        "context_menu.delete_title",
+                        kind = kind
+                    ))),
+            )
+            .child(
+                div()
+                    .mt_2()
+                    .text_xs()
+                    .text_color(theme::muted_text())
+                    .child(SharedString::from(rust_i18n::t!(
+                        "context_menu.delete_body",
+                        name = name
+                    ))),
+            )
+            .child(buttons);
+
+        div()
+            .absolute()
+            .size_full()
+            .top_0()
+            .left_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(theme::scrim())
+            .id("sftp-delete-scrim")
+            .on_click(cx.listener(|this, _ev, _window, cx| {
+                this.cancel_delete(cx);
+            }))
+            .child(card)
+            .into_any_element()
     }
 
     fn render_editor(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -1047,15 +1485,89 @@ impl Render for SftpPane {
                         .text_color(theme::faint_text())
                         .child(SharedString::from(size)),
                 )
-                .on_click(cx.listener(move |this, _ev, _w, cx| {
-                    if is_dir {
-                        let p = Self::join(&this.cwd, &name);
-                        this.request_list(p);
-                    } else {
-                        this.open_file_or_download(&name, cx);
-                    }
-                    cx.notify();
-                }));
+                .on_click({
+                    let name_click = name.clone();
+                    cx.listener(move |this, _ev, _w, cx| {
+                        if is_dir {
+                            let p = Self::join(&this.cwd, &name_click);
+                            this.request_list(p);
+                        } else {
+                            this.open_file_or_download(&name_click, cx);
+                        }
+                        cx.notify();
+                    })
+                })
+                .on_mouse_down(MouseButton::Right, {
+                    let name_menu = name.clone();
+                    cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                        let mut entries = vec![];
+                        if is_dir {
+                            entries.push(MenuEntry::Item(MenuItem {
+                                id: "navigate".into(),
+                                label: i18n::text("context_menu.open_folder"),
+                                shortcut_hint: None,
+                                disabled: false,
+                                danger: false,
+                                action: SftpMenuAction::Navigate(name_menu.clone()),
+                            }));
+                            entries.push(MenuEntry::Item(MenuItem {
+                                id: "upload-here".into(),
+                                label: i18n::text("context_menu.upload_here"),
+                                shortcut_hint: None,
+                                disabled: false,
+                                danger: false,
+                                action: SftpMenuAction::UploadHere(name_menu.clone()),
+                            }));
+                        } else {
+                            entries.push(MenuEntry::Item(MenuItem {
+                                id: "download".into(),
+                                label: i18n::text("context_menu.download"),
+                                shortcut_hint: None,
+                                disabled: false,
+                                danger: false,
+                                action: SftpMenuAction::Download(name_menu.clone()),
+                            }));
+                        }
+                        entries.push(MenuEntry::Separator);
+                        entries.push(MenuEntry::Item(MenuItem {
+                            id: "rename".into(),
+                            label: i18n::text("context_menu.rename"),
+                            shortcut_hint: None,
+                            disabled: false,
+                            danger: false,
+                            action: SftpMenuAction::Rename(name_menu.clone()),
+                        }));
+                        entries.push(MenuEntry::Item(MenuItem {
+                            id: "delete".into(),
+                            label: i18n::text("context_menu.delete"),
+                            shortcut_hint: None,
+                            disabled: false,
+                            danger: true,
+                            action: SftpMenuAction::Delete {
+                                name: name_menu.clone(),
+                                is_dir,
+                            },
+                        }));
+                        entries.push(MenuEntry::Separator);
+                        entries.push(MenuEntry::Item(MenuItem {
+                            id: "new-folder".into(),
+                            label: i18n::text("context_menu.new_folder"),
+                            shortcut_hint: None,
+                            disabled: false,
+                            danger: false,
+                            action: SftpMenuAction::NewDir,
+                        }));
+                        entries.push(MenuEntry::Item(MenuItem {
+                            id: "refresh".into(),
+                            label: i18n::text("context_menu.refresh"),
+                            shortcut_hint: None,
+                            disabled: false,
+                            danger: false,
+                            action: SftpMenuAction::Refresh,
+                        }));
+                        this.open_context_menu(ev.position, entries, window, cx);
+                    })
+                });
             list = list.child(row);
         }
 
@@ -1185,16 +1697,55 @@ impl Render for SftpPane {
             );
         }
 
-        div()
+        // 无交互的全尺寸 canvas：仅用于在 prepaint 阶段捕获根 div 的窗口坐标
+        // bounds（右键菜单定位 / 点击面板外关闭）。
+        let anchor = self.anchor_bounds.clone();
+        let bounds_canvas = canvas(
+            {
+                let anchor = anchor.clone();
+                move |bounds, _window, _cx| {
+                    anchor.set(Some(bounds));
+                    bounds
+                }
+            },
+            move |_bounds, _state, _window, _cx| {},
+        )
+        .absolute()
+        .left_0()
+        .top_0()
+        .size_full();
+
+        let mut root = div()
+            .relative()
             .size_full()
             .min_h_0()
             .flex()
             .flex_col()
             .bg(theme::canvas())
+            .on_key_down(cx.listener(SftpPane::handle_root_key))
+            .child(bounds_canvas)
             .child(top)
             .child(list)
-            .child(bottom)
-            .into_any_element()
+            .child(bottom);
+
+        if let Some(menu) = self.context_menu.clone() {
+            let anchor = self
+                .anchor_bounds
+                .get()
+                .map(|bounds| bounds.origin)
+                .unwrap_or_else(|| Point::new(px(0.), px(0.)));
+            root = root.child(render_context_menu(
+                &menu,
+                anchor,
+                window,
+                cx,
+                |this, action, window, cx| this.dispatch_menu_action(action, window, cx),
+                |this, cx| this.close_context_menu(cx),
+            ));
+        }
+        root = root.child(self.render_path_input_modal(cx));
+        root = root.child(self.render_delete_confirm(cx));
+        root.into_any_element()
     }
 }
 

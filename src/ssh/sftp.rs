@@ -36,6 +36,10 @@ pub enum SftpCmd {
     WriteFile { remote: String, contents: Vec<u8> },
     /// 建目录。
     Mkdir { path: String },
+    /// 删除远端条目（目录递归删除）。
+    Remove { path: String },
+    /// 重命名远端条目。
+    Rename { from: String, to: String },
 }
 
 /// worker → UI 事件。
@@ -89,11 +93,32 @@ pub async fn run_sftp_worker(
                 }
                 Err(e) => Err(format!("list: {e}")),
             },
-            SftpCmd::Mkdir { path } => sftp
-                .create_dir(&path)
-                .await
-                .map(|_| ())
-                .map_err(|e| e.to_string()),
+            SftpCmd::Mkdir { path } => {
+                let label = format!("mkdir: {path}");
+                let res = sftp
+                    .create_dir(&path)
+                    .await
+                    .map_err(|e| e.to_string())
+                    .map(|_| "ok".into());
+                report_done(&event_tx, label, res).await;
+                continue;
+            }
+            SftpCmd::Remove { path } => {
+                let label = format!("rm: {path}");
+                let res = remove_entry(&sftp, &path).await;
+                report_done(&event_tx, label, res).await;
+                continue;
+            }
+            SftpCmd::Rename { from, to } => {
+                let label = format!("mv: {from} → {to}");
+                let res = sftp
+                    .rename(&from, &to)
+                    .await
+                    .map_err(|e| e.to_string())
+                    .map(|_| "ok".into());
+                report_done(&event_tx, label, res).await;
+                continue;
+            }
             SftpCmd::Download { remote, local } => {
                 let label = format!("↓ {remote}");
                 let res = download(&sftp, &remote, &local, &event_tx, &label).await;
@@ -182,6 +207,30 @@ fn format_bytes(bytes: u64) -> String {
     } else {
         format!("{bytes} B")
     }
+}
+
+/// 删除远端条目：文件直接删，目录递归删除。
+async fn remove_entry(sftp: &SftpSession, path: &str) -> Result<String, String> {
+    let metadata = sftp.metadata(path).await.map_err(|e| e.to_string())?;
+    if metadata.is_dir() {
+        remove_dir_recursive(sftp, path).await?;
+    } else {
+        sftp.remove_file(path).await.map_err(|e| e.to_string())?;
+    }
+    Ok("ok".into())
+}
+
+async fn remove_dir_recursive(sftp: &SftpSession, path: &str) -> Result<(), String> {
+    let entries = sftp.read_dir(path).await.map_err(|e| e.to_string())?;
+    for entry in entries {
+        let child = format!("{}/{}", path.trim_end_matches('/'), entry.file_name());
+        if entry.metadata().is_dir() {
+            Box::pin(remove_dir_recursive(sftp, &child)).await?;
+        } else {
+            sftp.remove_file(&child).await.map_err(|e| e.to_string())?;
+        }
+    }
+    sftp.remove_dir(path).await.map_err(|e| e.to_string())
 }
 
 async fn list_dir(sftp: &SftpSession, path: &str) -> Result<(String, Vec<RemoteEntry>), String> {

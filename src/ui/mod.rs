@@ -1,5 +1,6 @@
 pub mod app_shell;
 pub(crate) mod assets;
+pub(crate) mod context_menu;
 pub mod forward_pane;
 pub(crate) mod icons;
 pub(crate) mod prompt;

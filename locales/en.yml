@@ -46,6 +46,37 @@ tooltip:
   new_project: New project
   close_tab: Close tab
 
+context_menu:
+  open_terminal: Open Terminal
+  open_sftp: Open SFTP
+  open_forward: Port Forwarding
+  copy_target: Copy Target
+  copy_alias: Copy Alias
+  copy_path: Copy Path
+  open_local_terminal: Open Terminal Here
+  reveal_in_finder: Reveal in Finder
+  forget_dir: Forget Directory
+  switch: Switch
+  close: Close
+  close_others: Close Others
+  close_all: Close All
+  copy: Copy
+  paste: Paste
+  select_all: Select All
+  open_link: Open Link
+  download: Download
+  open_folder: Open
+  upload_here: Upload Here
+  rename: Rename
+  new_folder: New Folder
+  delete: Delete
+  refresh: Refresh
+  create: Create
+  folder: folder
+  file: file
+  delete_title: "Delete %{kind}?"
+  delete_body: "%{name} will be permanently deleted. This cannot be undone."
+
 project:
   choose_directory: Choose project directory
   open: Open local project
@@ -115,6 +146,7 @@ sftp:
   choose_file: Choose file
   loading: Loading…
   file_too_large: "File is too large (%{size}, limit %{limit})"
+  name_placeholder: Name
 
 forward:
   stopping: "Stopping %{kind} %{listen}"

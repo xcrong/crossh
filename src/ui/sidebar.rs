@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, AppContext, Bounds, Context, FontWeight, InteractiveElement, IntoElement,
-    MouseButton, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, SharedString,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, SharedString,
     StatefulInteractiveElement, Styled, canvas, div, px,
 };
 
@@ -15,6 +15,7 @@ use crate::config::SshConfig;
 use crate::i18n::{self, LanguagePreference};
 use crate::ssh::ConnectionPool;
 use crate::ui::app_shell::AppShell;
+use crate::ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crate::ui::terminal_view::ConnState;
 use crate::ui::widgets::LocalPathTooltip;
 use crate::ui::workspace::{ActiveView, LocalDir};
@@ -618,6 +619,41 @@ fn render_local_dir(
         .on_click(cx.listener(move |this, _ev, _window, cx| {
             this.activate_local_dir(cwd_for_row.clone(), cx);
         }))
+        .on_mouse_down(MouseButton::Right, {
+            let cwd_menu = cwd.clone();
+            cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
+                let mut entries = vec![
+                    MenuEntry::Item(MenuItem {
+                        id: "open-terminal".into(),
+                        label: i18n::text("context_menu.open_local_terminal"),
+                        shortcut_hint: None,
+                        disabled: false,
+                        danger: false,
+                        action: ShellMenuAction::OpenLocalTerminal(cwd_menu.clone()),
+                    }),
+                    MenuEntry::Item(MenuItem {
+                        id: "reveal-finder".into(),
+                        label: i18n::text("context_menu.reveal_in_finder"),
+                        shortcut_hint: None,
+                        disabled: false,
+                        danger: false,
+                        action: ShellMenuAction::RevealInFinder(cwd_menu.clone()),
+                    }),
+                ];
+                if count == 0 {
+                    entries.push(MenuEntry::Separator);
+                    entries.push(MenuEntry::Item(MenuItem {
+                        id: "forget-dir".into(),
+                        label: i18n::text("context_menu.forget_dir"),
+                        shortcut_hint: None,
+                        disabled: false,
+                        danger: false,
+                        action: ShellMenuAction::ForgetLocalDir(cwd_menu.clone()),
+                    }));
+                }
+                this.open_context_menu(ev.position, entries, cx);
+            })
+        })
         .child(icons::icon(icons::IconName::FolderOpen, 15.).text_color(folder_color))
         .child(
             div()
@@ -727,6 +763,56 @@ fn render_host_entry(
         .on_click(cx.listener(move |this, _ev, _window, cx| {
             this.open_host(idx, cx);
         }))
+        .on_mouse_down(MouseButton::Right, {
+            let detail_menu = detail.clone();
+            let alias_menu = alias.clone();
+            cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
+                let entries = vec![
+                    MenuEntry::Item(MenuItem {
+                        id: "open-terminal".into(),
+                        label: i18n::text("context_menu.open_terminal"),
+                        shortcut_hint: None,
+                        disabled: false,
+                        danger: false,
+                        action: ShellMenuAction::OpenHost(idx),
+                    }),
+                    MenuEntry::Item(MenuItem {
+                        id: "open-sftp".into(),
+                        label: i18n::text("context_menu.open_sftp"),
+                        shortcut_hint: None,
+                        disabled: false,
+                        danger: false,
+                        action: ShellMenuAction::OpenSftp(idx),
+                    }),
+                    MenuEntry::Item(MenuItem {
+                        id: "open-forward".into(),
+                        label: i18n::text("context_menu.open_forward"),
+                        shortcut_hint: None,
+                        disabled: false,
+                        danger: false,
+                        action: ShellMenuAction::OpenForward(idx),
+                    }),
+                    MenuEntry::Separator,
+                    MenuEntry::Item(MenuItem {
+                        id: "copy-target".into(),
+                        label: i18n::text("context_menu.copy_target"),
+                        shortcut_hint: None,
+                        disabled: false,
+                        danger: false,
+                        action: ShellMenuAction::CopyText(detail_menu.clone()),
+                    }),
+                    MenuEntry::Item(MenuItem {
+                        id: "copy-alias".into(),
+                        label: i18n::text("context_menu.copy_alias"),
+                        shortcut_hint: None,
+                        disabled: false,
+                        danger: false,
+                        action: ShellMenuAction::CopyText(alias_menu.clone()),
+                    }),
+                ];
+                this.open_context_menu(ev.position, entries, cx);
+            })
+        })
         .child(
             div()
                 .flex()

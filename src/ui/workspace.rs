@@ -5,11 +5,13 @@ use std::path::PathBuf;
 
 use gpui::{
     AnyElement, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, SharedString, StatefulInteractiveElement, Styled, div, hsla, px, rgb,
+    MouseButton, MouseDownEvent, ParentElement, SharedString, StatefulInteractiveElement, Styled,
+    div, hsla, px, rgb,
 };
 
 use crate::i18n;
 use crate::ui::app_shell::AppShell;
+use crate::ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crate::ui::settings::render_settings_page;
 use crate::ui::terminal_view::ConnState;
 use crate::ui::{ForwardPane, SftpPane, TerminalView, icons, theme};
@@ -209,6 +211,57 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                     container = container.hover(|style| style.bg(theme::raised()));
                 }
                 let container = container
+                    .id(("remote-tab-container", idx))
+                    .on_mouse_down(MouseButton::Right, {
+                        let target = tab.target.clone();
+                        let single = shell.remote_tabs.len() == 1;
+                        cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
+                            let entries = vec![
+                                MenuEntry::Item(MenuItem {
+                                    id: "switch".into(),
+                                    label: i18n::text("context_menu.switch"),
+                                    shortcut_hint: None,
+                                    disabled: is_active,
+                                    danger: false,
+                                    action: ShellMenuAction::SelectRemoteTab(idx),
+                                }),
+                                MenuEntry::Item(MenuItem {
+                                    id: "close".into(),
+                                    label: i18n::text("context_menu.close"),
+                                    shortcut_hint: None,
+                                    disabled: false,
+                                    danger: false,
+                                    action: ShellMenuAction::CloseRemoteTab(idx),
+                                }),
+                                MenuEntry::Item(MenuItem {
+                                    id: "close-others".into(),
+                                    label: i18n::text("context_menu.close_others"),
+                                    shortcut_hint: None,
+                                    disabled: single,
+                                    danger: false,
+                                    action: ShellMenuAction::CloseOtherRemoteTabs(idx),
+                                }),
+                                MenuEntry::Item(MenuItem {
+                                    id: "close-all".into(),
+                                    label: i18n::text("context_menu.close_all"),
+                                    shortcut_hint: None,
+                                    disabled: false,
+                                    danger: false,
+                                    action: ShellMenuAction::CloseAllRemoteTabs,
+                                }),
+                                MenuEntry::Separator,
+                                MenuEntry::Item(MenuItem {
+                                    id: "copy-target".into(),
+                                    label: i18n::text("context_menu.copy_target"),
+                                    shortcut_hint: None,
+                                    disabled: false,
+                                    danger: false,
+                                    action: ShellMenuAction::CopyText(target.clone()),
+                                }),
+                            ];
+                            this.open_context_menu(ev.position, entries, cx);
+                        })
+                    })
                     .child(
                         div()
                             .id(("remote-tab", idx))
@@ -289,6 +342,63 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                     container = container.hover(|style| style.bg(theme::raised()));
                 }
                 let container = container
+                    .id(("local-tab-container", session_id))
+                    .on_mouse_down(MouseButton::Right, {
+                        let cwd = shell
+                            .local_sessions
+                            .get(&session_id)
+                            .map(|session| session.cwd.clone())
+                            .unwrap_or_default();
+                        let single = session_ids.len() == 1;
+                        cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
+                            let entries = vec![
+                                MenuEntry::Item(MenuItem {
+                                    id: "switch".into(),
+                                    label: i18n::text("context_menu.switch"),
+                                    shortcut_hint: None,
+                                    disabled: is_active,
+                                    danger: false,
+                                    action: ShellMenuAction::SelectLocalSession(session_id),
+                                }),
+                                MenuEntry::Item(MenuItem {
+                                    id: "close".into(),
+                                    label: i18n::text("context_menu.close"),
+                                    shortcut_hint: None,
+                                    disabled: false,
+                                    danger: false,
+                                    action: ShellMenuAction::CloseLocalSession(session_id),
+                                }),
+                                MenuEntry::Item(MenuItem {
+                                    id: "close-others".into(),
+                                    label: i18n::text("context_menu.close_others"),
+                                    shortcut_hint: None,
+                                    disabled: single,
+                                    danger: false,
+                                    action: ShellMenuAction::CloseOtherLocalSessions(session_id),
+                                }),
+                                MenuEntry::Separator,
+                                MenuEntry::Item(MenuItem {
+                                    id: "copy-path".into(),
+                                    label: i18n::text("context_menu.copy_path"),
+                                    shortcut_hint: None,
+                                    disabled: false,
+                                    danger: false,
+                                    action: ShellMenuAction::CopyText(
+                                        cwd.to_string_lossy().to_string(),
+                                    ),
+                                }),
+                                MenuEntry::Item(MenuItem {
+                                    id: "reveal-finder".into(),
+                                    label: i18n::text("context_menu.reveal_in_finder"),
+                                    shortcut_hint: None,
+                                    disabled: false,
+                                    danger: false,
+                                    action: ShellMenuAction::RevealInFinder(cwd.clone()),
+                                }),
+                            ];
+                            this.open_context_menu(ev.position, entries, cx);
+                        })
+                    })
                     .child(
                         div()
                             .id(("local-tab", session_id))

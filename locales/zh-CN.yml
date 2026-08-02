@@ -46,6 +46,37 @@ tooltip:
   new_project: 新建项目
   close_tab: 关闭标签
 
+context_menu:
+  open_terminal: 打开终端
+  open_sftp: 打开 SFTP
+  open_forward: 端口转发
+  copy_target: 复制连接目标
+  copy_alias: 复制主机别名
+  copy_path: 复制路径
+  open_local_terminal: 在此打开终端
+  reveal_in_finder: 在 Finder 中显示
+  forget_dir: 忘记此目录
+  switch: 切换
+  close: 关闭
+  close_others: 关闭其他
+  close_all: 关闭全部
+  copy: 复制
+  paste: 粘贴
+  select_all: 全选
+  open_link: 打开链接
+  download: 下载
+  open_folder: 打开
+  upload_here: 上传到此目录
+  rename: 重命名
+  new_folder: 新建目录
+  delete: 删除
+  refresh: 刷新
+  create: 创建
+  folder: 目录
+  file: 文件
+  delete_title: "删除%{kind}？"
+  delete_body: "%{name} 将被永久删除，此操作不可撤销。"
+
 project:
   choose_directory: 选择项目目录
   open: 打开本地项目
@@ -115,6 +146,7 @@ sftp:
   choose_file: 选择文件
   loading: 加载中…
   file_too_large: "文件过大（%{size}，上限 %{limit}）"
+  name_placeholder: 输入名称
 
 forward:
   stopping: "正在停止 %{kind} %{listen}"

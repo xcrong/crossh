@@ -16,14 +16,15 @@ use std::sync::Arc;
 
 use gpui::{
     App, AppContext, Context, Entity, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent,
-    ParentElement, PathPromptOptions, Render, Styled, Subscription, Task, TitlebarOptions, Window,
-    WindowBounds, WindowOptions, div, px, size,
+    ParentElement, PathPromptOptions, Pixels, Point, Render, Styled, Subscription, Task,
+    TitlebarOptions, Window, WindowBounds, WindowOptions, div, px, size,
 };
 
 use crate::config::SshConfig;
 use crate::i18n::{self, AppSettings, LanguagePreference};
 use crate::local;
 use crate::ssh::{Connection, ConnectionPool, HostKeyDecision, PendingPrompt, default_auth_for};
+use crate::ui::context_menu::{ContextMenuState, MenuEntry, ShellMenuAction, render_context_menu};
 use crate::ui::prompt::{PromptDisplay, render_prompt_modal};
 use crate::ui::sidebar::{HostEntry, build_entries, render_sidebar};
 use crate::ui::terminal_view::{TerminalEvent, TerminalView};
@@ -62,6 +63,8 @@ pub struct AppShell {
     /// 当前语言偏好；实际 locale 由 i18n 全局状态维护。
     pub(crate) language_preference: LanguagePreference,
     pub(crate) language_menu_open: bool,
+    /// 当前打开的右键上下文菜单（None = 未打开）。
+    pub(crate) context_menu: Option<ContextMenuState<ShellMenuAction>>,
     pub(crate) settings: AppSettings,
     pub(crate) settings_open: bool,
     pub(crate) settings_section: crate::ui::settings::SettingsSection,
@@ -124,6 +127,7 @@ impl AppShell {
             last_had_prompt: false,
             language_preference,
             language_menu_open: false,
+            context_menu: None,
             settings,
             settings_open: false,
             settings_section: crate::ui::settings::SettingsSection::General,
@@ -522,6 +526,13 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 菜单打开时只响应 Escape（其余键被菜单模态拦截）。
+        if self.context_menu.is_some() {
+            if ev.keystroke.key == "escape" {
+                self.close_context_menu(cx);
+            }
+            return;
+        }
         if !matches!(self.current_prompt(cx), PromptDisplay::None) {
             return;
         }
@@ -563,6 +574,96 @@ impl AppShell {
         self.language_menu_open = !self.language_menu_open;
         self.settings_open = false;
         cx.notify();
+    }
+
+    /// 打开右键上下文菜单（替换已有菜单）。
+    pub(crate) fn open_context_menu(
+        &mut self,
+        position: Point<Pixels>,
+        entries: Vec<MenuEntry<ShellMenuAction>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.context_menu = Some(ContextMenuState { position, entries });
+        self.language_menu_open = false;
+        cx.notify();
+    }
+
+    pub(crate) fn close_context_menu(&mut self, cx: &mut Context<Self>) {
+        if self.context_menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// 执行外壳级菜单动作并关闭菜单。
+    fn dispatch_shell_menu_action(
+        &mut self,
+        action: ShellMenuAction,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            ShellMenuAction::OpenHost(idx) => self.open_host(idx, cx),
+            ShellMenuAction::OpenSftp(idx) => self.open_sftp(idx, cx),
+            ShellMenuAction::OpenForward(idx) => self.open_forward(idx, cx),
+            ShellMenuAction::CopyText(text) => {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+            }
+            ShellMenuAction::RevealInFinder(path) => {
+                std::process::Command::new("open").arg(&path).spawn().ok();
+            }
+            ShellMenuAction::ForgetLocalDir(cwd) => self.forget_local_dir(cwd, cx),
+            ShellMenuAction::OpenLocalTerminal(cwd) => self.open_local_session(cwd, cx),
+            ShellMenuAction::SelectRemoteTab(idx) => self.switch_remote_tab(idx, cx),
+            ShellMenuAction::CloseRemoteTab(idx) => self.close_remote_tab(idx, cx),
+            ShellMenuAction::CloseOtherRemoteTabs(idx) => self.close_other_remote_tabs(idx, cx),
+            ShellMenuAction::CloseAllRemoteTabs => self.close_all_remote_tabs(cx),
+            ShellMenuAction::SelectLocalSession(session_id) => {
+                self.select_local_session(session_id, cx);
+            }
+            ShellMenuAction::CloseLocalSession(session_id) => {
+                self.close_local_session(session_id, cx);
+            }
+            ShellMenuAction::CloseOtherLocalSessions(session_id) => {
+                self.close_other_local_sessions(session_id, cx);
+            }
+        }
+        self.close_context_menu(cx);
+    }
+
+    /// 关闭除 `keep` 外的全部远程标签。
+    fn close_other_remote_tabs(&mut self, keep: usize, cx: &mut Context<Self>) {
+        if keep >= self.remote_tabs.len() {
+            return;
+        }
+        self.remote_tabs = vec![self.remote_tabs.swap_remove(keep)];
+        self.active_view = Some(ActiveView::RemoteTab(0));
+        cx.notify();
+    }
+
+    fn close_all_remote_tabs(&mut self, cx: &mut Context<Self>) {
+        if self.remote_tabs.is_empty() {
+            return;
+        }
+        self.remote_tabs.clear();
+        self.active_view = self.first_local_view();
+        cx.notify();
+    }
+
+    /// 关闭同一目录下的其他本地会话（保留 `keep`）。
+    fn close_other_local_sessions(&mut self, keep: LocalSessionId, cx: &mut Context<Self>) {
+        let Some(others) = self.local_dir_for_session(keep).map(|dir| {
+            dir.sessions
+                .iter()
+                .copied()
+                .filter(|id| *id != keep)
+                .collect::<Vec<_>>()
+        }) else {
+            return;
+        };
+        for session_id in others {
+            self.close_local_session(session_id, cx);
+        }
+        self.select_local_session(keep, cx);
     }
 
     pub(crate) fn toggle_settings(&mut self, cx: &mut Context<Self>) {
@@ -877,6 +978,18 @@ impl Render for AppShell {
             PromptDisplay::HostKey { .. } | PromptDisplay::Credential { .. }
         ) {
             root = root.child(render_prompt_modal(self, prompt, cx));
+        }
+        if let Some(menu) = self.context_menu.clone() {
+            root = root.child(render_context_menu(
+                &menu,
+                Point::new(px(0.), px(0.)),
+                window,
+                cx,
+                |this, action, window, cx| {
+                    this.dispatch_shell_menu_action(action, window, cx);
+                },
+                |this, cx| this.close_context_menu(cx),
+            ));
         }
         root
     }
