@@ -195,7 +195,7 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                 let tab = &shell.remote_tabs[idx];
                 let is_active = active_idx == idx;
                 let state = shell.pool.state_for_key(&tab.host_key, cx);
-                let alias = tab_label(tab);
+                let alias = tab_label(tab, cx);
                 // 容器不绑定 click；标签名与关闭按钮分别绑定，避免事件叠加。
                 let mut container = div()
                     .flex()
@@ -503,9 +503,14 @@ fn tab_badge_color(state: &Option<ConnState>) -> gpui::Hsla {
     }
 }
 
-fn tab_label(tab: &Tab) -> String {
+fn tab_label(tab: &Tab, cx: &mut Context<AppShell>) -> String {
     match &tab.pane {
-        Pane::Terminal(_) => tab.alias.clone(),
+        Pane::Terminal(terminal) => terminal
+            .read(cx)
+            .title()
+            .filter(|title| !title.trim().is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| tab.alias.clone()),
         Pane::Sftp(_) => format!("{} ({})", tab.alias, i18n::text("tab.sftp")),
         Pane::Forward(_) => format!("{} ({})", tab.alias, i18n::text("tab.forward")),
     }

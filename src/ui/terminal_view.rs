@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line};
+use alacritty_terminal::term::ClipboardType;
 use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::term::{Config, Term, TermMode};
@@ -28,8 +29,8 @@ use gpui::{
     EntityInputHandler, EventEmitter, FocusHandle, Font, FontWeight, Hsla, InteractiveElement,
     IntoElement, KeyDownEvent, KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, Task, TextAlign, TextRun,
-    UTF16Selection, Window, canvas, div, hsla, px, quad,
+    SharedString, StatefulInteractiveElement, StrikethroughStyle, Styled, Subscription, Task,
+    TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window, canvas, div, hsla, px, quad,
 };
 use vte::ansi::{Color, NamedColor, Processor, Rgb};
 
@@ -72,15 +73,34 @@ pub enum ConnState {
 pub enum TerminalEvent {
     /// shell 报告的当前工作目录已变化（仅本地终端）。
     CwdChanged,
+    /// 应用通过 OSC 设置了窗口标题。
+    TitleChanged,
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
+
+/// Events emitted by the terminal parser that require a UI/platform action.
+/// They are buffered because `EventListener::send_event` has no GPUI context.
+enum TerminalSideEffect {
+    Title(String),
+    ResetTitle,
+    ClipboardStore(ClipboardType, String),
+    ClipboardLoad(
+        ClipboardType,
+        Arc<dyn Fn(&str) -> String + Sync + Send + 'static>,
+    ),
+    ColorRequest(usize, Arc<dyn Fn(Rgb) -> String + Sync + Send + 'static>),
+}
+
+type WindowSizeHandle = Arc<Mutex<WindowSize>>;
+type SideEffectQueue = Arc<Mutex<VecDeque<TerminalSideEffect>>>;
 
 /// alacritty EventListener：把终端模拟器需要回写的响应送回远端 PTY。
 #[derive(Clone)]
 struct NoopListener {
     input_tx: Option<Sender<InputCmd>>,
-    window_size: Arc<Mutex<WindowSize>>,
+    window_size: WindowSizeHandle,
+    side_effects: SideEffectQueue,
 }
 
 impl Default for NoopListener {
@@ -93,6 +113,7 @@ impl Default for NoopListener {
                 cell_width: 8,
                 cell_height: (FONT_SIZE * 1.3) as u16,
             })),
+            side_effects: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 }
@@ -102,20 +123,29 @@ impl NoopListener {
         input_tx: Sender<InputCmd>,
         cols: usize,
         rows: usize,
-    ) -> (Self, Arc<Mutex<WindowSize>>) {
+    ) -> (Self, WindowSizeHandle, SideEffectQueue) {
         let window_size = Arc::new(Mutex::new(WindowSize {
             num_lines: rows as u16,
             num_cols: cols as u16,
             cell_width: 8,
             cell_height: (FONT_SIZE * 1.3) as u16,
         }));
+        let side_effects = Arc::new(Mutex::new(VecDeque::new()));
         (
             Self {
                 input_tx: Some(input_tx),
                 window_size: window_size.clone(),
+                side_effects: side_effects.clone(),
             },
             window_size,
+            side_effects,
         )
+    }
+
+    fn queue_side_effect(&self, effect: TerminalSideEffect) {
+        if let Ok(mut effects) = self.side_effects.lock() {
+            effects.push_back(effect);
+        }
     }
 
     fn write_to_pty(&self, bytes: Vec<u8>) {
@@ -147,6 +177,17 @@ impl EventListener for NoopListener {
                         cell_height: (FONT_SIZE * 1.3) as u16,
                     });
                 self.write_to_pty(format(size).into_bytes());
+            }
+            Event::Title(title) => self.queue_side_effect(TerminalSideEffect::Title(title)),
+            Event::ResetTitle => self.queue_side_effect(TerminalSideEffect::ResetTitle),
+            Event::ClipboardStore(ty, text) => {
+                self.queue_side_effect(TerminalSideEffect::ClipboardStore(ty, text));
+            }
+            Event::ClipboardLoad(ty, formatter) => {
+                self.queue_side_effect(TerminalSideEffect::ClipboardLoad(ty, formatter));
+            }
+            Event::ColorRequest(index, formatter) => {
+                self.queue_side_effect(TerminalSideEffect::ColorRequest(index, formatter));
             }
             _ => {}
         }
@@ -186,6 +227,7 @@ pub struct TerminalView {
     /// canvas 在窗口坐标中的原点，用于把 GPUI 鼠标位置转换到终端网格。
     content_origin: Point<Pixels>,
     window_size: Arc<Mutex<WindowSize>>,
+    side_effects: Arc<Mutex<VecDeque<TerminalSideEffect>>>,
     font: Font,
     font_size: f32,
     scrollback: usize,
@@ -212,6 +254,8 @@ pub struct TerminalView {
     detected_urls: Vec<(usize, usize, usize, String)>,
     /// 终端行的旁路时间戳；绝不写入 PTY 或 alacritty 的字符网格。
     line_timestamps: TerminalTimestampState,
+    /// 由 OSC 标题序列设置的窗口标题。
+    title: Option<String>,
     /// 当前打开的右键上下文菜单。
     context_menu: Option<ContextMenuState<TerminalMenuAction>>,
     /// canvas 在窗口坐标中的 bounds（右键菜单定位/外点关闭用）。
@@ -261,7 +305,8 @@ impl TerminalView {
             ..Default::default()
         };
         let size = TermSize { cols, rows };
-        let (listener, window_size) = NoopListener::for_bridge(input_tx.clone(), cols, rows);
+        let (listener, window_size, side_effects) =
+            NoopListener::for_bridge(input_tx.clone(), cols, rows);
         let font = Font {
             family: "Menlo".into(),
             weight: FontWeight::NORMAL,
@@ -284,6 +329,7 @@ impl TerminalView {
             rows,
             content_origin: Point::new(px(0.), px(0.)),
             window_size,
+            side_effects,
             font,
             font_size: settings.terminal_font_size,
             scrollback: settings.terminal_scrollback,
@@ -303,6 +349,7 @@ impl TerminalView {
             _blink_task: None,
             detected_urls: Vec::new(),
             line_timestamps: TerminalTimestampState::default(),
+            title: None,
             context_menu: None,
             anchor_bounds: Rc::new(StdCell::new(None)),
         });
@@ -397,6 +444,7 @@ impl TerminalView {
                 let was_alt_screen = self.term.mode().contains(TermMode::ALT_SCREEN);
                 let timestamp = (!was_alt_screen).then(|| format_timestamp(Local::now()));
                 self.parser.advance(&mut self.term, &bytes);
+                self.drain_terminal_side_effects(cx);
                 if !self.term.mode().contains(TermMode::ALT_SCREEN) {
                     self.line_timestamps.observe(
                         &self.term,
@@ -419,6 +467,54 @@ impl TerminalView {
                 self.state = ConnState::Closed;
             }
         }
+    }
+
+    fn drain_terminal_side_effects(&mut self, cx: &mut Context<Self>) {
+        let effects = self
+            .side_effects
+            .lock()
+            .map(|mut queue| queue.drain(..).collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        for effect in effects {
+            match effect {
+                TerminalSideEffect::Title(title) => {
+                    self.title = Some(title);
+                    cx.emit(TerminalEvent::TitleChanged);
+                }
+                TerminalSideEffect::ResetTitle => {
+                    self.title = None;
+                    cx.emit(TerminalEvent::TitleChanged);
+                }
+                TerminalSideEffect::ClipboardStore(clipboard, text) => {
+                    let item = gpui::ClipboardItem::new_string(text);
+                    // GPUI exposes the platform clipboard consistently across
+                    // desktop targets; Selection is treated as the same store
+                    // when a primary-selection API is unavailable.
+                    let _ = clipboard;
+                    cx.write_to_clipboard(item);
+                }
+                TerminalSideEffect::ClipboardLoad(clipboard, formatter) => {
+                    let _ = clipboard;
+                    let item = cx.read_from_clipboard();
+                    if let Some(text) = item.and_then(|item| item.text()) {
+                        self.send_input(formatter(&text).into_bytes());
+                    }
+                }
+                TerminalSideEffect::ColorRequest(index, formatter) => {
+                    if index < alacritty_terminal::term::color::COUNT
+                        && let Some(color) =
+                            self.term.colors()[index].or_else(|| default_palette_rgb_index(index))
+                    {
+                        self.send_input(formatter(color).into_bytes());
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
     }
 
     /// 发送输入字节到远端。
@@ -1347,13 +1443,17 @@ fn connecting_or_error_view(msg: &str, focus: &FocusHandle) -> impl IntoElement 
 struct RenderCell {
     ch: char,
     fg: Hsla,
-    bg: Option<Hsla>,
+    bg: Hsla,
     bold: bool,
     italic: bool,
+    underline: UnderlineKind,
+    underline_color: Hsla,
+    strikeout: bool,
     spacer: bool,
     wide: bool,
     zero_width: String,
     is_url: bool,
+    hyperlink: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -1363,10 +1463,95 @@ struct RenderTextRun {
     force_width_cells: usize,
     text: String,
     fg: Hsla,
-    bg: Option<Hsla>,
     bold: bool,
     italic: bool,
+    underline: UnderlineKind,
+    underline_color: Hsla,
+    strikeout: bool,
     is_url: bool,
+}
+
+/// GPUI exposes solid and wavy underlines. The other terminal underline modes
+/// still retain their semantic presence and use the closest available paint style.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum UnderlineKind {
+    #[default]
+    None,
+    Solid,
+    Wavy,
+}
+
+#[derive(Clone, Copy)]
+struct EffectiveCellStyle {
+    fg: Hsla,
+    bg: Hsla,
+    bold: bool,
+    italic: bool,
+    underline: UnderlineKind,
+    underline_color: Hsla,
+    strikeout: bool,
+}
+
+/// Resolve the terminal cell's rendition before it reaches GPUI.
+///
+/// ANSI inverse is a cell attribute, not a color. It must therefore be
+/// applied after both colors have been looked up in the current palette. This
+/// also gives hidden text, dim text, and underline colors one consistent
+/// place to resolve their interactions.
+fn effective_cell_style(
+    cell: &Cell,
+    colors: &alacritty_terminal::term::color::Colors,
+    default_fg: Hsla,
+    default_bg: Hsla,
+) -> EffectiveCellStyle {
+    let mut fg_color = cell.fg;
+    if cell.flags.contains(CellFlags::BOLD) && !cell.flags.contains(CellFlags::DIM) {
+        fg_color = brighten_color(fg_color);
+    }
+
+    let mut fg = color_to_hsla(&fg_color, colors).unwrap_or(default_fg);
+    let mut bg = color_to_hsla(&cell.bg, colors).unwrap_or(default_bg);
+    if cell.flags.contains(CellFlags::INVERSE) {
+        std::mem::swap(&mut fg, &mut bg);
+    }
+
+    if cell.flags.contains(CellFlags::DIM) {
+        fg = dimen(fg);
+    }
+    if cell.flags.contains(CellFlags::HIDDEN) {
+        fg = bg;
+    }
+
+    let underline = if cell.flags.contains(CellFlags::UNDERCURL) {
+        UnderlineKind::Wavy
+    } else if cell.flags.intersects(CellFlags::ALL_UNDERLINES) {
+        // GPUI currently has no dotted/dashed/double underline primitive. A
+        // solid line is preferable to silently dropping the terminal style.
+        UnderlineKind::Solid
+    } else {
+        UnderlineKind::None
+    };
+    let underline_color = cell
+        .underline_color()
+        .and_then(|color| color_to_hsla(&color, colors))
+        .unwrap_or(fg);
+
+    EffectiveCellStyle {
+        fg,
+        bg,
+        bold: cell.flags.contains(CellFlags::BOLD),
+        italic: cell.flags.contains(CellFlags::ITALIC),
+        underline,
+        underline_color,
+        strikeout: cell.flags.contains(CellFlags::STRIKEOUT),
+    }
+}
+
+fn brighten_color(color: Color) -> Color {
+    match color {
+        Color::Named(name) => Color::Named(name.to_bright()),
+        other => other,
+    }
 }
 
 impl RenderTextRun {
@@ -1376,12 +1561,13 @@ impl RenderTextRun {
         text.push_str(&cell.zero_width);
 
         let cell_width = if cell.wide { 2 } else { 1 };
+        let is_url = cell.is_url || cell.hyperlink.is_some();
         Self {
             start_col: col,
             cell_count: cell_width,
             force_width_cells: cell_width,
             text,
-            fg: if cell.is_url {
+            fg: if is_url {
                 rgb_to_hsla(Rgb {
                     r: 0x4f,
                     g: 0xaf,
@@ -1390,10 +1576,24 @@ impl RenderTextRun {
             } else {
                 cell.fg
             },
-            bg: cell.bg,
             bold: cell.bold,
             italic: cell.italic,
-            is_url: cell.is_url,
+            underline: if is_url && cell.underline == UnderlineKind::None {
+                UnderlineKind::Solid
+            } else {
+                cell.underline
+            },
+            underline_color: if is_url {
+                rgb_to_hsla(Rgb {
+                    r: 0x4f,
+                    g: 0xaf,
+                    b: 0xff,
+                })
+            } else {
+                cell.underline_color
+            },
+            strikeout: cell.strikeout,
+            is_url,
         }
     }
 
@@ -1401,9 +1601,11 @@ impl RenderTextRun {
         self.force_width_cells == 1
             && other.force_width_cells == 1
             && self.fg == other.fg
-            && self.bg == other.bg
             && self.bold == other.bold
             && self.italic == other.italic
+            && self.underline == other.underline
+            && self.underline_color == other.underline_color
+            && self.strikeout == other.strikeout
             && self.is_url == other.is_url
     }
 }
@@ -1849,6 +2051,8 @@ fn snapshot_visible(
     let rows = term.screen_lines();
     let top_visible = Line(-(display_offset as i32));
     let colors = term.colors();
+    let default_fg = fg_of(term);
+    let default_bg = bg_of(term);
 
     log::trace!(
         "snapshot_visible: display_offset={} top_visible={} cols={} rows={} total_lines={}",
@@ -1866,22 +2070,27 @@ fn snapshot_visible(
         let mut out: Vec<RenderCell> = Vec::with_capacity(cols);
         for c in 0..cols {
             let cell: &Cell = &row[Column(c)];
+            let style = effective_cell_style(cell, colors, default_fg, default_bg);
             let mut zero_width = String::new();
             if let Some(chars) = cell.zerowidth() {
                 zero_width.extend(chars.iter().copied());
             }
             out.push(RenderCell {
                 ch: if cell.c == '\0' { ' ' } else { cell.c },
-                fg: cell_fg(cell, colors),
-                bg: cell_bg(cell, colors),
-                bold: cell.flags.contains(CellFlags::BOLD),
-                italic: cell.flags.contains(CellFlags::ITALIC),
+                fg: style.fg,
+                bg: style.bg,
+                bold: style.bold,
+                italic: style.italic,
+                underline: style.underline,
+                underline_color: style.underline_color,
+                strikeout: style.strikeout,
                 spacer: cell
                     .flags
                     .intersects(CellFlags::WIDE_CHAR_SPACER | CellFlags::LEADING_WIDE_CHAR_SPACER),
                 wide: cell.flags.contains(CellFlags::WIDE_CHAR),
                 zero_width,
                 is_url: false,
+                hyperlink: cell.hyperlink().map(|link| link.uri().to_string()),
             });
         }
         out_rows.push(out);
@@ -1901,6 +2110,24 @@ fn snapshot_visible(
     // URL 检测与标记。
     let mut urls: Vec<(usize, usize, usize, String)> = Vec::new();
     for vy in 0..rows.min(out_rows.len()) {
+        // OSC 8 hyperlinks are authoritative: preserve their target even
+        // when the visible label does not contain a URL.
+        let mut col = 0;
+        while col < out_rows[vy].len() {
+            let Some(url) = out_rows[vy][col].hyperlink.clone() else {
+                col += 1;
+                continue;
+            };
+            let start = col;
+            while col < out_rows[vy].len()
+                && out_rows[vy][col].hyperlink.as_deref() == Some(url.as_str())
+            {
+                out_rows[vy][col].is_url = true;
+                col += 1;
+            }
+            urls.push((vy, start, col, url));
+        }
+
         let line_text: String = out_rows[vy]
             .iter()
             .map(|c| if c.spacer { ' ' } else { c.ch })
@@ -2066,6 +2293,44 @@ fn paint_timestamp_gutter(ctx: &PaintContext, window: &mut Window, cx: &mut App)
     }
 }
 
+fn paint_cell_backgrounds(
+    snapshot: &Snapshot,
+    bounds: Bounds<Pixels>,
+    cell_w: f32,
+    line_h: Pixels,
+    default_bg: Hsla,
+    window: &mut Window,
+) {
+    for (row_index, row) in snapshot.rows.iter().enumerate() {
+        let mut start = 0usize;
+        while start < row.len() {
+            let color = row[start].bg;
+            let mut end = start + 1;
+            while end < row.len() && row[end].bg == color {
+                end += 1;
+            }
+
+            if color != default_bg {
+                window.paint_quad(quad(
+                    Bounds {
+                        origin: Point::new(
+                            bounds.origin.x + px(start as f32 * cell_w),
+                            bounds.origin.y + px(row_index as f32 * line_h.as_f32()),
+                        ),
+                        size: gpui::size(px((end - start) as f32 * cell_w), line_h),
+                    },
+                    Corners::default(),
+                    color,
+                    Edges::default(),
+                    hsla(0., 0., 0., 0.),
+                    gpui::BorderStyle::default(),
+                ));
+            }
+            start = end;
+        }
+    }
+}
+
 fn paint_snapshot(ctx: &PaintContext, window: &mut Window, cx: &mut App) {
     let snapshot = ctx.snapshot;
     let ime_marked_text = ctx.ime_marked_text;
@@ -2117,6 +2382,11 @@ fn paint_snapshot(ctx: &PaintContext, window: &mut Window, cx: &mut App) {
         gpui::BorderStyle::default(),
     ));
 
+    // Paint cell backgrounds separately from glyphs. GPUI text backgrounds are
+    // glyph-run decorations and do not reliably cover blank cells or preserve
+    // the terminal selection layer.
+    paint_cell_backgrounds(snapshot, bounds, cell_wf, line_h, default_bg, window);
+
     // 选择高亮颜色。
     let sel_bg = hsla(0.6, 0.5, 0.3, 0.4);
 
@@ -2155,51 +2425,25 @@ fn paint_snapshot(ctx: &PaintContext, window: &mut Window, cx: &mut App) {
             }
         }
 
-        // 绘制选择高亮背景。
-        if let Some(((ax, ay), (bx, by))) = snapshot.selection {
-            let r0 = ay.min(by);
-            let r1 = ay.max(by);
-            if r >= r0 && r <= r1 {
-                let cols = snapshot.cols;
-                let (c0, c1) = if r == r0 && r == r1 {
-                    (ax.min(bx), ax.max(bx))
-                } else if r == r0 {
-                    (ax.min(bx), cols.saturating_sub(1))
-                } else if r == r1 {
-                    (0, ax.max(bx))
-                } else {
-                    (0, cols.saturating_sub(1))
-                };
-                if c0 <= c1 {
-                    let x = bounds.origin.x + px(c0 as f32 * cell_wf);
-                    let w = px((c1 - c0 + 1) as f32 * cell_wf);
-                    let y = bounds.origin.y + px(r as f32 * line_hf);
-                    window.paint_quad(quad(
-                        Bounds {
-                            origin: Point::new(x, y),
-                            size: gpui::size(w, line_h),
-                        },
-                        Corners::default(),
-                        sel_bg,
-                        Edges::default(),
-                        hsla(0., 0., 0., 0.),
-                        gpui::BorderStyle::default(),
-                    ));
-                }
-            }
-        }
-
         let row_y = bounds.origin.y + px(r as f32 * line_hf);
         for run in terminal_text_runs(row) {
-            let underline = if run.is_url {
-                Some(gpui::UnderlineStyle {
+            let underline = match run.underline {
+                UnderlineKind::None if !run.is_url => None,
+                UnderlineKind::Wavy => Some(UnderlineStyle {
                     thickness: px(1.0),
-                    color: Some(run.fg),
+                    color: Some(run.underline_color),
+                    wavy: true,
+                }),
+                UnderlineKind::Solid | UnderlineKind::None => Some(UnderlineStyle {
+                    thickness: px(1.0),
+                    color: Some(run.underline_color),
                     wavy: false,
-                })
-            } else {
-                None
+                }),
             };
+            let strikethrough = run.strikeout.then(|| StrikethroughStyle {
+                thickness: px(1.0),
+                color: Some(run.fg),
+            });
             let text_len = run.text.len();
             let text_run = TextRun {
                 len: text_len,
@@ -2219,9 +2463,9 @@ fn paint_snapshot(ctx: &PaintContext, window: &mut Window, cx: &mut App) {
                     fallbacks: font.fallbacks.clone(),
                 },
                 color: run.fg,
-                background_color: run.bg,
+                background_color: None,
                 underline,
-                strikethrough: None,
+                strikethrough,
             };
             let shaped = window.text_system().shape_line(
                 SharedString::from(run.text),
@@ -2239,7 +2483,7 @@ fn paint_snapshot(ctx: &PaintContext, window: &mut Window, cx: &mut App) {
     // 光标：实心块（受 blink + DECTCEM 控制）。
     if snapshot.cursor_visible
         && let Some((col, row)) = snapshot.cursor
-        && row < snapshot.rows.len()
+        && let Some(cursor_cell) = snapshot.rows.get(row).and_then(|cells| cells.get(col))
     {
         let x = bounds.origin.x + px(col as f32 * cell_wf);
         let y = bounds.origin.y + px(row as f32 * line_hf);
@@ -2250,11 +2494,74 @@ fn paint_snapshot(ctx: &PaintContext, window: &mut Window, cx: &mut App) {
         window.paint_quad(quad(
             cb,
             Corners::default(),
-            default_fg,
+            cursor_cell.fg,
             Edges::default(),
             hsla(0., 0., 0., 0.),
             gpui::BorderStyle::default(),
         ));
+
+        // The cursor quad is painted after the row text, so repaint the cell's
+        // glyph with the effective background color to keep the character
+        // readable instead of hiding it beneath the cursor block.
+        if !cursor_cell.spacer {
+            let mut cursor_text =
+                String::with_capacity(cursor_cell.ch.len_utf8() + cursor_cell.zero_width.len());
+            cursor_text.push(cursor_cell.ch);
+            cursor_text.push_str(&cursor_cell.zero_width);
+            let underline = match cursor_cell.underline {
+                UnderlineKind::None => None,
+                UnderlineKind::Solid => Some(UnderlineStyle {
+                    thickness: px(1.0),
+                    color: Some(cursor_cell.underline_color),
+                    wavy: false,
+                }),
+                UnderlineKind::Wavy => Some(UnderlineStyle {
+                    thickness: px(1.0),
+                    color: Some(cursor_cell.underline_color),
+                    wavy: true,
+                }),
+            };
+            let text_run = TextRun {
+                len: cursor_text.len(),
+                font: Font {
+                    weight: if cursor_cell.bold {
+                        FontWeight::BOLD
+                    } else {
+                        FontWeight::NORMAL
+                    },
+                    style: if cursor_cell.italic {
+                        gpui::FontStyle::Italic
+                    } else {
+                        gpui::FontStyle::Normal
+                    },
+                    family: font.family.clone(),
+                    features: font.features.clone(),
+                    fallbacks: font.fallbacks.clone(),
+                },
+                color: if cursor_cell.bg == default_bg {
+                    default_bg
+                } else {
+                    cursor_cell.bg
+                },
+                background_color: None,
+                underline,
+                strikethrough: cursor_cell.strikeout.then(|| StrikethroughStyle {
+                    thickness: px(1.0),
+                    color: Some(cursor_cell.bg),
+                }),
+            };
+            let shaped = window.text_system().shape_line(
+                SharedString::from(cursor_text),
+                px(font_size),
+                &[text_run],
+                Some(px(cell_wf * if cursor_cell.wide { 2.0 } else { 1.0 })),
+            );
+            if let Err(error) =
+                shaped.paint(Point::new(x, y), line_h, TextAlign::Left, None, window, cx)
+            {
+                log::warn!("paint cursor glyph failed: {error}");
+            }
+        }
     }
 
     // 合成阶段的拼音由输入法暂存，不能提前写入 PTY；在光标处绘制出来，
@@ -2345,22 +2652,6 @@ fn fg_of(term: &Term<NoopListener>) -> Hsla {
         .unwrap_or_else(|| default_palette(&NamedColor::Foreground))
 }
 
-fn cell_fg(cell: &Cell, colors: &alacritty_terminal::term::color::Colors) -> Hsla {
-    color_to_hsla(&cell.fg, colors)
-        .map(|c| {
-            if cell.flags.contains(CellFlags::DIM) {
-                dimen(c)
-            } else {
-                c
-            }
-        })
-        .unwrap_or_else(|| default_palette(&NamedColor::Foreground))
-}
-
-fn cell_bg(cell: &Cell, colors: &alacritty_terminal::term::color::Colors) -> Option<Hsla> {
-    color_to_hsla(&cell.bg, colors)
-}
-
 /// 把 alacritty/vte 的 Color 解析为 Hsla。Named/Indexed 走终端调色板，Spec 直传。
 fn color_to_hsla(color: &Color, colors: &alacritty_terminal::term::color::Colors) -> Option<Hsla> {
     match color {
@@ -2390,8 +2681,12 @@ fn rgb_to_hsla(Rgb { r, g, b }: Rgb) -> Hsla {
 
 /// 内置默认 16 色调色板（极简）。
 fn default_palette(n: &NamedColor) -> Hsla {
+    rgb_to_hsla(default_palette_rgb(n))
+}
+
+fn default_palette_rgb(n: &NamedColor) -> Rgb {
     use NamedColor::*;
-    let rgb: [u8; 3] = match n {
+    let rgb = match n {
         Black | DimBlack => [0x00, 0x00, 0x00],
         Red | DimRed => [0xc5, 0x28, 0x28],
         Green | DimGreen => [0x23, 0xa1, 0x2e],
@@ -2413,13 +2708,19 @@ fn default_palette(n: &NamedColor) -> Hsla {
         Cursor => [0x69, 0xd7, 0xb0],
         DimForeground => [0x9a, 0xa6, 0xb0],
     };
-    Hsla::from(gpui::rgb(
-        ((rgb[0] as u32) << 16) | ((rgb[1] as u32) << 8) | rgb[2] as u32,
-    ))
+    Rgb {
+        r: rgb[0],
+        g: rgb[1],
+        b: rgb[2],
+    }
 }
 
 /// 256 色的回退（xterm 配色：16 色 + 6×6×6 立方 + 24 级灰度）。
 fn default_palette_indexed(i: usize) -> Hsla {
+    rgb_to_hsla(default_palette_indexed_rgb(i))
+}
+
+fn default_palette_indexed_rgb(i: usize) -> Rgb {
     if i < 16 {
         // 前 16 色用内置调色板里的对应项。
         let n = match i {
@@ -2440,20 +2741,46 @@ fn default_palette_indexed(i: usize) -> Hsla {
             14 => NamedColor::BrightCyan,
             _ => NamedColor::BrightWhite,
         };
-        default_palette(&n)
+        default_palette_rgb(&n)
     } else if i < 232 {
         let i = i - 16;
         let r = i / 36;
         let g = (i / 6) % 6;
         let b = i % 6;
         let v = |x: usize| if x == 0 { 0 } else { 0x37 + 0x28 * x };
-        Hsla::from(gpui::rgb(
-            ((v(r) as u32) << 16) | ((v(g) as u32) << 8) | v(b) as u32,
-        ))
+        Rgb {
+            r: v(r) as u8,
+            g: v(g) as u8,
+            b: v(b) as u8,
+        }
     } else {
         let v = 8 + (i - 232) * 10;
-        Hsla::from(gpui::rgb(((v as u32) << 16) | ((v as u32) << 8) | v as u32))
+        Rgb {
+            r: v.min(255) as u8,
+            g: v.min(255) as u8,
+            b: v.min(255) as u8,
+        }
     }
+}
+
+fn default_palette_rgb_index(index: usize) -> Option<Rgb> {
+    let named = match index {
+        256 => NamedColor::Foreground,
+        257 => NamedColor::Background,
+        258 => NamedColor::Cursor,
+        259 => NamedColor::DimBlack,
+        260 => NamedColor::DimRed,
+        261 => NamedColor::DimGreen,
+        262 => NamedColor::DimYellow,
+        263 => NamedColor::DimBlue,
+        264 => NamedColor::DimMagenta,
+        265 => NamedColor::DimCyan,
+        266 => NamedColor::DimWhite,
+        267 => NamedColor::BrightForeground,
+        268 => NamedColor::DimForeground,
+        _ => return (index < 256).then(|| default_palette_indexed_rgb(index)),
+    };
+    Some(default_palette_rgb(&named))
 }
 
 fn dimen(c: Hsla) -> Hsla {
@@ -3491,13 +3818,26 @@ mod tests {
     #[test]
     fn terminal_listener_forwards_terminal_responses() {
         let (input_tx, input_rx) = async_channel::bounded(2);
-        let (listener, _) = NoopListener::for_bridge(input_tx, 80, 24);
+        let (listener, _, _) = NoopListener::for_bridge(input_tx, 80, 24);
         listener.send_event(Event::PtyWrite("\x1b[0n".to_string()));
 
         match input_rx.try_recv().expect("terminal response") {
             InputCmd::Write(bytes) => assert_eq!(bytes, b"\x1b[0n"),
             _ => panic!("expected a PTY write response"),
         }
+    }
+
+    #[test]
+    fn terminal_listener_buffers_ui_side_effects() {
+        let (input_tx, _) = async_channel::bounded(2);
+        let (listener, _, side_effects) = NoopListener::for_bridge(input_tx, 80, 24);
+        listener.send_event(Event::Title("OpenCode".to_string()));
+
+        let mut effects = side_effects.lock().expect("side effect queue");
+        assert!(matches!(
+            effects.pop_front(),
+            Some(TerminalSideEffect::Title(title)) if title == "OpenCode"
+        ));
     }
 
     #[test]
@@ -3557,6 +3897,98 @@ mod tests {
                 (3, 1, 1, "b".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn terminal_snapshot_applies_inverse_after_palette_lookup() {
+        let config = Config {
+            scrolling_history: SCROLLBACK,
+            ..Default::default()
+        };
+        let mut term: Term<NoopListener> = Term::new(
+            config,
+            &TermSize { cols: 4, rows: 1 },
+            NoopListener::default(),
+        );
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut term, b"\x1b[31;47mA\x1b[7mB\x1b[27mC");
+
+        let snapshot = snapshot_visible(&term, None, 4, false, &[]);
+        let red = default_palette(&NamedColor::Red);
+        let white = default_palette(&NamedColor::White);
+
+        assert_eq!(snapshot.rows[0][0].fg, red);
+        assert_eq!(snapshot.rows[0][0].bg, white);
+        assert_eq!(snapshot.rows[0][1].fg, white);
+        assert_eq!(snapshot.rows[0][1].bg, red);
+        assert_eq!(snapshot.rows[0][2].fg, red);
+        assert_eq!(snapshot.rows[0][2].bg, white);
+    }
+
+    #[test]
+    fn terminal_snapshot_preserves_text_decorations_and_hidden_text() {
+        let config = Config {
+            scrolling_history: SCROLLBACK,
+            ..Default::default()
+        };
+        let mut term: Term<NoopListener> = Term::new(
+            config,
+            &TermSize { cols: 3, rows: 1 },
+            NoopListener::default(),
+        );
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut term, b"\x1b[4;9mX\x1b[0m\x1b[8mY");
+
+        let snapshot = snapshot_visible(&term, None, 3, false, &[]);
+        assert_eq!(snapshot.rows[0][0].underline, UnderlineKind::Solid);
+        assert!(snapshot.rows[0][0].strikeout);
+        assert_eq!(snapshot.rows[0][1].fg, snapshot.rows[0][1].bg);
+    }
+
+    #[test]
+    fn terminal_snapshot_preserves_osc8_hyperlink_targets() {
+        let config = Config {
+            scrolling_history: SCROLLBACK,
+            ..Default::default()
+        };
+        let mut term: Term<NoopListener> = Term::new(
+            config,
+            &TermSize { cols: 8, rows: 1 },
+            NoopListener::default(),
+        );
+        let mut parser: Processor = Processor::new();
+        parser.advance(
+            &mut term,
+            b"\x1b]8;;https://example.com\x07Crossh\x1b]8;;\x07",
+        );
+
+        let snapshot = snapshot_visible(&term, None, 8, false, &[]);
+        assert_eq!(
+            snapshot.rows[0][0].hyperlink.as_deref(),
+            Some("https://example.com")
+        );
+        assert_eq!(
+            snapshot.urls.first(),
+            Some(&(0, 0, 6, "https://example.com".to_string()))
+        );
+    }
+
+    #[test]
+    fn bold_basic_colors_use_bright_palette_entries() {
+        let cell = Cell {
+            fg: Color::Named(NamedColor::Red),
+            ..Cell::default()
+        };
+        let style = effective_cell_style(
+            &Cell {
+                flags: CellFlags::BOLD,
+                ..cell
+            },
+            &alacritty_terminal::term::color::Colors::default(),
+            default_palette(&NamedColor::Foreground),
+            default_palette(&NamedColor::Background),
+        );
+        assert_eq!(style.fg, default_palette(&NamedColor::BrightRed));
     }
 
     /// 隔离测试：把真实 shell 输出（含 OSC 标题 / 颜色 / bracketed-paste /

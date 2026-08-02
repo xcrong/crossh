@@ -657,6 +657,12 @@ async fn open_terminal_channel(
     channel
         .request_pty(false, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
         .await?;
+    // Match the local PTY's capability advertisement so color-aware TUIs can
+    // request truecolor on SSH sessions as well. Servers may ignore env
+    // requests, which is why this is best-effort rather than a hard failure.
+    if let Err(error) = channel.set_env(false, "COLORTERM", "truecolor").await {
+        log::debug!("remote server ignored COLORTERM request: {error}");
+    }
     channel.request_shell(false).await?;
 
     let _ = term_event_tx.send(SessionEvent::Connected).await;

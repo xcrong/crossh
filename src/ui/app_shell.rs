@@ -163,6 +163,12 @@ impl AppShell {
             .acquire(resolved, methods, self.config.clone(), cx);
         let (input_tx, event_rx) = conn.read(cx).open_terminal(100, 30);
         let terminal = TerminalView::from_bridge(input_tx, event_rx, 100, 30, cx);
+        let subscription = cx.subscribe(&terminal, |_this, _terminal, event, cx| {
+            if matches!(event, TerminalEvent::TitleChanged) {
+                cx.notify();
+            }
+        });
+        self.terminal_subscriptions.push(subscription);
         self.remote_tabs.push(Tab {
             target,
             alias,
@@ -233,11 +239,12 @@ impl AppShell {
         let session_id = self.next_local_session_id;
         self.next_local_session_id += 1;
         // shell 内 `cd` 会经 OSC 7 上报新目录；订阅后把 session 自动挪到对应目录 view。
-        let subscription = cx.subscribe(&terminal, |this, _terminal, event, cx| {
-            if matches!(event, TerminalEvent::CwdChanged) {
+        let subscription = cx.subscribe(&terminal, |this, _terminal, event, cx| match event {
+            TerminalEvent::CwdChanged => {
                 this.sync_local_dirs(cx);
                 cx.notify();
             }
+            TerminalEvent::TitleChanged => cx.notify(),
         });
         self.terminal_subscriptions.push(subscription);
         self.local_sessions
