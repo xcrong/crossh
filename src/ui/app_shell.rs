@@ -20,7 +20,7 @@ use gpui::{
 };
 
 use crate::config::SshConfig;
-use crate::i18n::{self, LanguagePreference};
+use crate::i18n::{self, AppSettings, LanguagePreference};
 use crate::local;
 use crate::ssh::{
     Connection, ConnectionPool, CredentialKind, HostKeyDecision, PendingPrompt, default_auth_for,
@@ -59,6 +59,12 @@ type LocalSessionId = u64;
 enum ActiveView {
     RemoteTab(usize),
     LocalSession(LocalSessionId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingsSection {
+    General,
+    Terminal,
 }
 
 struct LocalSession {
@@ -100,6 +106,10 @@ pub struct AppShell {
     /// 当前语言偏好；实际 locale 由 i18n 全局状态维护。
     language_preference: LanguagePreference,
     language_menu_open: bool,
+    settings: AppSettings,
+    settings_open: bool,
+    settings_section: SettingsSection,
+    settings_scroll: gpui::ScrollHandle,
     /// 侧栏宽度与拖动状态；只影响布局，不改变导航状态。
     sidebar_width: Rc<Cell<f32>>,
     sidebar_dragging: Rc<Cell<bool>>,
@@ -118,7 +128,8 @@ impl AppShell {
         };
         let config = Arc::new(config);
         let entries = build_entries(&config);
-        let language_preference = i18n::preference(cx);
+        let settings = i18n::settings(cx);
+        let language_preference = settings.language;
 
         cx.new(|cx| Self {
             config,
@@ -141,6 +152,10 @@ impl AppShell {
             last_had_prompt: false,
             language_preference,
             language_menu_open: false,
+            settings,
+            settings_open: false,
+            settings_section: SettingsSection::General,
+            settings_scroll: gpui::ScrollHandle::new(),
             sidebar_width: Rc::new(Cell::new(theme::SIDEBAR_WIDTH)),
             sidebar_dragging: Rc::new(Cell::new(false)),
             sidebar_scroll: gpui::ScrollHandle::new(),
@@ -160,6 +175,7 @@ impl AppShell {
     /// 空认证候选也允许继续：Connection 会在认证失败前向 UI 请求密码，
     /// 这样密码登录主机不会被侧栏提前拦截。
     fn open_terminal_target(&mut self, target: String, alias: String, cx: &mut Context<Self>) {
+        self.settings_open = false;
         let resolved = self.config.resolve(&target);
         let methods = default_auth_for(&resolved);
         let host_key = ConnectionPool::key_for(&resolved);
@@ -182,6 +198,7 @@ impl AppShell {
     }
 
     fn open_sftp(&mut self, idx: usize, cx: &mut Context<Self>) {
+        self.settings_open = false;
         let entry = match self.entries.get(idx) {
             Some(e) => e.clone(),
             None => return,
@@ -205,6 +222,7 @@ impl AppShell {
     }
 
     fn open_forward(&mut self, idx: usize, cx: &mut Context<Self>) {
+        self.settings_open = false;
         let entry = match self.entries.get(idx) {
             Some(e) => e.clone(),
             None => return,
@@ -228,6 +246,7 @@ impl AppShell {
 
     /// 在目录 view 中打开一个独立的本地 PTY session。
     fn open_local_session(&mut self, cwd: PathBuf, cx: &mut Context<Self>) {
+        self.settings_open = false;
         let cwd = normalize_local_cwd(cwd);
         let cwd_text = cwd.to_string_lossy().to_string();
         let (input_tx, event_rx) = local::open_terminal(cwd.clone(), 100, 30);
@@ -258,6 +277,7 @@ impl AppShell {
     }
 
     fn select_local_session(&mut self, session_id: LocalSessionId, cx: &mut Context<Self>) {
+        self.settings_open = false;
         let cwd = self
             .local_dirs
             .iter()
@@ -330,6 +350,7 @@ impl AppShell {
         if idx >= self.remote_tabs.len() {
             return;
         }
+        self.settings_open = false;
         self.active_view = Some(ActiveView::RemoteTab(idx));
         self.refocus_active_terminal(cx);
         cx.notify();
@@ -549,6 +570,57 @@ impl AppShell {
 
     fn toggle_language_menu(&mut self, cx: &mut Context<Self>) {
         self.language_menu_open = !self.language_menu_open;
+        self.settings_open = false;
+        cx.notify();
+    }
+
+    fn toggle_settings(&mut self, cx: &mut Context<Self>) {
+        self.settings_open = !self.settings_open;
+        self.language_menu_open = false;
+        cx.notify();
+    }
+
+    fn close_settings(&mut self, cx: &mut Context<Self>) {
+        self.settings_open = false;
+        cx.notify();
+    }
+
+    fn select_settings_section(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
+        self.settings_section = section;
+        self.settings_scroll
+            .set_offset(gpui::Point::new(px(0.), px(0.)));
+        cx.notify();
+    }
+
+    fn apply_settings(&mut self, settings: AppSettings, cx: &mut Context<Self>) {
+        let settings = settings.normalized();
+        if self.settings == settings {
+            return;
+        }
+        let language_changed = self.language_preference != settings.language;
+        i18n::set_settings(cx, settings);
+        self.settings = settings;
+        self.language_preference = settings.language;
+
+        for tab in &self.remote_tabs {
+            match &tab.pane {
+                Pane::Terminal(terminal) => {
+                    terminal.update(cx, |terminal, cx| terminal.apply_settings(settings, cx));
+                }
+                Pane::Sftp(pane) if language_changed => {
+                    pane.update(cx, |_, cx| cx.notify());
+                }
+                Pane::Forward(pane) if language_changed => {
+                    pane.update(cx, |_, cx| cx.notify());
+                }
+                Pane::Sftp(_) | Pane::Forward(_) => {}
+            }
+        }
+        for session in self.local_sessions.values() {
+            session
+                .terminal
+                .update(cx, |terminal, cx| terminal.apply_settings(settings, cx));
+        }
         cx.notify();
     }
 
@@ -558,19 +630,31 @@ impl AppShell {
             cx.notify();
             return;
         }
-        i18n::set_preference(cx, preference);
-        self.language_preference = preference;
+        let mut settings = self.settings;
+        settings.language = preference;
+        self.apply_settings(settings, cx);
         self.language_menu_open = false;
-
-        // 子面板不会因为 AppShell 自身重绘而自动重新 render，因此显式通知它们。
-        for tab in &self.remote_tabs {
-            match &tab.pane {
-                Pane::Terminal(_) => {}
-                Pane::Sftp(pane) => pane.update(cx, |_, cx| cx.notify()),
-                Pane::Forward(pane) => pane.update(cx, |_, cx| cx.notify()),
-            }
-        }
         cx.notify();
+    }
+
+    fn toggle_timestamps(&mut self, cx: &mut Context<Self>) {
+        let mut settings = self.settings;
+        settings.show_timestamps = !settings.show_timestamps;
+        self.apply_settings(settings, cx);
+    }
+
+    fn adjust_font_size(&mut self, delta: f32, cx: &mut Context<Self>) {
+        let mut settings = self.settings;
+        settings.terminal_font_size = (settings.terminal_font_size + delta)
+            .round()
+            .clamp(i18n::MIN_TERMINAL_FONT_SIZE, i18n::MAX_TERMINAL_FONT_SIZE);
+        self.apply_settings(settings, cx);
+    }
+
+    fn set_scrollback(&mut self, scrollback: usize, cx: &mut Context<Self>) {
+        let mut settings = self.settings;
+        settings.terminal_scrollback = scrollback;
+        self.apply_settings(settings, cx);
     }
 
     fn sync_local_dirs(&mut self, cx: &Context<Self>) {
@@ -738,7 +822,7 @@ impl Render for AppShell {
         let sidebar = render_sidebar(self, cx);
         // Materialize the opaque element before attaching the root listener so
         // Rust 2024 does not keep `cx` borrowed through `render_main`.
-        let main = render_main(self, cx).into_any_element();
+        let main = render_main(self, cx);
 
         let mut root = div()
             .id("app-shell")
@@ -1069,6 +1153,38 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
                 .child(icons::icon(icons::IconName::ChevronDown, 11.))
                 .on_click(cx.listener(|this, _ev, _window, cx| {
                     this.toggle_language_menu(cx);
+                })),
+        )
+        .child(
+            div()
+                .id("settings-toggle")
+                .w(px(24.))
+                .h(px(24.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(theme::RADIUS_SM))
+                .cursor_pointer()
+                .text_color(if shell.settings_open {
+                    theme::accent()
+                } else {
+                    theme::muted_text()
+                })
+                .bg(if shell.settings_open {
+                    theme::accent_soft()
+                } else {
+                    theme::sidebar()
+                })
+                .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
+                .tooltip(|_window, cx| {
+                    cx.new(|_| LocalPathTooltip {
+                        path: SharedString::from(i18n::text("tooltip.settings")),
+                    })
+                    .into()
+                })
+                .child(icons::icon(icons::IconName::Settings, 14.))
+                .on_click(cx.listener(|this, _ev, _window, cx| {
+                    this.toggle_settings(cx);
                 })),
         )
         .child(
@@ -1629,7 +1745,11 @@ fn normalize_local_cwd(path: PathBuf) -> PathBuf {
     }
 }
 
-fn render_main(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoElement {
+fn render_main(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
+    if shell.settings_open {
+        return render_settings_page(shell, cx);
+    }
+
     let mut pane = div()
         .flex_1()
         .min_h_0()
@@ -1679,7 +1799,7 @@ fn render_main(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoElement
         );
     }
     pane = pane.child(content);
-    pane
+    pane.into_any_element()
 }
 
 fn render_empty_state(cx: &mut Context<AppShell>) -> AnyElement {
@@ -1743,6 +1863,385 @@ fn render_empty_state(cx: &mut Context<AppShell>) -> AnyElement {
                         })),
                 ),
         )
+        .into_any_element()
+}
+
+fn render_settings_page(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
+    let section = shell.settings_section;
+    let general = div()
+        .id("settings-section-general")
+        .h(px(32.))
+        .px_3()
+        .flex()
+        .items_center()
+        .gap_2()
+        .rounded(px(theme::RADIUS_SM))
+        .cursor_pointer()
+        .text_xs()
+        .text_color(if section == SettingsSection::General {
+            theme::text()
+        } else {
+            theme::muted_text()
+        })
+        .bg(if section == SettingsSection::General {
+            theme::accent_soft()
+        } else {
+            theme::canvas()
+        })
+        .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
+        .child(icons::icon(icons::IconName::Settings, 14.))
+        .child(SharedString::from(i18n::text("settings.general")))
+        .on_click(cx.listener(|this, _ev, _window, cx| {
+            this.select_settings_section(SettingsSection::General, cx);
+        }));
+    let terminal = div()
+        .id("settings-section-terminal")
+        .h(px(32.))
+        .px_3()
+        .flex()
+        .items_center()
+        .gap_2()
+        .rounded(px(theme::RADIUS_SM))
+        .cursor_pointer()
+        .text_xs()
+        .text_color(if section == SettingsSection::Terminal {
+            theme::text()
+        } else {
+            theme::muted_text()
+        })
+        .bg(if section == SettingsSection::Terminal {
+            theme::accent_soft()
+        } else {
+            theme::canvas()
+        })
+        .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
+        .child(icons::icon(icons::IconName::Terminal, 14.))
+        .child(SharedString::from(i18n::text("settings.terminal")))
+        .on_click(cx.listener(|this, _ev, _window, cx| {
+            this.select_settings_section(SettingsSection::Terminal, cx);
+        }));
+
+    let content = match section {
+        SettingsSection::General => render_general_settings(shell, cx),
+        SettingsSection::Terminal => render_terminal_settings(shell, cx),
+    };
+
+    div()
+        .id("settings-page")
+        .size_full()
+        .flex()
+        .flex_col()
+        .bg(theme::canvas())
+        .child(
+            div()
+                .h(px(theme::TAB_HEIGHT))
+                .flex_shrink_0()
+                .px_5()
+                .flex()
+                .items_center()
+                .gap_2()
+                .bg(theme::surface())
+                .border_b_1()
+                .border_color(theme::border())
+                .child(icons::icon(icons::IconName::Settings, 16.).text_color(theme::accent()))
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(SharedString::from(i18n::text("settings.title"))),
+                )
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .id("settings-close")
+                        .w(px(28.))
+                        .h(px(28.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(theme::RADIUS_SM))
+                        .cursor_pointer()
+                        .text_color(theme::muted_text())
+                        .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
+                        .tooltip(|_window, cx| {
+                            cx.new(|_| LocalPathTooltip {
+                                path: SharedString::from(i18n::text("settings.close")),
+                            })
+                            .into()
+                        })
+                        .child(icons::icon(icons::IconName::X, 14.))
+                        .on_click(cx.listener(|this, _ev, _window, cx| {
+                            this.close_settings(cx);
+                        })),
+                ),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .child(
+                    div()
+                        .w(px(180.))
+                        .flex_shrink_0()
+                        .p_3()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .border_r_1()
+                        .border_color(theme::border())
+                        .child(general)
+                        .child(terminal),
+                )
+                .child(
+                    div()
+                        .id("settings-content")
+                        .track_scroll(&shell.settings_scroll)
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .px_5()
+                        .py_4()
+                        .child(content),
+                ),
+        )
+        .into_any_element()
+}
+
+fn render_general_settings(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
+    let mut languages = div().flex().flex_row().gap_1().flex_wrap().justify_end();
+    for preference in LanguagePreference::ALL {
+        let selected = preference == shell.language_preference;
+        let option = div()
+            .id(format!("settings-language-{preference:?}"))
+            .h(px(30.))
+            .px_2()
+            .flex()
+            .items_center()
+            .rounded(px(theme::RADIUS_SM))
+            .cursor_pointer()
+            .text_xs()
+            .text_color(if selected {
+                theme::canvas()
+            } else {
+                theme::muted_text()
+            })
+            .bg(if selected {
+                theme::accent()
+            } else {
+                theme::raised()
+            })
+            .hover(|s| s.bg(theme::accent()).text_color(theme::canvas()))
+            .child(SharedString::from(i18n::preference_label(preference)))
+            .on_click(cx.listener(move |this, _ev, _window, cx| {
+                this.set_language(preference, cx);
+            }));
+        languages = languages.child(option);
+    }
+
+    div()
+        .id("settings-general")
+        .max_w(px(760.))
+        .flex()
+        .flex_col()
+        .child(settings_heading("settings.general"))
+        .child(settings_row(
+            i18n::text("settings.language"),
+            i18n::text("settings.language_description"),
+            languages.into_any_element(),
+        ))
+        .into_any_element()
+}
+
+fn render_terminal_settings(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
+    let mut timestamps = div()
+        .id("settings-timestamps-toggle")
+        .w(px(42.))
+        .h(px(24.))
+        .p_1()
+        .flex()
+        .items_center()
+        .rounded_full()
+        .cursor_pointer()
+        .bg(if shell.settings.show_timestamps {
+            theme::accent()
+        } else {
+            theme::border_strong()
+        });
+    timestamps = if shell.settings.show_timestamps {
+        timestamps.justify_end()
+    } else {
+        timestamps.justify_start()
+    };
+    timestamps = timestamps.child(
+        div()
+            .w(px(18.))
+            .h(px(18.))
+            .rounded_full()
+            .bg(theme::canvas()),
+    );
+    timestamps = timestamps.on_click(cx.listener(|this, _ev, _window, cx| {
+        this.toggle_timestamps(cx);
+    }));
+
+    let font_size = shell.settings.terminal_font_size.round() as u32;
+    let font_control = div()
+        .flex()
+        .items_center()
+        .gap_1()
+        .child(settings_icon_button(
+            "settings-font-decrease",
+            icons::IconName::Minus,
+            i18n::text("settings.font_size"),
+            cx.listener(|this, _ev, _window, cx| this.adjust_font_size(-1.0, cx)),
+        ))
+        .child(
+            div()
+                .w(px(64.))
+                .h(px(30.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(theme::RADIUS_SM))
+                .bg(theme::raised())
+                .text_xs()
+                .text_color(theme::text())
+                .child(SharedString::from(
+                    rust_i18n::t!("settings.pixels", value = font_size).to_string(),
+                )),
+        )
+        .child(settings_icon_button(
+            "settings-font-increase",
+            icons::IconName::Plus,
+            i18n::text("settings.font_size"),
+            cx.listener(|this, _ev, _window, cx| this.adjust_font_size(1.0, cx)),
+        ));
+
+    let scrollback_values = [500usize, 1000, 5000, 10000];
+    let mut scrollback = div().flex().flex_row().gap_1().flex_wrap().justify_end();
+    for value in scrollback_values {
+        let selected = value == shell.settings.terminal_scrollback;
+        let option = div()
+            .id(format!("settings-scrollback-{value}"))
+            .h(px(30.))
+            .px_2()
+            .flex()
+            .items_center()
+            .rounded(px(theme::RADIUS_SM))
+            .cursor_pointer()
+            .text_xs()
+            .text_color(if selected {
+                theme::canvas()
+            } else {
+                theme::muted_text()
+            })
+            .bg(if selected {
+                theme::accent()
+            } else {
+                theme::raised()
+            })
+            .hover(|s| s.bg(theme::accent()).text_color(theme::canvas()))
+            .child(SharedString::from(
+                rust_i18n::t!("settings.lines", value = value).to_string(),
+            ))
+            .on_click(cx.listener(move |this, _ev, _window, cx| {
+                this.set_scrollback(value, cx);
+            }));
+        scrollback = scrollback.child(option);
+    }
+
+    div()
+        .id("settings-terminal")
+        .max_w(px(760.))
+        .flex()
+        .flex_col()
+        .child(settings_heading("settings.terminal"))
+        .child(settings_row(
+            i18n::text("settings.timestamps"),
+            i18n::text("settings.timestamps_description"),
+            timestamps.into_any_element(),
+        ))
+        .child(settings_row(
+            i18n::text("settings.font_size"),
+            i18n::text("settings.font_size_description"),
+            font_control.into_any_element(),
+        ))
+        .child(settings_row(
+            i18n::text("settings.scrollback"),
+            i18n::text("settings.scrollback_description"),
+            scrollback.into_any_element(),
+        ))
+        .into_any_element()
+}
+
+fn settings_heading(key: &str) -> AnyElement {
+    div()
+        .pb_2()
+        .text_lg()
+        .font_weight(FontWeight::MEDIUM)
+        .child(SharedString::from(i18n::text(key)))
+        .into_any_element()
+}
+
+fn settings_row(label: String, description: String, control: AnyElement) -> AnyElement {
+    div()
+        .w_full()
+        .py_4()
+        .flex()
+        .items_center()
+        .gap_4()
+        .border_b_1()
+        .border_color(theme::border())
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme::text())
+                        .child(SharedString::from(label)),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::muted_text())
+                        .child(SharedString::from(description)),
+                ),
+        )
+        .child(control)
+        .into_any_element()
+}
+
+fn settings_icon_button(
+    id: &'static str,
+    icon: icons::IconName,
+    tooltip: String,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    div()
+        .id(id)
+        .w(px(30.))
+        .h(px(30.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(theme::RADIUS_SM))
+        .cursor_pointer()
+        .bg(theme::raised())
+        .text_color(theme::muted_text())
+        .hover(|s| s.bg(theme::accent()).text_color(theme::canvas()))
+        .tooltip(move |_window, cx| {
+            cx.new(|_| LocalPathTooltip {
+                path: SharedString::from(tooltip.clone()),
+            })
+            .into()
+        })
+        .child(icons::icon(icon, 14.))
+        .on_click(on_click)
         .into_any_element()
 }
 
@@ -2137,7 +2636,7 @@ fn host_key_button(
 ) -> impl IntoElement {
     let id = SharedString::from(label.clone());
     let icon = match decision {
-        HostKeyDecision::Reject => icons::IconName::XCircle,
+        HostKeyDecision::Reject => icons::IconName::CircleX,
         HostKeyDecision::AcceptOnce | HostKeyDecision::AcceptAlways => icons::IconName::Check,
     };
     let _ = shell;

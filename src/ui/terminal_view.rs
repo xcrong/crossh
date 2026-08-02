@@ -31,13 +31,14 @@ use gpui::{
 };
 use vte::ansi::{Color, NamedColor, Processor, Rgb};
 
-use crate::i18n;
+use crate::i18n::{self, AppSettings};
 use crate::ssh::{InputCmd, SessionEvent};
 use crate::ui::theme;
 
 /// 终端字体大小（像素）。
 const FONT_SIZE: f32 = 14.0;
 /// 滚动历史行数上限（控内存）。
+#[cfg(test)]
 const SCROLLBACK: usize = 1000;
 /// 一次 drain 最多合并的 PTY 输出事件，避免高频 TUI 输出触发大量小重绘。
 const OUTPUT_BATCH_LIMIT: usize = 128;
@@ -169,6 +170,9 @@ pub struct TerminalView {
     content_origin: Point<Pixels>,
     window_size: Arc<Mutex<WindowSize>>,
     font: Font,
+    font_size: f32,
+    scrollback: usize,
+    show_timestamps: bool,
     _drain: Option<Task<()>>,
     focused_once: bool,
     _focus_in: Option<Subscription>,
@@ -229,8 +233,9 @@ impl TerminalView {
         initial_cwd: Option<String>,
         cx: &mut App,
     ) -> Entity<Self> {
+        let settings = i18n::settings(cx);
         let config = Config {
-            scrolling_history: SCROLLBACK,
+            scrolling_history: settings.terminal_scrollback,
             kitty_keyboard: true,
             ..Default::default()
         };
@@ -253,12 +258,15 @@ impl TerminalView {
             cwd: initial_cwd,
             focus: cx.focus_handle(),
             cell_w: px(0.),
-            line_h: px(FONT_SIZE * 1.3),
+            line_h: px(settings.terminal_font_size * 1.3),
             cols,
             rows,
             content_origin: Point::new(px(0.), px(0.)),
             window_size,
             font,
+            font_size: settings.terminal_font_size,
+            scrollback: settings.terminal_scrollback,
+            show_timestamps: settings.show_timestamps,
             _drain: None,
             focused_once: false,
             _focus_in: None,
@@ -325,6 +333,32 @@ impl TerminalView {
         });
 
         entity
+    }
+
+    pub fn apply_settings(&mut self, settings: AppSettings, cx: &mut Context<Self>) {
+        let font_size = settings
+            .terminal_font_size
+            .clamp(i18n::MIN_TERMINAL_FONT_SIZE, i18n::MAX_TERMINAL_FONT_SIZE);
+        if (self.font_size - font_size).abs() > f32::EPSILON {
+            self.font_size = font_size;
+            self.line_h = px(font_size * 1.3);
+            self.cell_w = px(0.);
+            if let Ok(mut size) = self.window_size.lock() {
+                size.cell_height = self.line_h.as_f32().round().max(1.) as u16;
+            }
+        }
+
+        if self.scrollback != settings.terminal_scrollback {
+            self.scrollback = settings.terminal_scrollback;
+            self.term.set_options(Config {
+                scrolling_history: self.scrollback,
+                kitty_keyboard: true,
+                ..Default::default()
+            });
+        }
+
+        self.show_timestamps = settings.show_timestamps;
+        cx.notify();
     }
 
     fn apply_session_event(&mut self, event: SessionEvent) {
@@ -968,15 +1002,18 @@ impl Render for TerminalView {
                 underline: None,
                 strikethrough: None,
             };
-            let shaped = window
-                .text_system()
-                .shape_line("M".into(), px(FONT_SIZE), &[run], None);
+            let shaped =
+                window
+                    .text_system()
+                    .shape_line("M".into(), px(self.font_size), &[run], None);
             self.cell_w = shaped.width().max(px(1.0));
         }
 
         // 捕获绘制所需的克隆。
         let bg = bg_of(&self.term);
         let font = self.font.clone();
+        let font_size = self.font_size;
+        let show_timestamps = self.show_timestamps;
         let cell_w = self.cell_w;
         let line_h = self.line_h;
         let weak = entity.downgrade();
@@ -990,7 +1027,7 @@ impl Render for TerminalView {
                 // prepaint：可能 resize。
                 if let Some(t) = weak.upgrade() {
                     let _ = t.update(cx, |this, _cx| {
-                        let terminal_bounds = terminal_bounds_for(bounds);
+                        let terminal_bounds = terminal_bounds_for(bounds, show_timestamps);
                         this.content_origin = terminal_bounds.origin;
                         this.maybe_resize(Size {
                             w: terminal_bounds.size.width.as_f32(),
@@ -1017,7 +1054,11 @@ impl Render for TerminalView {
                         let sel = this.sel_start.zip(this.sel_end);
                         let show_cur = this.cursor_blink_on
                             && this.term.mode().contains(TermMode::SHOW_CURSOR);
-                        let timestamps = this.line_timestamps.visible(&this.term);
+                        let timestamps = if this.show_timestamps {
+                            this.line_timestamps.visible(&this.term)
+                        } else {
+                            vec![None; this.term.screen_lines()]
+                        };
                         (
                             snapshot_visible(&this.term, sel, this.cols, show_cur, &timestamps),
                             this.ime_marked_text.clone(),
@@ -1032,9 +1073,11 @@ impl Render for TerminalView {
                         &snapshot,
                         &ime_marked_text,
                         bounds,
-                        terminal_bounds_for(bounds),
+                        terminal_bounds_for(bounds, show_timestamps),
                         cell_w,
                         line_h,
+                        font_size,
+                        show_timestamps,
                         &font,
                         default_fg,
                         bg,
@@ -1514,16 +1557,25 @@ fn format_timestamp(timestamp: chrono::DateTime<Local>) -> String {
     timestamp.format("%H:%M:%S%.3f").to_string()
 }
 
-fn terminal_bounds_for(canvas_bounds: Bounds<Pixels>) -> Bounds<Pixels> {
-    let gutter_width = TIMESTAMP_GUTTER_WIDTH
-        .min((canvas_bounds.size.width.as_f32() - TIMESTAMP_GUTTER_GAP - 1.0).max(0.0));
+fn terminal_bounds_for(canvas_bounds: Bounds<Pixels>, show_timestamps: bool) -> Bounds<Pixels> {
+    let gutter_width = if show_timestamps {
+        TIMESTAMP_GUTTER_WIDTH
+            .min((canvas_bounds.size.width.as_f32() - TIMESTAMP_GUTTER_GAP - 1.0).max(0.0))
+    } else {
+        0.0
+    };
+    let gap = if show_timestamps {
+        TIMESTAMP_GUTTER_GAP
+    } else {
+        0.0
+    };
     Bounds {
         origin: Point::new(
-            canvas_bounds.origin.x + px(gutter_width + TIMESTAMP_GUTTER_GAP),
+            canvas_bounds.origin.x + px(gutter_width + gap),
             canvas_bounds.origin.y,
         ),
         size: gpui::size(
-            px((canvas_bounds.size.width.as_f32() - gutter_width - TIMESTAMP_GUTTER_GAP).max(1.0)),
+            px((canvas_bounds.size.width.as_f32() - gutter_width - gap).max(1.0)),
             canvas_bounds.size.height,
         ),
     }
@@ -1728,6 +1780,7 @@ fn paint_timestamp_gutter(
     canvas_bounds: Bounds<Pixels>,
     terminal_bounds: Bounds<Pixels>,
     line_h: Pixels,
+    font_size: f32,
     font: &Font,
     default_fg: Hsla,
     default_bg: Hsla,
@@ -1788,7 +1841,7 @@ fn paint_timestamp_gutter(
         };
         let shaped = window.text_system().shape_line(
             SharedString::from(timestamp.clone()),
-            px(FONT_SIZE - 2.0),
+            px((font_size - 2.0).max(8.0)),
             &[text_run],
             None,
         );
@@ -1816,6 +1869,8 @@ fn paint_snapshot(
     bounds: Bounds<Pixels>,
     cell_w: Pixels,
     line_h: Pixels,
+    font_size: f32,
+    show_timestamps: bool,
     font: &Font,
     default_fg: Hsla,
     default_bg: Hsla,
@@ -1825,17 +1880,20 @@ fn paint_snapshot(
     let cell_wf = cell_w.as_f32();
     let line_hf = line_h.as_f32();
 
-    paint_timestamp_gutter(
-        snapshot,
-        canvas_bounds,
-        bounds,
-        line_h,
-        font,
-        default_fg,
-        default_bg,
-        window,
-        cx,
-    );
+    if show_timestamps {
+        paint_timestamp_gutter(
+            snapshot,
+            canvas_bounds,
+            bounds,
+            line_h,
+            font_size,
+            font,
+            default_fg,
+            default_bg,
+            window,
+            cx,
+        );
+    }
 
     // 诊断：打印每帧实际拿到的 snapshot 内容（非空行），用于判断
     // 是「读不到内容」还是「画不出来」。trace 级别，避免 debug 下日志爆炸。
@@ -1978,7 +2036,7 @@ fn paint_snapshot(
             };
             let shaped = window.text_system().shape_line(
                 SharedString::from(run.text),
-                px(FONT_SIZE),
+                px(font_size),
                 &[text_run],
                 Some(px(cell_wf * run.force_width_cells as f32)),
             );
@@ -2033,7 +2091,7 @@ fn paint_snapshot(
             }];
             let shaped = window.text_system().shape_line(
                 SharedString::from(ime_marked_text.to_string()),
-                px(FONT_SIZE),
+                px(font_size),
                 &marked_runs,
                 Some(cell_w),
             );
@@ -2907,6 +2965,21 @@ mod tests {
                 .enumerate()
                 .all(|(index, byte)| matches!(index, 2 | 5 | 8) || byte.is_ascii_digit())
         );
+    }
+
+    #[test]
+    fn timestamp_visibility_controls_terminal_content_origin() {
+        let bounds = Bounds {
+            origin: Point::new(px(10.), px(20.)),
+            size: gpui::size(px(640.), px(300.)),
+        };
+        let with_gutter = terminal_bounds_for(bounds, true);
+        assert_eq!(with_gutter.origin.x.as_f32(), 122.0);
+        assert_eq!(with_gutter.size.width.as_f32(), 528.0);
+
+        let without_gutter = terminal_bounds_for(bounds, false);
+        assert_eq!(without_gutter.origin.x.as_f32(), 10.0);
+        assert_eq!(without_gutter.size.width.as_f32(), 640.0);
     }
 
     #[test]

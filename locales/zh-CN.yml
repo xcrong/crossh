@@ -5,6 +5,22 @@ language:
   english: 英语
   simplified_chinese: 简体中文
 
+settings:
+  title: 设置
+  close: 关闭设置
+  general: 通用
+  terminal: 终端
+  language: 界面语言
+  language_description: 选择 Crossh 使用的界面语言。
+  timestamps: 行时间戳
+  timestamps_description: 在终端左侧 gutter 显示精确到毫秒的时间戳。
+  font_size: 字体大小
+  font_size_description: 终端文字的像素大小。
+  scrollback: 滚动缓冲
+  scrollback_description: 终端保留的可滚动历史行数。
+  lines: "%{value} 行"
+  pixels: "%{value} 像素"
+
 sidebar:
   active: 活跃
   bank: 主机
@@ -19,6 +35,7 @@ sidebar:
 
 tooltip:
   new_terminal: 新建终端
+  settings: 设置
   open_sftp: 打开 SFTP
   port_forwarding: 端口转发
   new_project: 新建项目

@@ -27,12 +27,14 @@ impl AssetSource for UiAssetSource {
             "icons/refresh-cw.svg" => include_bytes!("../../assets/icons/refresh-cw.svg"),
             "icons/save.svg" => include_bytes!("../../assets/icons/save.svg"),
             "icons/search.svg" => include_bytes!("../../assets/icons/search.svg"),
+            "icons/settings.svg" => include_bytes!("../../assets/icons/settings.svg"),
             "icons/server.svg" => include_bytes!("../../assets/icons/server.svg"),
             "icons/shield-alert.svg" => include_bytes!("../../assets/icons/shield-alert.svg"),
             "icons/terminal.svg" => include_bytes!("../../assets/icons/terminal.svg"),
             "icons/upload.svg" => include_bytes!("../../assets/icons/upload.svg"),
-            "icons/x-circle.svg" => include_bytes!("../../assets/icons/x-circle.svg"),
+            "icons/circle-x.svg" => include_bytes!("../../assets/icons/circle-x.svg"),
             "icons/x.svg" => include_bytes!("../../assets/icons/x.svg"),
+            "icons/minus.svg" => include_bytes!("../../assets/icons/minus.svg"),
             _ => return Ok(None),
         };
         Ok(Some(Cow::Borrowed(bytes)))

@@ -18,12 +18,14 @@ pub(crate) enum IconName {
     RefreshCw,
     Save,
     Search,
+    Settings,
     Server,
     ShieldAlert,
     Terminal,
     Upload,
     X,
-    XCircle,
+    CircleX,
+    Minus,
 }
 
 impl IconName {
@@ -45,12 +47,14 @@ impl IconName {
             Self::RefreshCw => "icons/refresh-cw.svg",
             Self::Save => "icons/save.svg",
             Self::Search => "icons/search.svg",
+            Self::Settings => "icons/settings.svg",
             Self::Server => "icons/server.svg",
             Self::ShieldAlert => "icons/shield-alert.svg",
             Self::Terminal => "icons/terminal.svg",
             Self::Upload => "icons/upload.svg",
             Self::X => "icons/x.svg",
-            Self::XCircle => "icons/x-circle.svg",
+            Self::CircleX => "icons/circle-x.svg",
+            Self::Minus => "icons/minus.svg",
         }
     }
 }

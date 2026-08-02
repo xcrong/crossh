@@ -5,6 +5,22 @@ language:
   english: English
   simplified_chinese: Simplified Chinese
 
+settings:
+  title: Settings
+  close: Close settings
+  general: General
+  terminal: Terminal
+  language: Language
+  language_description: Choose the language used by the Crossh interface.
+  timestamps: Line timestamps
+  timestamps_description: Show millisecond timestamps in the terminal gutter.
+  font_size: Font size
+  font_size_description: Terminal text size in pixels.
+  scrollback: Scrollback
+  scrollback_description: Number of terminal lines kept for scrolling.
+  lines: "%{value} lines"
+  pixels: "%{value} px"
+
 sidebar:
   active: ACTIVE
   bank: BANK
@@ -19,6 +35,7 @@ sidebar:
 
 tooltip:
   new_terminal: New terminal
+  settings: Settings
   open_sftp: Open SFTP
   port_forwarding: Port forwarding
   new_project: New project
