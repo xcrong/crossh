@@ -103,7 +103,11 @@ for f in "$APP_LIB"/*.so*; do
         if [ ! -e "$APP_LIB/${dep##*/}" ]; then
             cp -L "$dep" "$APP_LIB/"
         fi
-    done < <(LD_LIBRARY_PATH="$APP_LIB" ldd "$f" 2>/dev/null | awk '/=> \// { print $NF }' | sort -u)
+    done < <(
+        LD_LIBRARY_PATH="$APP_LIB" ldd "$f" 2>/dev/null |
+            awk '/=> \// { for (i = 1; i <= NF; i++) if ($i == "=>") { print $(i + 1); break } }' |
+            sort -u
+    )
 done
 
 echo "==> appimagetool"
