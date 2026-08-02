@@ -6,7 +6,7 @@
 //! - 模态：池中任一连接出现 pending_prompt（未知主机密钥/凭据）时弹覆盖层。
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{
@@ -733,6 +733,12 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
         .values()
         .filter(|dir| local_dir_matches_query(dir, &query))
         .collect();
+    let mut project_name_counts = BTreeMap::new();
+    for dir in shell.local_dirs.values() {
+        *project_name_counts
+            .entry(local_dir_name_key(&dir.cwd))
+            .or_insert(0usize) += 1;
+    }
     let project_query = matches!(query.as_str(), "local" | "project" | "projects");
     let show_projects = query.is_empty() || project_query || !project_dirs.is_empty();
 
@@ -782,7 +788,17 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
     } else {
         for (idx, dir) in project_dirs.iter().enumerate() {
             let selected = is_active_local_dir(shell, dir);
-            project_list = project_list.child(render_local_dir(idx, dir, selected, shell, cx));
+            let duplicate_name = project_name_counts
+                .get(&local_dir_name_key(&dir.cwd))
+                .is_some_and(|count| *count > 1);
+            project_list = project_list.child(render_local_dir(
+                idx,
+                dir,
+                selected,
+                duplicate_name,
+                shell,
+                cx,
+            ));
         }
     }
 
@@ -910,6 +926,32 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
         .into_any_element()
 }
 
+fn local_dir_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| path.to_string_lossy().to_string())
+}
+
+fn local_dir_name_key(path: &Path) -> String {
+    local_dir_name(path).to_ascii_lowercase()
+}
+
+fn local_dir_label(path: &Path, duplicate_name: bool) -> String {
+    let name = local_dir_name(path);
+    if !duplicate_name {
+        return name;
+    }
+
+    path.parent()
+        .and_then(Path::file_name)
+        .and_then(|parent| parent.to_str())
+        .filter(|parent| !parent.is_empty())
+        .map(|parent| format!("{name} · {parent}"))
+        .unwrap_or(name)
+}
+
 fn local_dir_matches_query(dir: &LocalDir, query: &str) -> bool {
     query.is_empty()
         || matches!(query, "local" | "project" | "projects")
@@ -936,12 +978,14 @@ fn render_local_dir(
     idx: usize,
     dir: &LocalDir,
     selected: bool,
+    duplicate_name: bool,
     shell: &AppShell,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
     let cwd = dir.cwd.clone();
     let cwd_for_new = cwd.clone();
-    let cwd_text = cwd.to_string_lossy().to_string();
+    let label = local_dir_label(&cwd, duplicate_name);
+    let tooltip_path = SharedString::from(cwd.to_string_lossy().to_string());
     let count = dir.sessions.len();
     let state = local_dir_state(shell, dir, cx);
     let mut row = div()
@@ -955,6 +999,10 @@ fn render_local_dir(
         row = row.bg(rgb(0x2a2a3a));
     }
     row.hover(|s| s.bg(rgb(0x232327)))
+        .tooltip(move |_window, cx| {
+            let path = tooltip_path.clone();
+            cx.new(|_| LocalPathTooltip { path }).into()
+        })
         .on_click(cx.listener(move |this, _ev, _window, cx| {
             this.activate_local_dir(cwd.clone(), cx);
         }))
@@ -979,9 +1027,11 @@ fn render_local_dir(
                 )
                 .child(
                     div()
+                        .min_w_0()
                         .flex_1()
+                        .truncate()
                         .text_color(rgb(0xd7d7dc))
-                        .child(SharedString::from(cwd_text)),
+                        .child(SharedString::from(label)),
                 )
                 .child(
                     div()
@@ -1005,6 +1055,26 @@ fn render_local_dir(
                 ),
         )
         .into_any_element()
+}
+
+struct LocalPathTooltip {
+    path: SharedString,
+}
+
+impl Render for LocalPathTooltip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .w(px(480.))
+            .px_2()
+            .py_1()
+            .bg(rgb(0x2b2b30))
+            .border_1()
+            .border_color(rgb(0x484850))
+            .text_xs()
+            .text_color(rgb(0xf0f0f2))
+            .whitespace_normal()
+            .child(self.path.clone())
+    }
 }
 
 fn render_host_entry(
@@ -1748,6 +1818,19 @@ mod tests {
         assert!(local_dir_matches_query(&dir, "projects"));
         assert!(local_dir_matches_query(&dir, "projects/crossh"));
         assert!(!local_dir_matches_query(&dir, "unrelated"));
+    }
+
+    #[test]
+    fn project_labels_prefer_directory_name_and_disambiguate_duplicates() {
+        let path = Path::new("/Users/me/Code/crossh");
+        assert_eq!(local_dir_name(path), "crossh");
+        assert_eq!(
+            local_dir_name_key(Path::new("/Users/me/Code/Crossh")),
+            "crossh"
+        );
+        assert_eq!(local_dir_label(path, false), "crossh");
+        assert_eq!(local_dir_label(path, true), "crossh · Code");
+        assert_eq!(local_dir_label(Path::new("/"), true), "/");
     }
 
     #[test]
