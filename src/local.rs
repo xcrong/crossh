@@ -1,21 +1,32 @@
 //! 本地终端：使用和远端终端相同的输入/事件桥接，但在本机 PTY 中启动 shell。
 
+#[cfg(unix)]
 use std::fs::{self, File};
-use std::io::{self, ErrorKind, Read, Write};
+#[cfg(unix)]
+use std::io;
+#[cfg(unix)]
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(unix)]
 use std::sync::{Arc, Mutex};
 
+#[cfg(unix)]
 use alacritty_terminal::event::{OnResize, WindowSize};
+#[cfg(unix)]
 use alacritty_terminal::tty;
 use async_channel::{Receiver, Sender};
+#[cfg(unix)]
 use tokio::io::unix::AsyncFd;
 
 use crate::ssh::{InputCmd, SessionEvent};
 
+#[cfg(unix)]
 static NEXT_LOCAL_PTY_ID: AtomicU64 = AtomicU64::new(1);
 
 /// 在指定工作目录创建一个本地交互式终端。
+#[cfg(unix)]
 pub fn open_terminal(
     cwd: PathBuf,
     cols: u16,
@@ -37,6 +48,28 @@ pub fn open_terminal(
     (input_tx, event_rx)
 }
 
+#[cfg(not(unix))]
+pub fn open_terminal(
+    _cwd: PathBuf,
+    _cols: u16,
+    _rows: u16,
+) -> (Sender<InputCmd>, Receiver<SessionEvent>) {
+    let (input_tx, _input_rx) = async_channel::bounded::<InputCmd>(1024);
+    let (event_tx, event_rx) = async_channel::bounded::<SessionEvent>(4);
+
+    crate::ssh::ssh_runtime().spawn(async move {
+        let _ = event_tx
+            .send(SessionEvent::Error(
+                "local terminals are not supported on this platform".to_string(),
+            ))
+            .await;
+        let _ = event_tx.send(SessionEvent::Closed).await;
+    });
+
+    (input_tx, event_rx)
+}
+
+#[cfg(unix)]
 async fn run_local_terminal(
     cwd: PathBuf,
     cols: u16,
@@ -103,6 +136,7 @@ async fn run_local_terminal(
     Ok(())
 }
 
+#[cfg(unix)]
 async fn read_local_output(
     reader: AsyncFd<File>,
     event_tx: Sender<SessionEvent>,
@@ -127,6 +161,7 @@ async fn read_local_output(
     }
 }
 
+#[cfg(unix)]
 async fn drive_local_input(
     input_rx: Receiver<InputCmd>,
     mut writer: AsyncFd<File>,
@@ -151,6 +186,7 @@ async fn drive_local_input(
     Ok(())
 }
 
+#[cfg(unix)]
 async fn write_all(writer: &mut AsyncFd<File>, bytes: &[u8]) -> io::Result<()> {
     let mut offset = 0;
     while offset < bytes.len() {
@@ -170,10 +206,12 @@ async fn write_all(writer: &mut AsyncFd<File>, bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 struct ShellIntegration {
     directory: PathBuf,
 }
 
+#[cfg(unix)]
 impl Drop for ShellIntegration {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.directory);
@@ -181,6 +219,7 @@ impl Drop for ShellIntegration {
 }
 
 /// 将 shell 的提示符钩子接到 OSC 7，终端应用可以据此知道用户执行了 `cd`。
+#[cfg(unix)]
 fn prepare_shell_integration(options: &mut tty::Options, pty_id: u64) -> Option<ShellIntegration> {
     let shell = std::env::var_os("SHELL")?;
     let shell_name = Path::new(&shell).file_name()?.to_str()?;
@@ -349,6 +388,7 @@ fn hex_value(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::time::Duration;
 
     #[test]
@@ -374,6 +414,7 @@ mod tests {
         assert_eq!(percent_decode("a%GG"), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn local_terminal_reports_cwd_and_accepts_input() {
         let cwd = std::env::current_dir().unwrap();
@@ -445,6 +486,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn local_shell_keeps_login_path_with_minimal_env() {
         let original_shell = std::env::var_os("SHELL");

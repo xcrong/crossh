@@ -738,6 +738,7 @@ async fn drive_input(
 }
 
 /// 尝试用 ssh-agent 上的每个身份认证，成功即返回。
+#[cfg(unix)]
 async fn auth_agent(handle: &mut Handle<ClientHandler>, user: &str) -> anyhow::Result<bool> {
     let mut agent = keys::agent::client::AgentClient::connect_env().await?;
     let identities = agent.request_identities().await?;
@@ -754,6 +755,14 @@ async fn auth_agent(handle: &mut Handle<ClientHandler>, user: &str) -> anyhow::R
             return Ok(true);
         }
     }
+    Ok(false)
+}
+
+#[cfg(not(unix))]
+async fn auth_agent(_handle: &mut Handle<ClientHandler>, _user: &str) -> anyhow::Result<bool> {
+    // russh's environment-agent transport is Unix-only. Windows callers can
+    // still select another authentication method, such as a password or key.
+    log::debug!("ssh-agent authentication is unavailable on this platform");
     Ok(false)
 }
 
