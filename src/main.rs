@@ -5,6 +5,7 @@
 
 mod button;
 mod config;
+mod local;
 mod ssh;
 mod ui;
 

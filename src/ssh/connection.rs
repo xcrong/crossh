@@ -936,6 +936,7 @@ mod tests {
                             sample.push_str(&String::from_utf8_lossy(&b));
                             if connected && sample.len() > 20 { break; }
                         }
+                        Ok(SessionEvent::Cwd(_)) => {}
                         Ok(SessionEvent::Error(e)) => {
                             eprintln!("[test] error: {e}");
                             break;
@@ -1018,6 +1019,7 @@ mod tests {
                                 }
                             }
                         }
+                        Ok(SessionEvent::Cwd(_)) => {}
                         Ok(SessionEvent::Error(e)) => {
                             eprintln!("[test] err: {e}");
                             break;

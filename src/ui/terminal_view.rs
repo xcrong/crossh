@@ -143,6 +143,8 @@ pub struct TerminalView {
     input_tx: Sender<InputCmd>,
     pending_input: VecDeque<InputCmd>,
     pub state: ConnState,
+    /// 当前 shell 报告的工作目录；用于本地终端的侧栏分组。
+    pub cwd: Option<String>,
     focus: FocusHandle,
     cell_w: Pixels,
     line_h: Pixels,
@@ -183,6 +185,29 @@ impl TerminalView {
         rows: usize,
         cx: &mut App,
     ) -> Entity<Self> {
+        Self::from_bridge_with_cwd(input_tx, event_rx, cols, rows, None, cx)
+    }
+
+    /// 创建一个本地 PTY 终端。除工作目录事件外，其渲染和交互路径与 SSH 终端一致。
+    pub fn from_local_bridge(
+        input_tx: Sender<InputCmd>,
+        event_rx: Receiver<SessionEvent>,
+        cols: usize,
+        rows: usize,
+        cwd: String,
+        cx: &mut App,
+    ) -> Entity<Self> {
+        Self::from_bridge_with_cwd(input_tx, event_rx, cols, rows, Some(cwd), cx)
+    }
+
+    fn from_bridge_with_cwd(
+        input_tx: Sender<InputCmd>,
+        event_rx: Receiver<SessionEvent>,
+        cols: usize,
+        rows: usize,
+        initial_cwd: Option<String>,
+        cx: &mut App,
+    ) -> Entity<Self> {
         let config = Config {
             scrolling_history: SCROLLBACK,
             kitty_keyboard: true,
@@ -204,6 +229,7 @@ impl TerminalView {
             input_tx: input_tx.clone(),
             pending_input: VecDeque::new(),
             state: ConnState::Connecting,
+            cwd: initial_cwd,
             focus: cx.focus_handle(),
             cell_w: px(0.),
             line_h: px(FONT_SIZE * 1.3),
@@ -289,6 +315,9 @@ impl TerminalView {
                     debug_bytes(&bytes)
                 );
                 self.parser.advance(&mut self.term, &bytes);
+            }
+            SessionEvent::Cwd(cwd) => {
+                self.cwd = Some(cwd);
             }
             SessionEvent::Error(error) => {
                 log::warn!("terminal: error {error}");

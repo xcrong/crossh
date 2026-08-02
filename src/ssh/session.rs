@@ -115,6 +115,8 @@ pub enum SessionEvent {
     Connected,
     /// 远端 stdout/stderr 字节。
     Output(Vec<u8>),
+    /// 当前 shell 工作目录（本地 PTY 的 shell integration）。
+    Cwd(String),
     /// 连接/认证失败。
     Error(String),
     /// 通道关闭（远端 EOF/退出）。
