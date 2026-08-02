@@ -2,7 +2,7 @@
 //!
 //! - 连接池：同主机复用一条已认证会话（开新终端 channel），全部终端关闭才断开。
 //! - 多标签：每点击主机新开一个终端标签；可切换/关闭。
-//! - sidebar：按连接状态分为可折叠的 Active 与 Bank 主机组。
+//! - sidebar：按连接状态分为 Active、Bank，Projects 为同级可折叠组。
 //! - 模态：池中任一连接出现 pending_prompt（未知主机密钥/凭据）时弹覆盖层。
 
 use std::collections::BTreeMap;
@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, AppContext, Context, Entity, FocusHandle, FontWeight, InteractiveElement,
-    IntoElement, Keystroke, KeyDownEvent, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    IntoElement, Keystroke, KeyDownEvent, ParentElement, PathPromptOptions, Render, SharedString,
+    StatefulInteractiveElement, Styled, Task, TitlebarOptions, Window, WindowBounds, WindowOptions,
     div, hsla, px, rgb, size,
 };
 
@@ -39,36 +39,54 @@ enum Pane {
     Forward(Entity<ForwardPane>),
 }
 
-/// 一个终端/SFTP 标签。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TabKind {
-    Remote,
-    Local,
-}
-
+/// 一个远程终端/SFTP 标签。
 struct Tab {
     /// 重新打开终端时使用的原始目标（别名或 user@host:port）。
     target: String,
     alias: String,
     host_key: String,
     pane: Pane,
-    kind: TabKind,
+}
+
+type LocalSessionId = u64;
+
+/// 当前主区正在展示的工作区。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActiveView {
+    RemoteTab(usize),
+    LocalSession(LocalSessionId),
+}
+
+struct LocalSession {
+    cwd: PathBuf,
+    terminal: Entity<TerminalView>,
+}
+
+struct LocalDir {
+    cwd: PathBuf,
+    sessions: Vec<LocalSessionId>,
+    active_session: Option<LocalSessionId>,
 }
 
 pub struct AppShell {
     config: Arc<SshConfig>,
     entries: Vec<HostEntry>,
     pool: ConnectionPool,
-    tabs: Vec<Tab>,
-    active_tab: Option<usize>,
+    remote_tabs: Vec<Tab>,
+    local_sessions: BTreeMap<LocalSessionId, LocalSession>,
+    local_dirs: BTreeMap<PathBuf, LocalDir>,
+    next_local_session_id: LocalSessionId,
+    active_view: Option<ActiveView>,
     status: Option<String>,
     /// 侧栏搜索文本；未命中配置别名时也作为 QuickConnect 目标。
     host_query: String,
     host_focus: FocusHandle,
-    /// 主机分组折叠状态；Bank 默认收起，Active 默认展开。
+    /// 主机分组折叠状态；Bank 默认收起，Active/Projects 默认展开。
     bank_collapsed: bool,
     active_collapsed: bool,
-    local_collapsed: bool,
+    projects_collapsed: bool,
+    /// 原生项目目录选择器任务，持有到选择结果返回。
+    _project_picker: Option<Task<()>>,
     /// 模态文本输入缓冲（密码/口令）。
     prompt_input: String,
     /// 模态输入框焦点。
@@ -94,14 +112,18 @@ impl AppShell {
             config,
             entries,
             pool: ConnectionPool::new(),
-            tabs: Vec::new(),
-            active_tab: None,
+            remote_tabs: Vec::new(),
+            local_sessions: BTreeMap::new(),
+            local_dirs: BTreeMap::new(),
+            next_local_session_id: 1,
+            active_view: None,
             status: None,
             host_query: String::new(),
             host_focus: cx.focus_handle(),
             bank_collapsed: true,
             active_collapsed: false,
-            local_collapsed: false,
+            projects_collapsed: false,
+            _project_picker: None,
             prompt_input: String::new(),
             modal_focus: cx.focus_handle(),
             last_had_prompt: false,
@@ -129,14 +151,13 @@ impl AppShell {
         let conn = self.pool.acquire(resolved, methods, self.config.clone(), cx);
         let (input_tx, event_rx) = conn.read(cx).open_terminal(100, 30);
         let terminal = TerminalView::from_bridge(input_tx, event_rx, 100, 30, cx);
-        self.tabs.push(Tab {
+        self.remote_tabs.push(Tab {
             target,
             alias,
             host_key,
             pane: Pane::Terminal(terminal),
-            kind: TabKind::Remote,
         });
-        self.active_tab = Some(self.tabs.len() - 1);
+        self.active_view = Some(ActiveView::RemoteTab(self.remote_tabs.len() - 1));
         self.status = None;
         cx.notify();
     }
@@ -152,14 +173,13 @@ impl AppShell {
         let conn = self.pool.acquire(resolved.clone(), methods, self.config.clone(), cx);
         let (cmd_tx, event_rx) = conn.read(cx).open_sftp();
         let pane = SftpPane::from_bridge(cmd_tx, event_rx, cx);
-        self.tabs.push(Tab {
+        self.remote_tabs.push(Tab {
             target: entry.alias.clone(),
             alias: format!("{} (SFTP)", entry.alias),
             host_key,
             pane: Pane::Sftp(pane),
-            kind: TabKind::Remote,
         });
-        self.active_tab = Some(self.tabs.len() - 1);
+        self.active_view = Some(ActiveView::RemoteTab(self.remote_tabs.len() - 1));
         cx.notify();
     }
 
@@ -173,19 +193,18 @@ impl AppShell {
         let host_key = ConnectionPool::key_for(&resolved);
         let conn = self.pool.acquire(resolved.clone(), methods, self.config.clone(), cx);
         let pane = ForwardPane::new(conn, cx, &resolved);
-        self.tabs.push(Tab {
+        self.remote_tabs.push(Tab {
             target: entry.alias.clone(),
             alias: format!("{} (转发)", entry.alias),
             host_key,
             pane: Pane::Forward(pane),
-            kind: TabKind::Remote,
         });
-        self.active_tab = Some(self.tabs.len() - 1);
+        self.active_view = Some(ActiveView::RemoteTab(self.remote_tabs.len() - 1));
         cx.notify();
     }
 
-    /// 打开一个本地 PTY 标签。多个标签可以共享同一个 cwd 分组，但各自拥有独立 shell。
-    fn open_local_terminal(&mut self, cwd: PathBuf, cx: &mut Context<Self>) {
+    /// 在目录 view 中打开一个独立的本地 PTY session。
+    fn open_local_session(&mut self, cwd: PathBuf, cx: &mut Context<Self>) {
         let cwd = normalize_local_cwd(cwd);
         let cwd_text = cwd.to_string_lossy().to_string();
         let (input_tx, event_rx) = local::open_terminal(cwd.clone(), 100, 30);
@@ -197,82 +216,191 @@ impl AppShell {
             cwd_text.clone(),
             cx,
         );
-        self.tabs.push(Tab {
-            target: cwd_text.clone(),
-            alias: format!("local · {cwd_text}"),
-            host_key: format!("local:{cwd_text}"),
-            pane: Pane::Terminal(terminal.clone()),
-            kind: TabKind::Local,
-        });
-        self.active_tab = Some(self.tabs.len() - 1);
+        let session_id = self.next_local_session_id;
+        self.next_local_session_id += 1;
+        self.local_sessions.insert(
+            session_id,
+            LocalSession {
+                cwd,
+                terminal,
+            },
+        );
+        self.sync_local_dirs(cx);
+        self.select_local_session(session_id, cx);
         self.status = None;
         cx.notify();
     }
 
-    fn switch_tab(&mut self, idx: usize, cx: &mut Context<Self>) {
-        if idx < self.tabs.len() {
-            self.active_tab = Some(idx);
-            self.refocus_active_terminal(cx);
-            cx.notify();
+    fn activate_local_dir(&mut self, cwd: PathBuf, cx: &mut Context<Self>) {
+        let cwd = normalize_local_cwd(cwd);
+        self.sync_local_dirs(cx);
+        let session_id = self
+            .local_dirs
+            .get(&cwd)
+            .and_then(|dir| dir.active_session.or_else(|| dir.sessions.first().copied()));
+        if let Some(session_id) = session_id {
+            self.select_local_session(session_id, cx);
+        } else {
+            self.open_local_session(cwd, cx);
         }
     }
 
-    fn close_tab(&mut self, idx: usize, cx: &mut Context<Self>) {
-        if idx >= self.tabs.len() {
-            return;
+    fn select_local_session(&mut self, session_id: LocalSessionId, cx: &mut Context<Self>) {
+        let cwd = self
+            .local_dirs
+            .iter()
+            .find(|(_, dir)| dir.sessions.contains(&session_id))
+            .map(|(cwd, _)| cwd.clone());
+        let Some(cwd) = cwd else { return };
+        if let Some(dir) = self.local_dirs.get_mut(&cwd) {
+            dir.active_session = Some(session_id);
         }
-        self.tabs.remove(idx);
-        // 移除 Tab → Entity<TerminalView> 释放 → input_tx 断 → relay 结束 →
-        // Connection channel 计数减；归 0 则连接自行 disconnect。
-        self.active_tab = match self.active_tab {
-            None => None,
-            Some(a) if a == idx => {
-                if self.tabs.is_empty() {
-                    None
-                } else if a >= self.tabs.len() {
-                    Some(self.tabs.len() - 1)
-                } else {
-                    Some(a)
+        self.active_view = Some(ActiveView::LocalSession(session_id));
+        self.refocus_active_terminal(cx);
+        cx.notify();
+    }
+
+    fn close_local_session(&mut self, session_id: LocalSessionId, cx: &mut Context<Self>) {
+        let Some(cwd) = self
+            .local_dirs
+            .iter()
+            .find(|(_, dir)| dir.sessions.contains(&session_id))
+            .map(|(cwd, _)| cwd.clone())
+        else {
+            return;
+        };
+        let was_active = self.active_view == Some(ActiveView::LocalSession(session_id));
+        let mut next_session = None;
+        let remove_dir = if let Some(dir) = self.local_dirs.get_mut(&cwd) {
+            dir.sessions.retain(|id| *id != session_id);
+            if dir.active_session == Some(session_id) {
+                dir.active_session = dir.sessions.first().copied();
+            }
+            next_session = dir.active_session;
+            dir.sessions.is_empty()
+        } else {
+            false
+        };
+        self.local_sessions.remove(&session_id);
+        if remove_dir {
+            self.local_dirs.remove(&cwd);
+        }
+        if was_active {
+            self.active_view = next_session
+                .map(ActiveView::LocalSession)
+                .or_else(|| self.first_local_view())
+                .or_else(|| {
+                    self.remote_tabs
+                        .last()
+                        .map(|_| ActiveView::RemoteTab(self.remote_tabs.len() - 1))
+                });
+            self.refocus_active_terminal(cx);
+        }
+        cx.notify();
+    }
+
+    fn switch_tab(&mut self, idx: usize, cx: &mut Context<Self>) {
+        match self.active_view {
+            Some(ActiveView::RemoteTab(_)) => self.switch_remote_tab(idx, cx),
+            Some(ActiveView::LocalSession(session_id)) => {
+                let next_session = self
+                    .local_dir_for_session(session_id)
+                    .and_then(|dir| dir.sessions.get(idx).copied());
+                if let Some(next_session) = next_session {
+                    self.select_local_session(next_session, cx);
                 }
             }
-            Some(a) if a > idx => Some(a - 1),
+            None => {}
+        }
+    }
+
+    fn switch_remote_tab(&mut self, idx: usize, cx: &mut Context<Self>) {
+        if idx >= self.remote_tabs.len() {
+            return;
+        }
+        self.active_view = Some(ActiveView::RemoteTab(idx));
+        self.refocus_active_terminal(cx);
+        cx.notify();
+    }
+
+    fn close_remote_tab(&mut self, idx: usize, cx: &mut Context<Self>) {
+        if idx >= self.remote_tabs.len() {
+            return;
+        }
+        self.remote_tabs.remove(idx);
+        // 移除 Tab → Entity<TerminalView> 释放 → input_tx 断 → relay 结束 →
+        // Connection channel 计数减；归 0 则连接自行 disconnect。
+        self.active_view = match self.active_view {
+            Some(ActiveView::RemoteTab(a)) if a == idx => {
+                if self.remote_tabs.is_empty() {
+                    self.first_local_view()
+                } else if a >= self.remote_tabs.len() {
+                    Some(ActiveView::RemoteTab(self.remote_tabs.len() - 1))
+                } else {
+                    Some(ActiveView::RemoteTab(a))
+                }
+            }
+            Some(ActiveView::RemoteTab(a)) if a > idx => {
+                Some(ActiveView::RemoteTab(a - 1))
+            }
             other => other,
         };
         cx.notify();
     }
 
     fn close_active_tab(&mut self, cx: &mut Context<Self>) {
-        if let Some(idx) = self.active_tab {
-            self.close_tab(idx, cx);
+        match self.active_view {
+            Some(ActiveView::RemoteTab(idx)) => self.close_remote_tab(idx, cx),
+            Some(ActiveView::LocalSession(session_id)) => {
+                self.close_local_session(session_id, cx)
+            }
+            None => {}
         }
     }
 
     fn cycle_tab(&mut self, direction: isize, cx: &mut Context<Self>) {
-        let len = self.tabs.len();
-        if len == 0 {
-            return;
+        match self.active_view {
+            Some(ActiveView::RemoteTab(current)) => {
+                let len = self.remote_tabs.len();
+                if len == 0 {
+                    return;
+                }
+                let next = (current as isize + direction).rem_euclid(len as isize) as usize;
+                self.switch_remote_tab(next, cx);
+            }
+            Some(ActiveView::LocalSession(session_id)) => {
+                let Some(dir) = self.local_dir_for_session(session_id) else {
+                    return;
+                };
+                let Some(current) = dir.sessions.iter().position(|id| *id == session_id) else {
+                    return;
+                };
+                let next = (current as isize + direction)
+                    .rem_euclid(dir.sessions.len() as isize) as usize;
+                if let Some(next_session) = dir.sessions.get(next).copied() {
+                    self.select_local_session(next_session, cx);
+                }
+            }
+            None => {}
         }
-        let current = self.active_tab.unwrap_or(0) as isize;
-        let next = (current + direction).rem_euclid(len as isize) as usize;
-        self.switch_tab(next, cx);
     }
 
     /// 从当前标签复制一个终端标签；没有活动标签时把焦点放到快速连接框。
     fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(idx) = self.active_tab {
-            if let Some(kind) = self.tabs.get(idx).map(|tab| tab.kind) {
-                match kind {
-                    TabKind::Local => {
-                        let cwd = self.local_cwd_for_tab(idx, cx);
-                        self.open_local_terminal(cwd, cx);
-                    }
-                    TabKind::Remote => {
-                        let target = self.tabs[idx].target.clone();
-                        self.open_terminal_target(target.clone(), target, cx);
-                    }
-                }
+        match self.active_view {
+            Some(ActiveView::LocalSession(session_id)) => {
+                let cwd = self.local_session_cwd(session_id, cx);
+                self.open_local_session(cwd, cx);
                 return;
             }
+            Some(ActiveView::RemoteTab(idx)) => {
+                if let Some(tab) = self.remote_tabs.get(idx) {
+                    let target = tab.target.clone();
+                    self.open_terminal_target(target.clone(), target, cx);
+                    return;
+                }
+            }
+            None => {}
         }
         self.host_query.clear();
         self.host_focus.focus(window, cx);
@@ -286,13 +414,18 @@ impl AppShell {
         }
 
         let query_lower = query.to_ascii_lowercase();
+        if matches!(query_lower.as_str(), "project" | "projects") {
+            self.choose_project_directory(cx);
+            return;
+        }
         if query_lower == "local" {
-            self.open_local_terminal(current_local_cwd(), cx);
+            self.activate_local_dir(current_local_cwd(), cx);
             return;
         }
 
-        if let Some(cwd) = self.local_cwd_matching_query(&query_lower, cx) {
-            self.open_local_terminal(cwd, cx);
+        self.sync_local_dirs(cx);
+        if let Some(cwd) = self.local_cwd_matching_query(&query_lower) {
+            self.activate_local_dir(cwd, cx);
             return;
         }
 
@@ -311,6 +444,29 @@ impl AppShell {
         } else {
             self.open_terminal_target(query.clone(), query, cx);
         }
+    }
+
+    /// 通过原生目录选择器创建或打开一个本地项目。
+    fn choose_project_directory(&mut self, cx: &mut Context<Self>) {
+        let paths_receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("选择项目目录".into()),
+        });
+        let task = cx.spawn(async move |weak, cx| {
+            let Ok(Ok(Some(paths))) = paths_receiver.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = weak.update(cx, |this, cx| {
+                this.host_query.clear();
+                this.activate_local_dir(path, cx);
+            });
+        });
+        self._project_picker = Some(task);
     }
 
     fn handle_host_search_key(
@@ -378,30 +534,62 @@ impl AppShell {
         cx.notify();
     }
 
-    fn toggle_local_group(&mut self, cx: &mut Context<Self>) {
-        self.local_collapsed = !self.local_collapsed;
+    fn toggle_projects_group(&mut self, cx: &mut Context<Self>) {
+        self.projects_collapsed = !self.projects_collapsed;
         cx.notify();
     }
 
-    fn local_cwd_for_tab(&self, idx: usize, cx: &Context<Self>) -> PathBuf {
-        let Some(tab) = self.tabs.get(idx) else {
-            return current_local_cwd();
+    fn sync_local_dirs(&mut self, cx: &Context<Self>) {
+        let previous = std::mem::take(&mut self.local_dirs);
+        let active_local_session = match self.active_view {
+            Some(ActiveView::LocalSession(session_id)) => Some(session_id),
+            _ => None,
         };
-        if let Pane::Terminal(terminal) = &tab.pane {
-            if let Some(cwd) = terminal.read(cx).cwd.as_deref() {
-                return normalize_local_cwd(PathBuf::from(cwd));
-            }
-        }
-        normalize_local_cwd(PathBuf::from(&tab.target))
+        let sessions = self
+            .local_sessions
+            .iter_mut()
+            .map(|(&session_id, session)| {
+                if let Some(cwd) = session.terminal.read(cx).cwd.as_deref() {
+                    session.cwd = normalize_local_cwd(PathBuf::from(cwd));
+                }
+                (session_id, session.cwd.clone())
+            })
+            .collect::<Vec<_>>();
+        self.local_dirs = rebuild_local_dirs(&previous, sessions, active_local_session);
     }
 
-    fn local_cwd_matching_query(&self, query: &str, cx: &Context<Self>) -> Option<PathBuf> {
-        self.tabs
+    fn local_dir_for_session(&self, session_id: LocalSessionId) -> Option<&LocalDir> {
+        self.local_dirs
             .iter()
-            .enumerate()
-            .filter(|(_, tab)| tab.kind == TabKind::Local)
-            .map(|(idx, _)| self.local_cwd_for_tab(idx, cx))
+            .find_map(|(_, dir)| dir.sessions.contains(&session_id).then_some(dir))
+    }
+
+    fn first_local_view(&self) -> Option<ActiveView> {
+        self.local_dirs
+            .values()
+            .find_map(|dir| dir.active_session.map(ActiveView::LocalSession))
+    }
+
+    fn local_session_cwd(&self, session_id: LocalSessionId, cx: &Context<Self>) -> PathBuf {
+        self.local_sessions
+            .get(&session_id)
+            .map(|session| {
+                session
+                    .terminal
+                    .read(cx)
+                    .cwd
+                    .as_deref()
+                    .map(|cwd| normalize_local_cwd(PathBuf::from(cwd)))
+                    .unwrap_or_else(|| session.cwd.clone())
+            })
+            .unwrap_or_else(current_local_cwd)
+    }
+
+    fn local_cwd_matching_query(&self, query: &str) -> Option<PathBuf> {
+        self.local_dirs
+            .keys()
             .find(|cwd| cwd.to_string_lossy().to_ascii_lowercase().contains(query))
+            .cloned()
     }
 
     /// 当前有待处理弹窗的连接（若有）。
@@ -411,12 +599,24 @@ impl AppShell {
 
     /// 把焦点交还给当前活动终端 tab（切换 tab / 关闭模态后调用）。
     fn refocus_active_terminal(&self, cx: &mut Context<Self>) {
-        if let Some(idx) = self.active_tab {
-            if let Some(tab) = self.tabs.get(idx) {
-                if let Pane::Terminal(t) = &tab.pane {
-                    t.update(cx, |t, _| t.request_focus());
+        match self.active_view {
+            Some(ActiveView::RemoteTab(idx)) => {
+                if let Some(Tab {
+                    pane: Pane::Terminal(terminal),
+                    ..
+                }) = self.remote_tabs.get(idx)
+                {
+                    terminal.update(cx, |terminal, _| terminal.request_focus());
                 }
             }
+            Some(ActiveView::LocalSession(session_id)) => {
+                if let Some(session) = self.local_sessions.get(&session_id) {
+                    session
+                        .terminal
+                        .update(cx, |terminal, _| terminal.request_focus());
+                }
+            }
+            None => {}
         }
     }
 
@@ -487,6 +687,9 @@ impl AppShell {
 
 impl Render for AppShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // PTY 的 cwd 会随着 shell 中的 `cd` 改变；每帧同步，保证 session
+        // 自动移动到新的 Local 目录 view，同时保留自己的 session id。
+        self.sync_local_dirs(cx);
         let prompt = self.current_prompt(cx);
         let has_prompt = !matches!(prompt, PromptDisplay::None);
 
@@ -525,21 +728,17 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
     let query = shell.host_query.trim().to_ascii_lowercase();
     let search_focus = shell.host_focus.clone();
     let search_value = shell.host_query.clone();
-    let active_tab_key = shell
-        .active_tab
-        .and_then(|active_idx| shell.tabs.get(active_idx))
-        .map(|tab| tab.host_key.clone());
-    let local_groups = build_local_groups(shell, cx);
-    let show_local = local_matches_query(&local_groups, &query);
-    let local_active = local_groups
-        .iter()
-        .any(|group| is_active_connection(&group.state));
-    let local_in_active = show_local && local_active;
-    let local_in_bank = show_local && !local_active;
-    let local_state = local_groups
-        .iter()
-        .filter_map(|group| group.state.clone())
-        .reduce(|left, right| preferred_state(left, right));
+    let active_remote_key = match shell.active_view {
+        Some(ActiveView::RemoteTab(idx)) => shell.remote_tabs.get(idx).map(|tab| tab.host_key.clone()),
+        _ => None,
+    };
+    let project_dirs: Vec<&LocalDir> = shell
+        .local_dirs
+        .values()
+        .filter(|dir| local_dir_matches_query(dir, &query))
+        .collect();
+    let project_query = matches!(query.as_str(), "local" | "project" | "projects");
+    let show_projects = query.is_empty() || project_query || !project_dirs.is_empty();
 
     let mut active_entries = Vec::new();
     let mut bank_entries = Vec::new();
@@ -556,34 +755,21 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
         }
     }
 
-    let active_count = active_entries.len() + usize::from(local_in_active);
-    let bank_count = bank_entries.len() + usize::from(local_in_bank);
-    let visible_count = active_count + bank_count;
+    let active_count = active_entries.len();
+    let bank_count = bank_entries.len();
+    let project_count = if show_projects { project_dirs.len() } else { 0 };
+    let visible_count = active_count + bank_count + project_count;
 
     let mut active_list = div()
         .id("active-host-list")
         .flex()
         .flex_col()
         .gap_1();
-    if !local_in_active && active_entries.is_empty() {
+    if active_entries.is_empty() {
         active_list = active_list.child(render_host_group_empty("No active connections"));
     } else {
-        if local_in_active {
-            active_list = active_list.child(render_local_root(
-                local_state.clone(),
-                local_groups.len(),
-                local_groups.iter().any(|group| group.selected),
-                shell.local_collapsed,
-                cx,
-            ));
-            if !shell.local_collapsed {
-                for (idx, group) in local_groups.iter().enumerate() {
-                    active_list = active_list.child(render_local_group(idx, group, cx));
-                }
-            }
-        }
         for (idx, entry, state) in active_entries {
-            let selected = active_tab_key.as_deref() == Some(entry.key.as_str());
+            let selected = active_remote_key.as_deref() == Some(entry.key.as_str());
             active_list = active_list.child(render_host_entry(
                 idx, &entry, state, selected, cx,
             ));
@@ -591,26 +777,26 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
     }
 
     let mut bank_list = div().id("bank-host-list").flex().flex_col().gap_1();
-    if !local_in_bank && bank_entries.is_empty() {
+    if bank_entries.is_empty() {
         bank_list = bank_list.child(render_host_group_empty("No hosts in bank"));
     } else {
-        if local_in_bank {
-            bank_list = bank_list.child(render_local_root(
-                local_state,
-                local_groups.len(),
-                local_groups.iter().any(|group| group.selected),
-                shell.local_collapsed,
-                cx,
-            ));
-            if !shell.local_collapsed {
-                for (idx, group) in local_groups.iter().enumerate() {
-                    bank_list = bank_list.child(render_local_group(idx, group, cx));
-                }
-            }
-        }
         for (idx, entry, state) in bank_entries {
-            let selected = active_tab_key.as_deref() == Some(entry.key.as_str());
+            let selected = active_remote_key.as_deref() == Some(entry.key.as_str());
             bank_list = bank_list.child(render_host_entry(idx, &entry, state, selected, cx));
+        }
+    }
+
+    let mut project_list = div()
+        .id("project-list")
+        .flex()
+        .flex_col()
+        .gap_1();
+    if project_dirs.is_empty() {
+        project_list = project_list.child(render_host_group_empty("No projects"));
+    } else {
+        for (idx, dir) in project_dirs.iter().enumerate() {
+            let selected = is_active_local_dir(shell, dir);
+            project_list = project_list.child(render_local_dir(idx, dir, selected, shell, cx));
         }
     }
 
@@ -624,6 +810,7 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
         active_collapsed,
         active_list.into_any_element(),
         AppShell::toggle_active_group,
+        None,
         cx,
     );
     let bank_group = render_host_group(
@@ -633,10 +820,25 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
         bank_collapsed,
         bank_list.into_any_element(),
         AppShell::toggle_bank_group,
+        None,
         cx,
     );
+    let projects_group = if show_projects {
+        Some(render_host_group(
+            "projects",
+            "PROJECTS",
+            project_count,
+            shell.projects_collapsed && query.is_empty(),
+            project_list.into_any_element(),
+            AppShell::toggle_projects_group,
+            Some(AppShell::choose_project_directory),
+            cx,
+        ))
+    } else {
+        None
+    };
 
-    let list = div()
+    let mut list = div()
         .id("host-list")
         .flex_1()
         .min_h_0()
@@ -647,6 +849,9 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
         .overflow_y_scroll()
         .child(active_group)
         .child(bank_group);
+    if let Some(projects_group) = projects_group {
+        list = list.child(projects_group);
+    }
 
     let search = div()
         .id("host-search")
@@ -672,17 +877,13 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
         })
         .on_key_down(cx.listener(AppShell::handle_host_search_key))
         .child(SharedString::from(if search_value.is_empty() {
-            "筛选主机、local 或输入 user@host:port".to_string()
+            "筛选主机、projects 或输入 user@host:port".to_string()
         } else {
             search_value
         }));
 
-    let list_footer = if shell.entries.is_empty() {
-        if show_local {
-            "local · 本地终端".to_string()
-        } else {
-            "未找到 ~/.ssh/config 中的主机".to_string()
-        }
+    let list_footer = if visible_count == 0 && shell.entries.is_empty() && !show_projects {
+        "未找到 ~/.ssh/config 中的主机".to_string()
     } else if visible_count == 0 {
         "没有匹配的主机，按 Enter 进行快速连接".to_string()
     } else {
@@ -723,127 +924,40 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
         .into_any_element()
 }
 
-struct LocalGroup {
-    cwd: String,
-    count: usize,
-    selected: bool,
-    state: Option<ConnState>,
-}
-
-fn build_local_groups(shell: &AppShell, cx: &Context<AppShell>) -> Vec<LocalGroup> {
-    let mut groups = BTreeMap::<String, LocalGroup>::new();
-    for (idx, tab) in shell.tabs.iter().enumerate() {
-        if tab.kind != TabKind::Local {
-            continue;
-        }
-        let cwd = shell.local_cwd_for_tab(idx, cx).to_string_lossy().to_string();
-        let state = tab_state(shell, tab, cx);
-        let group = groups.entry(cwd.clone()).or_insert_with(|| LocalGroup {
-            cwd,
-            count: 0,
-            selected: false,
-            state: None,
-        });
-        group.count += 1;
-        group.selected |= shell.active_tab == Some(idx);
-        if let Some(state) = state {
-            group.state = Some(match group.state.take() {
-                Some(current) => preferred_state(current, state),
-                None => state,
-            });
-        }
-    }
-    groups.into_values().collect()
-}
-
-fn local_matches_query(groups: &[LocalGroup], query: &str) -> bool {
+fn local_dir_matches_query(dir: &LocalDir, query: &str) -> bool {
     query.is_empty()
-        || query == "local"
-        || groups
-            .iter()
-            .any(|group| group.cwd.to_ascii_lowercase().contains(query))
+        || matches!(query, "local" | "project" | "projects")
+        || dir.cwd.to_string_lossy().to_ascii_lowercase().contains(query)
 }
 
-fn render_local_root(
-    state: Option<ConnState>,
-    group_count: usize,
-    selected: bool,
-    collapsed: bool,
-    cx: &mut Context<AppShell>,
-) -> AnyElement {
-    let cwd = current_local_cwd();
-    let caret = if collapsed { "▸" } else { "▾" };
-    let detail = if group_count == 0 {
-        "点击打开本地终端".to_string()
-    } else {
-        format!("{} 个目录组", group_count)
-    };
-    let mut row = div()
-        .id("local-root")
-        .flex_shrink_0()
-        .px_3()
-        .py_1()
-        .text_sm()
-        .cursor_pointer();
-    if selected {
-        row = row.bg(rgb(0x2a2a3a));
-    }
-    row = row
-        .hover(|s| s.bg(rgb(0x232327)))
-        .on_click(cx.listener(move |this, _ev, _window, cx| {
-            this.open_local_terminal(cwd.clone(), cx);
-        }))
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .child(
-                    div()
-                        .w(px(8.))
-                        .h(px(8.))
-                        .rounded_full()
-                        .bg(badge_color(&state)),
-                )
-                .child(
-                    div()
-                        .id("local-toggle")
-                        .w(px(12.))
-                        .cursor_pointer()
-                        .text_color(rgb(0x6a6a72))
-                        .on_click(cx.listener(move |this, _ev, _window, cx| {
-                            cx.stop_propagation();
-                            this.toggle_local_group(cx);
-                        }))
-                        .child(SharedString::from(caret)),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .text_color(rgb(0xf5f5f7))
-                        .child(SharedString::from("local")),
-                ),
-        )
-        .child(
-            div()
-                .text_xs()
-                .text_color(rgb(0x888892))
-                .child(SharedString::from(format!("{}{detail}", state_badget(&state)))),
-        );
-    row.into_any_element()
+fn is_active_local_dir(shell: &AppShell, dir: &LocalDir) -> bool {
+    matches!(shell.active_view, Some(ActiveView::LocalSession(session_id)) if dir.sessions.contains(&session_id))
 }
 
-fn render_local_group(
+fn local_dir_state(
+    shell: &AppShell,
+    dir: &LocalDir,
+    cx: &Context<AppShell>,
+) -> Option<ConnState> {
+    dir.sessions
+        .iter()
+        .filter_map(|id| shell.local_sessions.get(id))
+        .map(|session| session.terminal.read(cx).state.clone())
+        .reduce(preferred_state)
+}
+
+fn render_local_dir(
     idx: usize,
-    group: &LocalGroup,
+    dir: &LocalDir,
+    selected: bool,
+    shell: &AppShell,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
-    let cwd = PathBuf::from(&group.cwd);
-    let cwd_text = group.cwd.clone();
-    let selected = group.selected;
-    let count = group.count;
-    let state = group.state.clone();
+    let cwd = dir.cwd.clone();
+    let cwd_for_new = cwd.clone();
+    let cwd_text = cwd.to_string_lossy().to_string();
+    let count = dir.sessions.len();
+    let state = local_dir_state(shell, dir, cx);
     let mut row = div()
         .id(("local-group", idx))
         .flex_shrink_0()
@@ -856,7 +970,7 @@ fn render_local_group(
     }
     row.hover(|s| s.bg(rgb(0x232327)))
         .on_click(cx.listener(move |this, _ev, _window, cx| {
-            this.open_local_terminal(cwd.clone(), cx);
+            this.activate_local_dir(cwd.clone(), cx);
         }))
         .child(
             div()
@@ -887,7 +1001,21 @@ fn render_local_group(
                     div()
                         .text_xs()
                         .text_color(rgb(0x888892))
-                        .child(SharedString::from(count.to_string())),
+                        .child(SharedString::from(format!("{count}"))),
+                )
+                .child(
+                    div()
+                        .id(("local-new", idx))
+                        .px_1()
+                        .cursor_pointer()
+                        .text_xs()
+                        .text_color(rgb(0x888892))
+                        .hover(|s| s.text_color(rgb(0xe6e6e6)))
+                        .child(SharedString::from("+"))
+                        .on_click(cx.listener(move |this, _ev, _window, cx| {
+                            cx.stop_propagation();
+                            this.open_local_session(cwd_for_new.clone(), cx);
+                        })),
                 ),
         )
         .into_any_element()
@@ -983,10 +1111,11 @@ fn render_host_group(
     collapsed: bool,
     children: AnyElement,
     toggle: fn(&mut AppShell, &mut Context<AppShell>),
+    action: Option<fn(&mut AppShell, &mut Context<AppShell>)>,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
     let caret = if collapsed { "▸" } else { "▾" };
-    let header = div()
+    let mut header = div()
         .id(format!("host-group-header-{id}"))
         .px_3()
         .py_1()
@@ -1015,6 +1144,23 @@ fn render_host_group(
                 .child(SharedString::from(count.to_string())),
         );
 
+    if let Some(action) = action {
+        header = header.child(
+            div()
+                .id(format!("host-group-action-{id}"))
+                .px_1()
+                .cursor_pointer()
+                .text_sm()
+                .text_color(rgb(0x888892))
+                .hover(|s| s.text_color(rgb(0xe6e6e6)))
+                .child(SharedString::from("+"))
+                .on_click(cx.listener(move |this, _ev, _window, cx| {
+                    cx.stop_propagation();
+                    action(this, cx);
+                })),
+        );
+    }
+
     let mut group = div()
         .id(format!("host-group-{id}"))
         .flex()
@@ -1041,14 +1187,31 @@ fn is_active_connection(state: &Option<ConnState>) -> bool {
     matches!(state, Some(ConnState::Connected))
 }
 
-fn tab_state(shell: &AppShell, tab: &Tab, cx: &Context<AppShell>) -> Option<ConnState> {
-    match tab.kind {
-        TabKind::Remote => shell.pool.state_for_key(&tab.host_key, cx),
-        TabKind::Local => match &tab.pane {
-            Pane::Terminal(terminal) => Some(terminal.read(cx).state.clone()),
-            Pane::Sftp(_) | Pane::Forward(_) => None,
-        },
+fn rebuild_local_dirs(
+    previous: &BTreeMap<PathBuf, LocalDir>,
+    sessions: impl IntoIterator<Item = (LocalSessionId, PathBuf)>,
+    active_local_session: Option<LocalSessionId>,
+) -> BTreeMap<PathBuf, LocalDir> {
+    let mut next = BTreeMap::new();
+    for (session_id, cwd) in sessions {
+        next.entry(cwd.clone())
+            .or_insert_with(|| LocalDir {
+                cwd,
+                sessions: Vec::new(),
+                active_session: None,
+            })
+            .sessions
+            .push(session_id);
     }
+
+    for (cwd, dir) in &mut next {
+        let previous_active = previous.get(cwd).and_then(|old| old.active_session);
+        dir.active_session = active_local_session
+            .filter(|id| dir.sessions.contains(id))
+            .or_else(|| previous_active.filter(|id| dir.sessions.contains(id)))
+            .or_else(|| dir.sessions.first().copied());
+    }
+    next
 }
 
 fn preferred_state(left: ConnState, right: ConnState) -> ConnState {
@@ -1133,15 +1296,20 @@ fn render_main(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoElement
 
     // 终端/SFTP 区。
     let mut content = div().flex_1().min_h_0().relative();
-    if let Some(idx) = shell.active_tab {
-        if let Some(tab) = shell.tabs.get(idx) {
-            let pane_el: AnyElement = match &tab.pane {
-                Pane::Terminal(t) => t.clone().into_any_element(),
-                Pane::Sftp(s) => s.clone().into_any_element(),
-                Pane::Forward(f) => f.clone().into_any_element(),
-            };
-            content = content.child(pane_el);
-        }
+    let active_pane = match shell.active_view {
+        Some(ActiveView::RemoteTab(idx)) => shell.remote_tabs.get(idx).map(|tab| match &tab.pane {
+            Pane::Terminal(t) => t.clone().into_any_element(),
+            Pane::Sftp(s) => s.clone().into_any_element(),
+            Pane::Forward(f) => f.clone().into_any_element(),
+        }),
+        Some(ActiveView::LocalSession(session_id)) => shell
+            .local_sessions
+            .get(&session_id)
+            .map(|session| session.terminal.clone().into_any_element()),
+        None => None,
+    };
+    if let Some(active_pane) = active_pane {
+        content = content.child(active_pane);
     } else {
         content = content.child(
             div()
@@ -1151,9 +1319,7 @@ fn render_main(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoElement
                 .justify_center()
                 .text_sm()
                 .text_color(rgb(0x6a6a72))
-                .child(SharedString::from(
-                    "从左侧选择主机或 local 开始",
-                )),
+                .child(SharedString::from("从左侧选择主机或项目开始")),
         );
     }
 
@@ -1184,68 +1350,141 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
         .border_b_1()
         .border_color(rgb(0x2a2a2e));
 
-    for (idx, tab) in shell.tabs.iter().enumerate() {
-        let is_active = shell.active_tab == Some(idx);
-        let state = tab_state(shell, tab, cx);
-        let bg = if is_active {
-            rgb(0x2a2a3a)
-        } else {
-            rgb(0x18181b)
-        };
-        let alias = tab.alias.clone();
-        // 容器不绑定 click；标签名与关闭按钮分别绑定，避免事件叠加。
-        let container = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_1()
-            .px_2()
-            .h_full()
-            .bg(bg)
-            .border_r_1()
-            .border_color(rgb(0x2a2a2e))
-            .child(
-                div()
-                    .id(("tab", idx))
+    match shell.active_view {
+        Some(ActiveView::RemoteTab(active_idx)) => {
+            for idx in 0..shell.remote_tabs.len() {
+                let tab = &shell.remote_tabs[idx];
+                let is_active = active_idx == idx;
+                let state = shell.pool.state_for_key(&tab.host_key, cx);
+                let alias = tab.alias.clone();
+                let bg = if is_active {
+                    rgb(0x2a2a3a)
+                } else {
+                    rgb(0x18181b)
+                };
+                // 容器不绑定 click；标签名与关闭按钮分别绑定，避免事件叠加。
+                let container = div()
                     .flex()
+                    .flex_row()
                     .items_center()
                     .gap_1()
                     .px_2()
-                    .py_1()
-                    .cursor_pointer()
-                    .text_xs()
-                    .text_color(rgb(0xe6e6e6))
-                    .hover(|s| s.bg(rgb(0x35355a)))
+                    .h_full()
+                    .bg(bg)
+                    .border_r_1()
+                    .border_color(rgb(0x2a2a2e))
                     .child(
                         div()
-                            .w(px(6.))
-                            .h(px(6.))
-                            .rounded_full()
-                            .bg(tab_badge_color(&state)),
+                            .id(("remote-tab", idx))
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .px_2()
+                            .py_1()
+                            .cursor_pointer()
+                            .text_xs()
+                            .text_color(rgb(0xe6e6e6))
+                            .hover(|s| s.bg(rgb(0x35355a)))
+                            .child(
+                                div()
+                                    .w(px(6.))
+                                    .h(px(6.))
+                                    .rounded_full()
+                                    .bg(tab_badge_color(&state)),
+                            )
+                            .child(SharedString::from(alias))
+                            .on_click(cx.listener(move |this, _ev, _w, cx| {
+                                this.switch_remote_tab(idx, cx);
+                            })),
                     )
-                    .child(SharedString::from(alias))
-                    .on_click(cx.listener(move |this, _ev, _w, cx| {
-                        this.switch_tab(idx, cx);
-                    })),
-            )
-            .child(
-                div()
-                    .id(("tab-close", idx))
-                    .px_1()
-                    .py_1()
-                    .cursor_pointer()
-                    .text_xs()
-                    .text_color(rgb(0x888892))
-                    .hover(|s| s.text_color(rgb(0xff6060)))
-                    .child(SharedString::from("×"))
-                    .on_click(cx.listener(move |this, _ev, _w, cx| {
-                        this.close_tab(idx, cx);
-                    })),
-            );
-        strip = strip.child(container);
+                    .child(
+                        div()
+                            .id(("remote-tab-close", idx))
+                            .px_1()
+                            .py_1()
+                            .cursor_pointer()
+                            .text_xs()
+                            .text_color(rgb(0x888892))
+                            .hover(|s| s.text_color(rgb(0xff6060)))
+                            .child(SharedString::from("×"))
+                            .on_click(cx.listener(move |this, _ev, _w, cx| {
+                                this.close_remote_tab(idx, cx);
+                            })),
+                    );
+                strip = strip.child(container);
+            }
+        }
+        Some(ActiveView::LocalSession(active_session_id)) => {
+            let session_ids = shell
+                .local_dir_for_session(active_session_id)
+                .map(|dir| dir.sessions.clone())
+                .unwrap_or_default();
+            for (idx, session_id) in session_ids.iter().copied().enumerate() {
+                let is_active = active_session_id == session_id;
+                let state = shell
+                    .local_sessions
+                    .get(&session_id)
+                    .map(|session| session.terminal.read(cx).state.clone());
+                let bg = if is_active {
+                    rgb(0x2a2a3a)
+                } else {
+                    rgb(0x18181b)
+                };
+                let label = format!("ses{}", idx + 1);
+                let container = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .px_2()
+                    .h_full()
+                    .bg(bg)
+                    .border_r_1()
+                    .border_color(rgb(0x2a2a2e))
+                    .child(
+                        div()
+                            .id(("local-tab", session_id))
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .px_2()
+                            .py_1()
+                            .cursor_pointer()
+                            .text_xs()
+                            .text_color(rgb(0xe6e6e6))
+                            .hover(|s| s.bg(rgb(0x35355a)))
+                            .child(
+                                div()
+                                    .w(px(6.))
+                                    .h(px(6.))
+                                    .rounded_full()
+                                    .bg(tab_badge_color(&state)),
+                            )
+                            .child(SharedString::from(label))
+                            .on_click(cx.listener(move |this, _ev, _w, cx| {
+                                this.select_local_session(session_id, cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id(("local-tab-close", session_id))
+                            .px_1()
+                            .py_1()
+                            .cursor_pointer()
+                            .text_xs()
+                            .text_color(rgb(0x888892))
+                            .hover(|s| s.text_color(rgb(0xff6060)))
+                            .child(SharedString::from("×"))
+                            .on_click(cx.listener(move |this, _ev, _w, cx| {
+                                this.close_local_session(session_id, cx);
+                            })),
+                    );
+                strip = strip.child(container);
+            }
+        }
+        None => {}
     }
 
-    let host_focus = shell.host_focus.clone();
     strip
         .child(div().flex_1())
         .child(
@@ -1259,10 +1498,8 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                 .text_color(rgb(0x8c8c94))
                 .hover(|s| s.bg(rgb(0x2a2a2e)).text_color(rgb(0xf5f5f7)))
                 .child(SharedString::from("+"))
-                .on_click(cx.listener(move |this, _ev, window, cx| {
-                    this.host_query.clear();
-                    host_focus.focus(window, cx);
-                    cx.notify();
+                .on_click(cx.listener(|this, _ev, window, cx| {
+                    this.new_tab(window, cx);
                 })),
         )
 }
@@ -1509,21 +1746,61 @@ mod tests {
     }
 
     #[test]
-    fn local_search_matches_folder_and_directory() {
-        let groups = vec![LocalGroup {
-            cwd: "/Users/me/projects/crossh".to_string(),
-            count: 2,
-            selected: true,
-            state: Some(ConnState::Connected),
-        }];
-        assert!(local_matches_query(&groups, ""));
-        assert!(local_matches_query(&groups, "local"));
-        assert!(local_matches_query(&groups, "projects/crossh"));
-        assert!(!local_matches_query(&groups, "unrelated"));
+    fn project_search_matches_directory_view() {
+        let dir = LocalDir {
+            cwd: PathBuf::from("/Users/me/projects/crossh"),
+            sessions: vec![1, 2],
+            active_session: Some(1),
+        };
+        assert!(local_dir_matches_query(&dir, ""));
+        assert!(local_dir_matches_query(&dir, "local"));
+        assert!(local_dir_matches_query(&dir, "project"));
+        assert!(local_dir_matches_query(&dir, "projects"));
+        assert!(local_dir_matches_query(&dir, "projects/crossh"));
+        assert!(!local_dir_matches_query(&dir, "unrelated"));
     }
 
     #[test]
-    fn local_group_prefers_a_live_session_state() {
+    fn project_directories_keep_sessions_isolated() {
+        let previous = BTreeMap::from([
+            (
+                PathBuf::from("/Users/me/one"),
+                LocalDir {
+                    cwd: PathBuf::from("/Users/me/one"),
+                    sessions: vec![1, 2],
+                    active_session: Some(2),
+                },
+            ),
+            (
+                PathBuf::from("/Users/me/two"),
+                LocalDir {
+                    cwd: PathBuf::from("/Users/me/two"),
+                    sessions: vec![3],
+                    active_session: Some(3),
+                },
+            ),
+        ]);
+        let current = vec![
+            (1, PathBuf::from("/Users/me/one")),
+            (2, PathBuf::from("/Users/me/two")),
+            (3, PathBuf::from("/Users/me/two")),
+        ];
+
+        let dirs = rebuild_local_dirs(&previous, current, Some(2));
+        assert_eq!(dirs[&PathBuf::from("/Users/me/one")].sessions, vec![1]);
+        assert_eq!(
+            dirs[&PathBuf::from("/Users/me/one")].active_session,
+            Some(1)
+        );
+        assert_eq!(dirs[&PathBuf::from("/Users/me/two")].sessions, vec![2, 3]);
+        assert_eq!(
+            dirs[&PathBuf::from("/Users/me/two")].active_session,
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn project_group_prefers_a_live_session_state() {
         assert_eq!(
             preferred_state(ConnState::Closed, ConnState::Connecting),
             ConnState::Connecting
