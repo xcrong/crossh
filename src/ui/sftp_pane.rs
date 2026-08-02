@@ -594,38 +594,14 @@ impl SftpPane {
         }
     }
 
-    /// 右键打开上下文菜单；同时在窗口注册一次「点击面板外即关闭」的监听。
+    /// 右键打开上下文菜单；外部点击监听在 canvas 的 paint 阶段注册。
     fn open_context_menu(
         &mut self,
         position: Point<Pixels>,
         entries: Vec<MenuEntry<SftpMenuAction>>,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.context_menu = Some(ContextMenuState { position, entries });
-        let weak = cx.entity().downgrade();
-        let anchor = self.anchor_bounds.clone();
-        window.on_mouse_event({
-            let weak = weak.clone();
-            move |ev: &MouseDownEvent, _phase, window, cx| {
-                let closed = weak
-                    .update(cx, |this, _| {
-                        let outside = anchor
-                            .get()
-                            .is_some_and(|bounds| !bounds.contains(&ev.position));
-                        if this.context_menu.is_some() && outside {
-                            this.context_menu = None;
-                            true
-                        } else {
-                            false
-                        }
-                    })
-                    .unwrap_or(false);
-                if closed {
-                    window.refresh();
-                }
-            }
-        });
         cx.notify();
     }
 
@@ -1499,7 +1475,7 @@ impl Render for SftpPane {
                 })
                 .on_mouse_down(MouseButton::Right, {
                     let name_menu = name.clone();
-                    cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                    cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
                         let mut entries = vec![];
                         if is_dir {
                             entries.push(MenuEntry::Item(MenuItem {
@@ -1565,7 +1541,7 @@ impl Render for SftpPane {
                             danger: false,
                             action: SftpMenuAction::Refresh,
                         }));
-                        this.open_context_menu(ev.position, entries, window, cx);
+                        this.open_context_menu(ev.position, entries, cx);
                     })
                 });
             list = list.child(row);
@@ -1697,9 +1673,11 @@ impl Render for SftpPane {
             );
         }
 
-        // 无交互的全尺寸 canvas：仅用于在 prepaint 阶段捕获根 div 的窗口坐标
-        // bounds（右键菜单定位 / 点击面板外关闭）。
+        // 全尺寸 canvas：在 prepaint 阶段捕获根 div 的窗口坐标 bounds，
+        // 并在 paint 阶段注册菜单的窗口级外部点击监听。
         let anchor = self.anchor_bounds.clone();
+        let context_menu_open = self.context_menu.is_some();
+        let context_menu_weak = cx.entity().downgrade();
         let bounds_canvas = canvas(
             {
                 let anchor = anchor.clone();
@@ -1708,7 +1686,36 @@ impl Render for SftpPane {
                     bounds
                 }
             },
-            move |_bounds, _state, _window, _cx| {},
+            move |_bounds, _state, window, _cx| {
+                if !context_menu_open {
+                    return;
+                }
+                let weak = context_menu_weak.clone();
+                let anchor = anchor.clone();
+                window.on_mouse_event(move |ev: &MouseDownEvent, phase, window, cx| {
+                    if !matches!(phase, gpui::DispatchPhase::Capture) {
+                        return;
+                    }
+                    let closed = weak
+                        .update(cx, |this, _| {
+                            let outside = anchor
+                                .get()
+                                .is_some_and(|bounds| !bounds.contains(&ev.position));
+                            if this.context_menu.is_some() && outside {
+                                this.context_menu = None;
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                        .unwrap_or(false);
+                    if closed {
+                        // 外部点击只关菜单，不再触发下方控件。
+                        cx.stop_propagation();
+                        window.refresh();
+                    }
+                });
+            },
         )
         .absolute()
         .left_0()

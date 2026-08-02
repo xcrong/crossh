@@ -693,7 +693,7 @@ impl TerminalView {
     fn handle_mouse_down(
         &mut self,
         ev: &MouseDownEvent,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.state != ConnState::Connected {
@@ -727,7 +727,7 @@ impl TerminalView {
                 }
             } else {
                 let url = self.url_at(col, row);
-                self.open_terminal_context_menu(ev.position, url, window, cx);
+                self.open_terminal_context_menu(ev.position, url, cx);
             }
             return;
         }
@@ -950,12 +950,11 @@ impl TerminalView {
         self.sel_end = Some((self.cols.saturating_sub(1), self.rows.saturating_sub(1)));
     }
 
-    /// 右键打开上下文菜单；同时在窗口注册一次「点击终端外即关闭」的监听。
+    /// 右键打开上下文菜单；外部点击监听在 canvas 的 paint 阶段注册。
     fn open_terminal_context_menu(
         &mut self,
         position: Point<Pixels>,
         url: Option<String>,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let has_selection = self.sel_start.zip(self.sel_end).is_some();
@@ -998,31 +997,6 @@ impl TerminalView {
             }));
         }
         self.context_menu = Some(ContextMenuState { position, entries });
-
-        // 点击终端区域外（侧栏/标签条）时关闭菜单；区域内由 scrim 负责。
-        let weak = cx.entity().downgrade();
-        let anchor = self.anchor_bounds.clone();
-        window.on_mouse_event({
-            let weak = weak.clone();
-            move |ev: &MouseDownEvent, _phase, window, cx| {
-                let closed = weak
-                    .update(cx, |this, _| {
-                        let outside = anchor
-                            .get()
-                            .is_some_and(|bounds| !bounds.contains(&ev.position));
-                        if this.context_menu.is_some() && outside {
-                            this.context_menu = None;
-                            true
-                        } else {
-                            false
-                        }
-                    })
-                    .unwrap_or(false);
-                if closed {
-                    window.refresh();
-                }
-            }
-        });
         cx.notify();
     }
 
@@ -1283,6 +1257,9 @@ impl Render for TerminalView {
         let line_h = self.line_h;
         let weak = entity.downgrade();
         let weak2 = weak.clone();
+        let context_menu_open = self.context_menu.is_some();
+        let context_menu_weak = entity.downgrade();
+        let context_menu_anchor = self.anchor_bounds.clone();
         let input_entity = entity.clone();
         let input_focus = focus.clone();
         let default_fg = fg_of(&self.term);
@@ -1304,6 +1281,34 @@ impl Render for TerminalView {
                 bounds
             },
             move |bounds, _pre, window, cx| {
+                if context_menu_open {
+                    let weak = context_menu_weak.clone();
+                    let anchor = context_menu_anchor.clone();
+                    window.on_mouse_event(move |ev: &MouseDownEvent, phase, window, cx| {
+                        if !matches!(phase, gpui::DispatchPhase::Capture) {
+                            return;
+                        }
+                        let closed = weak
+                            .update(cx, |this, _| {
+                                let outside = anchor
+                                    .get()
+                                    .is_some_and(|bounds| !bounds.contains(&ev.position));
+                                if this.context_menu.is_some() && outside {
+                                    this.context_menu = None;
+                                    true
+                                } else {
+                                    false
+                                }
+                            })
+                            .unwrap_or(false);
+                        if closed {
+                            // 外部点击只关菜单，不再触发下方控件（如侧栏主机）。
+                            cx.stop_propagation();
+                            window.refresh();
+                        }
+                    });
+                }
+
                 // GPUI 只有在 paint 阶段注册了 InputHandler，macOS 才会把
                 // 中文/日文等合成输入交给当前终端，并能查询候选框坐标。
                 window.handle_input(
