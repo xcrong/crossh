@@ -334,7 +334,7 @@ pub fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElemen
             }
         });
 
-    let mut titlebar = div()
+    let titlebar = div()
         .relative()
         .h(px(theme::TITLEBAR_HEIGHT))
         .flex_shrink_0()
@@ -414,11 +414,7 @@ pub fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElemen
                 .text_color(theme::faint_text())
                 .child(SharedString::from(format!("{visible_count}"))),
         );
-    if shell.language_menu_open {
-        titlebar = titlebar.child(render_language_menu(shell, cx));
-    }
-
-    div()
+    let mut sidebar_root = div()
         .relative()
         .flex_shrink_0()
         .w(px(width))
@@ -449,8 +445,11 @@ pub fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElemen
                         .child(SharedString::from(list_footer)),
                 ),
         )
-        .child(resize_handle)
-        .into_any_element()
+        .child(resize_handle);
+    if shell.language_menu_open {
+        sidebar_root = sidebar_root.child(render_language_menu(shell, cx));
+    }
+    sidebar_root.into_any_element()
 }
 
 fn render_language_menu(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
