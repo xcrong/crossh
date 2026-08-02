@@ -18,8 +18,12 @@ pub const MIN_TERMINAL_FONT_SIZE: f32 = 10.0;
 pub const MAX_TERMINAL_FONT_SIZE: f32 = 24.0;
 pub const MIN_TERMINAL_SCROLLBACK: usize = 100;
 pub const MAX_TERMINAL_SCROLLBACK: usize = 100_000;
+/// 侧栏 Local 分组保留的最近本地目录数。
+pub const DEFAULT_RECENT_LOCAL_DIRS_MAX: usize = 10;
+pub const MIN_RECENT_LOCAL_DIRS_MAX: usize = 1;
+pub const MAX_RECENT_LOCAL_DIRS_MAX: usize = 50;
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct AppSettings {
     #[serde(default)]
     pub language: LanguagePreference,
@@ -29,6 +33,11 @@ pub struct AppSettings {
     pub terminal_font_size: f32,
     #[serde(default = "default_terminal_scrollback")]
     pub terminal_scrollback: usize,
+    /// 最近打开过的本地目录（最近优先），退出后仍保留在侧栏 Local 分组。
+    #[serde(default)]
+    pub recent_local_dirs: Vec<PathBuf>,
+    #[serde(default = "default_recent_local_dirs_max")]
+    pub recent_local_dirs_max: usize,
 }
 
 impl Default for AppSettings {
@@ -38,6 +47,8 @@ impl Default for AppSettings {
             show_timestamps: default_show_timestamps(),
             terminal_font_size: default_terminal_font_size(),
             terminal_scrollback: default_terminal_scrollback(),
+            recent_local_dirs: Vec::new(),
+            recent_local_dirs_max: default_recent_local_dirs_max(),
         }
     }
 }
@@ -53,6 +64,12 @@ impl AppSettings {
         self.terminal_scrollback = self
             .terminal_scrollback
             .clamp(MIN_TERMINAL_SCROLLBACK, MAX_TERMINAL_SCROLLBACK);
+        self.recent_local_dirs_max = self
+            .recent_local_dirs_max
+            .clamp(MIN_RECENT_LOCAL_DIRS_MAX, MAX_RECENT_LOCAL_DIRS_MAX);
+        if self.recent_local_dirs.len() > self.recent_local_dirs_max {
+            self.recent_local_dirs.truncate(self.recent_local_dirs_max);
+        }
         self
     }
 }
@@ -67,6 +84,10 @@ fn default_terminal_font_size() -> f32 {
 
 fn default_terminal_scrollback() -> usize {
     DEFAULT_TERMINAL_SCROLLBACK
+}
+
+fn default_recent_local_dirs_max() -> usize {
+    DEFAULT_RECENT_LOCAL_DIRS_MAX
 }
 
 impl Locale {
@@ -106,7 +127,7 @@ impl LanguagePreference {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct I18nState {
     pub preference: LanguagePreference,
     pub locale: Locale,
@@ -130,7 +151,7 @@ pub fn init<C: BorrowAppContext>(cx: &mut C) {
 }
 
 pub fn settings(cx: &App) -> AppSettings {
-    I18nState::global(cx).settings
+    I18nState::global(cx).settings.clone()
 }
 
 pub fn set_settings<C: BorrowAppContext>(cx: &mut C, settings: AppSettings) {
@@ -140,9 +161,10 @@ pub fn set_settings<C: BorrowAppContext>(cx: &mut C, settings: AppSettings) {
     if let Err(error) = save_settings(&settings) {
         log::warn!("failed to save settings: {error}");
     }
+    let language = settings.language;
     cx.update_global::<I18nState, _>(|state, _| {
         *state = I18nState {
-            preference: settings.language,
+            preference: language,
             locale,
             settings,
         };
@@ -295,6 +317,7 @@ mod tests {
             show_timestamps: false,
             terminal_font_size: 18.0,
             terminal_scrollback: 5000,
+            ..AppSettings::default()
         };
         let encoded = toml::to_string(&settings).expect("settings should serialize");
         let decoded: AppSettings = toml::from_str(&encoded).expect("settings should deserialize");
@@ -311,6 +334,45 @@ mod tests {
         .normalized();
         assert_eq!(settings.terminal_font_size, MAX_TERMINAL_FONT_SIZE);
         assert_eq!(settings.terminal_scrollback, MAX_TERMINAL_SCROLLBACK);
+    }
+
+    #[test]
+    fn recent_local_dirs_round_trip_and_are_capped() {
+        let settings = AppSettings {
+            recent_local_dirs: vec![
+                PathBuf::from("/a"),
+                PathBuf::from("/b"),
+                PathBuf::from("/c"),
+            ],
+            recent_local_dirs_max: 2,
+            ..AppSettings::default()
+        }
+        .normalized();
+        assert_eq!(
+            settings.recent_local_dirs,
+            vec![PathBuf::from("/a"), PathBuf::from("/b")]
+        );
+
+        let encoded = toml::to_string(&settings).expect("settings should serialize");
+        let decoded: AppSettings = toml::from_str(&encoded).expect("settings should deserialize");
+        assert_eq!(decoded, settings);
+    }
+
+    #[test]
+    fn recent_local_dirs_max_is_clamped() {
+        let settings = AppSettings {
+            recent_local_dirs_max: 0,
+            ..AppSettings::default()
+        }
+        .normalized();
+        assert_eq!(settings.recent_local_dirs_max, MIN_RECENT_LOCAL_DIRS_MAX);
+
+        let settings = AppSettings {
+            recent_local_dirs_max: 999,
+            ..AppSettings::default()
+        }
+        .normalized();
+        assert_eq!(settings.recent_local_dirs_max, MAX_RECENT_LOCAL_DIRS_MAX);
     }
 
     #[test]

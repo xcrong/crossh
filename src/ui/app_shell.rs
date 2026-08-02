@@ -10,7 +10,7 @@
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -88,6 +88,20 @@ impl AppShell {
         let entries = build_entries(&config);
         let settings = i18n::settings(cx);
         let language_preference = settings.language;
+        // 启动时把最近的本地目录记录恢复到侧栏 Local 分组（无活动会话，点击即重开）。
+        let mut local_dirs = BTreeMap::new();
+        for cwd in &settings.recent_local_dirs {
+            if cwd.is_dir() {
+                local_dirs.insert(
+                    normalize_local_cwd(cwd.clone()),
+                    LocalDir {
+                        cwd: cwd.clone(),
+                        sessions: Vec::new(),
+                        active_session: None,
+                    },
+                );
+            }
+        }
 
         cx.new(|cx| Self {
             config,
@@ -95,7 +109,7 @@ impl AppShell {
             pool: ConnectionPool::new(),
             remote_tabs: Vec::new(),
             local_sessions: BTreeMap::new(),
-            local_dirs: BTreeMap::new(),
+            local_dirs,
             next_local_session_id: 1,
             active_view: None,
             status: None,
@@ -207,6 +221,7 @@ impl AppShell {
     pub(crate) fn open_local_session(&mut self, cwd: PathBuf, cx: &mut Context<Self>) {
         self.settings_open = false;
         let cwd = normalize_local_cwd(cwd);
+        self.remember_local_dir(&cwd, cx);
         let cwd_text = cwd.to_string_lossy().to_string();
         let (input_tx, event_rx) = local::open_terminal(cwd.clone(), 100, 30);
         let terminal =
@@ -284,7 +299,8 @@ impl AppShell {
                 dir.active_session = dir.sessions.first().copied();
             }
             next_session = dir.active_session;
-            dir.sessions.is_empty()
+            // 仍被「最近本地目录」记住的空目录保留在侧栏，等待下次点击重开。
+            dir.sessions.is_empty() && !self.settings.recent_local_dirs.contains(&cwd)
         } else {
             false
         };
@@ -577,14 +593,15 @@ impl AppShell {
             return;
         }
         let language_changed = self.language_preference != settings.language;
-        i18n::set_settings(cx, settings);
-        self.settings = settings;
-        self.language_preference = settings.language;
+        let language = settings.language;
 
         for tab in &self.remote_tabs {
             match &tab.pane {
                 Pane::Terminal(terminal) => {
-                    terminal.update(cx, |terminal, cx| terminal.apply_settings(settings, cx));
+                    let terminal_settings = settings.clone();
+                    terminal.update(cx, |terminal, cx| {
+                        terminal.apply_settings(terminal_settings, cx)
+                    });
                 }
                 Pane::Sftp(pane) if language_changed => {
                     pane.update(cx, |_, cx| cx.notify());
@@ -596,10 +613,15 @@ impl AppShell {
             }
         }
         for session in self.local_sessions.values() {
-            session
-                .terminal
-                .update(cx, |terminal, cx| terminal.apply_settings(settings, cx));
+            let terminal_settings = settings.clone();
+            session.terminal.update(cx, |terminal, cx| {
+                terminal.apply_settings(terminal_settings, cx)
+            });
         }
+
+        i18n::set_settings(cx, settings.clone());
+        self.settings = settings;
+        self.language_preference = language;
         cx.notify();
     }
 
@@ -609,7 +631,7 @@ impl AppShell {
             cx.notify();
             return;
         }
-        let mut settings = self.settings;
+        let mut settings = self.settings.clone();
         settings.language = preference;
         self.apply_settings(settings, cx);
         self.language_menu_open = false;
@@ -617,13 +639,13 @@ impl AppShell {
     }
 
     pub(crate) fn toggle_timestamps(&mut self, cx: &mut Context<Self>) {
-        let mut settings = self.settings;
+        let mut settings = self.settings.clone();
         settings.show_timestamps = !settings.show_timestamps;
         self.apply_settings(settings, cx);
     }
 
     pub(crate) fn adjust_font_size(&mut self, delta: f32, cx: &mut Context<Self>) {
-        let mut settings = self.settings;
+        let mut settings = self.settings.clone();
         settings.terminal_font_size = (settings.terminal_font_size + delta)
             .round()
             .clamp(i18n::MIN_TERMINAL_FONT_SIZE, i18n::MAX_TERMINAL_FONT_SIZE);
@@ -631,9 +653,16 @@ impl AppShell {
     }
 
     pub(crate) fn set_scrollback(&mut self, scrollback: usize, cx: &mut Context<Self>) {
-        let mut settings = self.settings;
+        let mut settings = self.settings.clone();
         settings.terminal_scrollback = scrollback;
         self.apply_settings(settings, cx);
+    }
+
+    pub(crate) fn set_recent_dirs_max(&mut self, max: usize, cx: &mut Context<Self>) {
+        let mut settings = self.settings.clone();
+        settings.recent_local_dirs_max = max;
+        self.apply_settings(settings, cx);
+        self.sync_local_dirs(cx);
     }
 
     /// 把本地会话按各终端当前 cwd 重建目录视图（打开/关闭/`cd` 时调用）。
@@ -653,7 +682,53 @@ impl AppShell {
                 (session_id, session.cwd.clone())
             })
             .collect::<Vec<_>>();
-        self.local_dirs = rebuild_local_dirs(&previous, sessions, active_local_session);
+        self.local_dirs = rebuild_local_dirs(
+            &previous,
+            sessions,
+            self.settings.recent_local_dirs.iter().cloned(),
+            active_local_session,
+        );
+    }
+
+    /// 把目录记入「最近本地目录」历史（最近优先、去重、截断到上限）并持久化。
+    fn remember_local_dir(&mut self, cwd: &Path, cx: &mut Context<Self>) {
+        let cwd = normalize_local_cwd(cwd.to_path_buf());
+        self.settings
+            .recent_local_dirs
+            .retain(|existing| existing != &cwd);
+        self.settings.recent_local_dirs.insert(0, cwd);
+        self.settings
+            .recent_local_dirs
+            .truncate(self.settings.recent_local_dirs_max);
+        self.persist_settings(cx);
+    }
+
+    /// 从「最近本地目录」历史中移除一个目录并持久化。
+    pub(crate) fn forget_local_dir(&mut self, cwd: PathBuf, cx: &mut Context<Self>) {
+        let cwd = normalize_local_cwd(cwd);
+        if !self.settings.recent_local_dirs.contains(&cwd) {
+            return;
+        }
+        self.settings.recent_local_dirs.retain(|existing| existing != &cwd);
+        self.persist_settings(cx);
+        self.sync_local_dirs(cx);
+        cx.notify();
+    }
+
+    /// 清空「最近本地目录」历史。
+    pub(crate) fn clear_recent_dirs(&mut self, cx: &mut Context<Self>) {
+        if self.settings.recent_local_dirs.is_empty() {
+            return;
+        }
+        self.settings.recent_local_dirs.clear();
+        self.persist_settings(cx);
+        self.sync_local_dirs(cx);
+        cx.notify();
+    }
+
+    /// 只写设置全局状态与磁盘，不重放终端设置（区别于 apply_settings）。
+    fn persist_settings(&mut self, cx: &mut Context<Self>) {
+        i18n::set_settings(cx, self.settings.clone());
     }
 
     pub(crate) fn local_dir_for_session(&self, session_id: LocalSessionId) -> Option<&LocalDir> {

@@ -387,12 +387,21 @@ fn tab_label(tab: &Tab) -> String {
 }
 
 /// 把会话按 cwd 重建目录视图：同一目录的会话合并，保留上一次的活动会话。
+/// `remembered` 是最近打开过的本地目录（无活动会话），合并进来后仍显示在侧栏。
 pub fn rebuild_local_dirs(
     previous: &BTreeMap<PathBuf, LocalDir>,
     sessions: impl IntoIterator<Item = (LocalSessionId, PathBuf)>,
+    remembered: impl IntoIterator<Item = PathBuf>,
     active_local_session: Option<LocalSessionId>,
 ) -> BTreeMap<PathBuf, LocalDir> {
     let mut next = BTreeMap::new();
+    for cwd in remembered {
+        next.entry(cwd.clone()).or_insert_with(|| LocalDir {
+            cwd,
+            sessions: Vec::new(),
+            active_session: None,
+        });
+    }
     for (session_id, cwd) in sessions {
         next.entry(cwd.clone())
             .or_insert_with(|| LocalDir {
@@ -462,7 +471,7 @@ mod tests {
             (3, PathBuf::from("/Users/me/two")),
         ];
 
-        let dirs = rebuild_local_dirs(&previous, current, Some(2));
+        let dirs = rebuild_local_dirs(&previous, current, Vec::new(), Some(2));
         assert_eq!(dirs[&PathBuf::from("/Users/me/one")].sessions, vec![1]);
         assert_eq!(
             dirs[&PathBuf::from("/Users/me/one")].active_session,
@@ -473,6 +482,18 @@ mod tests {
             dirs[&PathBuf::from("/Users/me/two")].active_session,
             Some(2)
         );
+    }
+
+    #[test]
+    fn remembered_dirs_stay_without_live_sessions() {
+        let previous = BTreeMap::new();
+        let remembered = vec![PathBuf::from("/Users/me/one"), PathBuf::from("/Users/me/two")];
+        let current = vec![(1, PathBuf::from("/Users/me/one"))];
+
+        let dirs = rebuild_local_dirs(&previous, current, remembered, Some(1));
+        assert_eq!(dirs[&PathBuf::from("/Users/me/one")].sessions, vec![1]);
+        assert_eq!(dirs[&PathBuf::from("/Users/me/two")].sessions, Vec::<LocalSessionId>::new());
+        assert_eq!(dirs[&PathBuf::from("/Users/me/two")].active_session, None);
     }
 
     #[test]

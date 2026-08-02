@@ -66,11 +66,20 @@ pub fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElemen
         }
         _ => None,
     };
-    let project_dirs: Vec<&LocalDir> = shell
+    let mut project_dirs: Vec<&LocalDir> = shell
         .local_dirs
         .values()
         .filter(|dir| local_dir_matches_query(dir, &query))
         .collect();
+    // 活跃目录优先，其余按「最近打开」顺序（未被记录的排在最后）。
+    project_dirs.sort_by_key(|dir| {
+        let recency = shell
+            .settings
+            .recent_local_dirs
+            .iter()
+            .position(|cwd| cwd == &dir.cwd);
+        (!dir.sessions.is_empty(), recency.unwrap_or(usize::MAX))
+    });
     let mut project_name_counts = BTreeMap::new();
     for dir in shell.local_dirs.values() {
         *project_name_counts
@@ -559,6 +568,7 @@ fn render_local_dir(
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
     let cwd = dir.cwd.clone();
+    let cwd_for_row = cwd.clone();
     let cwd_for_new = cwd.clone();
     let label = local_dir_label(&cwd, duplicate_name);
     let tooltip_path = SharedString::from(cwd.to_string_lossy().to_string());
@@ -591,13 +601,14 @@ fn render_local_dir(
             .border_l_2()
             .border_color(theme::accent());
     }
-    row.hover(|s| s.bg(theme::surface()))
+    row = row
+        .hover(|s| s.bg(theme::surface()))
         .tooltip(move |_window, cx| {
             let path = tooltip_path.clone();
             cx.new(|_| LocalPathTooltip { path }).into()
         })
         .on_click(cx.listener(move |this, _ev, _window, cx| {
-            this.activate_local_dir(cwd.clone(), cx);
+            this.activate_local_dir(cwd_for_row.clone(), cx);
         }))
         .child(icons::icon(icons::IconName::FolderOpen, 15.).text_color(folder_color))
         .child(
@@ -614,10 +625,12 @@ fn render_local_dir(
                 .text_xs()
                 .text_color(theme::muted_text())
                 .child(SharedString::from(format!("{count}"))),
-        )
-        .child(
+        );
+    // 仅有历史记录（无活动会话）的目录提供「从最近记录移除」按钮。
+    if count == 0 {
+        row = row.child(
             div()
-                .id(("local-new", idx))
+                .id(("local-forget", idx))
                 .w(px(24.))
                 .h(px(24.))
                 .flex()
@@ -626,20 +639,49 @@ fn render_local_dir(
                 .rounded(px(theme::RADIUS_SM))
                 .cursor_pointer()
                 .text_color(theme::muted_text())
-                .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
+                .hover(|s| s.bg(theme::raised()).text_color(theme::danger()))
                 .tooltip(|_window, cx| {
                     cx.new(|_| LocalPathTooltip {
-                        path: SharedString::from(i18n::text("tooltip.new_terminal")),
+                        path: SharedString::from(i18n::text("tooltip.forget_dir")),
                     })
                     .into()
                 })
-                .child(icons::icon(icons::IconName::Plus, 14.).text_color(theme::muted_text()).hover(|s| s.text_color(theme::text())))
+                .child(
+                    icons::icon(icons::IconName::X, 14.)
+                        .text_color(theme::muted_text())
+                        .hover(|s| s.text_color(theme::danger())),
+                )
                 .on_click(cx.listener(move |this, _ev, _window, cx| {
                     cx.stop_propagation();
-                    this.open_local_session(cwd_for_new.clone(), cx);
+                    this.forget_local_dir(cwd.clone(), cx);
                 })),
-        )
-        .into_any_element()
+        );
+    }
+    row.child(
+        div()
+            .id(("local-new", idx))
+            .w(px(24.))
+            .h(px(24.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(theme::RADIUS_SM))
+            .cursor_pointer()
+            .text_color(theme::muted_text())
+            .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
+            .tooltip(|_window, cx| {
+                cx.new(|_| LocalPathTooltip {
+                    path: SharedString::from(i18n::text("tooltip.new_terminal")),
+                })
+                .into()
+            })
+            .child(icons::icon(icons::IconName::Plus, 14.).text_color(theme::muted_text()).hover(|s| s.text_color(theme::text())))
+            .on_click(cx.listener(move |this, _ev, _window, cx| {
+                cx.stop_propagation();
+                this.open_local_session(cwd_for_new.clone(), cx);
+            })),
+    )
+    .into_any_element()
 }
 
 fn render_host_entry(

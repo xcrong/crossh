@@ -197,6 +197,51 @@ fn render_general_settings(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
         languages = languages.child(option);
     }
 
+    let recent_dirs_max = shell.settings.recent_local_dirs_max;
+    let recent_dirs_control = div()
+        .flex()
+        .items_center()
+        .gap_1()
+        .child(settings_icon_button(
+            "settings-recent-dirs-decrease",
+            icons::IconName::Minus,
+            i18n::text("settings.recent_dirs"),
+            cx.listener(|this, _ev, _window, cx| {
+                let max = this.settings.recent_local_dirs_max.saturating_sub(1);
+                this.set_recent_dirs_max(max, cx);
+            }),
+        ))
+        .child(
+            div()
+                .w(px(64.))
+                .h(px(30.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(theme::RADIUS_SM))
+                .bg(theme::raised())
+                .text_xs()
+                .text_color(theme::text())
+                .child(SharedString::from(
+                    rust_i18n::t!("settings.dirs", value = recent_dirs_max).to_string(),
+                )),
+        )
+        .child(settings_icon_button(
+            "settings-recent-dirs-increase",
+            icons::IconName::Plus,
+            i18n::text("settings.recent_dirs"),
+            cx.listener(|this, _ev, _window, cx| {
+                let max = this.settings.recent_local_dirs_max + 1;
+                this.set_recent_dirs_max(max, cx);
+            }),
+        ))
+        .child(settings_icon_button(
+            "settings-recent-dirs-clear",
+            icons::IconName::X,
+            i18n::text("settings.recent_dirs_clear"),
+            cx.listener(|this, _ev, _window, cx| this.clear_recent_dirs(cx)),
+        ));
+
     div()
         .id("settings-general")
         .max_w(px(760.))
@@ -207,6 +252,11 @@ fn render_general_settings(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
             i18n::text("settings.language"),
             i18n::text("settings.language_description"),
             languages.into_any_element(),
+        ))
+        .child(settings_row(
+            i18n::text("settings.recent_dirs"),
+            i18n::text("settings.recent_dirs_description"),
+            recent_dirs_control.into_any_element(),
         ))
         .into_any_element()
 }

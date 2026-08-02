@@ -20,6 +20,10 @@ settings:
   scrollback_description: 终端保留的可滚动历史行数。
   lines: "%{value} 行"
   pixels: "%{value} 像素"
+  recent_dirs: 最近本地目录
+  recent_dirs_description: 记住打开过的本地目录，退出后仍可在侧栏 Local 重新打开。
+  dirs: "%{value} 个目录"
+  recent_dirs_clear: 清空最近记录
 
 sidebar:
   active: 活跃
@@ -35,6 +39,7 @@ sidebar:
 
 tooltip:
   new_terminal: 新建终端
+  forget_dir: 从最近记录移除
   settings: 设置
   open_sftp: 打开 SFTP
   port_forwarding: 端口转发

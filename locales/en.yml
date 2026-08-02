@@ -20,6 +20,10 @@ settings:
   scrollback_description: Number of terminal lines kept for scrolling.
   lines: "%{value} lines"
   pixels: "%{value} px"
+  recent_dirs: Recent local directories
+  recent_dirs_description: Remember opened local folders so they can be reopened after quitting.
+  dirs: "%{value} dirs"
+  recent_dirs_clear: Clear recent history
 
 sidebar:
   active: ACTIVE
@@ -35,6 +39,7 @@ sidebar:
 
 tooltip:
   new_terminal: New terminal
+  forget_dir: Remove from recent
   settings: Settings
   open_sftp: Open SFTP
   port_forwarding: Port forwarding
