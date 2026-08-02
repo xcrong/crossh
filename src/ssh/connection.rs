@@ -282,20 +282,20 @@ impl Connection {
 
     /// UI 回传主机密钥决定并清空待处理请求。
     pub fn resolve_host_key(&mut self, decision: HostKeyDecision) {
-        if let Some(PendingPrompt::HostKey { reply, .. }) = &mut self.pending_prompt {
-            if let Some(tx) = reply.take() {
-                let _ = tx.send(decision);
-            }
+        if let Some(PendingPrompt::HostKey { reply, .. }) = &mut self.pending_prompt
+            && let Some(tx) = reply.take()
+        {
+            let _ = tx.send(decision);
         }
         self.pending_prompt = None;
     }
 
     /// UI 回传凭据（None = 取消）并清空待处理请求。
     pub fn resolve_credential(&mut self, value: Option<String>) {
-        if let Some(PendingPrompt::Credential { reply, .. }) = &mut self.pending_prompt {
-            if let Some(tx) = reply.take() {
-                let _ = tx.send(value);
-            }
+        if let Some(PendingPrompt::Credential { reply, .. }) = &mut self.pending_prompt
+            && let Some(tx) = reply.take()
+        {
+            let _ = tx.send(value);
         }
         self.pending_prompt = None;
     }
@@ -552,12 +552,10 @@ async fn authenticate(
                                         rust_i18n::t!("prompt.wrong_passphrase_retry").to_string(),
                                     )
                                     .await
+                                        && let Ok(key) = keys::load_secret_key(path, Some(&pass2))
+                                        && auth_with_key(handle, user, key).await?
                                     {
-                                        if let Ok(key) = keys::load_secret_key(path, Some(&pass2)) {
-                                            if auth_with_key(handle, user, key).await? {
-                                                return Ok(true);
-                                            }
-                                        }
+                                        return Ok(true);
                                     }
                                 }
                             }
@@ -585,14 +583,13 @@ async fn authenticate(
 
     // 兜底：向 UI 索要密码（用户可取消）。
     let prompt = rust_i18n::t!("prompt.password_for", user = default_user).to_string();
-    if let Some(pass) = request_credential(event_tx, CredentialKind::Password, prompt).await {
-        if handle
+    if let Some(pass) = request_credential(event_tx, CredentialKind::Password, prompt).await
+        && handle
             .authenticate_password(default_user.clone(), pass)
             .await?
             .success()
-        {
-            return Ok(true);
-        }
+    {
+        return Ok(true);
     }
     Ok(false)
 }

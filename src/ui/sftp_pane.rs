@@ -216,7 +216,7 @@ impl SftpPane {
                                         editor.error = None;
                                     }
                                     Err(_) => {
-                                        editor.error = Some(i18n::text("sftp.not_utf8").into());
+                                        editor.error = Some(i18n::text("sftp.not_utf8"));
                                     }
                                 }
                             }
@@ -288,7 +288,7 @@ impl SftpPane {
                             if let Some(editor) = &mut this.editor {
                                 editor.loading = false;
                                 editor.saving = false;
-                                editor.error = Some(i18n::text("sftp.closed").into());
+                                editor.error = Some(i18n::text("sftp.closed"));
                             }
                             this.message = Some(i18n::text("sftp.closed"));
                         }
@@ -465,7 +465,7 @@ impl SftpPane {
         };
         if contents.len() as u64 > MAX_EDITOR_FILE_BYTES {
             if let Some(editor) = &mut self.editor {
-                editor.error = Some(i18n::text("sftp.editor_file_too_large").into());
+                editor.error = Some(i18n::text("sftp.editor_file_too_large"));
             }
             cx.notify();
             return;

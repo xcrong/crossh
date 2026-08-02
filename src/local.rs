@@ -45,8 +45,10 @@ async fn run_local_terminal(
     input_rx: Receiver<InputCmd>,
     event_tx: Sender<SessionEvent>,
 ) -> io::Result<()> {
-    let mut options = tty::Options::default();
-    options.working_directory = Some(cwd.clone());
+    let mut options = tty::Options {
+        working_directory: Some(cwd.clone()),
+        ..Default::default()
+    };
     if let Some(shell) = std::env::var_os("SHELL") {
         options.shell = Some(tty::Shell::new(
             shell.to_string_lossy().to_string(),
@@ -83,11 +85,10 @@ async fn run_local_terminal(
         result = &mut read_task => {
             write_task.abort();
             let _ = write_task.await;
-            if let Ok(Err(error)) = result {
-                if error.kind() != ErrorKind::UnexpectedEof {
+            if let Ok(Err(error)) = result
+                && error.kind() != ErrorKind::UnexpectedEof {
                     let _ = event_tx.send(SessionEvent::Error(error.to_string())).await;
                 }
-            }
         }
         result = &mut write_task => {
             read_task.abort();

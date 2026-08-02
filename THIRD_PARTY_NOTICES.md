@@ -28,3 +28,18 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 Lucide identifies some icons as derived from Feather. Those icons retain the
 Feather MIT notice documented in Lucide's official `LICENSE` file.
+
+## Core dependencies
+
+- **gpui** — UI toolkit, vendored from the Zed project at a pinned commit
+  (see `Cargo.toml`). APACHE-2.0 / GPL-3.0-or-later (source: zed-industries/zed).
+- **russh / russh-sftp** — SSH client and SFTP protocol. MIT.
+- **alacritty_terminal / vte** — terminal emulator core and escape sequence
+  parsing. Apache-2.0 / MIT.
+
+## Application icon
+
+`assets/appicon/AppIcon.icns` is hand-drawn for Crossh (a mint crosshair on the
+app's graphite background) and is not a Lucide asset. Its source is
+`assets/appicon/icon-master.svg`; regenerate the iconset with
+`iconutil -c icns` after editing the master.

@@ -3,7 +3,6 @@
 //! 常驻开发工具：复用 `~/.ssh/config`（只读），提供交互式终端（russh + alacritty_terminal）。
 //! SFTP 与端口转发为后续阶段（见 .kilo/plans）。
 
-mod button;
 mod config;
 mod i18n;
 mod local;

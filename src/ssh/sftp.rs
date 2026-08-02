@@ -190,9 +190,9 @@ async fn list_dir(sftp: &SftpSession, path: &str) -> Result<(String, Vec<RemoteE
         .canonicalize(path)
         .await
         .unwrap_or_else(|_| path.to_string());
-    let mut rd = sftp.read_dir(&abs).await.map_err(|e| e.to_string())?;
+    let rd = sftp.read_dir(&abs).await.map_err(|e| e.to_string())?;
     let mut out = Vec::new();
-    while let Some(e) = rd.next() {
+    for e in rd {
         let md = e.metadata();
         out.push(RemoteEntry {
             name: e.file_name(),

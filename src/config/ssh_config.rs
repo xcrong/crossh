@@ -333,10 +333,10 @@ fn glob_includes(referring_file: &Path, pattern: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Ok(entries) = fs::read_dir(parent) {
         for ent in entries.flatten() {
-            if let Some(name) = ent.file_name().to_str() {
-                if pattern_matches(pat, name) {
-                    out.push(ent.path());
-                }
+            if let Some(name) = ent.file_name().to_str()
+                && pattern_matches(pat, name)
+            {
+                out.push(ent.path());
             }
         }
     }
@@ -349,10 +349,10 @@ pub(crate) fn expand_tilde(s: &str) -> String {
         if let Some(home) = std::env::var_os("HOME") {
             return Path::new(&home).join(rest).to_string_lossy().into_owned();
         }
-    } else if s == "~" {
-        if let Some(home) = std::env::var_os("HOME") {
-            return home.to_string_lossy().into_owned();
-        }
+    } else if s == "~"
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return home.to_string_lossy().into_owned();
     }
     s.to_string()
 }
@@ -419,25 +419,24 @@ fn split_target(target: &str) -> (Option<&str>, &str, Option<u16>) {
 
     // tty7 风格的 QuickConnect 也接受 `[::1]:2222`；去掉方括号后交给
     // russh，避免把 IPv6 地址的内部冒号误判成端口分隔符。
-    if let Some(bracketed) = rest.strip_prefix('[') {
-        if let Some((host, suffix)) = bracketed.split_once(']') {
-            let port = suffix
-                .strip_prefix(':')
-                .and_then(|value| value.parse::<u16>().ok());
-            if suffix.is_empty() || port.is_some() {
-                return (user, host, port);
-            }
+    if let Some(bracketed) = rest.strip_prefix('[')
+        && let Some((host, suffix)) = bracketed.split_once(']')
+    {
+        let port = suffix
+            .strip_prefix(':')
+            .and_then(|value| value.parse::<u16>().ok());
+        if suffix.is_empty() || port.is_some() {
+            return (user, host, port);
         }
     }
 
     // 只有单冒号且尾部确实是数字时才解析为端口；裸 IPv6 和非法端口
     // 保持完整主机名，避免丢失地址的一部分。
-    if let Some((host, port)) = rest.rsplit_once(':') {
-        if !host.contains(':') {
-            if let Ok(port) = port.parse::<u16>() {
-                return (user, host, Some(port));
-            }
-        }
+    if let Some((host, port)) = rest.rsplit_once(':')
+        && !host.contains(':')
+        && let Ok(port) = port.parse::<u16>()
+    {
+        return (user, host, Some(port));
     }
     (user, rest, None)
 }

@@ -32,13 +32,13 @@ pub fn new_remote_forward_registry() -> RemoteForwardRegistry {
 
 /// 解析 listen 规约：`8080` → (127.0.0.1, 8080)；`host:port` → (host, port)。
 pub fn parse_listen(s: &str) -> (String, u16) {
-    if let Some(port) = s.parse::<u16>().ok() {
+    if let Ok(port) = s.parse::<u16>() {
         return ("127.0.0.1".to_string(), port);
     }
-    if let Some((h, p)) = s.rsplit_once(':') {
-        if let Ok(port) = p.parse::<u16>() {
-            return (h.to_string(), port);
-        }
+    if let Some((h, p)) = s.rsplit_once(':')
+        && let Ok(port) = p.parse::<u16>()
+    {
+        return (h.to_string(), port);
     }
     ("127.0.0.1".to_string(), 0)
 }

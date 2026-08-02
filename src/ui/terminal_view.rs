@@ -23,11 +23,11 @@ use async_channel::{Receiver, Sender, TrySendError};
 use chrono::Local;
 use gpui::{
     App, AppContext, Bounds, Context, Corners, Edges, ElementInputHandler, Entity,
-    EntityInputHandler, FocusHandle, Font, FontWeight, Hsla, InteractiveElement, IntoElement,
-    KeyDownEvent, KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Task, TextAlign, TextRun, UTF16Selection,
-    Window, canvas, div, hsla, px, quad,
+    EntityInputHandler, EventEmitter, FocusHandle, Font, FontWeight, Hsla, InteractiveElement,
+    IntoElement, KeyDownEvent, KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, Task, TextAlign, TextRun,
+    UTF16Selection, Window, canvas, div, hsla, px, quad,
 };
 use vte::ansi::{Color, NamedColor, Processor, Rgb};
 
@@ -58,6 +58,15 @@ pub enum ConnState {
     Error(String),
     Closed,
 }
+
+/// 终端视图向订阅者（AppShell）发出的事件。
+#[derive(Clone, Debug)]
+pub enum TerminalEvent {
+    /// shell 报告的当前工作目录已变化（仅本地终端）。
+    CwdChanged,
+}
+
+impl EventEmitter<TerminalEvent> for TerminalView {}
 
 /// alacritty EventListener：把终端模拟器需要回写的响应送回远端 PTY。
 #[derive(Clone)]
@@ -298,7 +307,7 @@ impl TerminalView {
                 }
                 let applied = weak.update(cx, |this, cx| {
                     for event in events {
-                        this.apply_session_event(event);
+                        this.apply_session_event(event, cx);
                     }
                     this.flush_pending_input();
                     cx.notify();
@@ -361,7 +370,7 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn apply_session_event(&mut self, event: SessionEvent) {
+    fn apply_session_event(&mut self, event: SessionEvent, cx: &mut Context<Self>) {
         match event {
             SessionEvent::Connected => {
                 log::info!("terminal: connected");
@@ -382,7 +391,10 @@ impl TerminalView {
                 }
             }
             SessionEvent::Cwd(cwd) => {
-                self.cwd = Some(cwd);
+                if self.cwd.as_deref() != Some(cwd.as_str()) {
+                    self.cwd = Some(cwd);
+                    cx.emit(TerminalEvent::CwdChanged);
+                }
             }
             SessionEvent::Error(error) => {
                 log::warn!("terminal: error {error}");
@@ -559,24 +571,24 @@ impl TerminalView {
         };
 
         // Cmd+Click → 检查 URL 跳转
-        if ev.modifiers.platform && ev.button == MouseButton::Left {
-            if let Some(url) = self.url_at(col, row) {
-                log::info!("opening URL: {url}");
-                std::process::Command::new("open").arg(&url).spawn().ok();
-                return;
-            }
+        if ev.modifiers.platform
+            && ev.button == MouseButton::Left
+            && let Some(url) = self.url_at(col, row)
+        {
+            log::info!("opening URL: {url}");
+            std::process::Command::new("open").arg(&url).spawn().ok();
+            return;
         }
 
         let mode = *self.term.mode();
         // Shift 保留本地选择，即使远端应用开启了鼠标模式。
         if mode.intersects(TermMode::MOUSE_MODE) && !ev.modifiers.shift {
-            if let Some(button) = mouse_button_code(ev.button) {
-                if let Some(bytes) =
+            if let Some(button) = mouse_button_code(ev.button)
+                && let Some(bytes) =
                     encode_mouse_report(button, col, row, true, &ev.modifiers, mode)
-                {
-                    self.send_input(bytes);
-                    self.remote_mouse_button = Some(button);
-                }
+            {
+                self.send_input(bytes);
+                self.remote_mouse_button = Some(button);
             }
             return;
         }
@@ -605,20 +617,19 @@ impl TerminalView {
             return;
         }
         let mode = *self.term.mode();
-        if mode.intersects(TermMode::MOUSE_MODE) {
-            if let Some((col, row)) = self.pos_to_grid(ev.position) {
-                if let Some(button) = mouse_button_code(ev.button) {
-                    let tracked_release = self.remote_mouse_button == Some(button);
-                    if !ev.modifiers.shift || tracked_release {
-                        if let Some(bytes) =
-                            encode_mouse_report(button, col, row, false, &ev.modifiers, mode)
-                        {
-                            self.send_input(bytes);
-                        }
-                        if tracked_release {
-                            self.remote_mouse_button = None;
-                        }
-                    }
+        if mode.intersects(TermMode::MOUSE_MODE)
+            && let Some((col, row)) = self.pos_to_grid(ev.position)
+            && let Some(button) = mouse_button_code(ev.button)
+        {
+            let tracked_release = self.remote_mouse_button == Some(button);
+            if !ev.modifiers.shift || tracked_release {
+                if let Some(bytes) =
+                    encode_mouse_report(button, col, row, false, &ev.modifiers, mode)
+                {
+                    self.send_input(bytes);
+                }
+                if tracked_release {
+                    self.remote_mouse_button = None;
                 }
             }
         }
@@ -630,11 +641,11 @@ impl TerminalView {
         }
         let mode = *self.term.mode();
         if self.selecting && ev.pressed_button == Some(MouseButton::Left) {
-            if let Some((col, row)) = self.pos_to_grid(ev.position) {
-                if self.sel_end != Some((col, row)) {
-                    self.sel_end = Some((col, row));
-                    cx.notify();
-                }
+            if let Some((col, row)) = self.pos_to_grid(ev.position)
+                && self.sel_end != Some((col, row))
+            {
+                self.sel_end = Some((col, row));
+                cx.notify();
             }
             return;
         }
@@ -642,21 +653,20 @@ impl TerminalView {
         if mode.intersects(TermMode::MOUSE_MODE) && !ev.modifiers.shift {
             let reports_motion = mode.contains(TermMode::MOUSE_MOTION)
                 || (mode.contains(TermMode::MOUSE_DRAG) && ev.pressed_button.is_some());
-            if let Some((col, row)) = self.pos_to_grid(ev.position) {
-                if reports_motion {
-                    let button = ev
-                        .pressed_button
-                        .and_then(mouse_button_code)
-                        .map(|button| 32 + button)
-                        .unwrap_or(35);
-                    if let Some(bytes) =
-                        encode_mouse_report(button, col, row, true, &ev.modifiers, mode)
-                    {
-                        self.send_input(bytes);
-                    }
+            if let Some((col, row)) = self.pos_to_grid(ev.position)
+                && reports_motion
+            {
+                let button = ev
+                    .pressed_button
+                    .and_then(mouse_button_code)
+                    .map(|button| 32 + button)
+                    .unwrap_or(35);
+                if let Some(bytes) =
+                    encode_mouse_report(button, col, row, true, &ev.modifiers, mode)
+                {
+                    self.send_input(bytes);
                 }
             }
-            return;
         }
     }
 
@@ -681,7 +691,7 @@ impl TerminalView {
         if delta == 0.0 {
             return;
         }
-        let steps = (delta.abs() as usize).max(1).min(8);
+        let steps = (delta.abs() as usize).clamp(1, 8);
         let dir = if delta > 0.0 { 64 } else { 65 };
 
         if mode.intersects(TermMode::MOUSE_MODE) && !ev.modifiers.shift {
@@ -1026,7 +1036,7 @@ impl Render for TerminalView {
             move |bounds, _window, cx| {
                 // prepaint：可能 resize。
                 if let Some(t) = weak.upgrade() {
-                    let _ = t.update(cx, |this, _cx| {
+                    t.update(cx, |this, _cx| {
                         let terminal_bounds = terminal_bounds_for(bounds, show_timestamps);
                         this.content_origin = terminal_bounds.origin;
                         this.maybe_resize(Size {
@@ -1070,17 +1080,19 @@ impl Render for TerminalView {
                         this.detected_urls = urls;
                     });
                     paint_snapshot(
-                        &snapshot,
-                        &ime_marked_text,
-                        bounds,
-                        terminal_bounds_for(bounds, show_timestamps),
-                        cell_w,
-                        line_h,
-                        font_size,
-                        show_timestamps,
-                        &font,
-                        default_fg,
-                        bg,
+                        &PaintContext {
+                            snapshot: &snapshot,
+                            ime_marked_text: &ime_marked_text,
+                            canvas_bounds: bounds,
+                            bounds: terminal_bounds_for(bounds, show_timestamps),
+                            cell_w,
+                            line_h,
+                            font_size,
+                            show_timestamps,
+                            font: &font,
+                            default_fg,
+                            default_bg: bg,
+                        },
                         window,
                         cx,
                     );
@@ -1774,19 +1786,31 @@ fn snapshot_visible(
     }
 }
 
-/// 根据快照绘制。
-fn paint_timestamp_gutter(
-    snapshot: &Snapshot,
+/// paint 阶段共享的绘制参数（收敛 paint_* 长参数列表）。
+struct PaintContext<'a> {
+    snapshot: &'a Snapshot,
+    ime_marked_text: &'a str,
     canvas_bounds: Bounds<Pixels>,
-    terminal_bounds: Bounds<Pixels>,
+    bounds: Bounds<Pixels>,
+    cell_w: Pixels,
     line_h: Pixels,
     font_size: f32,
-    font: &Font,
+    show_timestamps: bool,
+    font: &'a Font,
     default_fg: Hsla,
     default_bg: Hsla,
-    window: &mut Window,
-    cx: &mut App,
-) {
+}
+
+/// 根据快照绘制。
+fn paint_timestamp_gutter(ctx: &PaintContext, window: &mut Window, cx: &mut App) {
+    let snapshot = ctx.snapshot;
+    let canvas_bounds = ctx.canvas_bounds;
+    let terminal_bounds = ctx.bounds;
+    let line_h = ctx.line_h;
+    let font_size = ctx.font_size;
+    let font = ctx.font;
+    let default_fg = ctx.default_fg;
+    let default_bg = ctx.default_bg;
     window.paint_quad(quad(
         canvas_bounds,
         Corners::default(),
@@ -1862,37 +1886,22 @@ fn paint_timestamp_gutter(
     }
 }
 
-fn paint_snapshot(
-    snapshot: &Snapshot,
-    ime_marked_text: &str,
-    canvas_bounds: Bounds<Pixels>,
-    bounds: Bounds<Pixels>,
-    cell_w: Pixels,
-    line_h: Pixels,
-    font_size: f32,
-    show_timestamps: bool,
-    font: &Font,
-    default_fg: Hsla,
-    default_bg: Hsla,
-    window: &mut Window,
-    cx: &mut App,
-) {
+fn paint_snapshot(ctx: &PaintContext, window: &mut Window, cx: &mut App) {
+    let snapshot = ctx.snapshot;
+    let ime_marked_text = ctx.ime_marked_text;
+    let bounds = ctx.bounds;
+    let cell_w = ctx.cell_w;
+    let line_h = ctx.line_h;
+    let font_size = ctx.font_size;
+    let show_timestamps = ctx.show_timestamps;
+    let font = ctx.font;
+    let default_fg = ctx.default_fg;
+    let default_bg = ctx.default_bg;
     let cell_wf = cell_w.as_f32();
     let line_hf = line_h.as_f32();
 
     if show_timestamps {
-        paint_timestamp_gutter(
-            snapshot,
-            canvas_bounds,
-            bounds,
-            line_h,
-            font_size,
-            font,
-            default_fg,
-            default_bg,
-            window,
-            cx,
-        );
+        paint_timestamp_gutter(ctx, window, cx);
     }
 
     // 诊断：打印每帧实际拿到的 snapshot 内容（非空行），用于判断
@@ -2048,68 +2057,67 @@ fn paint_snapshot(
     }
 
     // 光标：实心块（受 blink + DECTCEM 控制）。
-    if snapshot.cursor_visible {
-        if let Some((col, row)) = snapshot.cursor {
-            if row < snapshot.rows.len() {
-                let x = bounds.origin.x + px(col as f32 * cell_wf);
-                let y = bounds.origin.y + px(row as f32 * line_hf);
-                let cb = Bounds {
-                    origin: Point::new(x, y),
-                    size: gpui::size(cell_w, line_h),
-                };
-                window.paint_quad(quad(
-                    cb,
-                    Corners::default(),
-                    default_fg,
-                    Edges::default(),
-                    hsla(0., 0., 0., 0.),
-                    gpui::BorderStyle::default(),
-                ));
-            }
-        }
+    if snapshot.cursor_visible
+        && let Some((col, row)) = snapshot.cursor
+        && row < snapshot.rows.len()
+    {
+        let x = bounds.origin.x + px(col as f32 * cell_wf);
+        let y = bounds.origin.y + px(row as f32 * line_hf);
+        let cb = Bounds {
+            origin: Point::new(x, y),
+            size: gpui::size(cell_w, line_h),
+        };
+        window.paint_quad(quad(
+            cb,
+            Corners::default(),
+            default_fg,
+            Edges::default(),
+            hsla(0., 0., 0., 0.),
+            gpui::BorderStyle::default(),
+        ));
     }
 
     // 合成阶段的拼音由输入法暂存，不能提前写入 PTY；在光标处绘制出来，
     // 让用户能看到当前正在组合的文本，提交后才由 replace_text_in_range 发送。
-    if !ime_marked_text.is_empty() {
-        if let Some((col, row)) = snapshot.cursor {
-            let origin = Point::new(
-                bounds.origin.x + px(col as f32 * cell_wf),
-                bounds.origin.y + px(row as f32 * line_hf),
-            );
-            let marked_runs = [TextRun {
-                len: ime_marked_text.len(),
-                font: font.clone(),
-                color: default_fg,
-                background_color: Some(default_bg),
-                underline: Some(gpui::UnderlineStyle {
-                    thickness: px(1.0),
-                    color: Some(default_fg),
-                    wavy: false,
-                }),
-                strikethrough: None,
-            }];
-            let shaped = window.text_system().shape_line(
-                SharedString::from(ime_marked_text.to_string()),
-                px(font_size),
-                &marked_runs,
-                Some(cell_w),
-            );
-            let width = shaped.width().max(cell_w);
-            window.paint_quad(quad(
-                Bounds {
-                    origin,
-                    size: gpui::size(width, line_h),
-                },
-                Corners::default(),
-                default_bg,
-                Edges::default(),
-                hsla(0., 0., 0., 0.),
-                gpui::BorderStyle::default(),
-            ));
-            if let Err(e) = shaped.paint(origin, line_h, TextAlign::Left, None, window, cx) {
-                log::warn!("paint IME marked text failed: {e}");
-            }
+    if !ime_marked_text.is_empty()
+        && let Some((col, row)) = snapshot.cursor
+    {
+        let origin = Point::new(
+            bounds.origin.x + px(col as f32 * cell_wf),
+            bounds.origin.y + px(row as f32 * line_hf),
+        );
+        let marked_runs = [TextRun {
+            len: ime_marked_text.len(),
+            font: font.clone(),
+            color: default_fg,
+            background_color: Some(default_bg),
+            underline: Some(gpui::UnderlineStyle {
+                thickness: px(1.0),
+                color: Some(default_fg),
+                wavy: false,
+            }),
+            strikethrough: None,
+        }];
+        let shaped = window.text_system().shape_line(
+            SharedString::from(ime_marked_text.to_string()),
+            px(font_size),
+            &marked_runs,
+            Some(cell_w),
+        );
+        let width = shaped.width().max(cell_w);
+        window.paint_quad(quad(
+            Bounds {
+                origin,
+                size: gpui::size(width, line_h),
+            },
+            Corners::default(),
+            default_bg,
+            Edges::default(),
+            hsla(0., 0., 0., 0.),
+            gpui::BorderStyle::default(),
+        ));
+        if let Err(e) = shaped.paint(origin, line_h, TextAlign::Left, None, window, cx) {
+            log::warn!("paint IME marked text failed: {e}");
         }
     }
 
@@ -2387,13 +2395,14 @@ fn encode_keystroke_with_event(
     // Ctrl+letter and the ASCII control punctuation are single-byte controls.
     // Keep Alt+Ctrl as ESC followed by the control byte, which is what shells
     // and most full-screen applications expect for a Meta control key.
-    if m.control && !m.platform {
-        if let Some(control) = control_code(key) {
-            if m.alt {
-                return Some(vec![0x1b, control]);
-            }
-            return Some(vec![control]);
+    if m.control
+        && !m.platform
+        && let Some(control) = control_code(key)
+    {
+        if m.alt {
+            return Some(vec![0x1b, control]);
         }
+        return Some(vec![control]);
     }
 
     match key {
