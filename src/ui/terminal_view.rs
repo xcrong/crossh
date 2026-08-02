@@ -8,6 +8,7 @@
 //! Term 只在 gpui 主线程被触碰（drain 与 paint 都在主线程）。
 
 use std::collections::VecDeque;
+use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
@@ -18,11 +19,12 @@ use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use async_channel::{Receiver, Sender, TrySendError};
 use gpui::{
-    canvas, px, App, AppContext, Bounds, Context, Corners, Edges, Entity, FocusHandle, Font,
-    FontWeight, Hsla, InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent, Modifiers,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
-    ScrollDelta, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, TextAlign,
-    Subscription, Task, TextRun, Window, div, hsla, quad, rgb,
+    canvas, px, App, AppContext, Bounds, Context, Corners, Edges, ElementInputHandler, Entity,
+    EntityInputHandler, FocusHandle, Font, FontWeight, Hsla, InteractiveElement, IntoElement,
+    KeyDownEvent, KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent,
+    SharedString, StatefulInteractiveElement, Styled, TextAlign, Subscription, Task, TextRun,
+    UTF16Selection, Window, div, hsla, quad, rgb,
 };
 use vte::ansi::{Color, NamedColor, Processor, Rgb};
 
@@ -162,6 +164,10 @@ pub struct TerminalView {
     sel_start: Option<(usize, usize)>,
     sel_end: Option<(usize, usize)>,
     selecting: bool,
+    /// macOS/GPUI 输入法的临时合成文本。它不能直接写入 PTY，只有提交后的文本才发送。
+    ime_marked_text: String,
+    /// 输入法当前选区，单位是 UTF-16 code units。
+    ime_selected_range: Range<usize>,
     remote_mouse_button: Option<u8>,
     /// 累积滚动偏移（trackpad 累加用）。
     scroll_acc: f32,
@@ -245,6 +251,8 @@ impl TerminalView {
             sel_start: None,
             sel_end: None,
             selecting: false,
+            ime_marked_text: String::new(),
+            ime_selected_range: 0..0,
             remote_mouse_button: None,
             scroll_acc: 0.,
             cursor_blink_on: true,
@@ -726,6 +734,130 @@ impl TerminalView {
         }
         out
     }
+
+    /// 当前终端光标在可视 viewport 中的位置。
+    fn ime_cursor_bounds(&self, element_bounds: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
+        if self.cell_w.as_f32() <= 0.0 || self.line_h.as_f32() <= 0.0 {
+            return None;
+        }
+
+        let grid = self.term.grid();
+        let (col, row) = cursor_viewport_position(
+            grid.cursor.point.line.0,
+            grid.cursor.point.column.0,
+            grid.display_offset(),
+            self.term.screen_lines(),
+            self.term.columns(),
+        )?;
+
+        Some(Bounds {
+            origin: Point::new(
+                element_bounds.origin.x + px(col as f32 * self.cell_w.as_f32()),
+                element_bounds.origin.y + px(row as f32 * self.line_h.as_f32()),
+            ),
+            size: gpui::size(self.cell_w, self.line_h),
+        })
+    }
+}
+
+impl EntityInputHandler for TerminalView {
+    fn text_for_range(
+        &mut self,
+        range: Range<usize>,
+        adjusted_range: &mut Option<Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let (text, actual_range) = utf16_slice(&self.ime_marked_text, range)?;
+        adjusted_range.replace(actual_range);
+        Some(text)
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        Some(UTF16Selection {
+            range: self.ime_selected_range.clone(),
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
+        (!self.ime_marked_text.is_empty()).then(|| 0..utf16_len(&self.ime_marked_text))
+    }
+
+    fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ime_marked_text.clear();
+        self.ime_selected_range = 0..0;
+        window.invalidate_character_coordinates();
+        cx.notify();
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        _range: Option<Range<usize>>,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.ime_marked_text.clear();
+        self.ime_selected_range = 0..0;
+        if !text.is_empty() {
+            self.send_input(text.as_bytes().to_vec());
+        }
+        window.invalidate_character_coordinates();
+        cx.notify();
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _range: Option<Range<usize>>,
+        new_text: &str,
+        new_selected_range: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.ime_marked_text.clear();
+        self.ime_marked_text.push_str(new_text);
+        let end = utf16_len(new_text);
+        self.ime_selected_range = new_selected_range
+            .map(|range| normalize_utf16_range(range, end))
+            .unwrap_or(end..end);
+        window.invalidate_character_coordinates();
+        cx.notify();
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _range: Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        self.ime_cursor_bounds(element_bounds)
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: Point<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        // A terminal is not a random-access text document. The IME only needs
+        // the virtual marked text and the cursor bounds supplied above.
+        None
+    }
+
+    fn accepts_text_input(&self, _window: &mut Window, _cx: &mut Context<Self>) -> bool {
+        !matches!(self.state, ConnState::Error(_) | ConnState::Closed)
+    }
 }
 
 impl Render for TerminalView {
@@ -785,6 +917,8 @@ impl Render for TerminalView {
         let line_h = self.line_h;
         let weak = entity.downgrade();
         let weak2 = weak.clone();
+        let input_entity = entity.clone();
+        let input_focus = focus.clone();
         let default_fg = fg_of(&self.term);
 
         let canvas_el = canvas(
@@ -802,21 +936,41 @@ impl Render for TerminalView {
                 bounds
             },
             move |bounds, _pre, window, cx| {
+                // GPUI 只有在 paint 阶段注册了 InputHandler，macOS 才会把
+                // 中文/日文等合成输入交给当前终端，并能查询候选框坐标。
+                window.handle_input(
+                    &input_focus,
+                    ElementInputHandler::new(bounds, input_entity.clone()),
+                    cx,
+                );
+
                 // paint：先快照可见单元格（避免持有对 cx 的不可变借用），
                 // 再用 &mut App 绘制。
                 if let Some(t) = weak2.upgrade() {
-                    let snapshot = {
+                    let (snapshot, ime_marked_text) = {
                         let this = t.read(cx);
                         let sel = this.sel_start.zip(this.sel_end);
                         let show_cur = this.cursor_blink_on
                             && this.term.mode().contains(TermMode::SHOW_CURSOR);
-                        snapshot_visible(&this.term, sel, this.cols, show_cur)
+                        (
+                            snapshot_visible(&this.term, sel, this.cols, show_cur),
+                            this.ime_marked_text.clone(),
+                        )
                     };
                     // 保存 URL 供点击跳转。
                     let urls = snapshot.urls.clone();
                     let _ = weak2.update(cx, |this, _| { this.detected_urls = urls; });
                     paint_snapshot(
-                        &snapshot, bounds, cell_w, line_h, &font, default_fg, bg, window, cx,
+                        &snapshot,
+                        &ime_marked_text,
+                        bounds,
+                        cell_w,
+                        line_h,
+                        &font,
+                        default_fg,
+                        bg,
+                        window,
+                        cx,
                     );
                 }
             },
@@ -907,6 +1061,68 @@ struct Snapshot {
     urls: Vec<(usize, usize, usize, String)>,
 }
 
+/// 把 alacritty 的绝对行号转换成当前 viewport 内的行列。
+///
+/// 终端滚动时光标仍然保留在 grid 的绝对位置，候选框必须使用同一套
+/// display_offset 换算，否则会落在错误位置，或在不可见时错误地回退到左下角。
+fn cursor_viewport_position(
+    cursor_line: i32,
+    cursor_column: usize,
+    display_offset: usize,
+    rows: usize,
+    cols: usize,
+) -> Option<(usize, usize)> {
+    if rows == 0 || cols == 0 {
+        return None;
+    }
+
+    let display_offset = i32::try_from(display_offset).unwrap_or(i32::MAX);
+    let viewport_row = cursor_line.saturating_add(display_offset);
+    if viewport_row < 0 || viewport_row >= rows as i32 {
+        return None;
+    }
+
+    Some((cursor_column.min(cols - 1), viewport_row as usize))
+}
+
+fn utf16_len(text: &str) -> usize {
+    text.encode_utf16().count()
+}
+
+/// 将 UTF-16 偏移对齐到 Rust 字符边界，并返回对应的 UTF-16 偏移和 UTF-8 偏移。
+fn utf16_boundary(text: &str, offset: usize) -> (usize, usize) {
+    let mut utf16_offset = 0;
+    for (byte_offset, ch) in text.char_indices() {
+        if utf16_offset >= offset {
+            return (utf16_offset, byte_offset);
+        }
+        utf16_offset += ch.len_utf16();
+        if utf16_offset >= offset {
+            return (utf16_offset, byte_offset + ch.len_utf8());
+        }
+    }
+    (utf16_offset, text.len())
+}
+
+fn normalize_utf16_range(range: Range<usize>, text_len: usize) -> Range<usize> {
+    let start = range.start.min(text_len);
+    let end = range.end.min(text_len).max(start);
+    start..end
+}
+
+fn utf16_slice(text: &str, range: Range<usize>) -> Option<(String, Range<usize>)> {
+    let range = normalize_utf16_range(range, utf16_len(text));
+    let (actual_start, byte_start) = utf16_boundary(text, range.start);
+    let (actual_end, byte_end) = utf16_boundary(text, range.end);
+    if byte_start > byte_end {
+        return None;
+    }
+    Some((
+        text.get(byte_start..byte_end)?.to_string(),
+        actual_start..actual_end,
+    ))
+}
+
 /// 把 Term 可见区快照成 owned 数据。
 fn snapshot_visible(
     term: &Term<NoopListener>,
@@ -951,15 +1167,13 @@ fn snapshot_visible(
     }
 
     // 光标位置（视口内）。
-    let cursor = {
-        let cp = &grid.cursor.point;
-        let cline = cp.line.0 - top_visible.0;
-        if cline >= 0 && (cline as usize) < rows {
-            Some((cp.column.0.min(cols.saturating_sub(1)), cline as usize))
-        } else {
-            None
-        }
-    };
+    let cursor = cursor_viewport_position(
+        grid.cursor.point.line.0,
+        grid.cursor.point.column.0,
+        display_offset,
+        rows,
+        cols,
+    );
 
     let display_offset = grid.display_offset();
     let history_len = grid.history_size();
@@ -1010,6 +1224,7 @@ fn snapshot_visible(
 /// 根据快照绘制。
 fn paint_snapshot(
     snapshot: &Snapshot,
+    ime_marked_text: &str,
     bounds: Bounds<Pixels>,
     cell_w: Pixels,
     line_h: Pixels,
@@ -1242,6 +1457,50 @@ fn paint_snapshot(
                     hsla(0., 0., 0., 0.),
                     gpui::BorderStyle::default(),
                 ));
+            }
+        }
+    }
+
+    // 合成阶段的拼音由输入法暂存，不能提前写入 PTY；在光标处绘制出来，
+    // 让用户能看到当前正在组合的文本，提交后才由 replace_text_in_range 发送。
+    if !ime_marked_text.is_empty() {
+        if let Some((col, row)) = snapshot.cursor {
+            let origin = Point::new(
+                bounds.origin.x + px(col as f32 * cell_wf),
+                bounds.origin.y + px(row as f32 * line_hf),
+            );
+            let marked_runs = [TextRun {
+                len: ime_marked_text.len(),
+                font: font.clone(),
+                color: default_fg,
+                background_color: Some(default_bg),
+                underline: Some(gpui::UnderlineStyle {
+                    thickness: px(1.0),
+                    color: Some(default_fg),
+                    wavy: false,
+                }),
+                strikethrough: None,
+            }];
+            let shaped = window.text_system().shape_line(
+                SharedString::from(ime_marked_text.to_string()),
+                px(FONT_SIZE),
+                &marked_runs,
+                Some(cell_w),
+            );
+            let width = shaped.width().max(cell_w);
+            window.paint_quad(quad(
+                Bounds {
+                    origin,
+                    size: gpui::size(width, line_h),
+                },
+                Corners::default(),
+                default_bg,
+                Edges::default(),
+                hsla(0., 0., 0., 0.),
+                gpui::BorderStyle::default(),
+            ));
+            if let Err(e) = shaped.paint(origin, line_h, TextAlign::Left, None, window, cx) {
+                log::warn!("paint IME marked text failed: {e}");
             }
         }
     }
@@ -2238,6 +2497,40 @@ mod tests {
             InputCmd::Write(bytes) => assert_eq!(bytes, b"\x1b[0n"),
             _ => panic!("expected a PTY write response"),
         }
+    }
+
+    #[test]
+    fn ime_cursor_position_accounts_for_scrollback_offset() {
+        assert_eq!(
+            cursor_viewport_position(2, 9, 0, 24, 80),
+            Some((9, 2))
+        );
+        assert_eq!(
+            cursor_viewport_position(0, 99, 3, 24, 80),
+            Some((79, 3))
+        );
+        assert_eq!(cursor_viewport_position(-4, 0, 3, 24, 80), None);
+        assert_eq!(cursor_viewport_position(0, 0, 0, 0, 80), None);
+    }
+
+    #[test]
+    fn ime_text_ranges_use_utf16_and_preserve_character_boundaries() {
+        let text = "中😀文";
+        assert_eq!(utf16_len(text), 4);
+        assert_eq!(
+            utf16_slice(text, 1..3),
+            Some(("😀".to_string(), 1..3))
+        );
+        // A range that lands in the middle of a surrogate pair is expanded to
+        // the complete scalar value, matching GPUI's UTF-16 offset behavior.
+        assert_eq!(
+            utf16_slice(text, 1..2),
+            Some(("😀".to_string(), 1..3))
+        );
+        assert_eq!(
+            normalize_utf16_range(0..99, utf16_len(text)),
+            0..4
+        );
     }
 
     /// 隔离测试：把真实 shell 输出（含 OSC 标题 / 颜色 / bracketed-paste /
