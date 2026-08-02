@@ -1235,10 +1235,18 @@ struct Snapshot {
     timestamps: Vec<Option<String>>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct RowSignature {
     hash: u64,
     has_content: bool,
+    text: String,
+    wraps_to_next: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct LogicalTimestampLine {
+    text: String,
+    timestamp: Option<String>,
 }
 
 /// 保存终端主屏幕的行时间戳。它和 alacritty 网格分开，避免任何 UI 元数据
@@ -1322,22 +1330,7 @@ impl TerminalTimestampState {
         let signatures = terminal_row_signatures(term);
         let old_signatures = std::mem::take(&mut self.signatures);
         let old_lines = std::mem::take(&mut self.lines);
-        let mut next_lines = vec![None; signatures.len()];
-        let mut old_start = 0;
-
-        // Resize may reflow wrapped rows, so only carry timestamps across exact
-        // row matches. New/reflowed rows remain blank until their next output.
-        for (new_index, signature) in signatures.iter().enumerate() {
-            let Some(relative_old_index) = old_signatures[old_start..]
-                .iter()
-                .position(|old_signature| old_signature == signature)
-            else {
-                continue;
-            };
-            let old_index = old_start + relative_old_index;
-            next_lines[new_index] = old_lines.get(old_index).cloned().flatten();
-            old_start = old_index + 1;
-        }
+        let next_lines = remap_timestamps_after_resize(&old_signatures, &old_lines, &signatures);
 
         self.lines = next_lines;
         self.signatures = signatures;
@@ -1359,7 +1352,7 @@ impl TerminalTimestampState {
             .map(|row| {
                 let line = Line(-(display_offset as i32) + row as i32);
                 let index = start + row;
-                let continuation = line.0 > -(history as i32)
+                let continuation = row > 0
                     && grid[Line(line.0 - 1)][Column(grid.columns() - 1)]
                         .flags
                         .contains(CellFlags::WRAPLINE);
@@ -1381,23 +1374,114 @@ fn terminal_row_signatures(term: &Term<NoopListener>) -> Vec<RowSignature> {
     for line in -(history as i32)..grid.screen_lines() as i32 {
         let row = &grid[Line(line)];
         let mut hasher = DefaultHasher::new();
-        let mut has_content = false;
+        let wraps_to_next = row
+            .last()
+            .is_some_and(|cell| cell.flags.contains(CellFlags::WRAPLINE));
+        let mut text = String::new();
         for cell in row {
             cell.c.hash(&mut hasher);
             cell.flags.hash(&mut hasher);
             if let Some(zerowidth) = cell.zerowidth() {
                 zerowidth.hash(&mut hasher);
             }
-            has_content |= cell.c != '\0' && cell.c != ' ';
-            has_content |= cell.zerowidth().is_some_and(|chars| !chars.is_empty());
+
+            if !cell
+                .flags
+                .intersects(CellFlags::WIDE_CHAR_SPACER | CellFlags::LEADING_WIDE_CHAR_SPACER)
+            {
+                text.push(if cell.c == '\0' { ' ' } else { cell.c });
+                if let Some(zerowidth) = cell.zerowidth() {
+                    for &character in zerowidth {
+                        text.push(character);
+                    }
+                }
+            }
         }
+        if !wraps_to_next {
+            while text.ends_with(' ') {
+                text.pop();
+            }
+        }
+        let has_content = text.chars().any(|character| character != ' ');
         signatures.push(RowSignature {
             hash: hasher.finish(),
             has_content,
+            text,
+            wraps_to_next,
         });
     }
 
     signatures
+}
+
+fn logical_timestamp_lines(
+    signatures: &[RowSignature],
+    timestamps: &[Option<String>],
+) -> Vec<LogicalTimestampLine> {
+    let mut logical_lines = Vec::new();
+    let mut text = String::new();
+    let mut timestamp = None;
+
+    for (index, signature) in signatures.iter().enumerate() {
+        if timestamp.is_none() {
+            timestamp = timestamps.get(index).cloned().flatten();
+        }
+        text.push_str(&signature.text);
+
+        if !signature.wraps_to_next {
+            logical_lines.push(LogicalTimestampLine {
+                text: std::mem::take(&mut text),
+                timestamp: timestamp.take(),
+            });
+        }
+    }
+
+    if !text.is_empty()
+        || timestamp.is_some()
+        || signatures
+            .last()
+            .is_some_and(|signature| signature.wraps_to_next)
+    {
+        logical_lines.push(LogicalTimestampLine { text, timestamp });
+    }
+
+    logical_lines
+}
+
+fn remap_timestamps_after_resize(
+    old_signatures: &[RowSignature],
+    old_timestamps: &[Option<String>],
+    new_signatures: &[RowSignature],
+) -> Vec<Option<String>> {
+    let old_logical_lines = logical_timestamp_lines(old_signatures, old_timestamps);
+    let new_logical_lines = logical_timestamp_lines(new_signatures, &[]);
+    let mut logical_timestamps = vec![None; new_logical_lines.len()];
+    let mut old_start = 0;
+
+    for (new_index, new_line) in new_logical_lines.iter().enumerate() {
+        let Some(relative_old_index) = old_logical_lines[old_start..]
+            .iter()
+            .position(|old_line| old_line.text == new_line.text)
+        else {
+            continue;
+        };
+        let old_index = old_start + relative_old_index;
+        logical_timestamps[new_index] = old_logical_lines[old_index].timestamp.clone();
+        old_start = old_index + 1;
+    }
+
+    let mut timestamps = vec![None; new_signatures.len()];
+    let mut logical_index = 0;
+    for (row_index, signature) in new_signatures.iter().enumerate() {
+        if let Some(timestamp) = logical_timestamps.get(logical_index) {
+            timestamps[row_index] = timestamp.clone();
+        }
+        if !signature.wraps_to_next {
+            logical_index += 1;
+        }
+    }
+
+    timestamps
 }
 
 fn detect_scroll_shift(old: &[RowSignature], new: &[RowSignature]) -> Option<usize> {
@@ -2894,6 +2978,8 @@ mod tests {
             RowSignature {
                 hash: hasher.finish(),
                 has_content: true,
+                text: value.to_string(),
+                wraps_to_next: false,
             }
         };
         let old = [
@@ -2909,6 +2995,55 @@ mod tests {
             signature("five"),
         ];
         assert_eq!(detect_scroll_shift(&old, &new), Some(1));
+    }
+
+    #[test]
+    fn timestamp_tracker_preserves_rows_after_resize_reflow() {
+        let config = Config {
+            scrolling_history: SCROLLBACK,
+            ..Default::default()
+        };
+        let mut term: Term<NoopListener> = Term::new(
+            config,
+            &TermSize { cols: 5, rows: 4 },
+            NoopListener::default(),
+        );
+        let mut parser: Processor = Processor::new();
+        let mut tracker = TerminalTimestampState::default();
+
+        parser.advance(&mut term, b"abcdefghij");
+        tracker.observe(&term, "10:00:00.004".to_string());
+        parser.advance(&mut term, b"\r\nnext");
+        tracker.observe(&term, "10:00:00.005".to_string());
+
+        term.resize(TermSize { cols: 20, rows: 6 });
+        tracker.sync_to_term(&term);
+        let visible = tracker.visible(&term);
+
+        assert!(
+            visible
+                .iter()
+                .any(|timestamp| timestamp.as_deref() == Some("10:00:00.004"))
+        );
+        assert!(
+            visible
+                .iter()
+                .any(|timestamp| timestamp.as_deref() == Some("10:00:00.005"))
+        );
+
+        term.resize(TermSize { cols: 5, rows: 4 });
+        tracker.sync_to_term(&term);
+        let visible = tracker.visible(&term);
+        assert!(
+            visible
+                .iter()
+                .any(|timestamp| timestamp.as_deref() == Some("10:00:00.004"))
+        );
+        assert!(
+            visible
+                .iter()
+                .any(|timestamp| timestamp.as_deref() == Some("10:00:00.005"))
+        );
     }
 
     #[test]
