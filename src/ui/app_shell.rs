@@ -709,7 +709,9 @@ impl AppShell {
         if !self.settings.recent_local_dirs.contains(&cwd) {
             return;
         }
-        self.settings.recent_local_dirs.retain(|existing| existing != &cwd);
+        self.settings
+            .recent_local_dirs
+            .retain(|existing| existing != &cwd);
         self.persist_settings(cx);
         self.sync_local_dirs(cx);
         cx.notify();

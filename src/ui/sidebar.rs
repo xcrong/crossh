@@ -376,7 +376,11 @@ pub fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElemen
                 .child(SharedString::from(i18n::language_short_label(
                     shell.language_preference.resolve(),
                 )))
-                .child(icons::icon(icons::IconName::ChevronDown, 11.).text_color(theme::muted_text()).hover(|s| s.text_color(theme::text())))
+                .child(
+                    icons::icon(icons::IconName::ChevronDown, 11.)
+                        .text_color(theme::muted_text())
+                        .hover(|s| s.text_color(theme::text())),
+                )
                 .on_click(cx.listener(|this, _ev, _window, cx| {
                     this.toggle_language_menu(cx);
                 })),
@@ -408,11 +412,15 @@ pub fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElemen
                     })
                     .into()
                 })
-                .child(icons::icon(icons::IconName::Settings, 14.).text_color(if shell.settings_open {
-                    theme::accent()
-                } else {
-                    theme::muted_text()
-                }).hover(|s| s.text_color(theme::text())))
+                .child(
+                    icons::icon(icons::IconName::Settings, 14.)
+                        .text_color(if shell.settings_open {
+                            theme::accent()
+                        } else {
+                            theme::muted_text()
+                        })
+                        .hover(|s| s.text_color(theme::text())),
+                )
                 .on_click(cx.listener(|this, _ev, _window, cx| {
                     this.toggle_settings(cx);
                 })),
@@ -675,7 +683,11 @@ fn render_local_dir(
                 })
                 .into()
             })
-            .child(icons::icon(icons::IconName::Plus, 14.).text_color(theme::muted_text()).hover(|s| s.text_color(theme::text())))
+            .child(
+                icons::icon(icons::IconName::Plus, 14.)
+                    .text_color(theme::muted_text())
+                    .hover(|s| s.text_color(theme::text())),
+            )
             .on_click(cx.listener(move |this, _ev, _window, cx| {
                 cx.stop_propagation();
                 this.open_local_session(cwd_for_new.clone(), cx);
@@ -754,7 +766,11 @@ fn render_host_entry(
                             })
                             .into()
                         })
-                        .child(icons::icon(icons::IconName::Folder, 14.).text_color(theme::muted_text()).hover(|s| s.text_color(theme::text())))
+                        .child(
+                            icons::icon(icons::IconName::Folder, 14.)
+                                .text_color(theme::muted_text())
+                                .hover(|s| s.text_color(theme::text())),
+                        )
                         .on_click(cx.listener(move |this, _ev, _w, cx| {
                             cx.stop_propagation();
                             this.open_sftp(idx, cx);
@@ -778,7 +794,11 @@ fn render_host_entry(
                             })
                             .into()
                         })
-                        .child(icons::icon(icons::IconName::ArrowLeftRight, 14.).text_color(theme::muted_text()).hover(|s| s.text_color(theme::text())))
+                        .child(
+                            icons::icon(icons::IconName::ArrowLeftRight, 14.)
+                                .text_color(theme::muted_text())
+                                .hover(|s| s.text_color(theme::text())),
+                        )
                         .on_click(cx.listener(move |this, _ev, _w, cx| {
                             cx.stop_propagation();
                             this.open_forward(idx, cx);
@@ -871,7 +891,11 @@ fn render_host_group(spec: HostGroupSpec, cx: &mut Context<AppShell>) -> AnyElem
                     })
                     .into()
                 })
-                .child(icons::icon(icons::IconName::Plus, 14.).text_color(theme::muted_text()).hover(|s| s.text_color(theme::text())))
+                .child(
+                    icons::icon(icons::IconName::Plus, 14.)
+                        .text_color(theme::muted_text())
+                        .hover(|s| s.text_color(theme::text())),
+                )
                 .on_click(cx.listener(move |this, _ev, _window, cx| {
                     cx.stop_propagation();
                     action(this, cx);

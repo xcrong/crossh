@@ -39,11 +39,15 @@ pub fn render_settings_page(shell: &AppShell, cx: &mut Context<AppShell>) -> Any
             theme::canvas()
         })
         .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
-        .child(icons::icon(icons::IconName::Settings, 14.).text_color(if section == SettingsSection::General {
-            theme::text()
-        } else {
-            theme::muted_text()
-        }).hover(|s| s.text_color(theme::text())))
+        .child(
+            icons::icon(icons::IconName::Settings, 14.)
+                .text_color(if section == SettingsSection::General {
+                    theme::text()
+                } else {
+                    theme::muted_text()
+                })
+                .hover(|s| s.text_color(theme::text())),
+        )
         .child(SharedString::from(i18n::text("settings.general")))
         .on_click(cx.listener(|this, _ev, _window, cx| {
             this.select_settings_section(SettingsSection::General, cx);
@@ -69,11 +73,15 @@ pub fn render_settings_page(shell: &AppShell, cx: &mut Context<AppShell>) -> Any
             theme::canvas()
         })
         .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
-        .child(icons::icon(icons::IconName::Terminal, 14.).text_color(if section == SettingsSection::Terminal {
-            theme::text()
-        } else {
-            theme::muted_text()
-        }).hover(|s| s.text_color(theme::text())))
+        .child(
+            icons::icon(icons::IconName::Terminal, 14.)
+                .text_color(if section == SettingsSection::Terminal {
+                    theme::text()
+                } else {
+                    theme::muted_text()
+                })
+                .hover(|s| s.text_color(theme::text())),
+        )
         .child(SharedString::from(i18n::text("settings.terminal")))
         .on_click(cx.listener(|this, _ev, _window, cx| {
             this.select_settings_section(SettingsSection::Terminal, cx);
@@ -127,7 +135,11 @@ pub fn render_settings_page(shell: &AppShell, cx: &mut Context<AppShell>) -> Any
                             })
                             .into()
                         })
-                        .child(icons::icon(icons::IconName::X, 14.).text_color(theme::muted_text()).hover(|s| s.text_color(theme::text())))
+                        .child(
+                            icons::icon(icons::IconName::X, 14.)
+                                .text_color(theme::muted_text())
+                                .hover(|s| s.text_color(theme::text())),
+                        )
                         .on_click(cx.listener(|this, _ev, _window, cx| {
                             this.close_settings(cx);
                         })),
@@ -448,7 +460,11 @@ fn settings_icon_button(
             })
             .into()
         })
-        .child(icons::icon(icon, 14.).text_color(theme::muted_text()).hover(|s| s.text_color(theme::canvas())))
+        .child(
+            icons::icon(icon, 14.)
+                .text_color(theme::muted_text())
+                .hover(|s| s.text_color(theme::canvas())),
+        )
         .on_click(on_click)
         .into_any_element()
 }

@@ -1,0 +1,23 @@
+#!/bin/sh
+# Pre-commit hook: keep CI green by running the same checks locally.
+# Mirrors .github/workflows/ci.yml (fmt + clippy). Set CROSSH_HOOK_TEST=1
+# to also run `cargo test --release` before committing.
+#
+# Installed via `git config core.hooksPath scripts` so this file is shared.
+
+set -eu
+
+cd "$(git rev-parse --show-toplevel)"
+
+echo "==> cargo fmt --check"
+cargo fmt --check
+
+echo "==> cargo clippy --all-targets -- -D warnings"
+cargo clippy --all-targets --quiet -- -D warnings
+
+if [ "${CROSSH_HOOK_TEST:-0}" = "1" ]; then
+    echo "==> cargo test --release"
+    cargo test --release --quiet
+fi
+
+echo "pre-commit checks passed"

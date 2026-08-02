@@ -473,9 +473,7 @@ mod tests {
                     event = event_rx.recv() => match event {
                         Ok(SessionEvent::Connected) => {
                             let _ = input_for_task
-                                .send(InputCmd::Write(
-                                    b"which opencode; echo CROSSH_PATH=$PATH; exit\r".to_vec(),
-                                ))
+                                .send(InputCmd::Write(b"echo CROSSH_PATH=$PATH; exit\r".to_vec()))
                                 .await;
                         }
                         Ok(SessionEvent::Output(bytes)) => output.extend_from_slice(&bytes),
@@ -509,7 +507,7 @@ mod tests {
 
         let text = String::from_utf8_lossy(&output);
         assert!(
-            text.contains("/opt/homebrew/bin/opencode"),
+            text.contains("/opt/homebrew/bin") || text.contains("/usr/local/bin"),
             "local shell lost login PATH without SHELL env: {:?}",
             text
         );

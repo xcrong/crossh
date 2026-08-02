@@ -235,11 +235,13 @@ fn host_key_button(
         } else {
             theme::canvas()
         })
-        .child(icons::icon(icon, 14.).text_color(if matches!(decision, HostKeyDecision::Reject) {
-            theme::text()
-        } else {
-            theme::canvas()
-        }))
+        .child(
+            icons::icon(icon, 14.).text_color(if matches!(decision, HostKeyDecision::Reject) {
+                theme::text()
+            } else {
+                theme::canvas()
+            }),
+        )
         .child(SharedString::from(label))
         .on_click(cx.listener(move |this, _ev, _w, cx| {
             this.resolve_host_key(decision, cx);
@@ -269,18 +271,21 @@ fn cred_button(cx: &mut Context<AppShell>, label: String, submit: bool) -> impl 
         } else {
             theme::text()
         })
-        .child(icons::icon(
-            if submit {
-                icons::IconName::Check
+        .child(
+            icons::icon(
+                if submit {
+                    icons::IconName::Check
+                } else {
+                    icons::IconName::X
+                },
+                14.,
+            )
+            .text_color(if submit {
+                theme::canvas()
             } else {
-                icons::IconName::X
-            },
-            14.,
-        ).text_color(if submit {
-            theme::canvas()
-        } else {
-            theme::text()
-        }))
+                theme::text()
+            }),
+        )
         .child(SharedString::from(label))
         .on_click(cx.listener(move |this, _ev, _w, cx| {
             if submit {
