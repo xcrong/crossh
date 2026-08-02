@@ -6,11 +6,12 @@
 use async_channel::{Receiver, Sender};
 use gpui::{
     AnyElement, App, AppContext, ClipboardEntry, Context, Entity, FocusHandle, InteractiveElement,
-    IntoElement, KeyDownEvent, Keystroke, ParentElement, PathPromptOptions, Render, SharedString,
-    StatefulInteractiveElement, Styled, Task, Window, div, px, rgb,
+    IntoElement, KeyDownEvent, Keystroke, ParentElement, PathPromptOptions, Render, ScrollHandle,
+    SharedString, StatefulInteractiveElement, Styled, Task, Window, div, px, rgb,
 };
 
 use crate::ssh::{MAX_EDITOR_FILE_BYTES, RemoteEntry, SftpCmd, SftpEvent};
+use crate::ui::{icons, theme};
 
 /// 传输进度快照。
 #[derive(Clone, Debug, Default)]
@@ -149,6 +150,8 @@ pub struct SftpPane {
     progress: Option<Progress>,
     editor: Option<RemoteEditor>,
     focus: FocusHandle,
+    list_scroll: ScrollHandle,
+    editor_scroll: ScrollHandle,
     _drain: Option<Task<()>>,
     _picker: Option<Task<()>>,
 }
@@ -177,6 +180,8 @@ impl SftpPane {
             progress: None,
             editor: None,
             focus: cx.focus_handle(),
+            list_scroll: ScrollHandle::new(),
+            editor_scroll: ScrollHandle::new(),
             _drain: None,
             _picker: None,
         });
@@ -569,20 +574,24 @@ impl SftpPane {
             .gap_2()
             .px_3()
             .py_2()
-            .bg(rgb(0x18181b))
+            .bg(theme::surface())
             .border_b_1()
-            .border_color(rgb(0x2a2a2e))
+            .border_color(theme::border())
             .child(
                 div()
                     .id("sftp-editor-back")
+                    .h(px(28.))
                     .px_2()
-                    .py_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .rounded(px(theme::RADIUS_SM))
                     .cursor_pointer()
-                    .bg(rgb(0x2a2a2e))
-                    .hover(|s| s.bg(rgb(0x3a3a40)))
+                    .hover(|s| s.bg(theme::raised()))
                     .text_xs()
-                    .text_color(rgb(0xe6e6e6))
-                    .child(SharedString::from("← 文件列表"))
+                    .text_color(theme::text())
+                    .child(icons::icon(icons::IconName::ArrowLeft, 14.))
+                    .child(SharedString::from("文件列表"))
                     .on_click(cx.listener(|this, _ev, _window, cx| {
                         this.close_editor(cx);
                     })),
@@ -590,17 +599,19 @@ impl SftpPane {
             .child(
                 div()
                     .flex_1()
+                    .min_w_0()
+                    .truncate()
                     .text_xs()
-                    .text_color(rgb(0xe6e6e6))
+                    .text_color(theme::text())
                     .child(SharedString::from(name)),
             )
             .child(
                 div()
                     .text_xs()
                     .text_color(if read_only {
-                        rgb(0x9aa5ff)
+                        theme::info()
                     } else {
-                        rgb(0x8ed6a7)
+                        theme::accent()
                     })
                     .child(SharedString::from(if read_only {
                         "只读"
@@ -614,13 +625,18 @@ impl SftpPane {
             actions = actions.child(
                 div()
                     .id("sftp-editor-edit")
+                    .h(px(28.))
                     .px_2()
-                    .py_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .rounded(px(theme::RADIUS_SM))
                     .cursor_pointer()
-                    .bg(rgb(0x2a2a2e))
-                    .hover(|s| s.bg(rgb(0x3a3a40)))
+                    .bg(theme::raised())
+                    .hover(|s| s.bg(theme::border_strong()))
                     .text_xs()
-                    .text_color(rgb(0xe6e6e6))
+                    .text_color(theme::text())
+                    .child(icons::icon(icons::IconName::Pencil, 14.))
                     .child(SharedString::from("进入编辑"))
                     .on_click(cx.listener(|this, _ev, window, cx| {
                         this.enter_editor_edit(window, cx);
@@ -630,13 +646,18 @@ impl SftpPane {
             actions = actions.child(
                 div()
                     .id("sftp-editor-read-only")
+                    .h(px(28.))
                     .px_2()
-                    .py_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .rounded(px(theme::RADIUS_SM))
                     .cursor_pointer()
-                    .bg(rgb(0x2a2a2e))
-                    .hover(|s| s.bg(rgb(0x3a3a40)))
+                    .bg(theme::raised())
+                    .hover(|s| s.bg(theme::border_strong()))
                     .text_xs()
-                    .text_color(rgb(0xe6e6e6))
+                    .text_color(theme::text())
+                    .child(icons::icon(icons::IconName::ShieldAlert, 14.))
                     .child(SharedString::from("只读"))
                     .on_click(cx.listener(|this, _ev, _window, cx| {
                         this.leave_editor_edit(cx);
@@ -646,13 +667,18 @@ impl SftpPane {
                 actions = actions.child(
                     div()
                         .id("sftp-editor-save")
+                        .h(px(28.))
                         .px_2()
-                        .py_1()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .rounded(px(theme::RADIUS_SM))
                         .cursor_pointer()
-                        .bg(rgb(0x4352a3))
-                        .hover(|s| s.bg(rgb(0x5364c5)))
+                        .bg(theme::accent())
+                        .hover(|s| s.bg(rgb(0x82e3bf)))
                         .text_xs()
-                        .text_color(rgb(0xffffff))
+                        .text_color(theme::canvas())
+                        .child(icons::icon(icons::IconName::Save, 14.))
                         .child(SharedString::from(if saving {
                             "保存中…"
                         } else {
@@ -665,13 +691,18 @@ impl SftpPane {
                 actions = actions.child(
                     div()
                         .id("sftp-editor-discard")
+                        .h(px(28.))
                         .px_2()
-                        .py_1()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .rounded(px(theme::RADIUS_SM))
                         .cursor_pointer()
-                        .bg(rgb(0x2a2a2e))
-                        .hover(|s| s.bg(rgb(0x3a3a40)))
+                        .bg(theme::raised())
+                        .hover(|s| s.bg(theme::border_strong()))
                         .text_xs()
-                        .text_color(rgb(0xe6e6e6))
+                        .text_color(theme::text())
+                        .child(icons::icon(icons::IconName::X, 14.))
                         .child(SharedString::from("放弃"))
                         .on_click(cx.listener(|this, _ev, _window, cx| {
                             this.discard_editor(cx);
@@ -689,11 +720,12 @@ impl SftpPane {
             .flex_col()
             .px_3()
             .py_2()
+            .track_scroll(&self.editor_scroll)
             .overflow_y_scroll()
-            .bg(rgb(0x101012))
+            .bg(theme::canvas())
             .track_focus(&focus)
             .tab_stop(true)
-            .focus(|style| style.border_color(rgb(0x6e7cff)))
+            .focus(|style| style.border_color(theme::focus_ring()))
             .on_click({
                 let focus = focus.clone();
                 move |_ev, window, cx| window.focus(&focus, cx)
@@ -704,14 +736,14 @@ impl SftpPane {
             body = body.child(
                 div()
                     .text_xs()
-                    .text_color(rgb(0xb0b0b8))
+                    .text_color(theme::muted_text())
                     .child(SharedString::from("读取中…")),
             );
         } else if let Some(error) = error.clone() {
             body = body.child(
                 div()
                     .text_xs()
-                    .text_color(rgb(0xe58f8f))
+                    .text_color(theme::danger())
                     .child(SharedString::from(error)),
             );
         } else {
@@ -722,12 +754,12 @@ impl SftpPane {
                     .flex_shrink_0()
                     .min_h(px(20.))
                     .text_xs()
-                    .text_color(rgb(0xe6e6e6))
+                    .text_color(theme::text())
                     .child(
                         div()
                             .w(px(42.))
                             .flex_shrink_0()
-                            .text_color(rgb(0x5f606b))
+                            .text_color(theme::faint_text())
                             .child(SharedString::from(format!("{:>4} ", line_idx + 1))),
                     );
                 if !read_only && line_idx == cursor_line {
@@ -738,7 +770,13 @@ impl SftpPane {
                         .unwrap_or(line.len());
                     row = row
                         .child(SharedString::from(line[..cursor_byte].to_string()))
-                        .child(div().w(px(1.)).h(px(18.)).flex_shrink_0().bg(rgb(0x9aa5ff)))
+                        .child(
+                            div()
+                                .w(px(1.))
+                                .h(px(18.))
+                                .flex_shrink_0()
+                                .bg(theme::accent()),
+                        )
                         .child(SharedString::from(line[cursor_byte..].to_string()));
                 } else {
                     row = row.child(SharedString::from(line.to_string()));
@@ -763,7 +801,7 @@ impl SftpPane {
             .min_h_0()
             .flex()
             .flex_col()
-            .bg(rgb(0x121214))
+            .bg(theme::canvas())
             .child(header)
             .child(body)
             .child(
@@ -771,11 +809,11 @@ impl SftpPane {
                     .flex_shrink_0()
                     .px_3()
                     .py_1()
-                    .bg(rgb(0x18181b))
+                    .bg(theme::surface())
                     .border_t_1()
-                    .border_color(rgb(0x2a2a2e))
+                    .border_color(theme::border())
                     .text_xs()
-                    .text_color(rgb(0x8e8e98))
+                    .text_color(theme::muted_text())
                     .child(SharedString::from(footer_text)),
             )
             .into_any_element()
@@ -880,20 +918,24 @@ impl Render for SftpPane {
             .gap_2()
             .px_3()
             .py_2()
-            .bg(rgb(0x18181b))
+            .bg(theme::surface())
             .border_b_1()
-            .border_color(rgb(0x2a2a2e))
+            .border_color(theme::border())
             .child(
                 div()
                     .id("sftp-up")
+                    .h(px(28.))
                     .px_2()
-                    .py_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .rounded(px(theme::RADIUS_SM))
                     .cursor_pointer()
-                    .bg(rgb(0x2a2a2e))
-                    .hover(|s| s.bg(rgb(0x3a3a40)))
+                    .hover(|s| s.bg(theme::raised()))
                     .text_xs()
-                    .text_color(rgb(0xe6e6e6))
-                    .child(SharedString::from("↑ 上级"))
+                    .text_color(theme::text())
+                    .child(icons::icon(icons::IconName::ArrowUp, 14.))
+                    .child(SharedString::from("上级"))
                     .on_click(cx.listener(|this, _ev, _w, cx| {
                         let p = Self::parent_of(&this.cwd);
                         this.request_list(p);
@@ -903,21 +945,26 @@ impl Render for SftpPane {
             .child(
                 div()
                     .flex_1()
+                    .min_w_0()
+                    .truncate()
                     .text_xs()
-                    .text_color(rgb(0xb0b0b8))
+                    .text_color(theme::muted_text())
                     .child(SharedString::from(cwd)),
             )
             .child(
                 div()
                     .id("sftp-refresh")
+                    .w(px(28.))
+                    .h(px(28.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(theme::RADIUS_SM))
                     .px_2()
-                    .py_1()
                     .cursor_pointer()
-                    .bg(rgb(0x2a2a2e))
-                    .hover(|s| s.bg(rgb(0x3a3a40)))
-                    .text_xs()
-                    .text_color(rgb(0xe6e6e6))
-                    .child(SharedString::from("刷新"))
+                    .text_color(theme::muted_text())
+                    .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
+                    .child(icons::icon(icons::IconName::RefreshCw, 14.))
                     .on_click(cx.listener(|this, _ev, _w, cx| {
                         this.request_list(this.cwd.clone());
                         cx.notify();
@@ -933,6 +980,7 @@ impl Render for SftpPane {
             .flex_col()
             .px_2()
             .py_2()
+            .track_scroll(&self.list_scroll)
             .overflow_y_scroll();
         for (idx, e) in self.entries.iter().enumerate() {
             let name = e.name.clone();
@@ -949,26 +997,39 @@ impl Render for SftpPane {
                 .flex_shrink_0()
                 .items_center()
                 .gap_2()
+                .h(px(34.))
                 .px_2()
-                .py_1()
+                .rounded(px(theme::RADIUS_SM))
                 .cursor_pointer()
-                .hover(|s| s.bg(rgb(0x232327)))
-                .child(div().text_xs().text_color(rgb(0x888892)).child(if is_dir {
-                    "📁"
-                } else {
-                    "📄"
-                }))
+                .hover(|s| s.bg(theme::surface()))
+                .child(
+                    icons::icon(
+                        if is_dir {
+                            icons::IconName::Folder
+                        } else {
+                            icons::IconName::FileText
+                        },
+                        15.,
+                    )
+                    .text_color(if is_dir {
+                        theme::warning()
+                    } else {
+                        theme::muted_text()
+                    }),
+                )
                 .child(
                     div()
                         .flex_1()
+                        .min_w_0()
+                        .truncate()
                         .text_xs()
-                        .text_color(rgb(0xe6e6e6))
+                        .text_color(theme::text())
                         .child(SharedString::from(name.clone())),
                 )
                 .child(
                     div()
                         .text_xs()
-                        .text_color(rgb(0x6a6a72))
+                        .text_color(theme::faint_text())
                         .child(SharedString::from(size)),
                 )
                 .on_click(cx.listener(move |this, _ev, _w, cx| {
@@ -989,17 +1050,20 @@ impl Render for SftpPane {
         let input = div()
             .id("sftp-upload-input")
             .flex_1()
+            .h(px(32.))
             .px_2()
-            .py_1()
-            .bg(rgb(0x121214))
+            .flex()
+            .items_center()
+            .rounded(px(theme::RADIUS_SM))
+            .bg(theme::canvas())
             .border_1()
-            .border_color(rgb(0x3a3a40))
+            .border_color(theme::border_strong())
             .text_xs()
-            .text_color(rgb(0xe6e6e6))
+            .text_color(theme::text())
             .track_focus(&focus)
             .tab_stop(true)
-            .focus(|style| style.border_color(rgb(0x6e7cff)))
-            .focus_visible(|style| style.border_color(rgb(0x9aa5ff)))
+            .focus(|style| style.border_color(theme::focus_ring()))
+            .focus_visible(|style| style.border_color(theme::accent()))
             .on_click({
                 let focus = focus.clone();
                 move |_ev, window, cx| window.focus(&focus, cx)
@@ -1017,9 +1081,9 @@ impl Render for SftpPane {
             .gap_1()
             .px_3()
             .py_2()
-            .bg(rgb(0x18181b))
+            .bg(theme::surface())
             .border_t_1()
-            .border_color(rgb(0x2a2a2e))
+            .border_color(theme::border())
             .child(
                 div()
                     .flex()
@@ -1030,13 +1094,18 @@ impl Render for SftpPane {
                     .child(
                         div()
                             .id("sftp-upload-btn")
+                            .h(px(28.))
                             .px_2()
-                            .py_1()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .rounded(px(theme::RADIUS_SM))
                             .cursor_pointer()
-                            .bg(rgb(0x2a2a2e))
-                            .hover(|s| s.bg(rgb(0x3a3a40)))
+                            .bg(theme::accent())
+                            .hover(|s| s.bg(rgb(0x82e3bf)))
                             .text_xs()
-                            .text_color(rgb(0xe6e6e6))
+                            .text_color(theme::canvas())
+                            .child(icons::icon(icons::IconName::Upload, 14.))
                             .child(SharedString::from("上传"))
                             .on_click(cx.listener(|this, _ev, _w, cx| {
                                 this.do_upload(cx);
@@ -1045,13 +1114,18 @@ impl Render for SftpPane {
                     .child(
                         div()
                             .id("sftp-choose-file")
+                            .h(px(28.))
                             .px_2()
-                            .py_1()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .rounded(px(theme::RADIUS_SM))
                             .cursor_pointer()
-                            .bg(rgb(0x2a2a2e))
-                            .hover(|s| s.bg(rgb(0x3a3a40)))
+                            .bg(theme::raised())
+                            .hover(|s| s.bg(theme::border_strong()))
                             .text_xs()
-                            .text_color(rgb(0xe6e6e6))
+                            .text_color(theme::text())
+                            .child(icons::icon(icons::IconName::FolderOpen, 14.))
                             .child(SharedString::from("选择文件"))
                             .on_click(cx.listener(|this, _ev, _w, cx| {
                                 this.choose_upload_file(cx);
@@ -1065,7 +1139,7 @@ impl Render for SftpPane {
                 .filter(|&t| t > 0)
                 .map(|t| ((p.transferred as f64 / t as f64) * 100.0) as u32)
                 .unwrap_or(0);
-            bottom = bottom.child(div().text_xs().text_color(rgb(0xb0b0b8)).child(
+            bottom = bottom.child(div().text_xs().text_color(theme::info()).child(
                 SharedString::from(format!(
                     "{}: {} / {} ({}%)",
                     p.label,
@@ -1078,14 +1152,14 @@ impl Render for SftpPane {
             bottom = bottom.child(
                 div()
                     .text_xs()
-                    .text_color(rgb(0xb0b0b8))
+                    .text_color(theme::muted_text())
                     .child(SharedString::from("加载中…")),
             );
         } else if let Some(msg) = &self.message {
             bottom = bottom.child(
                 div()
                     .text_xs()
-                    .text_color(rgb(0xb0b0b8))
+                    .text_color(theme::muted_text())
                     .child(SharedString::from(msg.clone())),
             );
         }
@@ -1095,7 +1169,7 @@ impl Render for SftpPane {
             .min_h_0()
             .flex()
             .flex_col()
-            .bg(rgb(0x121214))
+            .bg(theme::canvas())
             .child(top)
             .child(list)
             .child(bottom)

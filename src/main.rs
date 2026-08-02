@@ -31,10 +31,12 @@ fn main() {
     // 预热 tokio 运行时（单例，限 2 worker 线程，控内存）。
     let _rt = ssh::ssh_runtime();
 
-    gpui_platform::application().run(move |cx: &mut App| {
-        cx.init_colors();
-        ui::app_shell::open_main_window(cx);
-    });
+    gpui_platform::application()
+        .with_assets(ui::assets::UiAssetSource)
+        .run(move |cx: &mut App| {
+            cx.init_colors();
+            ui::app_shell::open_main_window(cx);
+        });
 }
 
 /// 初始化日志：写到 `/tmp/crossh/run.log`（同时 tee 到 stderr，方便 `cargo run` 观察）。

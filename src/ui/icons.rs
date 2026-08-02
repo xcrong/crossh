@@ -1,0 +1,60 @@
+use gpui::{SharedString, Styled, Svg, px, svg};
+
+#[derive(Clone, Copy)]
+pub(crate) enum IconName {
+    ArrowLeft,
+    ArrowLeftRight,
+    ArrowUp,
+    Check,
+    ChevronDown,
+    ChevronRight,
+    FileText,
+    Folder,
+    FolderOpen,
+    KeyRound,
+    Link,
+    Pencil,
+    Plus,
+    RefreshCw,
+    Save,
+    Search,
+    Server,
+    ShieldAlert,
+    Terminal,
+    Upload,
+    X,
+    XCircle,
+}
+
+impl IconName {
+    fn path(self) -> &'static str {
+        match self {
+            Self::ArrowLeft => "icons/arrow-left.svg",
+            Self::ArrowLeftRight => "icons/arrow-left-right.svg",
+            Self::ArrowUp => "icons/arrow-up.svg",
+            Self::Check => "icons/check.svg",
+            Self::ChevronDown => "icons/chevron-down.svg",
+            Self::ChevronRight => "icons/chevron-right.svg",
+            Self::FileText => "icons/file-text.svg",
+            Self::Folder => "icons/folder.svg",
+            Self::FolderOpen => "icons/folder-open.svg",
+            Self::KeyRound => "icons/key-round.svg",
+            Self::Link => "icons/link.svg",
+            Self::Pencil => "icons/pencil.svg",
+            Self::Plus => "icons/plus.svg",
+            Self::RefreshCw => "icons/refresh-cw.svg",
+            Self::Save => "icons/save.svg",
+            Self::Search => "icons/search.svg",
+            Self::Server => "icons/server.svg",
+            Self::ShieldAlert => "icons/shield-alert.svg",
+            Self::Terminal => "icons/terminal.svg",
+            Self::Upload => "icons/upload.svg",
+            Self::X => "icons/x.svg",
+            Self::XCircle => "icons/x-circle.svg",
+        }
+    }
+}
+
+pub(crate) fn icon(name: IconName, size: f32) -> Svg {
+    svg().path(SharedString::from(name.path())).size(px(size))
+}

@@ -2,18 +2,21 @@
 //!
 //! - 连接池：同主机复用一条已认证会话（开新终端 channel），全部终端关闭才断开。
 //! - 多标签：每点击主机新开一个终端标签；可切换/关闭。
-//! - sidebar：按连接状态分为 Active、Bank，Projects 为同级可折叠组。
+//! - sidebar：Local、Active、Bank 为同级可折叠组。
 //! - 模态：池中任一连接出现 pending_prompt（未知主机密钥/凭据）时弹覆盖层。
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, AppContext, Context, Entity, FocusHandle, FontWeight, InteractiveElement,
-    IntoElement, KeyDownEvent, Keystroke, ParentElement, PathPromptOptions, Render, SharedString,
+    AnyElement, App, AppContext, Bounds, Context, Entity, FocusHandle, FontWeight,
+    InteractiveElement, IntoElement, KeyDownEvent, Keystroke, MouseButton, MouseMoveEvent,
+    MouseUpEvent, ParentElement, PathPromptOptions, Pixels, Render, SharedString,
     StatefulInteractiveElement, Styled, Task, TitlebarOptions, Window, WindowBounds, WindowOptions,
-    div, hsla, px, rgb, size,
+    canvas, div, hsla, px, rgb, size,
 };
 
 use crate::config::SshConfig;
@@ -22,7 +25,7 @@ use crate::ssh::{
     Connection, ConnectionPool, CredentialKind, HostKeyDecision, PendingPrompt, default_auth_for,
 };
 use crate::ui::terminal_view::ConnState;
-use crate::ui::{ForwardPane, SftpPane, TerminalView};
+use crate::ui::{ForwardPane, SftpPane, TerminalView, icons, theme};
 
 /// 主机列表条目：别名 + 详情 + 池键（用于查连接状态）。
 #[derive(Clone)]
@@ -81,7 +84,7 @@ pub struct AppShell {
     /// 侧栏搜索文本；未命中配置别名时也作为 QuickConnect 目标。
     host_query: String,
     host_focus: FocusHandle,
-    /// 主机分组折叠状态；Bank 默认收起，Active/Projects 默认展开。
+    /// 主机分组折叠状态；Bank 默认收起，Local/Active 默认展开。
     bank_collapsed: bool,
     active_collapsed: bool,
     projects_collapsed: bool,
@@ -93,6 +96,10 @@ pub struct AppShell {
     modal_focus: FocusHandle,
     /// 上一帧是否有活动模态（用于在弹窗出现时自动聚焦）。
     last_had_prompt: bool,
+    /// 侧栏宽度与拖动状态；只影响布局，不改变导航状态。
+    sidebar_width: Rc<Cell<f32>>,
+    sidebar_dragging: Rc<Cell<bool>>,
+    sidebar_scroll: gpui::ScrollHandle,
 }
 
 impl AppShell {
@@ -127,6 +134,9 @@ impl AppShell {
             prompt_input: String::new(),
             modal_focus: cx.focus_handle(),
             last_had_prompt: false,
+            sidebar_width: Rc::new(Cell::new(theme::SIDEBAR_WIDTH)),
+            sidebar_dragging: Rc::new(Cell::new(false)),
+            sidebar_scroll: gpui::ScrollHandle::new(),
         })
     }
 
@@ -702,8 +712,8 @@ impl Render for AppShell {
             .flex()
             .flex_row()
             .size_full()
-            .bg(rgb(0x121214))
-            .text_color(rgb(0xe6e6e6))
+            .bg(theme::canvas())
+            .text_color(theme::text())
             .on_key_down(cx.listener(AppShell::handle_shell_key_down))
             .child(sidebar)
             .child(main);
@@ -828,7 +838,7 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
     let projects_group = if show_projects {
         Some(render_host_group(
             "projects",
-            "PROJECTS",
+            "LOCAL",
             project_count,
             shell.projects_collapsed && query.is_empty(),
             project_list.into_any_element(),
@@ -842,87 +852,203 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
 
     let mut list = div()
         .id("host-list")
+        .track_scroll(&shell.sidebar_scroll)
         .flex_1()
         .min_h_0()
         .flex()
         .flex_col()
-        .gap_1()
+        .gap_2()
+        .px_2()
         .py_2()
-        .overflow_y_scroll()
-        .child(active_group)
-        .child(bank_group);
+        .overflow_y_scroll();
     if let Some(projects_group) = projects_group {
         list = list.child(projects_group);
     }
+    list = list.child(active_group).child(bank_group);
 
+    let search_placeholder = if search_value.is_empty() {
+        "筛选主机或输入 user@host:port".to_string()
+    } else {
+        search_value
+    };
     let search = div()
         .id("host-search")
-        .mx_3()
+        .mx_2()
         .mb_2()
+        .h(px(32.))
         .px_2()
-        .py_1()
         .flex()
         .items_center()
-        .bg(rgb(0x121214))
+        .gap_2()
+        .bg(theme::canvas())
         .border_1()
-        .border_color(rgb(0x303036))
+        .border_color(theme::border())
+        .rounded(px(theme::RADIUS_SM))
         .text_xs()
-        .text_color(if search_value.is_empty() {
-            rgb(0x6a6a72)
+        .text_color(if shell.host_query.is_empty() {
+            theme::faint_text()
         } else {
-            rgb(0xe6e6e8)
+            theme::text()
         })
         .track_focus(&search_focus)
+        .focus(|style| style.border_color(theme::focus_ring()))
         .on_click({
             let search_focus = search_focus.clone();
             move |_ev, window, cx| window.focus(&search_focus, cx)
         })
         .on_key_down(cx.listener(AppShell::handle_host_search_key))
-        .child(SharedString::from(if search_value.is_empty() {
-            "筛选主机、projects 或输入 user@host:port".to_string()
-        } else {
-            search_value
-        }));
+        .child(icons::icon(icons::IconName::Search, 14.).text_color(theme::muted_text()))
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .truncate()
+                .child(SharedString::from(search_placeholder)),
+        );
 
     let list_footer = if visible_count == 0 && shell.entries.is_empty() && !show_projects {
         "未找到 ~/.ssh/config 中的主机".to_string()
     } else if visible_count == 0 {
-        "没有匹配的主机，按 Enter 进行快速连接".to_string()
+        "没有匹配的入口，按 Enter 快速连接".to_string()
     } else {
-        format!("{} 个入口", visible_count)
+        format!("{visible_count} 个入口")
     };
 
+    let width = shell
+        .sidebar_width
+        .get()
+        .clamp(theme::SIDEBAR_MIN_WIDTH, theme::SIDEBAR_MAX_WIDTH);
+    let container: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::new(Cell::new(None));
+    let backing = canvas(
+        {
+            let container = container.clone();
+            move |bounds, _window, _cx| container.set(Some(bounds))
+        },
+        {
+            let container = container.clone();
+            let width_cell = shell.sidebar_width.clone();
+            let dragging = shell.sidebar_dragging.clone();
+            move |_bounds, _state, window, _cx| {
+                window.on_mouse_event({
+                    let container = container.clone();
+                    let width_cell = width_cell.clone();
+                    let dragging = dragging.clone();
+                    move |ev: &MouseMoveEvent, _phase, window, _cx| {
+                        if !dragging.get() {
+                            return;
+                        }
+                        let Some(bounds) = container.get() else {
+                            return;
+                        };
+                        let width = (ev.position.x - bounds.origin.x)
+                            .as_f32()
+                            .clamp(theme::SIDEBAR_MIN_WIDTH, theme::SIDEBAR_MAX_WIDTH);
+                        width_cell.set(width);
+                        window.refresh();
+                    }
+                });
+                window.on_mouse_event({
+                    let dragging = dragging.clone();
+                    move |_ev: &MouseUpEvent, _phase, window, _cx| {
+                        if dragging.replace(false) {
+                            window.refresh();
+                        }
+                    }
+                });
+            }
+        },
+    )
+    .absolute()
+    .size_full();
+
+    let resizing = shell.sidebar_dragging.get();
+    let resize_handle = div()
+        .id("sidebar-resize")
+        .absolute()
+        .top_0()
+        .right(px(-4.))
+        .w(px(8.))
+        .h_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_col_resize()
+        .child(
+            div()
+                .w(px(1.))
+                .h_full()
+                .bg(if resizing {
+                    theme::accent()
+                } else {
+                    theme::border()
+                })
+                .hover(|style| style.bg(theme::accent())),
+        )
+        .on_mouse_down(MouseButton::Left, {
+            let dragging = shell.sidebar_dragging.clone();
+            move |_ev, window, _cx| {
+                dragging.set(true);
+                window.refresh();
+            }
+        });
+
     div()
-        .w(px(220.))
+        .relative()
+        .flex_shrink_0()
+        .w(px(width))
         .h_full()
         .flex()
         .flex_col()
-        .bg(rgb(0x1a1a1d))
+        .bg(theme::sidebar())
         .border_r_1()
-        .border_color(rgb(0x2a2a2e))
+        .border_color(theme::border())
+        .child(backing)
         .child(
             div()
-                .px_4()
-                .pt_3()
-                .pb_2()
+                .size_full()
                 .flex()
-                .items_center()
-                .justify_between()
-                .text_xs()
-                .text_color(rgb(0x8c8c94))
-                .child(SharedString::from("Hosts"))
-                .child(SharedString::from(format!("{visible_count}"))),
+                .flex_col()
+                .child(
+                    div()
+                        .h(px(theme::TITLEBAR_HEIGHT))
+                        .flex_shrink_0()
+                        .px_3()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            icons::icon(icons::IconName::Terminal, 15.).text_color(theme::accent()),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme::text())
+                                .child(SharedString::from("crossh")),
+                        )
+                        .child(div().flex_1())
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::faint_text())
+                                .child(SharedString::from(format!("{visible_count}"))),
+                        ),
+                )
+                .child(search)
+                .child(list)
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .px_3()
+                        .py_2()
+                        .border_t_1()
+                        .border_color(theme::border())
+                        .text_xs()
+                        .text_color(theme::faint_text())
+                        .child(SharedString::from(list_footer)),
+                ),
         )
-        .child(search)
-        .child(list)
-        .child(
-            div()
-                .px_3()
-                .py_2()
-                .text_xs()
-                .text_color(rgb(0x6a6a72))
-                .child(SharedString::from(list_footer)),
-        )
+        .child(resize_handle)
         .into_any_element()
 }
 
@@ -988,17 +1114,34 @@ fn render_local_dir(
     let tooltip_path = SharedString::from(cwd.to_string_lossy().to_string());
     let count = dir.sessions.len();
     let state = local_dir_state(shell, dir, cx);
+    let folder_color = if selected {
+        theme::accent()
+    } else {
+        match state {
+            Some(ConnState::Connected) => theme::accent(),
+            Some(ConnState::Connecting) => theme::warning(),
+            Some(ConnState::Error(_)) => theme::danger(),
+            _ => theme::muted_text(),
+        }
+    };
     let mut row = div()
         .id(("local-group", idx))
         .flex_shrink_0()
-        .px_3()
-        .py_1()
+        .h(px(theme::ROW_HEIGHT))
+        .px_2()
+        .flex()
+        .items_center()
+        .gap_2()
+        .rounded(px(theme::RADIUS_SM))
         .text_sm()
         .cursor_pointer();
     if selected {
-        row = row.bg(rgb(0x2a2a3a));
+        row = row
+            .bg(theme::accent_soft())
+            .border_l_2()
+            .border_color(theme::accent());
     }
-    row.hover(|s| s.bg(rgb(0x232327)))
+    row.hover(|s| s.bg(theme::surface()))
         .tooltip(move |_window, cx| {
             let path = tooltip_path.clone();
             cx.new(|_| LocalPathTooltip { path }).into()
@@ -1006,53 +1149,45 @@ fn render_local_dir(
         .on_click(cx.listener(move |this, _ev, _window, cx| {
             this.activate_local_dir(cwd.clone(), cx);
         }))
+        .child(icons::icon(icons::IconName::FolderOpen, 15.).text_color(folder_color))
         .child(
             div()
+                .min_w_0()
+                .flex_1()
+                .truncate()
+                .text_color(theme::text())
+                .child(SharedString::from(label)),
+        )
+        .child(
+            div()
+                .min_w(px(18.))
+                .text_xs()
+                .text_color(theme::muted_text())
+                .child(SharedString::from(format!("{count}"))),
+        )
+        .child(
+            div()
+                .id(("local-new", idx))
+                .w(px(24.))
+                .h(px(24.))
                 .flex()
-                .flex_row()
                 .items_center()
-                .gap_2()
-                .child(
-                    div()
-                        .w(px(8.))
-                        .h(px(8.))
-                        .rounded_full()
-                        .bg(badge_color(&state)),
-                )
-                .child(
-                    div()
-                        .w(px(12.))
-                        .text_color(rgb(0x6a6a72))
-                        .child(SharedString::from("↳")),
-                )
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .truncate()
-                        .text_color(rgb(0xd7d7dc))
-                        .child(SharedString::from(label)),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(0x888892))
-                        .child(SharedString::from(format!("{count}"))),
-                )
-                .child(
-                    div()
-                        .id(("local-new", idx))
-                        .px_1()
-                        .cursor_pointer()
-                        .text_xs()
-                        .text_color(rgb(0x888892))
-                        .hover(|s| s.text_color(rgb(0xe6e6e6)))
-                        .child(SharedString::from("+"))
-                        .on_click(cx.listener(move |this, _ev, _window, cx| {
-                            cx.stop_propagation();
-                            this.open_local_session(cwd_for_new.clone(), cx);
-                        })),
-                ),
+                .justify_center()
+                .rounded(px(theme::RADIUS_SM))
+                .cursor_pointer()
+                .text_color(theme::muted_text())
+                .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
+                .tooltip(|_window, cx| {
+                    cx.new(|_| LocalPathTooltip {
+                        path: SharedString::from("新建终端"),
+                    })
+                    .into()
+                })
+                .child(icons::icon(icons::IconName::Plus, 14.))
+                .on_click(cx.listener(move |this, _ev, _window, cx| {
+                    cx.stop_propagation();
+                    this.open_local_session(cwd_for_new.clone(), cx);
+                })),
         )
         .into_any_element()
 }
@@ -1067,11 +1202,11 @@ impl Render for LocalPathTooltip {
             .w(px(480.))
             .px_2()
             .py_1()
-            .bg(rgb(0x2b2b30))
+            .bg(theme::raised())
             .border_1()
-            .border_color(rgb(0x484850))
+            .border_color(theme::border_strong())
             .text_xs()
-            .text_color(rgb(0xf0f0f2))
+            .text_color(theme::text())
             .whitespace_normal()
             .child(self.path.clone())
     }
@@ -1091,15 +1226,20 @@ fn render_host_entry(
     let mut entry_div = div()
         .id(("host-entry", idx))
         .flex_shrink_0()
-        .px_3()
+        .min_h(px(theme::ROW_HEIGHT))
+        .px_2()
         .py_1()
+        .rounded(px(theme::RADIUS_SM))
         .text_sm()
         .cursor_pointer();
     if selected {
-        entry_div = entry_div.bg(rgb(0x2a2a3a));
+        entry_div = entry_div
+            .bg(theme::accent_soft())
+            .border_l_2()
+            .border_color(theme::accent());
     }
     entry_div = entry_div
-        .hover(|s| s.bg(rgb(0x232327)))
+        .hover(|s| s.bg(theme::surface()))
         .on_click(cx.listener(move |this, _ev, _window, cx| {
             this.open_host(idx, cx);
         }))
@@ -1110,27 +1250,39 @@ fn render_host_entry(
                 .items_center()
                 .gap_2()
                 .child(
-                    div()
-                        .w(px(8.))
-                        .h(px(8.))
-                        .rounded_full()
-                        .bg(badge_color(&state)),
+                    icons::icon(icons::IconName::Server, 15.).text_color(if selected {
+                        theme::accent()
+                    } else {
+                        theme::muted_text()
+                    }),
                 )
                 .child(
                     div()
                         .flex_1()
-                        .text_color(rgb(0xf5f5f7))
+                        .min_w_0()
+                        .truncate()
+                        .text_color(theme::text())
                         .child(SharedString::from(alias)),
                 )
                 .child(
                     div()
                         .id(("sftp-btn", idx))
-                        .px_1()
+                        .w(px(24.))
+                        .h(px(24.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(theme::RADIUS_SM))
                         .cursor_pointer()
-                        .text_xs()
-                        .text_color(rgb(0x888892))
-                        .hover(|s| s.text_color(rgb(0xe6e6e6)))
-                        .child(SharedString::from("📁"))
+                        .text_color(theme::muted_text())
+                        .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
+                        .tooltip(|_window, cx| {
+                            cx.new(|_| LocalPathTooltip {
+                                path: SharedString::from("打开 SFTP"),
+                            })
+                            .into()
+                        })
+                        .child(icons::icon(icons::IconName::Folder, 14.))
                         .on_click(cx.listener(move |this, _ev, _w, cx| {
                             cx.stop_propagation();
                             this.open_sftp(idx, cx);
@@ -1139,12 +1291,22 @@ fn render_host_entry(
                 .child(
                     div()
                         .id(("fwd-btn", idx))
-                        .px_1()
+                        .w(px(24.))
+                        .h(px(24.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(theme::RADIUS_SM))
                         .cursor_pointer()
-                        .text_xs()
-                        .text_color(rgb(0x888892))
-                        .hover(|s| s.text_color(rgb(0xe6e6e6)))
-                        .child(SharedString::from("⇄"))
+                        .text_color(theme::muted_text())
+                        .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
+                        .tooltip(|_window, cx| {
+                            cx.new(|_| LocalPathTooltip {
+                                path: SharedString::from("端口转发"),
+                            })
+                            .into()
+                        })
+                        .child(icons::icon(icons::IconName::ArrowLeftRight, 14.))
                         .on_click(cx.listener(move |this, _ev, _w, cx| {
                             cx.stop_propagation();
                             this.open_forward(idx, cx);
@@ -1153,8 +1315,14 @@ fn render_host_entry(
         )
         .child(
             div()
+                .ml(px(23.))
                 .text_xs()
-                .text_color(rgb(0x888892))
+                .text_color(match state {
+                    Some(ConnState::Connected) => theme::accent(),
+                    Some(ConnState::Connecting) => theme::warning(),
+                    Some(ConnState::Error(_)) => theme::danger(),
+                    _ => theme::faint_text(),
+                })
                 .child(SharedString::from(format!("{badge}{detail}"))),
         );
     entry_div.into_any_element()
@@ -1170,29 +1338,34 @@ fn render_host_group(
     action: Option<fn(&mut AppShell, &mut Context<AppShell>)>,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
-    let caret = if collapsed { "▸" } else { "▾" };
+    let caret = if collapsed {
+        icons::IconName::ChevronRight
+    } else {
+        icons::IconName::ChevronDown
+    };
     let mut header = div()
         .id(format!("host-group-header-{id}"))
-        .px_3()
-        .py_1()
+        .h(px(28.))
+        .px_2()
         .flex()
         .items_center()
         .gap_2()
+        .rounded(px(theme::RADIUS_SM))
         .cursor_pointer()
         .text_xs()
-        .text_color(rgb(0x8c8c94))
-        .hover(|s| s.bg(rgb(0x232327)).text_color(rgb(0xe6e6e6)))
+        .text_color(theme::muted_text())
+        .hover(|s| s.bg(theme::surface()).text_color(theme::text()))
         .on_click(cx.listener(move |this, _ev, _window, cx| toggle(this, cx)))
+        .child(icons::icon(caret, 13.).text_color(theme::faint_text()))
         .child(
             div()
-                .w(px(10.))
-                .text_color(rgb(0x6a6a72))
-                .child(SharedString::from(caret)),
+                .flex_1()
+                .font_weight(FontWeight::MEDIUM)
+                .child(SharedString::from(title)),
         )
-        .child(div().flex_1().child(SharedString::from(title)))
         .child(
             div()
-                .text_color(rgb(0x6a6a72))
+                .text_color(theme::faint_text())
                 .child(SharedString::from(count.to_string())),
         );
 
@@ -1200,12 +1373,22 @@ fn render_host_group(
         header = header.child(
             div()
                 .id(format!("host-group-action-{id}"))
-                .px_1()
+                .w(px(24.))
+                .h(px(24.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(theme::RADIUS_SM))
                 .cursor_pointer()
-                .text_sm()
-                .text_color(rgb(0x888892))
-                .hover(|s| s.text_color(rgb(0xe6e6e6)))
-                .child(SharedString::from("+"))
+                .text_color(theme::muted_text())
+                .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
+                .tooltip(|_window, cx| {
+                    cx.new(|_| LocalPathTooltip {
+                        path: SharedString::from("新建项目"),
+                    })
+                    .into()
+                })
+                .child(icons::icon(icons::IconName::Plus, 14.))
                 .on_click(cx.listener(move |this, _ev, _window, cx| {
                     cx.stop_propagation();
                     action(this, cx);
@@ -1227,10 +1410,11 @@ fn render_host_group(
 
 fn render_host_group_empty(label: &'static str) -> AnyElement {
     div()
-        .px_3()
+        .px_2()
         .py_2()
+        .rounded(px(theme::RADIUS_SM))
         .text_xs()
-        .text_color(rgb(0x6a6a72))
+        .text_color(theme::faint_text())
         .child(SharedString::from(label))
         .into_any_element()
 }
@@ -1294,17 +1478,6 @@ fn state_badget(state: &Option<ConnState>) -> String {
     }
 }
 
-/// 徽标圆点颜色。
-fn badge_color(state: &Option<ConnState>) -> gpui::Hsla {
-    match state {
-        None => hsla(0., 0., 0.3, 1.),
-        Some(ConnState::Connecting) => hsla(0.13, 0.8, 0.6, 1.),
-        Some(ConnState::Connected) => hsla(0.33, 0.7, 0.5, 1.),
-        Some(ConnState::Error(_)) => hsla(0., 0.8, 0.55, 1.),
-        Some(ConnState::Closed) => hsla(0., 0., 0.3, 1.),
-    }
-}
-
 fn tab_badge_color(state: &Option<ConnState>) -> gpui::Hsla {
     match state {
         Some(ConnState::Connecting) => hsla(0.13, 0.8, 0.6, 1.),
@@ -1339,7 +1512,7 @@ fn render_main(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoElement
         .flex_1()
         .min_h_0()
         .h_full()
-        .bg(rgb(0x121214))
+        .bg(theme::canvas())
         .flex()
         .flex_col();
 
@@ -1363,16 +1536,7 @@ fn render_main(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoElement
     if let Some(active_pane) = active_pane {
         content = content.child(active_pane);
     } else {
-        content = content.child(
-            div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_sm()
-                .text_color(rgb(0x6a6a72))
-                .child(SharedString::from("从左侧选择主机或项目开始")),
-        );
+        content = content.child(render_empty_state(cx));
     }
 
     if let Some(status) = &shell.status {
@@ -1383,9 +1547,12 @@ fn render_main(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoElement
                 .left_2()
                 .px_3()
                 .py_1()
+                .rounded(px(theme::RADIUS_SM))
+                .border_1()
+                .border_color(theme::border_strong())
+                .bg(theme::raised())
                 .text_xs()
-                .bg(rgb(0x2a2a2e))
-                .text_color(rgb(0xe6e6e6))
+                .text_color(theme::text())
                 .child(SharedString::from(status.clone())),
         );
     }
@@ -1393,14 +1560,81 @@ fn render_main(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoElement
     pane
 }
 
+fn render_empty_state(cx: &mut Context<AppShell>) -> AnyElement {
+    div()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .w(px(340.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .w(px(56.))
+                        .h(px(56.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(14.))
+                        .bg(theme::accent_soft())
+                        .child(
+                            icons::icon(icons::IconName::Terminal, 28.).text_color(theme::accent()),
+                        ),
+                )
+                .child(
+                    div()
+                        .mt_2()
+                        .text_lg()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme::text())
+                        .child(SharedString::from("准备开始")),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme::muted_text())
+                        .child(SharedString::from("选择一个主机，或打开一个本地项目")),
+                )
+                .child(
+                    div()
+                        .id("empty-new-project")
+                        .mt_3()
+                        .px_3()
+                        .h(px(32.))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .rounded(px(theme::RADIUS_SM))
+                        .cursor_pointer()
+                        .bg(theme::accent())
+                        .text_color(theme::canvas())
+                        .hover(|style| style.bg(rgb(0x82e3bf)))
+                        .child(icons::icon(icons::IconName::FolderOpen, 14.))
+                        .child(SharedString::from("打开本地项目"))
+                        .on_click(cx.listener(|this, _ev, _window, cx| {
+                            this.choose_project_directory(cx);
+                        })),
+                ),
+        )
+        .into_any_element()
+}
+
 fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoElement {
     let mut strip = div()
         .flex()
         .flex_row()
-        .h(px(32.))
-        .bg(rgb(0x18181b))
+        .h(px(theme::TAB_HEIGHT))
+        .px_2()
+        .gap_1()
+        .items_center()
+        .bg(theme::surface())
         .border_b_1()
-        .border_color(rgb(0x2a2a2e));
+        .border_color(theme::border());
 
     match shell.active_view {
         Some(ActiveView::RemoteTab(active_idx)) => {
@@ -1409,22 +1643,21 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                 let is_active = active_idx == idx;
                 let state = shell.pool.state_for_key(&tab.host_key, cx);
                 let alias = tab.alias.clone();
-                let bg = if is_active {
-                    rgb(0x2a2a3a)
-                } else {
-                    rgb(0x18181b)
-                };
                 // 容器不绑定 click；标签名与关闭按钮分别绑定，避免事件叠加。
-                let container = div()
+                let mut container = div()
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap_1()
-                    .px_2()
-                    .h_full()
-                    .bg(bg)
-                    .border_r_1()
-                    .border_color(rgb(0x2a2a2e))
+                    .h(px(28.))
+                    .px_1()
+                    .rounded(px(theme::RADIUS_SM));
+                if is_active {
+                    container = container.bg(theme::accent_soft());
+                } else {
+                    container = container.hover(|style| style.bg(theme::raised()));
+                }
+                let container = container
                     .child(
                         div()
                             .id(("remote-tab", idx))
@@ -1435,8 +1668,8 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                             .py_1()
                             .cursor_pointer()
                             .text_xs()
-                            .text_color(rgb(0xe6e6e6))
-                            .hover(|s| s.bg(rgb(0x35355a)))
+                            .text_color(theme::text())
+                            .hover(|s| s.text_color(theme::accent()))
                             .child(
                                 div()
                                     .w(px(6.))
@@ -1452,13 +1685,22 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                     .child(
                         div()
                             .id(("remote-tab-close", idx))
-                            .px_1()
-                            .py_1()
+                            .w(px(24.))
+                            .h(px(24.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(theme::RADIUS_SM))
                             .cursor_pointer()
-                            .text_xs()
-                            .text_color(rgb(0x888892))
-                            .hover(|s| s.text_color(rgb(0xff6060)))
-                            .child(SharedString::from("×"))
+                            .text_color(theme::muted_text())
+                            .hover(|s| s.bg(theme::raised()).text_color(theme::danger()))
+                            .tooltip(|_window, cx| {
+                                cx.new(|_| LocalPathTooltip {
+                                    path: SharedString::from("关闭标签"),
+                                })
+                                .into()
+                            })
+                            .child(icons::icon(icons::IconName::X, 13.))
                             .on_click(cx.listener(move |this, _ev, _w, cx| {
                                 this.close_remote_tab(idx, cx);
                             })),
@@ -1477,22 +1719,21 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                     .local_sessions
                     .get(&session_id)
                     .map(|session| session.terminal.read(cx).state.clone());
-                let bg = if is_active {
-                    rgb(0x2a2a3a)
-                } else {
-                    rgb(0x18181b)
-                };
                 let label = format!("ses{}", idx + 1);
-                let container = div()
+                let mut container = div()
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap_1()
-                    .px_2()
-                    .h_full()
-                    .bg(bg)
-                    .border_r_1()
-                    .border_color(rgb(0x2a2a2e))
+                    .h(px(28.))
+                    .px_1()
+                    .rounded(px(theme::RADIUS_SM));
+                if is_active {
+                    container = container.bg(theme::accent_soft());
+                } else {
+                    container = container.hover(|style| style.bg(theme::raised()));
+                }
+                let container = container
                     .child(
                         div()
                             .id(("local-tab", session_id))
@@ -1503,8 +1744,8 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                             .py_1()
                             .cursor_pointer()
                             .text_xs()
-                            .text_color(rgb(0xe6e6e6))
-                            .hover(|s| s.bg(rgb(0x35355a)))
+                            .text_color(theme::text())
+                            .hover(|s| s.text_color(theme::accent()))
                             .child(
                                 div()
                                     .w(px(6.))
@@ -1520,13 +1761,22 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                     .child(
                         div()
                             .id(("local-tab-close", session_id))
-                            .px_1()
-                            .py_1()
+                            .w(px(24.))
+                            .h(px(24.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(theme::RADIUS_SM))
                             .cursor_pointer()
-                            .text_xs()
-                            .text_color(rgb(0x888892))
-                            .hover(|s| s.text_color(rgb(0xff6060)))
-                            .child(SharedString::from("×"))
+                            .text_color(theme::muted_text())
+                            .hover(|s| s.bg(theme::raised()).text_color(theme::danger()))
+                            .tooltip(|_window, cx| {
+                                cx.new(|_| LocalPathTooltip {
+                                    path: SharedString::from("关闭标签"),
+                                })
+                                .into()
+                            })
+                            .child(icons::icon(icons::IconName::X, 13.))
                             .on_click(cx.listener(move |this, _ev, _w, cx| {
                                 this.close_local_session(session_id, cx);
                             })),
@@ -1540,14 +1790,30 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
     strip.child(div().flex_1()).child(
         div()
             .id("new-tab")
-            .px_3()
-            .h_full()
+            .flex_shrink_0()
+            .w(px(28.))
+            .h(px(28.))
             .flex()
             .items_center()
+            .justify_center()
+            .rounded(px(theme::RADIUS_SM))
             .cursor_pointer()
-            .text_color(rgb(0x8c8c94))
-            .hover(|s| s.bg(rgb(0x2a2a2e)).text_color(rgb(0xf5f5f7)))
-            .child(SharedString::from("+"))
+            .bg(theme::accent_soft())
+            .border_1()
+            .border_color(theme::border_strong())
+            .text_color(theme::accent())
+            .hover(|s| {
+                s.bg(theme::accent())
+                    .border_color(theme::accent())
+                    .text_color(theme::canvas())
+            })
+            .tooltip(|_window, cx| {
+                cx.new(|_| LocalPathTooltip {
+                    path: SharedString::from("新建终端"),
+                })
+                .into()
+            })
+            .child(icons::icon(icons::IconName::Plus, 15.))
             .on_click(cx.listener(|this, _ev, window, cx| {
                 this.new_tab(window, cx);
             })),
@@ -1561,6 +1827,11 @@ fn render_prompt_modal(
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
     let modal_focus = shell.modal_focus.clone();
+    let modal_icon = match &prompt {
+        PromptDisplay::HostKey { .. } => icons::IconName::ShieldAlert,
+        PromptDisplay::Credential { .. } => icons::IconName::KeyRound,
+        PromptDisplay::None => return div().into_any_element(),
+    };
 
     let (title, body, is_credential): (String, String, bool) = match prompt {
         PromptDisplay::HostKey {
@@ -1588,7 +1859,7 @@ fn render_prompt_modal(
             };
             (title.to_string(), prompt.clone(), true)
         }
-        PromptDisplay::None => return div().into_any_element(),
+        PromptDisplay::None => unreachable!(),
     };
 
     let mut buttons = div().flex().flex_row().gap_2().mt_4();
@@ -1620,27 +1891,35 @@ fn render_prompt_modal(
     }
 
     let mut card = div()
-        .w(px(420.))
+        .w(px(440.))
         .p_5()
-        .bg(rgb(0x1f1f23))
+        .bg(theme::surface())
         .border_1()
-        .border_color(rgb(0x3a3a40))
-        .rounded(px(8.))
+        .border_color(theme::border_strong())
+        .rounded(px(theme::RADIUS_MD))
         .shadow_md()
         .flex()
         .flex_col()
         .child(
             div()
+                .flex()
+                .items_center()
+                .gap_2()
                 .text_sm()
-                .font_weight(FontWeight::BOLD)
-                .text_color(rgb(0xf5f5f7))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme::text())
+                .child(icons::icon(modal_icon, 17.).text_color(if is_credential {
+                    theme::info()
+                } else {
+                    theme::warning()
+                }))
                 .child(SharedString::from(title)),
         )
         .child(
             div()
                 .mt_2()
                 .text_xs()
-                .text_color(rgb(0xb0b0b8))
+                .text_color(theme::muted_text())
                 .child(SharedString::from(body)),
         );
 
@@ -1648,15 +1927,18 @@ fn render_prompt_modal(
         let masked = "•".repeat(shell.prompt_input.chars().count());
         let input = div()
             .id("prompt-input")
-            .w(px(360.))
+            .w_full()
+            .h(px(34.))
             .px_3()
-            .py_2()
+            .flex()
+            .items_center()
             .mt_2()
-            .bg(rgb(0x121214))
+            .bg(theme::canvas())
             .border_1()
-            .border_color(rgb(0x3a3a40))
+            .border_color(theme::border_strong())
+            .rounded(px(theme::RADIUS_SM))
             .text_sm()
-            .text_color(rgb(0xe6e6e6))
+            .text_color(theme::text())
             .track_focus(&modal_focus)
             .on_key_down(cx.listener(handle_credential_key))
             .child(SharedString::from(masked));
@@ -1672,7 +1954,7 @@ fn render_prompt_modal(
         .flex()
         .items_center()
         .justify_center()
-        .bg(hsla(0., 0., 0., 0.55))
+        .bg(theme::scrim())
         .child(card)
         .into_any_element()
 }
@@ -1719,16 +2001,33 @@ fn host_key_button(
     decision: HostKeyDecision,
 ) -> impl IntoElement {
     let id = SharedString::from(label.to_string());
+    let icon = match decision {
+        HostKeyDecision::Reject => icons::IconName::XCircle,
+        HostKeyDecision::AcceptOnce | HostKeyDecision::AcceptAlways => icons::IconName::Check,
+    };
     let _ = shell;
     div()
         .id(id)
+        .h(px(30.))
         .px_3()
-        .py_1()
+        .flex()
+        .items_center()
+        .gap_2()
+        .rounded(px(theme::RADIUS_SM))
         .text_xs()
         .cursor_pointer()
-        .bg(rgb(0x2a2a2e))
-        .hover(|s| s.bg(rgb(0x3a3a40)))
-        .text_color(rgb(0xe6e6e6))
+        .bg(if matches!(decision, HostKeyDecision::Reject) {
+            theme::raised()
+        } else {
+            theme::accent()
+        })
+        .hover(|s| s.bg(theme::border_strong()))
+        .text_color(if matches!(decision, HostKeyDecision::Reject) {
+            theme::text()
+        } else {
+            theme::canvas()
+        })
+        .child(icons::icon(icon, 14.))
         .child(SharedString::from(label.to_string()))
         .on_click(cx.listener(move |this, _ev, _w, cx| {
             this.resolve_host_key(decision, cx);
@@ -1745,13 +2044,33 @@ fn cred_button(
     let _ = shell;
     div()
         .id(id)
+        .h(px(30.))
         .px_3()
-        .py_1()
+        .flex()
+        .items_center()
+        .gap_2()
+        .rounded(px(theme::RADIUS_SM))
         .text_xs()
         .cursor_pointer()
-        .bg(rgb(0x2a2a2e))
-        .hover(|s| s.bg(rgb(0x3a3a40)))
-        .text_color(rgb(0xe6e6e6))
+        .bg(if submit {
+            theme::accent()
+        } else {
+            theme::raised()
+        })
+        .hover(|s| s.bg(theme::border_strong()))
+        .text_color(if submit {
+            theme::canvas()
+        } else {
+            theme::text()
+        })
+        .child(icons::icon(
+            if submit {
+                icons::IconName::Check
+            } else {
+                icons::IconName::X
+            },
+            14.,
+        ))
         .child(SharedString::from(label.to_string()))
         .on_click(cx.listener(move |this, _ev, _w, cx| {
             if submit {

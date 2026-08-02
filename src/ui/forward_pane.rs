@@ -7,11 +7,12 @@ use std::collections::HashSet;
 
 use gpui::{
     App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, Styled, Task, Window, div, px, rgb,
+    SharedString, StatefulInteractiveElement, Styled, Task, Window, div, px,
 };
 
 use crate::config::ForwardSpec;
 use crate::ssh::{Connection, ForwardKind};
+use crate::ui::{icons, theme};
 
 pub struct ForwardPane {
     conn: Entity<Connection>,
@@ -88,22 +89,38 @@ impl Render for ForwardPane {
             .flex_col()
             .px_4()
             .py_3()
-            .gap_2()
-            .bg(rgb(0x121214));
+            .gap_3()
+            .bg(theme::canvas());
 
         col = col.child(
             div()
+                .flex()
+                .items_center()
+                .gap_2()
                 .text_sm()
-                .text_color(rgb(0xb0b0b8))
-                .child(SharedString::from("端口转发（来自 ~/.ssh/config）")),
+                .text_color(theme::text())
+                .child(
+                    icons::icon(icons::IconName::ArrowLeftRight, 17.).text_color(theme::accent()),
+                )
+                .child(SharedString::from("端口转发"))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::faint_text())
+                        .child(SharedString::from("来自 ~/.ssh/config")),
+                ),
         );
 
         let total = self.local.len() + self.remote.len() + self.dynamic.len();
         if total == 0 {
             col = col.child(
                 div()
-                    .text_xs()
-                    .text_color(rgb(0x6a6a72))
+                    .p_3()
+                    .rounded(px(theme::RADIUS_SM))
+                    .border_1()
+                    .border_color(theme::border())
+                    .text_sm()
+                    .text_color(theme::muted_text())
                     .child(SharedString::from(
                         "该主机未配置 LocalForward / RemoteForward / DynamicForward。",
                     )),
@@ -140,11 +157,13 @@ impl Render for ForwardPane {
                 div()
                     .mt_2()
                     .p_2()
-                    .bg(rgb(0x18181b))
+                    .rounded(px(theme::RADIUS_SM))
+                    .bg(theme::surface())
                     .border_1()
-                    .border_color(rgb(0x2a2a2e))
+                    .border_color(theme::border())
                     .text_xs()
-                    .text_color(rgb(0xb0b0b8))
+                    .text_color(theme::muted_text())
+                    .child(icons::icon(icons::IconName::Link, 14.).text_color(theme::info()))
                     .child(SharedString::from(
                         self.messages.last().cloned().unwrap_or_default(),
                     )),
@@ -176,8 +195,9 @@ fn render_section(
     }
     let mut section = div().flex().flex_col().gap_1().child(
         div()
+            .px_1()
             .text_xs()
-            .text_color(rgb(0x888892))
+            .text_color(theme::muted_text())
             .child(SharedString::from(title.to_string())),
     );
     for (i, spec) in specs.iter().enumerate() {
@@ -198,20 +218,28 @@ fn render_section(
             .flex_row()
             .items_center()
             .gap_2()
+            .h(px(34.))
             .px_2()
-            .py_1()
+            .rounded(px(theme::RADIUS_SM))
             .cursor_pointer()
-            .hover(|s| s.bg(rgb(0x232327)))
+            .hover(|s| s.bg(theme::surface()))
             .child(div().w(px(10.)).h(px(10.)).rounded_full().bg(if on {
-                gpui::hsla(0.33, 0.7, 0.5, 1.)
+                theme::accent()
             } else {
-                gpui::hsla(0., 0., 0.25, 1.)
+                theme::border_strong()
+            }))
+            .child(icons::icon(icons::IconName::Link, 14.).text_color(if on {
+                theme::accent()
+            } else {
+                theme::faint_text()
             }))
             .child(
                 div()
                     .flex_1()
+                    .min_w_0()
+                    .truncate()
                     .text_xs()
-                    .text_color(rgb(0xe6e6e6))
+                    .text_color(theme::text())
                     .child(SharedString::from(label)),
             )
             .on_click(cx.listener(move |this, _ev, _w, cx| {

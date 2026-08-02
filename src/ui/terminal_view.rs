@@ -24,11 +24,12 @@ use gpui::{
     KeyDownEvent, KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ParentElement, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Task, TextAlign, TextRun, UTF16Selection,
-    Window, canvas, div, hsla, px, quad, rgb,
+    Window, canvas, div, hsla, px, quad,
 };
 use vte::ansi::{Color, NamedColor, Processor, Rgb};
 
 use crate::ssh::{InputCmd, SessionEvent};
+use crate::ui::theme;
 
 /// 终端字体大小（像素）。
 const FONT_SIZE: f32 = 14.0;
@@ -1037,8 +1038,14 @@ impl Render for TerminalView {
                     .absolute()
                     .top_2()
                     .left_2()
+                    .px_2()
+                    .py_1()
+                    .rounded(px(theme::RADIUS_SM))
+                    .bg(theme::raised())
+                    .border_1()
+                    .border_color(theme::border_strong())
                     .text_xs()
-                    .text_color(hsla(0., 0., 0.8, 1.))
+                    .text_color(theme::warning())
                     .child(SharedString::from(msg)),
             );
         }
@@ -1050,13 +1057,13 @@ fn connecting_or_error_view(msg: &str, focus: &FocusHandle) -> impl IntoElement 
     div()
         .id("terminal-error")
         .size_full()
-        .bg(rgb(0x1e1e20))
+        .bg(theme::canvas())
         .track_focus(focus)
         .flex()
         .items_center()
         .justify_center()
         .text_sm()
-        .text_color(hsla(0.1, 0.6, 0.6, 1.))
+        .text_color(theme::warning())
         .child(SharedString::from(msg.to_string()))
 }
 
@@ -1719,10 +1726,10 @@ fn default_palette(n: &NamedColor) -> Hsla {
         BrightMagenta => [0xff, 0x7e, 0xff],
         BrightCyan => [0x6b, 0xe7, 0xeb],
         BrightWhite | BrightForeground => [0xff, 0xff, 0xff],
-        Foreground => [0xe6, 0xe6, 0xe6],
-        Background => [0x12, 0x12, 0x14],
-        Cursor => [0xe6, 0xe6, 0xe6],
-        DimForeground => [0x9a, 0x9a, 0x9a],
+        Foreground => [0xe7, 0xed, 0xf1],
+        Background => [0x0f, 0x11, 0x14],
+        Cursor => [0x69, 0xd7, 0xb0],
+        DimForeground => [0x9a, 0xa6, 0xb0],
     };
     Hsla::from(gpui::rgb(
         ((rgb[0] as u32) << 16) | ((rgb[1] as u32) << 8) | rgb[2] as u32,
