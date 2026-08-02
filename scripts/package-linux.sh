@@ -61,9 +61,12 @@ Type=Application
 Categories=Development;Network;
 StartupWMClass=crossh
 EOF
+ln -s "usr/share/applications/$APP_NAME.desktop" "$APPDIR/$APP_NAME.desktop"
 
 rsvg-convert -w 512 -h 512 assets/appicon/icon-master.svg \
     -o "$APPDIR/usr/share/icons/hicolor/512x512/apps/$APP_NAME.png"
+ln -s "usr/share/icons/hicolor/512x512/apps/$APP_NAME.png" "$APPDIR/$APP_NAME.png"
+ln -s "$APP_NAME.png" "$APPDIR/.DirIcon"
 
 cat > "$APPDIR/AppRun" <<'EOF'
 #!/bin/sh
