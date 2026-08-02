@@ -10,6 +10,9 @@ use async_channel::{Receiver, Sender};
 use russh_sftp::client::SftpSession;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// 编辑器允许读取和保存的最大文件大小。
+pub const MAX_EDITOR_FILE_BYTES: u64 = 4 * 1024 * 1024;
+
 /// 远程目录条目（UI 友好快照）。
 #[derive(Clone, Debug)]
 pub struct RemoteEntry {
@@ -27,6 +30,10 @@ pub enum SftpCmd {
     Download { remote: String, local: PathBuf },
     /// 上传本地文件到远端路径。
     Upload { local: PathBuf, remote: String },
+    /// 读取远端文本文件。
+    ReadFile { remote: String },
+    /// 保存远端文本文件。
+    WriteFile { remote: String, contents: Vec<u8> },
     /// 建目录。
     Mkdir { path: String },
 }
@@ -36,10 +43,18 @@ pub enum SftpCmd {
 pub enum SftpEvent {
     /// 列目录结果。
     Listed { path: String, entries: Vec<RemoteEntry> },
+    /// 远端文件内容。
+    FileRead { remote: String, contents: Vec<u8> },
     /// 传输进度。
     Progress { label: String, transferred: u64, total: Option<u64> },
     /// 单个操作完成（ok=false 时 message 为错误）。
     Done { label: String, ok: bool, message: String },
+    /// 保存文件完成。
+    Saved {
+        remote: String,
+        ok: bool,
+        message: String,
+    },
     /// worker 致命错误。
     Error(String),
     /// worker 结束。
@@ -83,6 +98,20 @@ pub async fn run_sftp_worker(
                 report_done(&event_tx, label, res).await;
                 continue;
             }
+            SftpCmd::ReadFile { remote } => match read_file(&sftp, &remote).await {
+                Ok(contents) => {
+                    let _ = event_tx
+                        .send(SftpEvent::FileRead { remote, contents })
+                        .await;
+                    Ok(())
+                }
+                Err(e) => Err(format!("read {remote}: {e}")),
+            },
+            SftpCmd::WriteFile { remote, contents } => {
+                let res = write_file(&sftp, &remote, &contents).await;
+                report_saved(&event_tx, remote, res).await;
+                continue;
+            }
         };
         if let Err(e) = result {
             let _ = event_tx.send(SftpEvent::Error(e)).await;
@@ -90,6 +119,59 @@ pub async fn run_sftp_worker(
     }
     let _ = sftp.close().await;
     let _ = event_tx.send(SftpEvent::Closed).await;
+}
+
+/// 读取远端文件，编辑器只接收小于上限的内容。
+async fn read_file(sftp: &SftpSession, remote: &str) -> Result<Vec<u8>, String> {
+    let metadata = sftp.metadata(remote).await.map_err(|e| e.to_string())?;
+    if metadata.len() > MAX_EDITOR_FILE_BYTES {
+        return Err(format!(
+            "文件过大（{}，上限 {}）",
+            format_bytes(metadata.len()),
+            format_bytes(MAX_EDITOR_FILE_BYTES)
+        ));
+    }
+
+    let mut remote_file = sftp.open(remote).await.map_err(|e| e.to_string())?;
+    let mut contents = Vec::with_capacity(metadata.len() as usize);
+    remote_file
+        .read_to_end(&mut contents)
+        .await
+        .map_err(|e| e.to_string())?;
+    remote_file.shutdown().await.ok();
+    Ok(contents)
+}
+
+/// 保存编辑器内容，远端 `create` 会覆盖原文件。
+async fn write_file(sftp: &SftpSession, remote: &str, contents: &[u8]) -> Result<String, String> {
+    if contents.len() as u64 > MAX_EDITOR_FILE_BYTES {
+        return Err(format!(
+            "文件过大（{}，上限 {}）",
+            format_bytes(contents.len() as u64),
+            format_bytes(MAX_EDITOR_FILE_BYTES)
+        ));
+    }
+
+    let mut remote_file = sftp.create(remote).await.map_err(|e| e.to_string())?;
+    remote_file
+        .write_all(contents)
+        .await
+        .map_err(|e| e.to_string())?;
+    remote_file.flush().await.map_err(|e| e.to_string())?;
+    remote_file.shutdown().await.ok();
+    Ok(format!("{} bytes", contents.len()))
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 async fn list_dir(sftp: &SftpSession, path: &str) -> Result<(String, Vec<RemoteEntry>), String> {
@@ -204,5 +286,33 @@ async fn report_done(event_tx: &Sender<SftpEvent>, label: String, res: Result<St
                 })
                 .await;
         }
+    }
+}
+
+async fn report_saved(event_tx: &Sender<SftpEvent>, remote: String, res: Result<String, String>) {
+    let event = match res {
+        Ok(message) => SftpEvent::Saved {
+            remote,
+            ok: true,
+            message,
+        },
+        Err(message) => SftpEvent::Saved {
+            remote,
+            ok: false,
+            message,
+        },
+    };
+    let _ = event_tx.send(event).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn editor_file_limit_is_rendered_human_readably() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(1024), "1.0 KB");
+        assert_eq!(format_bytes(MAX_EDITOR_FILE_BYTES), "4.0 MB");
     }
 }

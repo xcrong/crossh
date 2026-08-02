@@ -12,4 +12,4 @@ pub use connection::{Connection, CredentialKind, ForwardKind, HostKeyDecision, P
 pub use pool::ConnectionPool;
 pub use runtime::runtime as ssh_runtime;
 pub use session::{default_auth_for, InputCmd, SessionEvent};
-pub use sftp::{RemoteEntry, SftpCmd, SftpEvent};
+pub use sftp::{MAX_EDITOR_FILE_BYTES, RemoteEntry, SftpCmd, SftpEvent};
