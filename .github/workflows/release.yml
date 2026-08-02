@@ -13,6 +13,8 @@ jobs:
   build:
     name: Build & package crossh.app
     runs-on: macos-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 

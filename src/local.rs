@@ -207,6 +207,23 @@ fn prepare_shell_integration(options: &mut tty::Options, pty_id: u64) -> Option<
         .unwrap_or_else(|| home.clone());
     let directory = std::env::temp_dir().join(format!("crossh-zsh-{pty_id}"));
     fs::create_dir_all(&directory).ok()?;
+
+    // ZDOTDIR 重定向会让 zsh 找不到 ~/.zprofile、~/.zshenv、~/.zlogin，
+    // 而很多用户的 PATH（brew shellenv 等）都写在 .zprofile 里。
+    // 为每个 dotfile 写一个 source 原文件的包装器，保留 login shell 完整语义。
+    for name in [".zshenv", ".zprofile", ".zlogin"] {
+        let original = original_zdotdir.join(name);
+        let wrapper = format!(
+            "if [[ -r {} ]]; then source {}; fi\n",
+            shell_quote(&original),
+            shell_quote(&original),
+        );
+        if fs::write(directory.join(name), wrapper).is_err() {
+            let _ = fs::remove_dir_all(&directory);
+            return None;
+        }
+    }
+
     let original_rc = original_zdotdir.join(".zshrc");
     let rc = format!(
         "if [[ -r {original_rc} ]]; then source {original_rc}; fi\n\
@@ -425,6 +442,76 @@ mod tests {
             String::from_utf8_lossy(&output).contains(&expected_cwd),
             "local shell output did not contain pwd: {:?}",
             String::from_utf8_lossy(&output)
+        );
+    }
+
+    #[test]
+    fn local_shell_keeps_login_path_with_minimal_env() {
+        let original_shell = std::env::var_os("SHELL");
+        let original_path = std::env::var_os("PATH");
+        let original_term = std::env::var_os("TERM");
+        unsafe {
+            // LaunchServices 注入 SHELL 但 PATH 是极简的 launchd 默认值：
+            // 必须完整复现这个组合才能触发 ZDOTDIR 重定向的缺陷。
+            std::env::set_var("SHELL", "/bin/zsh");
+            std::env::set_var("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+        }
+
+        let cwd = std::env::current_dir().unwrap();
+        let (input_tx, event_rx) = open_terminal(cwd, 80, 24);
+        let input_for_task = input_tx.clone();
+
+        let output = crate::ssh::ssh_runtime().block_on(async move {
+            let mut output = Vec::new();
+            let timer = tokio::time::sleep(Duration::from_secs(5));
+            tokio::pin!(timer);
+
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = &mut timer => break,
+                    event = event_rx.recv() => match event {
+                        Ok(SessionEvent::Connected) => {
+                            let _ = input_for_task
+                                .send(InputCmd::Write(
+                                    b"which opencode; echo CROSSH_PATH=$PATH; exit\r".to_vec(),
+                                ))
+                                .await;
+                        }
+                        Ok(SessionEvent::Output(bytes)) => output.extend_from_slice(&bytes),
+                        Ok(SessionEvent::Error(message)) => {
+                            output.extend_from_slice(format!("[error] {message}").as_bytes());
+                            break;
+                        }
+                        Ok(SessionEvent::Closed) | Err(_) => break,
+                        Ok(SessionEvent::Cwd(_)) => {}
+                    }
+                }
+            }
+            output
+        });
+        drop(input_tx);
+
+        unsafe {
+            match original_shell {
+                Some(shell) => std::env::set_var("SHELL", shell),
+                None => std::env::remove_var("SHELL"),
+            }
+            match original_path {
+                Some(path) => std::env::set_var("PATH", path),
+                None => std::env::remove_var("PATH"),
+            }
+            match original_term {
+                Some(term) => std::env::set_var("TERM", term),
+                None => std::env::remove_var("TERM"),
+            }
+        }
+
+        let text = String::from_utf8_lossy(&output);
+        assert!(
+            text.contains("/opt/homebrew/bin/opencode"),
+            "local shell lost login PATH without SHELL env: {:?}",
+            text
         );
     }
 }
