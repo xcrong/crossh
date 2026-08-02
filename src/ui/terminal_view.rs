@@ -424,10 +424,12 @@ impl TerminalView {
             match ks.key.as_str() {
                 "c" => {
                     self.copy_selection(cx);
+                    cx.stop_propagation();
                     return;
                 }
                 "v" => {
                     self.paste_clipboard(cx);
+                    cx.stop_propagation();
                     return;
                 }
                 _ => {}
@@ -436,12 +438,17 @@ impl TerminalView {
         let mode = *self.term.mode();
         let event_type = if ev.is_held { 2 } else { 1 };
         match encode_keystroke_with_event(ks, mode, event_type) {
-            Some(bytes) => self.send_input(bytes),
+            Some(bytes) => {
+                self.send_input(bytes);
+                // macOS 会在 key callback 未消费时继续把事件交给
+                // NSTextInputContext；终端已将它编码写入 PTY，必须阻止第二次文本提交。
+                cx.stop_propagation();
+            }
             None => log::debug!("unhandled keystroke: key={} key_char={:?}", ks.key, ks.key_char),
         }
     }
 
-    fn handle_key_up(&mut self, ev: &KeyUpEvent, _: &mut Window, _: &mut Context<Self>) {
+    fn handle_key_up(&mut self, ev: &KeyUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
         if is_shell_shortcut(ks)
             || (ks.modifiers.platform
@@ -455,8 +462,12 @@ impl TerminalView {
         if !mode.contains(TermMode::REPORT_EVENT_TYPES) {
             return;
         }
-        if let Some(bytes) = encode_keystroke_with_event(ks, mode, 3) {
+        // REPORT_EVENT_TYPES only adds release events to keys represented by
+        // kitty CSI-u sequences. Legacy text bytes ("a", Backspace, Enter,
+        // etc.) must not be resent on key-up or TUIs such as Codex see them twice.
+        if let Some(bytes) = encode_kitty_keystroke(ks, mode, 3) {
             self.send_input(bytes);
+            cx.stop_propagation();
         }
     }
 
@@ -2425,6 +2436,21 @@ mod tests {
         assert_eq!(
             encode_keystroke_with_event(&keystroke("a"), report_events, 3),
             Some(b"\x1b[97;1:3u".to_vec())
+        );
+
+        let disambiguate_events =
+            disambiguate | TermMode::REPORT_EVENT_TYPES | TermMode::REPORT_ALTERNATE_KEYS;
+        assert_eq!(
+            encode_kitty_keystroke(&keystroke("a"), disambiguate_events, 3),
+            None
+        );
+        assert_eq!(
+            encode_kitty_keystroke(&keystroke("backspace"), disambiguate_events, 3),
+            None
+        );
+        assert_eq!(
+            encode_kitty_keystroke(&keystroke("up"), disambiguate_events, 3),
+            Some(b"\x1b[1;1:3A".to_vec())
         );
 
         let enhanced = report_all
