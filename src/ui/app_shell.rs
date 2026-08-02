@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, AppContext, Context, Entity, FocusHandle, FontWeight, InteractiveElement,
-    IntoElement, Keystroke, KeyDownEvent, ParentElement, PathPromptOptions, Render, SharedString,
+    IntoElement, KeyDownEvent, Keystroke, ParentElement, PathPromptOptions, Render, SharedString,
     StatefulInteractiveElement, Styled, Task, TitlebarOptions, Window, WindowBounds, WindowOptions,
     div, hsla, px, rgb, size,
 };
@@ -19,7 +19,7 @@ use gpui::{
 use crate::config::SshConfig;
 use crate::local;
 use crate::ssh::{
-    default_auth_for, Connection, ConnectionPool, CredentialKind, HostKeyDecision, PendingPrompt,
+    Connection, ConnectionPool, CredentialKind, HostKeyDecision, PendingPrompt, default_auth_for,
 };
 use crate::ui::terminal_view::ConnState;
 use crate::ui::{ForwardPane, SftpPane, TerminalView};
@@ -148,7 +148,9 @@ impl AppShell {
         let host_key = ConnectionPool::key_for(&resolved);
 
         // 复用或新建连接，开一个终端 channel。
-        let conn = self.pool.acquire(resolved, methods, self.config.clone(), cx);
+        let conn = self
+            .pool
+            .acquire(resolved, methods, self.config.clone(), cx);
         let (input_tx, event_rx) = conn.read(cx).open_terminal(100, 30);
         let terminal = TerminalView::from_bridge(input_tx, event_rx, 100, 30, cx);
         self.remote_tabs.push(Tab {
@@ -170,7 +172,9 @@ impl AppShell {
         let resolved = self.config.resolve(&entry.alias);
         let methods = default_auth_for(&resolved);
         let host_key = ConnectionPool::key_for(&resolved);
-        let conn = self.pool.acquire(resolved.clone(), methods, self.config.clone(), cx);
+        let conn = self
+            .pool
+            .acquire(resolved.clone(), methods, self.config.clone(), cx);
         let (cmd_tx, event_rx) = conn.read(cx).open_sftp();
         let pane = SftpPane::from_bridge(cmd_tx, event_rx, cx);
         self.remote_tabs.push(Tab {
@@ -191,7 +195,9 @@ impl AppShell {
         let resolved = self.config.resolve(&entry.alias);
         let methods = default_auth_for(&resolved);
         let host_key = ConnectionPool::key_for(&resolved);
-        let conn = self.pool.acquire(resolved.clone(), methods, self.config.clone(), cx);
+        let conn = self
+            .pool
+            .acquire(resolved.clone(), methods, self.config.clone(), cx);
         let pane = ForwardPane::new(conn, cx, &resolved);
         self.remote_tabs.push(Tab {
             target: entry.alias.clone(),
@@ -208,23 +214,12 @@ impl AppShell {
         let cwd = normalize_local_cwd(cwd);
         let cwd_text = cwd.to_string_lossy().to_string();
         let (input_tx, event_rx) = local::open_terminal(cwd.clone(), 100, 30);
-        let terminal = TerminalView::from_local_bridge(
-            input_tx,
-            event_rx,
-            100,
-            30,
-            cwd_text.clone(),
-            cx,
-        );
+        let terminal =
+            TerminalView::from_local_bridge(input_tx, event_rx, 100, 30, cwd_text.clone(), cx);
         let session_id = self.next_local_session_id;
         self.next_local_session_id += 1;
-        self.local_sessions.insert(
-            session_id,
-            LocalSession {
-                cwd,
-                terminal,
-            },
-        );
+        self.local_sessions
+            .insert(session_id, LocalSession { cwd, terminal });
         self.sync_local_dirs(cx);
         self.select_local_session(session_id, cx);
         self.status = None;
@@ -340,9 +335,7 @@ impl AppShell {
                     Some(ActiveView::RemoteTab(a))
                 }
             }
-            Some(ActiveView::RemoteTab(a)) if a > idx => {
-                Some(ActiveView::RemoteTab(a - 1))
-            }
+            Some(ActiveView::RemoteTab(a)) if a > idx => Some(ActiveView::RemoteTab(a - 1)),
             other => other,
         };
         cx.notify();
@@ -351,9 +344,7 @@ impl AppShell {
     fn close_active_tab(&mut self, cx: &mut Context<Self>) {
         match self.active_view {
             Some(ActiveView::RemoteTab(idx)) => self.close_remote_tab(idx, cx),
-            Some(ActiveView::LocalSession(session_id)) => {
-                self.close_local_session(session_id, cx)
-            }
+            Some(ActiveView::LocalSession(session_id)) => self.close_local_session(session_id, cx),
             None => {}
         }
     }
@@ -375,8 +366,8 @@ impl AppShell {
                 let Some(current) = dir.sessions.iter().position(|id| *id == session_id) else {
                     return;
                 };
-                let next = (current as isize + direction)
-                    .rem_euclid(dir.sessions.len() as isize) as usize;
+                let next =
+                    (current as isize + direction).rem_euclid(dir.sessions.len() as isize) as usize;
                 if let Some(next_session) = dir.sessions.get(next).copied() {
                     self.select_local_session(next_session, cx);
                 }
@@ -717,7 +708,10 @@ impl Render for AppShell {
             .child(sidebar)
             .child(main);
 
-        if matches!(prompt, PromptDisplay::HostKey { .. } | PromptDisplay::Credential { .. }) {
+        if matches!(
+            prompt,
+            PromptDisplay::HostKey { .. } | PromptDisplay::Credential { .. }
+        ) {
             root = root.child(render_prompt_modal(self, prompt, cx));
         }
         root
@@ -729,7 +723,9 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
     let search_focus = shell.host_focus.clone();
     let search_value = shell.host_query.clone();
     let active_remote_key = match shell.active_view {
-        Some(ActiveView::RemoteTab(idx)) => shell.remote_tabs.get(idx).map(|tab| tab.host_key.clone()),
+        Some(ActiveView::RemoteTab(idx)) => {
+            shell.remote_tabs.get(idx).map(|tab| tab.host_key.clone())
+        }
         _ => None,
     };
     let project_dirs: Vec<&LocalDir> = shell
@@ -760,19 +756,13 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
     let project_count = if show_projects { project_dirs.len() } else { 0 };
     let visible_count = active_count + bank_count + project_count;
 
-    let mut active_list = div()
-        .id("active-host-list")
-        .flex()
-        .flex_col()
-        .gap_1();
+    let mut active_list = div().id("active-host-list").flex().flex_col().gap_1();
     if active_entries.is_empty() {
         active_list = active_list.child(render_host_group_empty("No active connections"));
     } else {
         for (idx, entry, state) in active_entries {
             let selected = active_remote_key.as_deref() == Some(entry.key.as_str());
-            active_list = active_list.child(render_host_entry(
-                idx, &entry, state, selected, cx,
-            ));
+            active_list = active_list.child(render_host_entry(idx, &entry, state, selected, cx));
         }
     }
 
@@ -786,11 +776,7 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
         }
     }
 
-    let mut project_list = div()
-        .id("project-list")
-        .flex()
-        .flex_col()
-        .gap_1();
+    let mut project_list = div().id("project-list").flex().flex_col().gap_1();
     if project_dirs.is_empty() {
         project_list = project_list.child(render_host_group_empty("No projects"));
     } else {
@@ -927,18 +913,18 @@ fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
 fn local_dir_matches_query(dir: &LocalDir, query: &str) -> bool {
     query.is_empty()
         || matches!(query, "local" | "project" | "projects")
-        || dir.cwd.to_string_lossy().to_ascii_lowercase().contains(query)
+        || dir
+            .cwd
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .contains(query)
 }
 
 fn is_active_local_dir(shell: &AppShell, dir: &LocalDir) -> bool {
     matches!(shell.active_view, Some(ActiveView::LocalSession(session_id)) if dir.sessions.contains(&session_id))
 }
 
-fn local_dir_state(
-    shell: &AppShell,
-    dir: &LocalDir,
-    cx: &Context<AppShell>,
-) -> Option<ConnState> {
+fn local_dir_state(shell: &AppShell, dir: &LocalDir, cx: &Context<AppShell>) -> Option<ConnState> {
     dir.sessions
         .iter()
         .filter_map(|id| shell.local_sessions.get(id))
@@ -1133,11 +1119,7 @@ fn render_host_group(
                 .text_color(rgb(0x6a6a72))
                 .child(SharedString::from(caret)),
         )
-        .child(
-            div()
-                .flex_1()
-                .child(SharedString::from(title)),
-        )
+        .child(div().flex_1().child(SharedString::from(title)))
         .child(
             div()
                 .text_color(rgb(0x6a6a72))
@@ -1485,23 +1467,21 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
         None => {}
     }
 
-    strip
-        .child(div().flex_1())
-        .child(
-            div()
-                .id("new-tab")
-                .px_3()
-                .h_full()
-                .flex()
-                .items_center()
-                .cursor_pointer()
-                .text_color(rgb(0x8c8c94))
-                .hover(|s| s.bg(rgb(0x2a2a2e)).text_color(rgb(0xf5f5f7)))
-                .child(SharedString::from("+"))
-                .on_click(cx.listener(|this, _ev, window, cx| {
-                    this.new_tab(window, cx);
-                })),
-        )
+    strip.child(div().flex_1()).child(
+        div()
+            .id("new-tab")
+            .px_3()
+            .h_full()
+            .flex()
+            .items_center()
+            .cursor_pointer()
+            .text_color(rgb(0x8c8c94))
+            .hover(|s| s.bg(rgb(0x2a2a2e)).text_color(rgb(0xf5f5f7)))
+            .child(SharedString::from("+"))
+            .on_click(cx.listener(|this, _ev, window, cx| {
+                this.new_tab(window, cx);
+            })),
+    )
 }
 
 /// 渲染模态覆盖层。
@@ -1527,9 +1507,7 @@ fn render_prompt_modal(
             };
             (
                 "主机密钥确认".to_string(),
-                format!(
-                    "{warn}\n主机: {host}:{port}\n密钥类型: {key_type}\n指纹:\n{fingerprint}"
-                ),
+                format!("{warn}\n主机: {host}:{port}\n密钥类型: {key_type}\n指纹:\n{fingerprint}"),
                 false,
             )
         }
@@ -1548,8 +1526,18 @@ fn render_prompt_modal(
         PromptDisplay::HostKey { changed, .. } => {
             if !changed {
                 buttons = buttons
-                    .child(host_key_button(shell, cx, "接受一次", HostKeyDecision::AcceptOnce))
-                    .child(host_key_button(shell, cx, "总是接受", HostKeyDecision::AcceptAlways));
+                    .child(host_key_button(
+                        shell,
+                        cx,
+                        "接受一次",
+                        HostKeyDecision::AcceptOnce,
+                    ))
+                    .child(host_key_button(
+                        shell,
+                        cx,
+                        "总是接受",
+                        HostKeyDecision::AcceptAlways,
+                    ));
             }
             buttons = buttons.child(host_key_button(shell, cx, "拒绝", HostKeyDecision::Reject));
         }
@@ -1741,7 +1729,9 @@ mod tests {
         assert!(is_active_connection(&Some(ConnState::Connected)));
         assert!(!is_active_connection(&Some(ConnState::Connecting)));
         assert!(!is_active_connection(&Some(ConnState::Closed)));
-        assert!(!is_active_connection(&Some(ConnState::Error("failed".to_string()))));
+        assert!(!is_active_connection(&Some(ConnState::Error(
+            "failed".to_string()
+        ))));
         assert!(!is_active_connection(&None));
     }
 

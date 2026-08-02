@@ -12,11 +12,11 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
-use russh::client::{Handle, Msg};
 use russh::Channel;
+use russh::client::{Handle, Msg};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 
 use crate::config::ForwardSpec;
 
@@ -111,7 +111,11 @@ pub async fn run_dynamic_forward(
 ) -> anyhow::Result<()> {
     let (bind_addr, bind_port) = parse_listen(&spec.listen);
     let listener = TcpListener::bind((bind_addr.as_str(), bind_port)).await?;
-    log::info!("dynamic forward (SOCKS5) listening on {}:{}", bind_addr, bind_port);
+    log::info!(
+        "dynamic forward (SOCKS5) listening on {}:{}",
+        bind_addr,
+        bind_port
+    );
 
     loop {
         tokio::select! {
@@ -156,7 +160,8 @@ async fn handle_socks5(
     tcp.read_exact(&mut req).await?;
     if req[0] != 0x05 || req[1] != 0x01 {
         // 仅支持 CONNECT。
-        tcp.write_all(&[0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+        tcp.write_all(&[0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+            .await?;
         anyhow::bail!("socks: only CONNECT supported");
     }
     let (host, port) = match req[3] {
@@ -176,10 +181,14 @@ async fn handle_socks5(
             tcp.read_exact(&mut name).await?;
             let mut p = [0u8; 2];
             tcp.read_exact(&mut p).await?;
-            (String::from_utf8_lossy(&name).to_string(), u16::from_be_bytes(p))
+            (
+                String::from_utf8_lossy(&name).to_string(),
+                u16::from_be_bytes(p),
+            )
         }
         _ => {
-            tcp.write_all(&[0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+            tcp.write_all(&[0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                .await?;
             anyhow::bail!("socks: unsupported ATYP");
         }
     };
@@ -190,12 +199,14 @@ async fn handle_socks5(
     {
         Ok(c) => c,
         Err(e) => {
-            tcp.write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+            tcp.write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                .await?;
             return Err(e.into());
         }
     };
     // 成功回复。
-    tcp.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
+    tcp.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        .await?;
     relay_channel_tcp(channel, tcp).await
 }
 

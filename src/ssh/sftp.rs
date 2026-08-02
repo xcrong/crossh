@@ -42,13 +42,24 @@ pub enum SftpCmd {
 #[derive(Debug)]
 pub enum SftpEvent {
     /// 列目录结果。
-    Listed { path: String, entries: Vec<RemoteEntry> },
+    Listed {
+        path: String,
+        entries: Vec<RemoteEntry>,
+    },
     /// 远端文件内容。
     FileRead { remote: String, contents: Vec<u8> },
     /// 传输进度。
-    Progress { label: String, transferred: u64, total: Option<u64> },
+    Progress {
+        label: String,
+        transferred: u64,
+        total: Option<u64>,
+    },
     /// 单个操作完成（ok=false 时 message 为错误）。
-    Done { label: String, ok: bool, message: String },
+    Done {
+        label: String,
+        ok: bool,
+        message: String,
+    },
     /// 保存文件完成。
     Saved {
         remote: String,
@@ -72,10 +83,7 @@ pub async fn run_sftp_worker(
             SftpCmd::List { path } => match list_dir(&sftp, &path).await {
                 Ok((abs, entries)) => {
                     let _ = event_tx
-                        .send(SftpEvent::Listed {
-                            path: abs,
-                            entries,
-                        })
+                        .send(SftpEvent::Listed { path: abs, entries })
                         .await;
                     Ok(())
                 }
@@ -176,7 +184,10 @@ fn format_bytes(bytes: u64) -> String {
 
 async fn list_dir(sftp: &SftpSession, path: &str) -> Result<(String, Vec<RemoteEntry>), String> {
     // 规范化为绝对路径（首次 "." → 用户家目录），失败则保留原值。
-    let abs = sftp.canonicalize(path).await.unwrap_or_else(|_| path.to_string());
+    let abs = sftp
+        .canonicalize(path)
+        .await
+        .unwrap_or_else(|_| path.to_string());
     let mut rd = sftp.read_dir(&abs).await.map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     while let Some(e) = rd.next() {
@@ -205,11 +216,16 @@ async fn download(
     if let Some(parent) = local.parent() {
         tokio::fs::create_dir_all(parent).await.ok();
     }
-    let mut local_file = tokio::fs::File::create(local).await.map_err(|e| e.to_string())?;
+    let mut local_file = tokio::fs::File::create(local)
+        .await
+        .map_err(|e| e.to_string())?;
     let mut transferred = 0u64;
     let mut buf = vec![0u8; 32 * 1024];
     loop {
-        let n = remote_file.read(&mut buf).await.map_err(|e| e.to_string())?;
+        let n = remote_file
+            .read(&mut buf)
+            .await
+            .map_err(|e| e.to_string())?;
         if n == 0 {
             break;
         }
@@ -239,7 +255,9 @@ async fn upload(
     label: &str,
 ) -> Result<String, String> {
     let total = tokio::fs::metadata(local).await.map(|m| m.len()).ok();
-    let mut local_file = tokio::fs::File::open(local).await.map_err(|e| e.to_string())?;
+    let mut local_file = tokio::fs::File::open(local)
+        .await
+        .map_err(|e| e.to_string())?;
     let mut remote_file = sftp.create(remote).await.map_err(|e| e.to_string())?;
     let mut transferred = 0u64;
     let mut buf = vec![0u8; 32 * 1024];

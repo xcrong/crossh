@@ -47,10 +47,7 @@ impl ConnectionPool {
     ) -> Entity<Connection> {
         let key = Self::key_for(&host);
         if let Some(c) = self.map.get(&key) {
-            let reusable = !matches!(
-                c.read(cx).state,
-                ConnState::Closed | ConnState::Error(_)
-            );
+            let reusable = !matches!(c.read(cx).state, ConnState::Closed | ConnState::Error(_));
             if reusable {
                 return c.clone();
             }

@@ -9,11 +9,11 @@
 use std::sync::Arc;
 
 use async_channel::Sender;
-use russh::client::{self, connect_stream, Handle};
+use russh::client::{self, Handle, connect_stream};
 
 use crate::config::{HostConfig, SshConfig};
 
-use super::connection::{connect_direct_and_auth, ClientHandler, ConnEvent};
+use super::connection::{ClientHandler, ConnEvent, connect_direct_and_auth};
 use super::forward::RemoteForwardRegistry;
 use super::session::default_auth_for;
 
@@ -65,7 +65,10 @@ pub(crate) async fn open_target_via_jump(
     // 1) 跳板：直连+认证（跳板自身不应再有 proxy_jump；多层不在支持范围）。
     let jump_cfg = resolve_jump(&config, &jump_alias);
     if jump_cfg.proxy_jump.is_some() {
-        anyhow::bail!("multi-layer ProxyJump not supported (jump {} itself has ProxyJump)", jump_alias);
+        anyhow::bail!(
+            "multi-layer ProxyJump not supported (jump {} itself has ProxyJump)",
+            jump_alias
+        );
     }
     let jump_methods = default_auth_for(&jump_cfg);
     if jump_methods.is_empty() {
@@ -76,18 +79,18 @@ pub(crate) async fn open_target_via_jump(
 
     // 2) 在跳板会话上 direct_tcpip 到 target:port。
     let channel = jump_handle
-        .channel_open_direct_tcpip(target_host.clone(), target_port as u32, "0.0.0.0".to_string(), 0)
+        .channel_open_direct_tcpip(
+            target_host.clone(),
+            target_port as u32,
+            "0.0.0.0".to_string(),
+            0,
+        )
         .await?;
     let stream = channel.into_stream();
 
     // 3) 在该流上跑第二个 SSH client（目标的 host key / 认证仍走反应式 UI）。
     let target_cfg = Arc::new(client::Config::default());
-    let target_handler = ClientHandler::new(
-        target_host,
-        target_port,
-        event_tx.clone(),
-        registry,
-    );
+    let target_handler = ClientHandler::new(target_host, target_port, event_tx.clone(), registry);
     let target_handle = connect_stream(target_cfg, stream, target_handler).await?;
     Ok((target_handle, jump_handle))
 }

@@ -19,12 +19,12 @@ use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use async_channel::{Receiver, Sender, TrySendError};
 use gpui::{
-    canvas, px, App, AppContext, Bounds, Context, Corners, Edges, ElementInputHandler, Entity,
+    App, AppContext, Bounds, Context, Corners, Edges, ElementInputHandler, Entity,
     EntityInputHandler, FocusHandle, Font, FontWeight, Hsla, InteractiveElement, IntoElement,
-    KeyDownEvent, KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent,
-    SharedString, StatefulInteractiveElement, Styled, TextAlign, Subscription, Task, TextRun,
-    UTF16Selection, Window, div, hsla, quad, rgb,
+    KeyDownEvent, KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Task, TextAlign, TextRun, UTF16Selection,
+    Window, canvas, div, hsla, px, quad, rgb,
 };
 use vte::ansi::{Color, NamedColor, Processor, Rgb};
 
@@ -90,7 +90,9 @@ impl NoopListener {
     }
 
     fn write_to_pty(&self, bytes: Vec<u8>) {
-        let Some(input_tx) = &self.input_tx else { return };
+        let Some(input_tx) = &self.input_tx else {
+            return;
+        };
         if let Err(error) = input_tx.try_send(InputCmd::Write(bytes)) {
             log::warn!("terminal response could not be sent to PTY: {error}");
         }
@@ -293,11 +295,12 @@ impl TerminalView {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(530))
                     .await;
-                if weak2.update(cx, |this, cx| {
-                    this.cursor_blink_on = !this.cursor_blink_on;
-                    cx.notify();
-                })
-                .is_err()
+                if weak2
+                    .update(cx, |this, cx| {
+                        this.cursor_blink_on = !this.cursor_blink_on;
+                        cx.notify();
+                    })
+                    .is_err()
                 {
                     break;
                 }
@@ -317,11 +320,7 @@ impl TerminalView {
                 self.state = ConnState::Connected;
             }
             SessionEvent::Output(bytes) => {
-                log::trace!(
-                    "pty output ({}B): {}",
-                    bytes.len(),
-                    debug_bytes(&bytes)
-                );
+                log::trace!("pty output ({}B): {}", bytes.len(), debug_bytes(&bytes));
                 self.parser.advance(&mut self.term, &bytes);
             }
             SessionEvent::Cwd(cwd) => {
@@ -390,8 +389,13 @@ impl TerminalView {
         if new_cols != self.cols || new_rows != self.rows {
             log::debug!(
                 "maybe_resize: PTY {}x{} -> {}x{} (bounds={}x{}, cell_w={})",
-                self.cols, self.rows, new_cols, new_rows,
-                bounds.w as u32, bounds.h as u32, self.cell_w.as_f32()
+                self.cols,
+                self.rows,
+                new_cols,
+                new_rows,
+                bounds.w as u32,
+                bounds.h as u32,
+                self.cell_w.as_f32()
             );
             self.cols = new_cols;
             self.rows = new_rows;
@@ -444,7 +448,11 @@ impl TerminalView {
                 // NSTextInputContext；终端已将它编码写入 PTY，必须阻止第二次文本提交。
                 cx.stop_propagation();
             }
-            None => log::debug!("unhandled keystroke: key={} key_char={:?}", ks.key, ks.key_char),
+            None => log::debug!(
+                "unhandled keystroke: key={} key_char={:?}",
+                ks.key,
+                ks.key_char
+            ),
         }
     }
 
@@ -493,10 +501,7 @@ impl TerminalView {
         if ev.modifiers.platform && ev.button == MouseButton::Left {
             if let Some(url) = self.url_at(col, row) {
                 log::info!("opening URL: {url}");
-                std::process::Command::new("open")
-                    .arg(&url)
-                    .spawn()
-                    .ok();
+                std::process::Command::new("open").arg(&url).spawn().ok();
                 return;
             }
         }
@@ -505,14 +510,9 @@ impl TerminalView {
         // Shift 保留本地选择，即使远端应用开启了鼠标模式。
         if mode.intersects(TermMode::MOUSE_MODE) && !ev.modifiers.shift {
             if let Some(button) = mouse_button_code(ev.button) {
-                if let Some(bytes) = encode_mouse_report(
-                    button,
-                    col,
-                    row,
-                    true,
-                    &ev.modifiers,
-                    mode,
-                ) {
+                if let Some(bytes) =
+                    encode_mouse_report(button, col, row, true, &ev.modifiers, mode)
+                {
                     self.send_input(bytes);
                     self.remote_mouse_button = Some(button);
                 }
@@ -543,14 +543,9 @@ impl TerminalView {
                 if let Some(button) = mouse_button_code(ev.button) {
                     let tracked_release = self.remote_mouse_button == Some(button);
                     if !ev.modifiers.shift || tracked_release {
-                        if let Some(bytes) = encode_mouse_report(
-                            button,
-                            col,
-                            row,
-                            false,
-                            &ev.modifiers,
-                            mode,
-                        ) {
+                        if let Some(bytes) =
+                            encode_mouse_report(button, col, row, false, &ev.modifiers, mode)
+                        {
                             self.send_input(bytes);
                         }
                         if tracked_release {
@@ -587,14 +582,9 @@ impl TerminalView {
                         .and_then(mouse_button_code)
                         .map(|button| 32 + button)
                         .unwrap_or(35);
-                    if let Some(bytes) = encode_mouse_report(
-                        button,
-                        col,
-                        row,
-                        true,
-                        &ev.modifiers,
-                        mode,
-                    ) {
+                    if let Some(bytes) =
+                        encode_mouse_report(button, col, row, true, &ev.modifiers, mode)
+                    {
                         self.send_input(bytes);
                     }
                 }
@@ -603,7 +593,12 @@ impl TerminalView {
         }
     }
 
-    fn handle_scroll_wheel(&mut self, ev: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn handle_scroll_wheel(
+        &mut self,
+        ev: &ScrollWheelEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let mode = *self.term.mode();
 
         let delta = match ev.delta {
@@ -616,23 +611,21 @@ impl TerminalView {
             }
         };
 
-        if delta == 0.0 { return; }
+        if delta == 0.0 {
+            return;
+        }
         let steps = (delta.abs() as usize).max(1).min(8);
         let dir = if delta > 0.0 { 64 } else { 65 };
 
         if mode.intersects(TermMode::MOUSE_MODE) && !ev.modifiers.shift {
-            let point = self
-                .pos_to_grid(ev.position)
-                .unwrap_or((self.cols.saturating_sub(1) / 2, self.rows.saturating_sub(1) / 2));
+            let point = self.pos_to_grid(ev.position).unwrap_or((
+                self.cols.saturating_sub(1) / 2,
+                self.rows.saturating_sub(1) / 2,
+            ));
             for _ in 0..steps {
-                if let Some(bytes) = encode_mouse_report(
-                    dir,
-                    point.0,
-                    point.1,
-                    true,
-                    &ev.modifiers,
-                    mode,
-                ) {
+                if let Some(bytes) =
+                    encode_mouse_report(dir, point.0, point.1, true, &ev.modifiers, mode)
+                {
                     self.send_input(bytes);
                 }
             }
@@ -668,27 +661,39 @@ impl TerminalView {
 
     /// Cmd+C：将选中的文本复制到剪贴板。
     fn copy_selection(&mut self, cx: &mut Context<Self>) {
-        let Some((sx, sy)) = self.sel_start else { return };
+        let Some((sx, sy)) = self.sel_start else {
+            return;
+        };
         let Some((ex, ey)) = self.sel_end else { return };
-        if sx == ex && sy == ey { return; }
+        if sx == ex && sy == ey {
+            return;
+        }
 
         let text = self.extract_selection_text(sx, sy, ex, ey);
         self.sel_start = None;
         self.sel_end = None;
         cx.notify();
 
-        if text.is_empty() { return; }
+        if text.is_empty() {
+            return;
+        }
         let item = gpui::ClipboardItem::new_string(text);
         cx.write_to_clipboard(item);
     }
 
     /// Cmd+V：从剪贴板读取文本并发送到 PTY。
     fn paste_clipboard(&mut self, _cx: &mut Context<Self>) {
-        if self.state != ConnState::Connected { return; }
+        if self.state != ConnState::Connected {
+            return;
+        }
         let item = _cx.read_from_clipboard();
         if let Some(text) = item.and_then(|it| {
             it.entries.into_iter().find_map(|e| {
-                if let gpui::ClipboardEntry::String(s) = e { Some(s.text) } else { None }
+                if let gpui::ClipboardEntry::String(s) = e {
+                    Some(s.text)
+                } else {
+                    None
+                }
             })
         }) {
             let bytes = if self.term.mode().contains(TermMode::BRACKETED_PASTE) {
@@ -714,25 +719,31 @@ impl TerminalView {
     }
 
     /// 从 grid 中提取选择区域内的文本。
-    fn extract_selection_text(
-        &self,
-        sx: usize, sy: usize,
-        ex: usize, ey: usize,
-    ) -> String {
+    fn extract_selection_text(&self, sx: usize, sy: usize, ex: usize, ey: usize) -> String {
         let grid = self.term.grid();
         let display_offset = grid.display_offset();
         let top_line = -(display_offset as i32);
         let _rows = self.term.screen_lines();
 
         let (y0, y1) = if sy <= ey { (sy, ey) } else { (ey, sy) };
-        let (x0, x1) = if sy == ey && sx > ex { (ex, sx) } else if sy < ey { (sx, ex) } else { (ex, sx) };
+        let (x0, x1) = if sy == ey && sx > ex {
+            (ex, sx)
+        } else if sy < ey {
+            (sx, ex)
+        } else {
+            (ex, sx)
+        };
 
         let mut out = String::new();
         for vy in y0..=y1 {
             let line_idx = top_line + vy as i32;
             let line = &grid[Line(line_idx)];
             let start_col = if vy == y0 { x0 } else { 0 };
-            let end_col = if vy == y1 { x1.min(self.cols.saturating_sub(1)) } else { self.cols - 1 };
+            let end_col = if vy == y1 {
+                x1.min(self.cols.saturating_sub(1))
+            } else {
+                self.cols - 1
+            };
             for c in start_col..=end_col {
                 let ch = line[Column(c)].c;
                 if ch != '\0' {
@@ -882,10 +893,12 @@ impl Render for TerminalView {
                 cx.notify();
             }));
             let focus = self.focus.clone();
-            self._focus_out = Some(cx.on_focus_out(&focus, window, |this, _event, _window, cx| {
-                this.send_focus_event(false);
-                cx.notify();
-            }));
+            self._focus_out = Some(
+                cx.on_focus_out(&focus, window, |this, _event, _window, cx| {
+                    this.send_focus_event(false);
+                    cx.notify();
+                }),
+            );
         }
 
         // 打开/切回 tab 时自动聚焦终端，确保键盘输入直达 PTY（否则 on_key_down 不会触发）。
@@ -917,7 +930,9 @@ impl Render for TerminalView {
                 underline: None,
                 strikethrough: None,
             };
-            let shaped = window.text_system().shape_line("M".into(), px(FONT_SIZE), &[run], None);
+            let shaped = window
+                .text_system()
+                .shape_line("M".into(), px(FONT_SIZE), &[run], None);
             self.cell_w = shaped.width().max(px(1.0));
         }
 
@@ -970,7 +985,9 @@ impl Render for TerminalView {
                     };
                     // 保存 URL 供点击跳转。
                     let urls = snapshot.urls.clone();
-                    let _ = weak2.update(cx, |this, _| { this.detected_urls = urls; });
+                    let _ = weak2.update(cx, |this, _| {
+                        this.detected_urls = urls;
+                    });
                     paint_snapshot(
                         &snapshot,
                         &ime_marked_text,
@@ -1044,7 +1061,7 @@ fn connecting_or_error_view(msg: &str, focus: &FocusHandle) -> impl IntoElement 
 }
 
 /// 一个单元格的渲染快照（owned，避免绘制时持有对 term 的借用）。
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct RenderCell {
     ch: char,
     fg: Hsla,
@@ -1052,7 +1069,105 @@ struct RenderCell {
     bold: bool,
     italic: bool,
     spacer: bool,
+    wide: bool,
+    zero_width: String,
     is_url: bool,
+}
+
+#[derive(Clone, Debug)]
+struct RenderTextRun {
+    start_col: usize,
+    cell_count: usize,
+    force_width_cells: usize,
+    text: String,
+    fg: Hsla,
+    bg: Option<Hsla>,
+    bold: bool,
+    italic: bool,
+    is_url: bool,
+}
+
+impl RenderTextRun {
+    fn from_cell(col: usize, cell: &RenderCell) -> Self {
+        let mut text = String::with_capacity(cell.ch.len_utf8() + cell.zero_width.len());
+        text.push(cell.ch);
+        text.push_str(&cell.zero_width);
+
+        let cell_width = if cell.wide { 2 } else { 1 };
+        Self {
+            start_col: col,
+            cell_count: cell_width,
+            force_width_cells: cell_width,
+            text,
+            fg: if cell.is_url {
+                rgb_to_hsla(Rgb {
+                    r: 0x4f,
+                    g: 0xaf,
+                    b: 0xff,
+                })
+            } else {
+                cell.fg
+            },
+            bg: cell.bg,
+            bold: cell.bold,
+            italic: cell.italic,
+            is_url: cell.is_url,
+        }
+    }
+
+    fn has_same_style(&self, other: &Self) -> bool {
+        self.force_width_cells == 1
+            && other.force_width_cells == 1
+            && self.fg == other.fg
+            && self.bg == other.bg
+            && self.bold == other.bold
+            && self.italic == other.italic
+            && self.is_url == other.is_url
+    }
+}
+
+/// 将终端网格转换为带有明确列起点的文本 run。
+///
+/// 普通字符可以按样式合并，但宽字符必须单独成 run：GPUI 的固定宽度排版
+/// 按 glyph 推进，而终端网格按 cell 推进。把两者混在同一个 run 中会让中文
+/// 只占一列，随后字符就会覆盖它。
+fn terminal_text_runs(row: &[RenderCell]) -> Vec<RenderTextRun> {
+    let mut runs = Vec::with_capacity(row.len() / 8 + 1);
+    let mut current: Option<RenderTextRun> = None;
+
+    for (col, cell) in row.iter().enumerate() {
+        if cell.spacer {
+            continue;
+        }
+
+        let cell_run = RenderTextRun::from_cell(col, cell);
+        if cell.wide {
+            if let Some(run) = current.take() {
+                runs.push(run);
+            }
+            runs.push(cell_run);
+            continue;
+        }
+
+        if let Some(run) = current.as_mut()
+            && run.start_col + run.cell_count == col
+            && run.has_same_style(&cell_run)
+        {
+            run.text.push_str(&cell_run.text);
+            run.cell_count += 1;
+        } else {
+            if let Some(run) = current.take() {
+                runs.push(run);
+            }
+            current = Some(cell_run);
+        }
+    }
+
+    if let Some(run) = current {
+        runs.push(run);
+    }
+
+    runs
 }
 
 /// 可见视口快照 + 光标位置 + 选择区域。
@@ -1164,13 +1279,21 @@ fn snapshot_visible(
         let mut out: Vec<RenderCell> = Vec::with_capacity(cols);
         for c in 0..cols {
             let cell: &Cell = &row[Column(c)];
+            let mut zero_width = String::new();
+            if let Some(chars) = cell.zerowidth() {
+                zero_width.extend(chars.iter().copied());
+            }
             out.push(RenderCell {
                 ch: if cell.c == '\0' { ' ' } else { cell.c },
                 fg: cell_fg(cell, colors),
                 bg: cell_bg(cell, colors),
                 bold: cell.flags.contains(CellFlags::BOLD),
                 italic: cell.flags.contains(CellFlags::ITALIC),
-                spacer: cell.flags.contains(CellFlags::WIDE_CHAR_SPACER),
+                spacer: cell
+                    .flags
+                    .intersects(CellFlags::WIDE_CHAR_SPACER | CellFlags::LEADING_WIDE_CHAR_SPACER),
+                wide: cell.flags.contains(CellFlags::WIDE_CHAR),
+                zero_width,
                 is_url: false,
             });
         }
@@ -1191,12 +1314,19 @@ fn snapshot_visible(
     // URL 检测与标记。
     let mut urls: Vec<(usize, usize, usize, String)> = Vec::new();
     for vy in 0..rows.min(out_rows.len()) {
-        let line_text: String = out_rows[vy].iter().map(|c| if c.spacer { ' ' } else { c.ch }).collect();
+        let line_text: String = out_rows[vy]
+            .iter()
+            .map(|c| if c.spacer { ' ' } else { c.ch })
+            .collect();
         let line_len = line_text.len();
         let mut pos = 0;
         while pos < line_len {
             let rest = &line_text[pos..];
-            let (offset, _) = match rest.find("https://").or_else(|| rest.find("http://")).or_else(|| rest.find("www.")) {
+            let (offset, _) = match rest
+                .find("https://")
+                .or_else(|| rest.find("http://"))
+                .or_else(|| rest.find("www."))
+            {
                 Some(idx) => (idx, ()),
                 None => break,
             };
@@ -1204,7 +1334,14 @@ fn snapshot_visible(
             let mut url_end = url_start + 4;
             while url_end < line_len {
                 let c = line_text.as_bytes()[url_end] as char;
-                if c.is_whitespace() || c == '"' || c == '\'' || c == '>' || c == '<' || c == ')' || c == ']' {
+                if c.is_whitespace()
+                    || c == '"'
+                    || c == '\''
+                    || c == '>'
+                    || c == '<'
+                    || c == ')'
+                    || c == ']'
+                {
                     break;
                 }
                 url_end += 1;
@@ -1229,7 +1366,16 @@ fn snapshot_visible(
         }
     }
 
-    Snapshot { rows: out_rows, cursor, selection, cols, display_offset, history_len, cursor_visible, urls }
+    Snapshot {
+        rows: out_rows,
+        cursor,
+        selection,
+        cols,
+        display_offset,
+        history_len,
+        cursor_visible,
+        urls,
+    }
 }
 
 /// 根据快照绘制。
@@ -1260,7 +1406,10 @@ fn paint_snapshot(
             line_hf
         );
         for (r, row) in snapshot.rows.iter().enumerate() {
-            let s: String = row.iter().map(|c| if c.spacer { ' ' } else { c.ch }).collect();
+            let s: String = row
+                .iter()
+                .map(|c| if c.spacer { ' ' } else { c.ch })
+                .collect();
             let t = s.trim_end();
             if !t.is_empty() {
                 log::trace!("  snapshot row {:2}: {:?}", r, t);
@@ -1302,7 +1451,10 @@ fn paint_snapshot(
                     let w = px((c1 - c0 + 1) as f32 * cell_wf);
                     let y = bounds.origin.y + px(r as f32 * line_hf);
                     window.paint_quad(quad(
-                        Bounds { origin: Point::new(x, y), size: gpui::size(w, line_h) },
+                        Bounds {
+                            origin: Point::new(x, y),
+                            size: gpui::size(w, line_h),
+                        },
                         Corners::default(),
                         sel_bg,
                         Edges::default(),
@@ -1312,16 +1464,6 @@ fn paint_snapshot(
                 }
             }
         }
-
-        // 把同行同 (fg,bg,attrs) 的 cell 聚成一段 run，减少 shape 次数。
-        let mut text = String::with_capacity(row.len());
-        let mut runs: Vec<TextRun> = Vec::new();
-        let mut cur_fg: Option<Hsla> = None;
-        let mut cur_bg: Option<Hsla> = None;
-        let mut cur_bold = false;
-        let mut cur_italic = false;
-        let mut cur_url = false;
-        let mut run_start_byte: usize = 0;
 
         // 绘制选择高亮背景。
         if let Some(((ax, ay), (bx, by))) = snapshot.selection {
@@ -1343,7 +1485,10 @@ fn paint_snapshot(
                     let w = px((c1 - c0 + 1) as f32 * cell_wf);
                     let y = bounds.origin.y + px(r as f32 * line_hf);
                     window.paint_quad(quad(
-                        Bounds { origin: Point::new(x, y), size: gpui::size(w, line_h) },
+                        Bounds {
+                            origin: Point::new(x, y),
+                            size: gpui::size(w, line_h),
+                        },
                         Corners::default(),
                         sel_bg,
                         Edges::default(),
@@ -1354,99 +1499,50 @@ fn paint_snapshot(
             }
         }
 
-        let flush_run = |_text: &str,
-                         runs: &mut Vec<TextRun>,
-                         start: usize,
-                         end: usize,
-                         fg: Hsla,
-                         bg: Option<Hsla>,
-                         bold: bool,
-                         italic: bool,
-                         is_url: bool| {
-            let len = end - start;
-            if len == 0 {
-                return;
-            }
-            let underline = if is_url {
+        let row_y = bounds.origin.y + px(r as f32 * line_hf);
+        for run in terminal_text_runs(row) {
+            let underline = if run.is_url {
                 Some(gpui::UnderlineStyle {
                     thickness: px(1.0),
-                    color: Some(fg),
+                    color: Some(run.fg),
                     wavy: false,
                 })
             } else {
                 None
             };
-            runs.push(TextRun {
-                len,
+            let text_len = run.text.len();
+            let text_run = TextRun {
+                len: text_len,
                 font: Font {
-                    weight: if bold { FontWeight::BOLD } else { FontWeight::NORMAL },
-                    style: if italic { gpui::FontStyle::Italic } else { gpui::FontStyle::Normal },
+                    weight: if run.bold {
+                        FontWeight::BOLD
+                    } else {
+                        FontWeight::NORMAL
+                    },
+                    style: if run.italic {
+                        gpui::FontStyle::Italic
+                    } else {
+                        gpui::FontStyle::Normal
+                    },
                     family: font.family.clone(),
                     features: font.features.clone(),
                     fallbacks: font.fallbacks.clone(),
                 },
-                color: fg,
-                background_color: bg,
+                color: run.fg,
+                background_color: run.bg,
                 underline,
                 strikethrough: None,
-            });
-        };
-
-        for cell in row {
-            if cell.spacer {
-                continue;
+            };
+            let shaped = window.text_system().shape_line(
+                SharedString::from(run.text),
+                px(FONT_SIZE),
+                &[text_run],
+                Some(px(cell_wf * run.force_width_cells as f32)),
+            );
+            let origin = Point::new(bounds.origin.x + px(run.start_col as f32 * cell_wf), row_y);
+            if let Err(e) = shaped.paint(origin, line_h, TextAlign::Left, None, window, cx) {
+                log::warn!("paint row {r} failed: {e}");
             }
-            // 把 URL 颜色与下划线纳入属性变化追踪。
-            let cell_is_url = cell.is_url;
-            let cell_url_fg = if cell_is_url { Some(rgb_to_hsla(Rgb { r: 0x4f, g: 0xaf, b: 0xff })) } else { None };
-            let cell_fg_effective = cell_url_fg.unwrap_or(cell.fg);
-            if Some(cell_fg_effective) != cur_fg || cell.bg != cur_bg || cell.bold != cur_bold
-                || cell.italic != cur_italic || cell_is_url != cur_url
-            {
-                let _ = flush_run(
-                    &text,
-                    &mut runs,
-                    run_start_byte,
-                    text.len(),
-                    cur_fg.unwrap_or(default_fg),
-                    cur_bg,
-                    cur_bold,
-                    cur_italic,
-                    cur_url,
-                );
-                run_start_byte = text.len();
-                cur_fg = Some(cell_fg_effective);
-                cur_bg = cell.bg;
-                cur_bold = cell.bold;
-                cur_italic = cell.italic;
-                cur_url = cell_is_url;
-            }
-            text.push(cell.ch);
-        }
-        let _ = flush_run(
-            &text,
-            &mut runs,
-            run_start_byte,
-            text.len(),
-            cur_fg.unwrap_or(default_fg),
-            cur_bg,
-            cur_bold,
-            cur_italic,
-            cur_url,
-        );
-
-        if text.is_empty() {
-            continue;
-        }
-        let shaped = window.text_system().shape_line(
-            SharedString::from(text),
-            px(FONT_SIZE),
-            &runs,
-            Some(cell_w),
-        );
-        let origin = Point::new(bounds.origin.x, bounds.origin.y + px(r as f32 * line_hf));
-        if let Err(e) = shaped.paint(origin, line_h, TextAlign::Left, None, window, cx) {
-            log::warn!("paint row {r} failed: {e}");
         }
     }
 
@@ -1523,7 +1619,8 @@ fn paint_snapshot(
         let sb_w = px(6.);
         let sb_x = bounds.right() - sb_w;
         let sb_h = bounds.size.height;
-        let thumb_h = sb_h * (snapshot.rows.len() as f32 / (history_len + snapshot.rows.len()) as f32);
+        let thumb_h =
+            sb_h * (snapshot.rows.len() as f32 / (history_len + snapshot.rows.len()) as f32);
         let thumb_y = sb_h * ((history_len - display_offset) as f32 / history_len as f32);
         window.paint_quad(quad(
             Bounds {
@@ -1576,20 +1673,21 @@ fn cell_bg(cell: &Cell, colors: &alacritty_terminal::term::color::Colors) -> Opt
 }
 
 /// 把 alacritty/vte 的 Color 解析为 Hsla。Named/Indexed 走终端调色板，Spec 直传。
-fn color_to_hsla(
-    color: &Color,
-    colors: &alacritty_terminal::term::color::Colors,
-) -> Option<Hsla> {
+fn color_to_hsla(color: &Color, colors: &alacritty_terminal::term::color::Colors) -> Option<Hsla> {
     match color {
         Color::Spec(rgb) => Some(rgb_to_hsla(*rgb)),
         Color::Named(n) => {
             let idx = *n as usize;
-            colors[idx].map(rgb_to_hsla).or_else(|| Some(default_palette(n)))
+            colors[idx]
+                .map(rgb_to_hsla)
+                .or_else(|| Some(default_palette(n)))
         }
         Color::Indexed(i) => {
             let idx = *i as usize;
             if idx < 256 {
-                colors[idx].map(rgb_to_hsla).or_else(|| Some(default_palette_indexed(idx)))
+                colors[idx]
+                    .map(rgb_to_hsla)
+                    .or_else(|| Some(default_palette_indexed(idx)))
             } else {
                 None
             }
@@ -1626,7 +1724,9 @@ fn default_palette(n: &NamedColor) -> Hsla {
         Cursor => [0xe6, 0xe6, 0xe6],
         DimForeground => [0x9a, 0x9a, 0x9a],
     };
-    Hsla::from(gpui::rgb(((rgb[0] as u32) << 16) | ((rgb[1] as u32) << 8) | rgb[2] as u32))
+    Hsla::from(gpui::rgb(
+        ((rgb[0] as u32) << 16) | ((rgb[1] as u32) << 8) | rgb[2] as u32,
+    ))
 }
 
 /// 256 色的回退（xterm 配色：16 色 + 6×6×6 立方 + 24 级灰度）。
@@ -1668,10 +1768,7 @@ fn default_palette_indexed(i: usize) -> Hsla {
 }
 
 fn dimen(c: Hsla) -> Hsla {
-    Hsla {
-        a: c.a * 0.6,
-        ..c
-    }
+    Hsla { a: c.a * 0.6, ..c }
 }
 
 // ─── 鼠标编码 ────────────────────────────────────────────────────────────────
@@ -1729,10 +1826,7 @@ fn encode_normal_mouse(button: u8, col: usize, row: usize, utf8: bool) -> Option
     let encode_position = |position: usize| -> Vec<u8> {
         let position = position + 33;
         if utf8 && position >= 128 {
-            vec![
-                (0xc0 + position / 64) as u8,
-                (0x80 + (position & 63)) as u8,
-            ]
+            vec![(0xc0 + position / 64) as u8, (0x80 + (position & 63)) as u8]
         } else {
             vec![position as u8]
         }
@@ -1850,11 +1944,7 @@ fn encode_keystroke_with_event(
                 return Some(vec![0]);
             }
             if !m.control && !m.platform {
-                return Some(if m.alt {
-                    vec![0x1b, b' ']
-                } else {
-                    vec![b' ']
-                });
+                return Some(if m.alt { vec![0x1b, b' '] } else { vec![b' '] });
             }
         }
         _ => {}
@@ -1898,11 +1988,7 @@ fn encode_keystroke_with_event(
 ///
 /// 保持 Enter/Tab/Backspace 在 disambiguate 模式下的传统字节，避免应用
 /// 崩溃后用户无法在 shell 中输入 `reset`；REPORT_ALL 模式则按协议编码全部键。
-fn encode_kitty_keystroke(
-    ks: &gpui::Keystroke,
-    mode: TermMode,
-    event_type: u8,
-) -> Option<Vec<u8>> {
+fn encode_kitty_keystroke(ks: &gpui::Keystroke, mode: TermMode, event_type: u8) -> Option<Vec<u8>> {
     let report_all = mode.contains(TermMode::REPORT_ALL_KEYS_AS_ESC);
     let disambiguate = mode.contains(TermMode::DISAMBIGUATE_ESC_CODES);
     if !report_all && !disambiguate {
@@ -1940,14 +2026,12 @@ fn encode_kitty_keystroke(
     } else {
         code.to_string()
     };
-    let associated_text = if report_all
-        && event_type == 1
-        && mode.contains(TermMode::REPORT_ASSOCIATED_TEXT)
-    {
-        associated_text_code(ks)
-    } else {
-        None
-    };
+    let associated_text =
+        if report_all && event_type == 1 && mode.contains(TermMode::REPORT_ASSOCIATED_TEXT) {
+            associated_text_code(ks)
+        } else {
+            None
+        };
     Some(encode_kitty_u(
         key_code,
         modifiers,
@@ -2023,7 +2107,13 @@ fn encode_kitty_functional_key(
     }
 
     let private_code = kitty_private_key_code(key)?;
-    Some(encode_kitty_u(private_code, modifiers, mode, event_type, None))
+    Some(encode_kitty_u(
+        private_code,
+        modifiers,
+        mode,
+        event_type,
+        None,
+    ))
 }
 
 fn encode_kitty_u(
@@ -2148,8 +2238,7 @@ fn shifted_ascii_char(ch: char) -> char {
 fn is_kitty_functional_key(key: &str) -> bool {
     matches!(
         key,
-        "up"
-            | "down"
+        "up" | "down"
             | "left"
             | "right"
             | "home"
@@ -2212,22 +2301,46 @@ fn plain_special_key(key: &str, mode: TermMode) -> Option<Vec<u8>> {
     let app_cursor = mode.contains(TermMode::APP_CURSOR);
     let sequence = match key {
         "up" => {
-            if app_cursor { "\x1bOA" } else { "\x1b[A" }
+            if app_cursor {
+                "\x1bOA"
+            } else {
+                "\x1b[A"
+            }
         }
         "down" => {
-            if app_cursor { "\x1bOB" } else { "\x1b[B" }
+            if app_cursor {
+                "\x1bOB"
+            } else {
+                "\x1b[B"
+            }
         }
         "right" => {
-            if app_cursor { "\x1bOC" } else { "\x1b[C" }
+            if app_cursor {
+                "\x1bOC"
+            } else {
+                "\x1b[C"
+            }
         }
         "left" => {
-            if app_cursor { "\x1bOD" } else { "\x1b[D" }
+            if app_cursor {
+                "\x1bOD"
+            } else {
+                "\x1b[D"
+            }
         }
         "home" => {
-            if app_cursor { "\x1bOH" } else { "\x1b[H" }
+            if app_cursor {
+                "\x1bOH"
+            } else {
+                "\x1b[H"
+            }
         }
         "end" => {
-            if app_cursor { "\x1bOF" } else { "\x1b[F" }
+            if app_cursor {
+                "\x1bOF"
+            } else {
+                "\x1b[F"
+            }
         }
         "insert" => "\x1b[2~",
         "delete" => "\x1b[3~",
@@ -2385,7 +2498,10 @@ mod tests {
         assert_eq!(encode_keystroke(&keystroke("space")), Some(b" ".to_vec()));
         assert_eq!(encode_keystroke(&keystroke("ctrl-c")), Some(vec![3]));
         assert_eq!(encode_keystroke(&keystroke("ctrl-@")), Some(vec![0]));
-        assert_eq!(encode_keystroke(&keystroke("alt-x")), Some(b"\x1bx".to_vec()));
+        assert_eq!(
+            encode_keystroke(&keystroke("alt-x")),
+            Some(b"\x1bx".to_vec())
+        );
         assert_eq!(encode_keystroke(&keystroke("shift-a")), Some(b"A".to_vec()));
         assert_eq!(encode_keystroke(&keystroke("shift-1")), Some(b"!".to_vec()));
     }
@@ -2502,8 +2618,11 @@ mod tests {
             kitty_keyboard: true,
             ..Default::default()
         };
-        let mut term: Term<NoopListener> =
-            Term::new(config, &TermSize { cols: 80, rows: 24 }, NoopListener::default());
+        let mut term: Term<NoopListener> = Term::new(
+            config,
+            &TermSize { cols: 80, rows: 24 },
+            NoopListener::default(),
+        );
         let mut parser: Processor = Processor::new();
         parser.advance(&mut term, b"\x1b[?1h\x1b[?1002h\x1b[?1006h");
 
@@ -2527,14 +2646,8 @@ mod tests {
 
     #[test]
     fn ime_cursor_position_accounts_for_scrollback_offset() {
-        assert_eq!(
-            cursor_viewport_position(2, 9, 0, 24, 80),
-            Some((9, 2))
-        );
-        assert_eq!(
-            cursor_viewport_position(0, 99, 3, 24, 80),
-            Some((79, 3))
-        );
+        assert_eq!(cursor_viewport_position(2, 9, 0, 24, 80), Some((9, 2)));
+        assert_eq!(cursor_viewport_position(0, 99, 3, 24, 80), Some((79, 3)));
         assert_eq!(cursor_viewport_position(-4, 0, 3, 24, 80), None);
         assert_eq!(cursor_viewport_position(0, 0, 0, 0, 80), None);
     }
@@ -2543,19 +2656,50 @@ mod tests {
     fn ime_text_ranges_use_utf16_and_preserve_character_boundaries() {
         let text = "中😀文";
         assert_eq!(utf16_len(text), 4);
-        assert_eq!(
-            utf16_slice(text, 1..3),
-            Some(("😀".to_string(), 1..3))
-        );
+        assert_eq!(utf16_slice(text, 1..3), Some(("😀".to_string(), 1..3)));
         // A range that lands in the middle of a surrogate pair is expanded to
         // the complete scalar value, matching GPUI's UTF-16 offset behavior.
-        assert_eq!(
-            utf16_slice(text, 1..2),
-            Some(("😀".to_string(), 1..3))
+        assert_eq!(utf16_slice(text, 1..2), Some(("😀".to_string(), 1..3)));
+        assert_eq!(normalize_utf16_range(0..99, utf16_len(text)), 0..4);
+    }
+
+    #[test]
+    fn terminal_render_keeps_wide_characters_on_their_grid_columns() {
+        let config = Config {
+            scrolling_history: SCROLLBACK,
+            ..Default::default()
+        };
+        let mut term: Term<NoopListener> = Term::new(
+            config,
+            &TermSize { cols: 8, rows: 2 },
+            NoopListener::default(),
         );
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut term, "a中b".as_bytes());
+
+        let snapshot = snapshot_visible(&term, None, 8, true);
+        assert!(snapshot.rows[0][1].wide);
+        assert!(snapshot.rows[0][2].spacer);
+
+        let runs = terminal_text_runs(&snapshot.rows[0][..4]);
+        let positions: Vec<_> = runs
+            .iter()
+            .map(|run| {
+                (
+                    run.start_col,
+                    run.cell_count,
+                    run.force_width_cells,
+                    run.text.clone(),
+                )
+            })
+            .collect();
         assert_eq!(
-            normalize_utf16_range(0..99, utf16_len(text)),
-            0..4
+            positions,
+            vec![
+                (0, 1, 1, "a".to_string()),
+                (1, 2, 2, "中".to_string()),
+                (3, 1, 1, "b".to_string()),
+            ]
         );
     }
 
@@ -2606,8 +2750,11 @@ mod tests {
             scrolling_history: SCROLLBACK,
             ..Default::default()
         };
-        let mut term: Term<NoopListener> =
-            Term::new(config, &TermSize { cols: 80, rows: 10 }, NoopListener::default());
+        let mut term: Term<NoopListener> = Term::new(
+            config,
+            &TermSize { cols: 80, rows: 10 },
+            NoopListener::default(),
+        );
         let mut parser: Processor = Processor::new();
 
         let bytes: &[u8] = b"\x1b[?2004h\x1b]0;ubuntu@vps: ~\x07\x1b[01;32mubuntu@vps\x1b[00m:\x1b[01;34m~\x1b[00m$ ls\r\n\x1b[?2004l\r\x1b[0m\x1b[01;34mbackup\x1b[0m  \x1b[01;34mcard\x1b[0m\r\n\x1b[?2004h\x1b]0;ubuntu@vps: ~\x07\x1b[01;32mubuntu@vps\x1b[00m:\x1b[01;34m~\x1b[00m$ ";
@@ -2622,7 +2769,10 @@ mod tests {
         );
 
         // 模拟 maybe_resize：80x10 -> 100x30。
-        term.resize(TermSize { cols: 100, rows: 30 });
+        term.resize(TermSize {
+            cols: 100,
+            rows: 30,
+        });
 
         let grid = term.grid();
         println!(
@@ -2649,8 +2799,14 @@ mod tests {
             all.push_str(&s);
         }
 
-        assert!(all.contains("backup"), "after resize, visible area missing 'backup'");
-        assert!(all.contains("card"), "after resize, visible area missing 'card'");
+        assert!(
+            all.contains("backup"),
+            "after resize, visible area missing 'backup'"
+        );
+        assert!(
+            all.contains("card"),
+            "after resize, visible area missing 'card'"
+        );
     }
 
     /// 验证把字节流切成极小 chunk（模拟 drain 分批 advance）后，
@@ -2661,8 +2817,11 @@ mod tests {
             scrolling_history: SCROLLBACK,
             ..Default::default()
         };
-        let mut term: Term<NoopListener> =
-            Term::new(config, &TermSize { cols: 80, rows: 10 }, NoopListener::default());
+        let mut term: Term<NoopListener> = Term::new(
+            config,
+            &TermSize { cols: 80, rows: 10 },
+            NoopListener::default(),
+        );
         let mut parser: Processor = Processor::new();
 
         let bytes: &[u8] = b"\x1b[?2004h\x1b]0;ubuntu@vps: ~\x07\x1b[01;32mubuntu@vps\x1b[00m:\x1b[01;34m~\x1b[00m$ ls\r\n\x1b[?2004l\r\x1b[0m\x1b[01;34mbackup\x1b[0m  \x1b[01;34mcard\x1b[0m\r\n\x1b[?2004h\x1b]0;ubuntu@vps: ~\x07\x1b[01;32mubuntu@vps\x1b[00m:\x1b[01;34m~\x1b[00m$ ";

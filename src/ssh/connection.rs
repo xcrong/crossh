@@ -27,12 +27,12 @@ use crate::config::HostConfig;
 use crate::ui::terminal_view::ConnState;
 
 use super::forward::{
-    handle_forwarded_tcpip, new_remote_forward_registry, run_dynamic_forward, run_local_forward,
-    start_remote_forward, stop_remote_forward, RemoteForwardRegistry,
+    RemoteForwardRegistry, handle_forwarded_tcpip, new_remote_forward_registry,
+    run_dynamic_forward, run_local_forward, start_remote_forward, stop_remote_forward,
 };
 use super::runtime::runtime;
 use super::session::{AuthChoice, InputCmd, SessionEvent, default_user_for};
-use super::sftp::{run_sftp_worker, SftpCmd, SftpEvent};
+use super::sftp::{SftpCmd, SftpEvent, run_sftp_worker};
 
 /// UI 主机密钥决定（NeedHostKey 的回传）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,10 +256,7 @@ impl Connection {
     pub fn open_sftp(&self) -> (Sender<SftpCmd>, Receiver<SftpEvent>) {
         let (cmd_tx, cmd_rx) = async_channel::bounded::<SftpCmd>(64);
         let (event_tx, event_rx) = async_channel::bounded::<SftpEvent>(64);
-        let _ = self.cmd_tx.try_send(ConnCmd::OpenSftp {
-            cmd_rx,
-            event_tx,
-        });
+        let _ = self.cmd_tx.try_send(ConnCmd::OpenSftp { cmd_rx, event_tx });
         (cmd_tx, event_rx)
     }
 
@@ -313,9 +310,14 @@ async fn run_connection(
     event_tx: Sender<ConnEvent>,
 ) -> anyhow::Result<()> {
     let remote_registry = new_remote_forward_registry();
-    let (handle, jump_handle) =
-        connect_and_authenticate(&host, &methods, &event_tx, remote_registry.clone(), ssh_config)
-            .await?;
+    let (handle, jump_handle) = connect_and_authenticate(
+        &host,
+        &methods,
+        &event_tx,
+        remote_registry.clone(),
+        ssh_config,
+    )
+    .await?;
     let handle = Arc::new(handle);
     // 跳板 Handle 需保活；持有到连接结束。
     let _jump_keepalive = jump_handle;
@@ -328,8 +330,10 @@ async fn run_connection(
     let mut active: usize = 0;
     let mut ever_opened = false;
     // 活动转发的停止信号 / -R 分配端口。
-    let mut fw_state: std::collections::HashMap<(ForwardKind, crate::config::ForwardSpec), ForwardState> =
-        std::collections::HashMap::new();
+    let mut fw_state: std::collections::HashMap<
+        (ForwardKind, crate::config::ForwardSpec),
+        ForwardState,
+    > = std::collections::HashMap::new();
 
     let result: anyhow::Result<()> = loop {
         tokio::select! {
@@ -632,7 +636,9 @@ async fn request_credential(
 }
 
 /// 开一个 SFTP 会话：session channel + sftp 子系统 + 转 stream + 握手。
-async fn open_sftp_session(handle: &Handle<ClientHandler>) -> anyhow::Result<russh_sftp::client::SftpSession> {
+async fn open_sftp_session(
+    handle: &Handle<ClientHandler>,
+) -> anyhow::Result<russh_sftp::client::SftpSession> {
     let channel = handle.channel_open_session().await?;
     channel.request_subsystem(true, "sftp").await?;
     let stream = channel.into_stream();
@@ -651,15 +657,7 @@ async fn open_terminal_channel(
 ) -> anyhow::Result<()> {
     let channel = handle.channel_open_session().await?;
     channel
-        .request_pty(
-            false,
-            "xterm-256color",
-            cols as u32,
-            rows as u32,
-            0,
-            0,
-            &[],
-        )
+        .request_pty(false, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
         .await?;
     channel.request_shell(false).await?;
 
@@ -736,10 +734,7 @@ async fn drive_input(
 }
 
 /// 尝试用 ssh-agent 上的每个身份认证，成功即返回。
-async fn auth_agent(
-    handle: &mut Handle<ClientHandler>,
-    user: &str,
-) -> anyhow::Result<bool> {
+async fn auth_agent(handle: &mut Handle<ClientHandler>, user: &str) -> anyhow::Result<bool> {
     let mut agent = keys::agent::client::AgentClient::connect_env().await?;
     let identities = agent.request_identities().await?;
     for id in identities {
@@ -963,8 +958,9 @@ mod tests {
     #[test]
     #[ignore]
     fn connect_and_run_ls() {
-        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
-            .try_init();
+        let _ =
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
+                .try_init();
         let target = std::env::var("CROSSH_TEST_HOST").unwrap_or_else(|_| "txvps".to_string());
         let cfg = Arc::new(SshConfig::from_default_location().unwrap());
         let host = cfg.resolve(&target);

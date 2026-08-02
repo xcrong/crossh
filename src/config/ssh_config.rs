@@ -125,9 +125,15 @@ impl SshConfig {
                     merged.identity_files.push(f.clone());
                 }
             }
-            merged.local_forwards.extend(h.local_forwards.iter().cloned());
-            merged.remote_forwards.extend(h.remote_forwards.iter().cloned());
-            merged.dynamic_forwards.extend(h.dynamic_forwards.iter().cloned());
+            merged
+                .local_forwards
+                .extend(h.local_forwards.iter().cloned());
+            merged
+                .remote_forwards
+                .extend(h.remote_forwards.iter().cloned());
+            merged
+                .dynamic_forwards
+                .extend(h.dynamic_forwards.iter().cloned());
         }
 
         // 用户直接输入 "host:port" 或 "user@host" 形式时也支持一下。
@@ -162,7 +168,11 @@ fn default_config_path() -> Result<PathBuf, ConfigError> {
 }
 
 /// 解析单个文件。`seen` 用于防止 Include 循环。
-fn parse_file(path: &Path, cfg: &mut SshConfig, seen: &mut Vec<PathBuf>) -> Result<(), ConfigError> {
+fn parse_file(
+    path: &Path,
+    cfg: &mut SshConfig,
+    seen: &mut Vec<PathBuf>,
+) -> Result<(), ConfigError> {
     let canonical = match fs::canonicalize(path) {
         Ok(c) => c,
         Err(_) => {
@@ -300,7 +310,10 @@ fn glob_includes(referring_file: &Path, pattern: &str) -> Vec<PathBuf> {
     let base = if p.is_absolute() {
         PathBuf::new()
     } else {
-        referring_file.parent().unwrap_or(Path::new(".")).to_path_buf()
+        referring_file
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_path_buf()
     };
     let full = base.join(&p);
 
@@ -358,9 +371,7 @@ fn glob(pattern: &str, target: &str) -> bool {
     fn helper(p: &[u8], t: &[u8]) -> bool {
         match (p.first(), t.first()) {
             (None, None) => true,
-            (Some(b'*'), _) => {
-                helper(&p[1..], t) || (!t.is_empty() && helper(p, &t[1..]))
-            }
+            (Some(b'*'), _) => helper(&p[1..], t) || (!t.is_empty() && helper(p, &t[1..])),
             (Some(b'?'), Some(_)) => helper(&p[1..], &t[1..]),
             (Some(&a), Some(&b)) => a.eq_ignore_ascii_case(&b) && helper(&p[1..], &t[1..]),
             _ => false,
@@ -440,10 +451,7 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let id = SEQ.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!(
-            "crossh-test-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("crossh-test-{}", std::process::id()));
         let _ = fs::create_dir_all(&dir);
         let path = dir.join(format!("config-{id}"));
         fs::write(&path, src).unwrap();
@@ -467,9 +475,7 @@ mod tests {
     #[test]
     fn first_match_wins_for_scalar_keys() {
         // OpenSSH 语义：首个命中块的标量键生效，因此具体 host 必须在通配 host 之前。
-        let c = cfg(
-            "Host web\n  User deploy\n\nHost *\n  User fallback\n",
-        );
+        let c = cfg("Host web\n  User deploy\n\nHost *\n  User fallback\n");
         let r = c.resolve("web");
         assert_eq!(r.user.as_deref(), Some("deploy"));
         let r2 = c.resolve("other");
@@ -478,9 +484,8 @@ mod tests {
 
     #[test]
     fn identity_files_accumulate() {
-        let c = cfg(
-            "Host *\n  IdentityFile ~/.ssh/default\n\nHost web\n  IdentityFile ~/.ssh/web\n",
-        );
+        let c =
+            cfg("Host *\n  IdentityFile ~/.ssh/default\n\nHost web\n  IdentityFile ~/.ssh/web\n");
         let r = c.resolve("web");
         assert_eq!(r.identity_files.len(), 2);
     }
@@ -561,9 +566,6 @@ mod tests {
     #[test]
     fn proxyjump_parsed() {
         let c = cfg("Host target\n  ProxyJump jump.example.com\n");
-        assert_eq!(
-            c.hosts[0].proxy_jump.as_deref(),
-            Some("jump.example.com")
-        );
+        assert_eq!(c.hosts[0].proxy_jump.as_deref(), Some("jump.example.com"));
     }
 }

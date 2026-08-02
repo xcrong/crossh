@@ -48,11 +48,7 @@ fn init_logging() {
     }
     trim_log_if_needed(path);
 
-    let target_file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .ok();
+    let target_file = OpenOptions::new().create(true).append(true).open(path).ok();
 
     let mut builder =
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
@@ -93,9 +89,7 @@ fn trim_log_if_needed(path: &Path) {
     }
     let kept = count_lines(&bytes[start..]);
     match fs::write(path, &bytes[start..]) {
-        Ok(()) => eprintln!(
-            "[crossh] 日志裁剪：{total} 行 -> 保留末尾 {kept} 行（{LOG_PATH}）"
-        ),
+        Ok(()) => eprintln!("[crossh] 日志裁剪：{total} 行 -> 保留末尾 {kept} 行（{LOG_PATH}）"),
         Err(e) => eprintln!("[crossh] 日志裁剪失败: {e}"),
     }
 }
@@ -216,7 +210,12 @@ mod tests {
 
         let after = fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = after.lines().collect();
-        assert_eq!(lines.len(), LOG_TRIM_KEEP, "裁剪后应保留 {} 行", LOG_TRIM_KEEP);
+        assert_eq!(
+            lines.len(),
+            LOG_TRIM_KEEP,
+            "裁剪后应保留 {} 行",
+            LOG_TRIM_KEEP
+        );
         // 末尾内容应为原始的最后 10_000 行（msg 50000..59999）。
         assert_eq!(lines.first(), Some(&"msg 50000"));
         assert_eq!(lines.last(), Some(&"msg 59999"));

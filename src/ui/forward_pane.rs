@@ -24,7 +24,11 @@ pub struct ForwardPane {
 }
 
 impl ForwardPane {
-    pub fn new(conn: Entity<Connection>, cx: &mut App, forwards: &crate::config::HostConfig) -> Entity<Self> {
+    pub fn new(
+        conn: Entity<Connection>,
+        cx: &mut App,
+        forwards: &crate::config::HostConfig,
+    ) -> Entity<Self> {
         cx.new(|_cx| Self {
             conn,
             local: forwards.local_forwards.clone(),
@@ -49,18 +53,16 @@ impl ForwardPane {
             let key = (kind, spec.clone());
             let task = cx.spawn(async move |weak, cx| {
                 let res = rx.await;
-                let _ = weak.update(cx, |this, cx| {
-                    match res {
-                        Ok(Ok(())) => {
-                            this.active.insert(key.clone());
-                            this.push_msg(cx, format!("已启动 {:?} {}", key.0, key.1.listen));
-                        }
-                        Ok(Err(e)) => {
-                            this.push_msg(cx, format!("启动 {:?} {} 失败: {e}", key.0, key.1.listen));
-                        }
-                        Err(_) => {
-                            this.push_msg(cx, "连接已关闭".into());
-                        }
+                let _ = weak.update(cx, |this, cx| match res {
+                    Ok(Ok(())) => {
+                        this.active.insert(key.clone());
+                        this.push_msg(cx, format!("已启动 {:?} {}", key.0, key.1.listen));
+                    }
+                    Ok(Err(e)) => {
+                        this.push_msg(cx, format!("启动 {:?} {} 失败: {e}", key.0, key.1.listen));
+                    }
+                    Err(_) => {
+                        this.push_msg(cx, "连接已关闭".into());
                     }
                 });
             });
@@ -102,13 +104,36 @@ impl Render for ForwardPane {
                 div()
                     .text_xs()
                     .text_color(rgb(0x6a6a72))
-                    .child(SharedString::from("该主机未配置 LocalForward / RemoteForward / DynamicForward。")),
+                    .child(SharedString::from(
+                        "该主机未配置 LocalForward / RemoteForward / DynamicForward。",
+                    )),
             );
         }
 
-        col = render_section(col, "本地 (-L)", ForwardKind::Local, &self.local, &self.active, cx);
-        col = render_section(col, "远端 (-R)", ForwardKind::Remote, &self.remote, &self.active, cx);
-        col = render_section(col, "动态 (-D SOCKS5)", ForwardKind::Dynamic, &self.dynamic, &self.active, cx);
+        col = render_section(
+            col,
+            "本地 (-L)",
+            ForwardKind::Local,
+            &self.local,
+            &self.active,
+            cx,
+        );
+        col = render_section(
+            col,
+            "远端 (-R)",
+            ForwardKind::Remote,
+            &self.remote,
+            &self.active,
+            cx,
+        );
+        col = render_section(
+            col,
+            "动态 (-D SOCKS5)",
+            ForwardKind::Dynamic,
+            &self.dynamic,
+            &self.active,
+            cx,
+        );
 
         if !self.messages.is_empty() {
             col = col.child(
@@ -121,10 +146,7 @@ impl Render for ForwardPane {
                     .text_xs()
                     .text_color(rgb(0xb0b0b8))
                     .child(SharedString::from(
-                        self.messages
-                            .last()
-                            .cloned()
-                            .unwrap_or_default(),
+                        self.messages.last().cloned().unwrap_or_default(),
                     )),
             );
         }

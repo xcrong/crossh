@@ -49,8 +49,8 @@ pub fn default_auth_for(host: &HostConfig) -> Vec<AuthChoice> {
     let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
 
     let push_key = |out: &mut Vec<AuthChoice>,
-                   seen: &mut std::collections::HashSet<PathBuf>,
-                   path: PathBuf| {
+                    seen: &mut std::collections::HashSet<PathBuf>,
+                    path: PathBuf| {
         if path.is_file() && seen.insert(path.clone()) {
             out.push(AuthChoice::Key {
                 user: user.clone(),
@@ -131,9 +131,7 @@ mod tests {
     /// 端到端连接验证见 `super::super::connection::tests::connect_real_host`。
     #[test]
     fn auth_choice_user() {
-        let a = AuthChoice::Agent {
-            user: "u".into(),
-        };
+        let a = AuthChoice::Agent { user: "u".into() };
         assert_eq!(a.user(), "u");
     }
 }
