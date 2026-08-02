@@ -1473,6 +1473,7 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "async-channel",
+ "chrono",
  "env_logger",
  "gpui",
  "gpui_platform",

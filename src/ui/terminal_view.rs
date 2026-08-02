@@ -8,6 +8,8 @@
 //! Term 只在 gpui 主线程被触碰（drain 与 paint 都在主线程）。
 
 use std::collections::VecDeque;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
@@ -18,6 +20,7 @@ use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use async_channel::{Receiver, Sender, TrySendError};
+use chrono::Local;
 use gpui::{
     App, AppContext, Bounds, Context, Corners, Edges, ElementInputHandler, Entity,
     EntityInputHandler, FocusHandle, Font, FontWeight, Hsla, InteractiveElement, IntoElement,
@@ -37,6 +40,12 @@ const FONT_SIZE: f32 = 14.0;
 const SCROLLBACK: usize = 1000;
 /// 一次 drain 最多合并的 PTY 输出事件，避免高频 TUI 输出触发大量小重绘。
 const OUTPUT_BATCH_LIMIT: usize = 128;
+/// 左侧时间戳 gutter 的固定宽度，保证终端列数不会随文字内容抖动。
+const TIMESTAMP_GUTTER_WIDTH: f32 = 104.0;
+/// 时间戳文本与 gutter 两侧的间距。
+const TIMESTAMP_GUTTER_PADDING: f32 = 8.0;
+/// gutter 分隔线与终端第 0 列之间的视觉留白。
+const TIMESTAMP_GUTTER_GAP: f32 = 8.0;
 
 /// 连接状态。
 #[derive(Default, Clone, Debug, PartialEq)]
@@ -179,6 +188,8 @@ pub struct TerminalView {
     _blink_task: Option<Task<()>>,
     /// 最近一帧检测到的 URL（用于点击跳转）。
     detected_urls: Vec<(usize, usize, usize, String)>,
+    /// 终端行的旁路时间戳；绝不写入 PTY 或 alacritty 的字符网格。
+    line_timestamps: TerminalTimestampState,
 }
 
 impl TerminalView {
@@ -261,6 +272,7 @@ impl TerminalView {
             cursor_blink_on: true,
             _blink_task: None,
             detected_urls: Vec::new(),
+            line_timestamps: TerminalTimestampState::default(),
         });
 
         // drain：在主线程上从 event_rx 取事件喂给 Term。
@@ -322,7 +334,17 @@ impl TerminalView {
             }
             SessionEvent::Output(bytes) => {
                 log::trace!("pty output ({}B): {}", bytes.len(), debug_bytes(&bytes));
+                // alternate screen 是 Codex/vim/top 等 TUI 的绘制缓冲区；只保留
+                // 普通 shell 网格的时间戳，避免全屏重绘产生大量错误行。
+                let was_alt_screen = self.term.mode().contains(TermMode::ALT_SCREEN);
+                let timestamp = (!was_alt_screen).then(|| format_timestamp(Local::now()));
                 self.parser.advance(&mut self.term, &bytes);
+                if !self.term.mode().contains(TermMode::ALT_SCREEN) {
+                    self.line_timestamps.observe(
+                        &self.term,
+                        timestamp.unwrap_or_else(|| format_timestamp(Local::now())),
+                    );
+                }
             }
             SessionEvent::Cwd(cwd) => {
                 self.cwd = Some(cwd);
@@ -404,6 +426,9 @@ impl TerminalView {
                 cols: new_cols,
                 rows: new_rows,
             });
+            if !self.term.mode().contains(TermMode::ALT_SCREEN) {
+                self.line_timestamps.sync_to_term(&self.term);
+            }
             if let Ok(mut size) = self.window_size.lock() {
                 size.num_cols = new_cols as u16;
                 size.num_lines = new_rows as u16;
@@ -659,8 +684,13 @@ impl TerminalView {
             return None;
         }
         let local = pos - self.content_origin;
-        let x = local.x.as_f32().max(0.);
-        let y = local.y.as_f32().max(0.);
+        // gutter 属于 UI，不是终端的第 0 列；点击 gutter 时不应触发
+        // 选择或远端鼠标协议。
+        let x = local.x.as_f32();
+        let y = local.y.as_f32();
+        if x < 0. || y < 0. {
+            return None;
+        }
         let col = ((x / self.cell_w.as_f32()) as usize).min(self.cols.saturating_sub(1));
         let row = ((y / self.line_h.as_f32()) as usize).min(self.rows.saturating_sub(1));
         (self.cols > 0 && self.rows > 0).then_some((col, row))
@@ -765,7 +795,7 @@ impl TerminalView {
     }
 
     /// 当前终端光标在可视 viewport 中的位置。
-    fn ime_cursor_bounds(&self, element_bounds: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
+    fn ime_cursor_bounds(&self, _element_bounds: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
         if self.cell_w.as_f32() <= 0.0 || self.line_h.as_f32() <= 0.0 {
             return None;
         }
@@ -781,8 +811,8 @@ impl TerminalView {
 
         Some(Bounds {
             origin: Point::new(
-                element_bounds.origin.x + px(col as f32 * self.cell_w.as_f32()),
-                element_bounds.origin.y + px(row as f32 * self.line_h.as_f32()),
+                self.content_origin.x + px(col as f32 * self.cell_w.as_f32()),
+                self.content_origin.y + px(row as f32 * self.line_h.as_f32()),
             ),
             size: gpui::size(self.cell_w, self.line_h),
         })
@@ -959,10 +989,11 @@ impl Render for TerminalView {
                 // prepaint：可能 resize。
                 if let Some(t) = weak.upgrade() {
                     let _ = t.update(cx, |this, _cx| {
-                        this.content_origin = bounds.origin;
+                        let terminal_bounds = terminal_bounds_for(bounds);
+                        this.content_origin = terminal_bounds.origin;
                         this.maybe_resize(Size {
-                            w: bounds.size.width.as_f32(),
-                            h: bounds.size.height.as_f32(),
+                            w: terminal_bounds.size.width.as_f32(),
+                            h: terminal_bounds.size.height.as_f32(),
                         });
                     });
                 }
@@ -985,8 +1016,9 @@ impl Render for TerminalView {
                         let sel = this.sel_start.zip(this.sel_end);
                         let show_cur = this.cursor_blink_on
                             && this.term.mode().contains(TermMode::SHOW_CURSOR);
+                        let timestamps = this.line_timestamps.visible(&this.term);
                         (
-                            snapshot_visible(&this.term, sel, this.cols, show_cur),
+                            snapshot_visible(&this.term, sel, this.cols, show_cur, &timestamps),
                             this.ime_marked_text.clone(),
                         )
                     };
@@ -999,6 +1031,7 @@ impl Render for TerminalView {
                         &snapshot,
                         &ime_marked_text,
                         bounds,
+                        terminal_bounds_for(bounds),
                         cell_w,
                         line_h,
                         &font,
@@ -1198,6 +1231,217 @@ struct Snapshot {
     cursor_visible: bool,
     /// 可见区内的 URL：(row_in_viewport, col_start, col_end, url_string)。
     urls: Vec<(usize, usize, usize, String)>,
+    /// 可见区每一行的时间戳；换行续行和 alternate screen 为 None。
+    timestamps: Vec<Option<String>>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RowSignature {
+    hash: u64,
+    has_content: bool,
+}
+
+/// 保存终端主屏幕的行时间戳。它和 alacritty 网格分开，避免任何 UI 元数据
+/// 进入 PTY，也避免 ANSI 控制序列被误显示成终端内容。
+#[derive(Default)]
+struct TerminalTimestampState {
+    lines: Vec<Option<String>>,
+    signatures: Vec<RowSignature>,
+    columns: usize,
+    screen_lines: usize,
+}
+
+impl TerminalTimestampState {
+    fn observe(&mut self, term: &Term<NoopListener>, timestamp: String) {
+        let grid = term.grid();
+        let signatures = terminal_row_signatures(term);
+        let columns = grid.columns();
+        let screen_lines = grid.screen_lines();
+        let shape_changed =
+            self.columns != 0 && (self.columns != columns || self.screen_lines != screen_lines);
+
+        let old_signatures = std::mem::take(&mut self.signatures);
+        let old_lines = std::mem::take(&mut self.lines);
+        let mut next_lines = vec![None; signatures.len()];
+        let mut mapping = vec![None; signatures.len()];
+
+        if !shape_changed && !old_signatures.is_empty() {
+            if signatures.len() > old_signatures.len() {
+                for (new_index, old_index) in
+                    mapping.iter_mut().enumerate().take(old_signatures.len())
+                {
+                    *old_index = Some(new_index);
+                }
+            } else if signatures.len() == old_signatures.len() {
+                if let Some(shift) = detect_scroll_shift(&old_signatures, &signatures) {
+                    for (new_index, mapped_old_index) in mapping.iter_mut().enumerate() {
+                        let old_index = new_index + shift;
+                        if old_index < old_signatures.len() {
+                            *mapped_old_index = Some(old_index);
+                        }
+                    }
+                } else {
+                    for (new_index, old_index) in mapping.iter_mut().enumerate() {
+                        *old_index = Some(new_index);
+                    }
+                }
+            }
+        }
+
+        for (new_index, signature) in signatures.iter().enumerate() {
+            let Some(old_index) = mapping[new_index] else {
+                if signature.has_content {
+                    next_lines[new_index] = Some(timestamp.clone());
+                }
+                continue;
+            };
+
+            if old_signatures.get(old_index) == Some(signature) {
+                next_lines[new_index] = old_lines.get(old_index).cloned().flatten();
+            } else if signature.has_content {
+                next_lines[new_index] = Some(timestamp.clone());
+            }
+        }
+
+        // 即使输出只有 ANSI 控制序列，当前编辑行也代表一次新的终端活动。
+        // 这能让空提示符行在 gutter 中有时间，而不会给所有空白行加时间。
+        let cursor_index = grid.history_size() as i32 + grid.cursor.point.line.0;
+        if let Ok(cursor_index) = usize::try_from(cursor_index)
+            && cursor_index < next_lines.len()
+        {
+            next_lines[cursor_index] = Some(timestamp);
+        }
+
+        self.lines = next_lines;
+        self.signatures = signatures;
+        self.columns = columns;
+        self.screen_lines = screen_lines;
+    }
+
+    fn sync_to_term(&mut self, term: &Term<NoopListener>) {
+        let signatures = terminal_row_signatures(term);
+        let old_signatures = std::mem::take(&mut self.signatures);
+        let old_lines = std::mem::take(&mut self.lines);
+        let mut next_lines = vec![None; signatures.len()];
+        let mut old_start = 0;
+
+        // Resize may reflow wrapped rows, so only carry timestamps across exact
+        // row matches. New/reflowed rows remain blank until their next output.
+        for (new_index, signature) in signatures.iter().enumerate() {
+            let Some(relative_old_index) = old_signatures[old_start..]
+                .iter()
+                .position(|old_signature| old_signature == signature)
+            else {
+                continue;
+            };
+            let old_index = old_start + relative_old_index;
+            next_lines[new_index] = old_lines.get(old_index).cloned().flatten();
+            old_start = old_index + 1;
+        }
+
+        self.lines = next_lines;
+        self.signatures = signatures;
+        self.columns = term.grid().columns();
+        self.screen_lines = term.grid().screen_lines();
+    }
+
+    fn visible(&self, term: &Term<NoopListener>) -> Vec<Option<String>> {
+        let grid = term.grid();
+        let rows = grid.screen_lines();
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            return vec![None; rows];
+        }
+
+        let history = grid.history_size();
+        let display_offset = grid.display_offset();
+        let start = history.saturating_sub(display_offset);
+        (0..rows)
+            .map(|row| {
+                let line = Line(-(display_offset as i32) + row as i32);
+                let index = start + row;
+                let continuation = line.0 > -(history as i32)
+                    && grid[Line(line.0 - 1)][Column(grid.columns() - 1)]
+                        .flags
+                        .contains(CellFlags::WRAPLINE);
+                if continuation {
+                    None
+                } else {
+                    self.lines.get(index).cloned().flatten()
+                }
+            })
+            .collect()
+    }
+}
+
+fn terminal_row_signatures(term: &Term<NoopListener>) -> Vec<RowSignature> {
+    let grid = term.grid();
+    let history = grid.history_size();
+    let mut signatures = Vec::with_capacity(grid.total_lines());
+
+    for line in -(history as i32)..grid.screen_lines() as i32 {
+        let row = &grid[Line(line)];
+        let mut hasher = DefaultHasher::new();
+        let mut has_content = false;
+        for cell in row {
+            cell.c.hash(&mut hasher);
+            cell.flags.hash(&mut hasher);
+            if let Some(zerowidth) = cell.zerowidth() {
+                zerowidth.hash(&mut hasher);
+            }
+            has_content |= cell.c != '\0' && cell.c != ' ';
+            has_content |= cell.zerowidth().is_some_and(|chars| !chars.is_empty());
+        }
+        signatures.push(RowSignature {
+            hash: hasher.finish(),
+            has_content,
+        });
+    }
+
+    signatures
+}
+
+fn detect_scroll_shift(old: &[RowSignature], new: &[RowSignature]) -> Option<usize> {
+    if old.len() != new.len() || old.len() < 4 {
+        return None;
+    }
+
+    for shift in 1..=old.len().saturating_sub(1).min(8) {
+        let overlap = old.len() - shift;
+        let matches = old[shift..]
+            .iter()
+            .zip(&new[..overlap])
+            .filter(|(old, new)| old == new)
+            .count();
+        let informative_matches = old[shift..]
+            .iter()
+            .zip(&new[..overlap])
+            .filter(|(old, new)| old == new && old.has_content)
+            .count();
+        if matches >= overlap.saturating_sub(1) && informative_matches > 0 {
+            return Some(shift);
+        }
+    }
+
+    None
+}
+
+fn format_timestamp(timestamp: chrono::DateTime<Local>) -> String {
+    timestamp.format("%H:%M:%S%.3f").to_string()
+}
+
+fn terminal_bounds_for(canvas_bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+    let gutter_width = TIMESTAMP_GUTTER_WIDTH
+        .min((canvas_bounds.size.width.as_f32() - TIMESTAMP_GUTTER_GAP - 1.0).max(0.0));
+    Bounds {
+        origin: Point::new(
+            canvas_bounds.origin.x + px(gutter_width + TIMESTAMP_GUTTER_GAP),
+            canvas_bounds.origin.y,
+        ),
+        size: gpui::size(
+            px((canvas_bounds.size.width.as_f32() - gutter_width - TIMESTAMP_GUTTER_GAP).max(1.0)),
+            canvas_bounds.size.height,
+        ),
+    }
 }
 
 /// 把 alacritty 的绝对行号转换成当前 viewport 内的行列。
@@ -1268,6 +1512,7 @@ fn snapshot_visible(
     selection: Option<((usize, usize), (usize, usize))>,
     _cols: usize,
     cursor_visible: bool,
+    timestamps: &[Option<String>],
 ) -> Snapshot {
     let grid = term.grid();
     let display_offset = grid.display_offset();
@@ -1388,13 +1633,101 @@ fn snapshot_visible(
         history_len,
         cursor_visible,
         urls,
+        timestamps: timestamps.to_vec(),
     }
 }
 
 /// 根据快照绘制。
+fn paint_timestamp_gutter(
+    snapshot: &Snapshot,
+    canvas_bounds: Bounds<Pixels>,
+    terminal_bounds: Bounds<Pixels>,
+    line_h: Pixels,
+    font: &Font,
+    default_fg: Hsla,
+    default_bg: Hsla,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    window.paint_quad(quad(
+        canvas_bounds,
+        Corners::default(),
+        default_bg,
+        Edges::default(),
+        hsla(0., 0., 0., 0.),
+        gpui::BorderStyle::default(),
+    ));
+
+    let reserved_width = terminal_bounds.origin.x - canvas_bounds.origin.x;
+    let gutter_width = reserved_width - px(TIMESTAMP_GUTTER_GAP);
+    if gutter_width.as_f32() <= 1.0 {
+        return;
+    }
+
+    let divider_color = Hsla::from(theme::border());
+    window.paint_quad(quad(
+        Bounds {
+            origin: Point::new(
+                canvas_bounds.origin.x + gutter_width - px(1.),
+                canvas_bounds.origin.y,
+            ),
+            size: gpui::size(px(1.), canvas_bounds.size.height),
+        },
+        Corners::default(),
+        divider_color,
+        Edges::default(),
+        hsla(0., 0., 0., 0.),
+        gpui::BorderStyle::default(),
+    ));
+
+    let text_width = gutter_width.as_f32() - TIMESTAMP_GUTTER_PADDING;
+    if text_width <= 0.0 {
+        return;
+    }
+    let timestamp_color = Hsla {
+        a: default_fg.a * 0.48,
+        ..default_fg
+    };
+
+    for (row, timestamp) in snapshot.timestamps.iter().enumerate() {
+        let Some(timestamp) = timestamp else {
+            continue;
+        };
+        let text_run = TextRun {
+            len: timestamp.len(),
+            font: font.clone(),
+            color: timestamp_color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let shaped = window.text_system().shape_line(
+            SharedString::from(timestamp.clone()),
+            px(FONT_SIZE - 2.0),
+            &[text_run],
+            None,
+        );
+        let origin = Point::new(
+            canvas_bounds.origin.x + px(TIMESTAMP_GUTTER_PADDING / 2.0),
+            canvas_bounds.origin.y + px(row as f32 * line_h.as_f32()),
+        );
+        if let Err(error) = shaped.paint(
+            origin,
+            line_h,
+            TextAlign::Right,
+            Some(px(text_width)),
+            window,
+            cx,
+        ) {
+            log::warn!("paint timestamp row {row} failed: {error}");
+        }
+    }
+}
+
 fn paint_snapshot(
     snapshot: &Snapshot,
     ime_marked_text: &str,
+    canvas_bounds: Bounds<Pixels>,
     bounds: Bounds<Pixels>,
     cell_w: Pixels,
     line_h: Pixels,
@@ -1406,6 +1739,18 @@ fn paint_snapshot(
 ) {
     let cell_wf = cell_w.as_f32();
     let line_hf = line_h.as_f32();
+
+    paint_timestamp_gutter(
+        snapshot,
+        canvas_bounds,
+        bounds,
+        line_h,
+        font,
+        default_fg,
+        default_bg,
+        window,
+        cx,
+    );
 
     // 诊断：打印每帧实际拿到的 snapshot 内容（非空行），用于判断
     // 是「读不到内容」还是「画不出来」。trace 级别，避免 debug 下日志爆炸。
@@ -2467,6 +2812,106 @@ mod tests {
     }
 
     #[test]
+    fn timestamps_use_fixed_millisecond_precision() {
+        let timestamp = format_timestamp(Local::now());
+        assert_eq!(timestamp.len(), 12);
+        assert_eq!(timestamp.as_bytes()[8], b'.');
+        assert!(
+            timestamp
+                .bytes()
+                .enumerate()
+                .all(|(index, byte)| matches!(index, 2 | 5 | 8) || byte.is_ascii_digit())
+        );
+    }
+
+    #[test]
+    fn timestamp_tracker_preserves_rows_when_scrollback_grows() {
+        let config = Config {
+            scrolling_history: SCROLLBACK,
+            ..Default::default()
+        };
+        let mut term: Term<NoopListener> = Term::new(
+            config,
+            &TermSize { cols: 20, rows: 2 },
+            NoopListener::default(),
+        );
+        let mut parser: Processor = Processor::new();
+        let mut tracker = TerminalTimestampState::default();
+
+        parser.advance(&mut term, b"one\r\ntwo");
+        tracker.observe(&term, "10:00:00.001".to_string());
+        parser.advance(&mut term, b"\r\nthree");
+        tracker.observe(&term, "10:00:00.002".to_string());
+
+        assert_eq!(
+            tracker.visible(&term),
+            vec![
+                Some("10:00:00.001".to_string()),
+                Some("10:00:00.002".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn timestamp_tracker_hides_wrapped_rows_and_alternate_screen() {
+        let config = Config {
+            scrolling_history: SCROLLBACK,
+            ..Default::default()
+        };
+        let mut term: Term<NoopListener> = Term::new(
+            config,
+            &TermSize { cols: 5, rows: 3 },
+            NoopListener::default(),
+        );
+        let mut parser: Processor = Processor::new();
+        let mut tracker = TerminalTimestampState::default();
+
+        parser.advance(&mut term, b"abcdef");
+        tracker.observe(&term, "10:00:00.003".to_string());
+        let visible = tracker.visible(&term);
+        assert_eq!(visible[0], Some("10:00:00.003".to_string()));
+        assert_eq!(visible[1], None);
+
+        parser.advance(&mut term, b"\x1b[?1049h\x1b[2Jtui");
+        assert!(term.mode().contains(TermMode::ALT_SCREEN));
+        assert!(
+            tracker
+                .visible(&term)
+                .into_iter()
+                .all(|stamp| stamp.is_none())
+        );
+
+        parser.advance(&mut term, b"\x1b[?1049l");
+        assert!(!term.mode().contains(TermMode::ALT_SCREEN));
+        assert_eq!(tracker.visible(&term)[0], Some("10:00:00.003".to_string()));
+    }
+
+    #[test]
+    fn timestamp_tracker_detects_capped_scrollback_shift() {
+        let signature = |value: &str| {
+            let mut hasher = DefaultHasher::new();
+            value.hash(&mut hasher);
+            RowSignature {
+                hash: hasher.finish(),
+                has_content: true,
+            }
+        };
+        let old = [
+            signature("one"),
+            signature("two"),
+            signature("three"),
+            signature("four"),
+        ];
+        let new = [
+            signature("two"),
+            signature("three"),
+            signature("four"),
+            signature("five"),
+        ];
+        assert_eq!(detect_scroll_shift(&old, &new), Some(1));
+    }
+
+    #[test]
     fn encodes_navigation_keys_for_terminal_modes() {
         assert_eq!(encode_keystroke(&keystroke("up")), Some(b"\x1b[A".to_vec()));
         assert_eq!(
@@ -2690,7 +3135,7 @@ mod tests {
         let mut parser: Processor = Processor::new();
         parser.advance(&mut term, "a中b".as_bytes());
 
-        let snapshot = snapshot_visible(&term, None, 8, true);
+        let snapshot = snapshot_visible(&term, None, 8, true, &[]);
         assert!(snapshot.rows[0][1].wide);
         assert!(snapshot.rows[0][2].spacer);
 
