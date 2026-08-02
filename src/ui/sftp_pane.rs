@@ -5,9 +5,9 @@
 
 use async_channel::{Receiver, Sender};
 use gpui::{
-    AnyElement, App, AppContext, Context, Entity, FocusHandle, InteractiveElement, IntoElement,
-    Keystroke, KeyDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement,
-    Styled, Task, Window, div, rgb,
+    App, AppContext, Context, Entity, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent,
+    Keystroke, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Task,
+    Window, div, rgb,
 };
 
 use crate::ssh::{RemoteEntry, SftpCmd, SftpEvent};
@@ -20,11 +20,14 @@ struct Progress {
     total: Option<u64>,
 }
 
+const SFTP_CHANNEL_UNAVAILABLE: &str = "SFTP 通道不可用";
+
 pub struct SftpPane {
     cmd_tx: Sender<SftpCmd>,
     cwd: String,
     entries: Vec<RemoteEntry>,
     message: Option<String>,
+    loading: bool,
     upload_input: String,
     progress: Option<Progress>,
     focus: FocusHandle,
@@ -38,20 +41,23 @@ impl SftpPane {
         event_rx: Receiver<SftpEvent>,
         cx: &mut App,
     ) -> Entity<Self> {
+        let initial_list_ok = try_send_command(
+            &cmd_tx,
+            SftpCmd::List {
+                path: ".".to_string(),
+            },
+        )
+        .is_ok();
         let entity = cx.new(|cx| Self {
             cmd_tx: cmd_tx.clone(),
             cwd: ".".to_string(),
             entries: Vec::new(),
-            message: None,
+            message: (!initial_list_ok).then(|| SFTP_CHANNEL_UNAVAILABLE.to_string()),
+            loading: initial_list_ok,
             upload_input: String::new(),
             progress: None,
             focus: cx.focus_handle(),
             _drain: None,
-        });
-
-        // 请求初始列表。
-        let _ = cmd_tx.try_send(SftpCmd::List {
-            path: ".".to_string(),
         });
 
         let weak = entity.downgrade();
@@ -63,6 +69,7 @@ impl SftpPane {
                             this.cwd = path;
                             this.entries = entries;
                             this.message = None;
+                            this.loading = false;
                         }
                         SftpEvent::Progress {
                             label,
@@ -75,22 +82,27 @@ impl SftpPane {
                                 total,
                             });
                         }
-                        SftpEvent::Done {
-                            label, ok, message,
-                        } => {
+                        SftpEvent::Done { label, ok, message } => {
                             this.progress = None;
+                            this.loading = false;
                             this.message = Some(if ok {
                                 format!("{label}: {message}")
                             } else {
                                 format!("{label} 失败: {message}")
                             });
                             // 传输完成后刷新当前目录。
-                            let _ = this.cmd_tx.try_send(SftpCmd::List {
-                                path: this.cwd.clone(),
-                            });
+                            this.request_list(this.cwd.clone());
                         }
-                        SftpEvent::Error(e) => this.message = Some(e),
-                        SftpEvent::Closed => this.message = Some("SFTP 已关闭".into()),
+                        SftpEvent::Error(e) => {
+                            this.progress = None;
+                            this.loading = false;
+                            this.message = Some(e);
+                        }
+                        SftpEvent::Closed => {
+                            this.progress = None;
+                            this.loading = false;
+                            this.message = Some("SFTP 已关闭".into());
+                        }
                     }
                     cx.notify();
                 });
@@ -103,12 +115,20 @@ impl SftpPane {
         entity
     }
 
-    fn cd(&self, path: String) {
-        let _ = self.cmd_tx.try_send(SftpCmd::List { path });
+    fn request_list(&mut self, path: String) {
+        self.loading = true;
+        self.message = None;
+        if try_send_command(&self.cmd_tx, SftpCmd::List { path }).is_err() {
+            self.loading = false;
+            self.message = Some(SFTP_CHANNEL_UNAVAILABLE.to_string());
+        }
     }
 
     fn parent_of(path: &str) -> String {
         let p = path.trim_end_matches('/');
+        if p.is_empty() {
+            return "/".to_string();
+        }
         match p.rfind('/') {
             Some(0) => "/".to_string(),
             Some(idx) => p[..idx].to_string(),
@@ -124,22 +144,44 @@ impl SftpPane {
         }
     }
 
-    fn download(&self, name: &str) {
+    fn download(&mut self, name: &str) {
         let remote = Self::join(&self.cwd, name);
-        let local = downloads_dir().join(name);
-        let local = unique_local_path(&local);
-        let _ = self.cmd_tx.try_send(SftpCmd::Download { remote, local });
+        let target = downloads_dir().join(name);
+        let Some(local) = unique_local_path(&target) else {
+            self.message = Some(format!("无法为 {} 找到可用的本地文件名", name));
+            return;
+        };
+        if try_send_command(&self.cmd_tx, SftpCmd::Download { remote, local }).is_err() {
+            self.message = Some(SFTP_CHANNEL_UNAVAILABLE.to_string());
+        } else {
+            self.message = Some(format!("准备下载: {name}"));
+        }
     }
 
     fn do_upload(&mut self, cx: &mut Context<Self>) {
-        let local = std::path::PathBuf::from(crate::config::expand_tilde(&self.upload_input));
+        let input = self.upload_input.trim();
+        if input.is_empty() {
+            self.message = Some("请输入本地文件路径".into());
+            cx.notify();
+            return;
+        }
+        let local = std::path::PathBuf::from(crate::config::expand_tilde(input));
+        if !local.is_file() {
+            self.message = Some(format!("本地文件不存在: {}", local.display()));
+            cx.notify();
+            return;
+        }
         let basename = local
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "upload.bin".into());
         let remote = Self::join(&self.cwd, &basename);
-        let _ = self.cmd_tx.try_send(SftpCmd::Upload { local, remote });
-        self.upload_input.clear();
+        if try_send_command(&self.cmd_tx, SftpCmd::Upload { local, remote }).is_err() {
+            self.message = Some(SFTP_CHANNEL_UNAVAILABLE.to_string());
+        } else {
+            self.message = Some(format!("准备上传: {basename}"));
+            self.upload_input.clear();
+        }
         cx.notify();
     }
 
@@ -180,9 +222,9 @@ fn downloads_dir() -> std::path::PathBuf {
 }
 
 /// 重名时追加 ` (1)`、` (2)`… 避免覆盖。
-fn unique_local_path(path: &std::path::Path) -> std::path::PathBuf {
+fn unique_local_path(path: &std::path::Path) -> Option<std::path::PathBuf> {
     if !path.exists() {
-        return path.to_path_buf();
+        return Some(path.to_path_buf());
     }
     let stem = path
         .file_stem()
@@ -197,10 +239,14 @@ fn unique_local_path(path: &std::path::Path) -> std::path::PathBuf {
         };
         let candidate = parent.join(&name);
         if !candidate.exists() {
-            return candidate;
+            return Some(candidate);
         }
     }
-    path.to_path_buf()
+    None
+}
+
+fn try_send_command(tx: &Sender<SftpCmd>, command: SftpCmd) -> Result<(), &'static str> {
+    tx.try_send(command).map_err(|_| SFTP_CHANNEL_UNAVAILABLE)
 }
 
 impl Render for SftpPane {
@@ -231,7 +277,7 @@ impl Render for SftpPane {
                     .child(SharedString::from("↑ 上级"))
                     .on_click(cx.listener(|this, _ev, _w, cx| {
                         let p = Self::parent_of(&this.cwd);
-                        this.cd(p);
+                        this.request_list(p);
                         cx.notify();
                     })),
             )
@@ -254,13 +300,21 @@ impl Render for SftpPane {
                     .text_color(rgb(0xe6e6e6))
                     .child(SharedString::from("刷新"))
                     .on_click(cx.listener(|this, _ev, _w, cx| {
-                        this.cd(this.cwd.clone());
+                        this.request_list(this.cwd.clone());
                         cx.notify();
                     })),
             );
 
         // 列表区。
-        let mut list = div().flex_1().flex().flex_col().px_2().py_2();
+        let mut list = div()
+            .id("sftp-entry-list")
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .px_2()
+            .py_2()
+            .overflow_y_scroll();
         for (idx, e) in self.entries.iter().enumerate() {
             let name = e.name.clone();
             let is_dir = e.is_dir;
@@ -273,6 +327,7 @@ impl Render for SftpPane {
                 .id(("entry", idx))
                 .flex()
                 .flex_row()
+                .flex_shrink_0()
                 .items_center()
                 .gap_2()
                 .px_2()
@@ -300,7 +355,7 @@ impl Render for SftpPane {
                 .on_click(cx.listener(move |this, _ev, _w, cx| {
                     if is_dir {
                         let p = Self::join(&this.cwd, &name);
-                        this.cd(p);
+                        this.request_list(p);
                     } else {
                         this.download(&name);
                     }
@@ -323,6 +378,13 @@ impl Render for SftpPane {
             .text_xs()
             .text_color(rgb(0xe6e6e6))
             .track_focus(&focus)
+            .tab_stop(true)
+            .focus(|style| style.border_color(rgb(0x6e7cff)))
+            .focus_visible(|style| style.border_color(rgb(0x9aa5ff)))
+            .on_click({
+                let focus = focus.clone();
+                move |_ev, window, cx| window.focus(&focus, cx)
+            })
             .on_key_down(cx.listener(SftpPane::handle_input_key))
             .child(SharedString::from(if upload_val.is_empty() {
                 "本地文件路径（回车上传）".to_string()
@@ -369,17 +431,21 @@ impl Render for SftpPane {
                 .filter(|&t| t > 0)
                 .map(|t| ((p.transferred as f64 / t as f64) * 100.0) as u32)
                 .unwrap_or(0);
+            bottom = bottom.child(div().text_xs().text_color(rgb(0xb0b0b8)).child(
+                SharedString::from(format!(
+                    "{}: {} / {} ({}%)",
+                    p.label,
+                    format_size(p.transferred),
+                    p.total.map(format_size).unwrap_or_else(|| "?".into()),
+                    pct
+                )),
+            ));
+        } else if self.loading {
             bottom = bottom.child(
                 div()
                     .text_xs()
                     .text_color(rgb(0xb0b0b8))
-                    .child(SharedString::from(format!(
-                        "{}: {} / {} ({}%)",
-                        p.label,
-                        format_size(p.transferred),
-                        p.total.map(format_size).unwrap_or_else(|| "?".into()),
-                        pct
-                    ))),
+                    .child(SharedString::from("加载中…")),
             );
         } else if let Some(msg) = &self.message {
             bottom = bottom.child(
@@ -390,11 +456,9 @@ impl Render for SftpPane {
             );
         }
 
-        let _ = top;
-        let _: AnyElement = div().into_any_element();
-
         div()
             .size_full()
+            .min_h_0()
             .flex()
             .flex_col()
             .bg(rgb(0x121214))
@@ -416,5 +480,58 @@ fn format_size(b: u64) -> String {
         format!("{:.1} KB", b as f64 / KB as f64)
     } else {
         format!("{b} B")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn parent_of_handles_root_and_nested_paths() {
+        assert_eq!(SftpPane::parent_of("/"), "/");
+        assert_eq!(SftpPane::parent_of("////"), "/");
+        assert_eq!(SftpPane::parent_of("/home/user"), "/home");
+        assert_eq!(SftpPane::parent_of("/home/user/"), "/home");
+        assert_eq!(SftpPane::parent_of("."), ".");
+    }
+
+    #[test]
+    fn join_handles_relative_and_root_bases() {
+        assert_eq!(SftpPane::join(".", "notes.txt"), "./notes.txt");
+        assert_eq!(SftpPane::join("/", "notes.txt"), "/notes.txt");
+        assert_eq!(
+            SftpPane::join("/home/user", "notes.txt"),
+            "/home/user/notes.txt"
+        );
+    }
+
+    #[test]
+    fn command_queue_reports_full_and_closed_channels() {
+        let (tx, rx) = async_channel::bounded(1);
+        let list = || SftpCmd::List {
+            path: ".".to_string(),
+        };
+
+        assert_eq!(try_send_command(&tx, list()), Ok(()));
+        assert_eq!(try_send_command(&tx, list()), Err(SFTP_CHANNEL_UNAVAILABLE));
+
+        drop(rx);
+        assert_eq!(try_send_command(&tx, list()), Err(SFTP_CHANNEL_UNAVAILABLE));
+    }
+
+    #[test]
+    fn unique_local_path_returns_unused_path_without_overwriting() {
+        let path = Path::new("/definitely-missing-crossh-downloads/notes.txt");
+        assert_eq!(unique_local_path(path), Some(path.to_path_buf()));
+    }
+
+    #[test]
+    fn format_size_uses_human_readable_units() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(1024), "1.0 KB");
+        assert_eq!(format_size(1024 * 1024), "1.0 MB");
+        assert_eq!(format_size(1024 * 1024 * 1024), "1.0 GB");
     }
 }

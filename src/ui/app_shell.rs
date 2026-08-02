@@ -651,6 +651,7 @@ fn render_host_entry(
                         .hover(|s| s.text_color(rgb(0xe6e6e6)))
                         .child(SharedString::from("📁"))
                         .on_click(cx.listener(move |this, _ev, _w, cx| {
+                            cx.stop_propagation();
                             this.open_sftp(idx, cx);
                         })),
                 )
@@ -664,6 +665,7 @@ fn render_host_entry(
                         .hover(|s| s.text_color(rgb(0xe6e6e6)))
                         .child(SharedString::from("⇄"))
                         .on_click(cx.listener(move |this, _ev, _w, cx| {
+                            cx.stop_propagation();
                             this.open_forward(idx, cx);
                         })),
                 ),
@@ -777,6 +779,7 @@ fn tab_badge_color(state: &Option<ConnState>) -> gpui::Hsla {
 fn render_main(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoElement {
     let mut pane = div()
         .flex_1()
+        .min_h_0()
         .h_full()
         .bg(rgb(0x121214))
         .flex()
@@ -786,7 +789,7 @@ fn render_main(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoElement
     pane = pane.child(render_tab_strip(shell, cx));
 
     // 终端/SFTP 区。
-    let mut content = div().flex_1().relative();
+    let mut content = div().flex_1().min_h_0().relative();
     if let Some(idx) = shell.active_tab {
         if let Some(tab) = shell.tabs.get(idx) {
             let pane_el: AnyElement = match &tab.pane {
