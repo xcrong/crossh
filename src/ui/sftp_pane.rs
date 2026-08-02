@@ -601,7 +601,7 @@ impl SftpPane {
                     .hover(|s| s.bg(theme::raised()))
                     .text_xs()
                     .text_color(theme::text())
-                    .child(icons::icon(icons::IconName::ArrowLeft, 14.))
+                    .child(icons::icon(icons::IconName::ArrowLeft, 14.).text_color(theme::text()))
                     .child(SharedString::from(i18n::text("sftp.file_list")))
                     .on_click(cx.listener(|this, _ev, _window, cx| {
                         this.close_editor(cx);
@@ -647,7 +647,7 @@ impl SftpPane {
                     .hover(|s| s.bg(theme::border_strong()))
                     .text_xs()
                     .text_color(theme::text())
-                    .child(icons::icon(icons::IconName::Pencil, 14.))
+                    .child(icons::icon(icons::IconName::Pencil, 14.).text_color(theme::text()))
                     .child(SharedString::from(i18n::text("sftp.enter_editing")))
                     .on_click(cx.listener(|this, _ev, window, cx| {
                         this.enter_editor_edit(window, cx);
@@ -668,7 +668,7 @@ impl SftpPane {
                     .hover(|s| s.bg(theme::border_strong()))
                     .text_xs()
                     .text_color(theme::text())
-                    .child(icons::icon(icons::IconName::ShieldAlert, 14.))
+                    .child(icons::icon(icons::IconName::ShieldAlert, 14.).text_color(theme::text()))
                     .child(SharedString::from(i18n::text("sftp.read_only")))
                     .on_click(cx.listener(|this, _ev, _window, cx| {
                         this.leave_editor_edit(cx);
@@ -689,7 +689,7 @@ impl SftpPane {
                         .hover(|s| s.bg(rgb(0x82e3bf)))
                         .text_xs()
                         .text_color(theme::canvas())
-                        .child(icons::icon(icons::IconName::Save, 14.))
+                        .child(icons::icon(icons::IconName::Save, 14.).text_color(theme::canvas()))
                         .child(SharedString::from(if saving {
                             i18n::text("sftp.saving_short")
                         } else {
@@ -713,7 +713,7 @@ impl SftpPane {
                         .hover(|s| s.bg(theme::border_strong()))
                         .text_xs()
                         .text_color(theme::text())
-                        .child(icons::icon(icons::IconName::X, 14.))
+                        .child(icons::icon(icons::IconName::X, 14.).text_color(theme::text()))
                         .child(SharedString::from(i18n::text("sftp.discard")))
                         .on_click(cx.listener(|this, _ev, _window, cx| {
                             this.discard_editor(cx);
@@ -945,7 +945,7 @@ impl Render for SftpPane {
                     .hover(|s| s.bg(theme::raised()))
                     .text_xs()
                     .text_color(theme::text())
-                    .child(icons::icon(icons::IconName::ArrowUp, 14.))
+                    .child(icons::icon(icons::IconName::ArrowUp, 14.).text_color(theme::text()))
                     .child(SharedString::from(i18n::text("sftp.parent")))
                     .on_click(cx.listener(|this, _ev, _w, cx| {
                         let p = Self::parent_of(&this.cwd);
@@ -975,7 +975,7 @@ impl Render for SftpPane {
                     .cursor_pointer()
                     .text_color(theme::muted_text())
                     .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
-                    .child(icons::icon(icons::IconName::RefreshCw, 14.))
+                    .child(icons::icon(icons::IconName::RefreshCw, 14.).text_color(theme::muted_text()).hover(|s| s.text_color(theme::text())))
                     .on_click(cx.listener(|this, _ev, _w, cx| {
                         this.request_list(this.cwd.clone());
                         cx.notify();
@@ -1116,7 +1116,7 @@ impl Render for SftpPane {
                             .hover(|s| s.bg(rgb(0x82e3bf)))
                             .text_xs()
                             .text_color(theme::canvas())
-                            .child(icons::icon(icons::IconName::Upload, 14.))
+                            .child(icons::icon(icons::IconName::Upload, 14.).text_color(theme::canvas()))
                             .child(SharedString::from(i18n::text("sftp.upload")))
                             .on_click(cx.listener(|this, _ev, _w, cx| {
                                 this.do_upload(cx);
@@ -1136,7 +1136,7 @@ impl Render for SftpPane {
                             .hover(|s| s.bg(theme::border_strong()))
                             .text_xs()
                             .text_color(theme::text())
-                            .child(icons::icon(icons::IconName::FolderOpen, 14.))
+                            .child(icons::icon(icons::IconName::FolderOpen, 14.).text_color(theme::text()))
                             .child(SharedString::from(i18n::text("sftp.choose_file")))
                             .on_click(cx.listener(|this, _ev, _w, cx| {
                                 this.choose_upload_file(cx);

@@ -162,7 +162,7 @@ fn render_empty_state(cx: &mut Context<AppShell>) -> AnyElement {
                         .bg(theme::accent())
                         .text_color(theme::canvas())
                         .hover(|style| style.bg(rgb(0x82e3bf)))
-                        .child(icons::icon(icons::IconName::FolderOpen, 14.))
+                        .child(icons::icon(icons::IconName::FolderOpen, 14.).text_color(theme::canvas()))
                         .child(SharedString::from(i18n::text("project.open")))
                         .on_click(cx.listener(|this, _ev, _window, cx| {
                             this.choose_project_directory(cx);
@@ -248,7 +248,7 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                                 })
                                 .into()
                             })
-                            .child(icons::icon(icons::IconName::X, 13.))
+                            .child(icons::icon(icons::IconName::X, 13.).text_color(theme::muted_text()).hover(|s| s.text_color(theme::danger())))
                             .on_click(cx.listener(move |this, _ev, _w, cx| {
                                 this.close_remote_tab(idx, cx);
                             })),
@@ -324,7 +324,7 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                                 })
                                 .into()
                             })
-                            .child(icons::icon(icons::IconName::X, 13.))
+                            .child(icons::icon(icons::IconName::X, 13.).text_color(theme::muted_text()).hover(|s| s.text_color(theme::danger())))
                             .on_click(cx.listener(move |this, _ev, _w, cx| {
                                 this.close_local_session(session_id, cx);
                             })),
@@ -361,7 +361,7 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                 })
                 .into()
             })
-            .child(icons::icon(icons::IconName::Plus, 15.))
+            .child(icons::icon(icons::IconName::Plus, 15.).text_color(theme::accent()).hover(|s| s.text_color(theme::canvas())))
             .on_click(cx.listener(|this, _ev, window, cx| {
                 this.new_tab(window, cx);
             })),
