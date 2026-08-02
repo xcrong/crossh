@@ -535,6 +535,12 @@ impl TerminalView {
         }
         if self.selecting && ev.button == MouseButton::Left {
             self.selecting = false;
+            // 单击只改变焦点，不应留下一个单字符的“选区阴影”；只有
+            // 实际拖拽出范围时才保留选区，供 Cmd+C 复制。
+            if self.sel_start == self.sel_end {
+                self.sel_start = None;
+                self.sel_end = None;
+            }
             cx.notify();
             return;
         }
