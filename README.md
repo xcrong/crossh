@@ -1,6 +1,6 @@
 # crossh
 
-基于 [gpui](https://github.com/zed-industries/zed/tree/main/crates/gpui) 的轻量 SSH 客户端（macOS），
+基于 [gpui](https://github.com/zed-industries/zed/tree/main/crates/gpui) 的轻量 SSH 客户端（macOS / Linux / Windows），
 以 `~/.ssh/config` 为唯一真源，常驻开发工具定位：低内存、多标签、开箱即用。
 
 ## 特性
@@ -26,9 +26,12 @@ cargo run --release  # 发布模式
 打包为 `.app`（含 ad-hoc 签名，无需开发者账号）：
 
 ```bash
-scripts/package.sh          # 输出 dist/crossh.app 与 dist/crossh-<version>-macos.zip
+scripts/package.sh          # 本机架构，输出 dist/crossh.app 与 dist/crossh-<version>-<arch>-macos.zip
+scripts/package.sh x86_64-apple-darwin   # 指定架构（交叉编译）
 open dist/crossh.app
 ```
+
+三平台发布产物由 [.github/workflows/release.yml](.github/workflows/release.yml) 构建：macOS `.app` zip（aarch64/x86_64）、Linux `tar.gz` + AppImage（x86_64/aarch64）、Windows zip（x86_64）。
 
 ## 快捷键
 

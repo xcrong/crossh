@@ -1,7 +1,10 @@
 name: Release
 
-# 打 tag（v*）时自动构建并发布 macOS .app 包。
-# 本地等价命令:  scripts/package.sh
+# 打 tag（v*）时自动构建并发布三平台、多架构产物：
+#   macOS:  aarch64 / x86_64 .app zip（ad-hoc 签名）
+#   Linux:  x86_64 / aarch64 tar.gz + AppImage
+#   Windows: x86_64 zip（aarch64 实验性，编译失败不阻塞发布）
+# 本地等价命令:  scripts/package.sh / package-linux.sh / package-windows.ps1
 
 on:
   push:
@@ -9,12 +12,83 @@ on:
       - "v*"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
-    name: Build & package crossh.app
-    runs-on: macos-latest
-    permissions:
-      contents: write
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.continue_on_error || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS aarch64
+            os: macos-15
+            target: aarch64-apple-darwin
+            package: bash scripts/package.sh aarch64-apple-darwin "$VERSION"
+            artifact: crossh-macos-aarch64
+            glob: dist/*macos.zip
+
+          - name: macOS x86_64
+            os: macos-15
+            target: x86_64-apple-darwin
+            package: bash scripts/package.sh x86_64-apple-darwin "$VERSION"
+            artifact: crossh-macos-x86_64
+            glob: dist/*macos.zip
+
+          - name: Linux x86_64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            setup: |
+              sudo apt-get update
+              sudo apt-get install -y build-essential cmake pkg-config \
+                libxcb1-dev libxcb-composite0-dev libxcb-dri3-0-dev libxcb-icccm4-dev \
+                libxcb-keysyms1-dev libxcb-present-dev libxcb-render-util0-dev \
+                libxcb-render0-dev libxcb-shape0-dev libxcb-shm0-dev libxcb-xfixes0-dev \
+                libxcb-xkb-dev libxcb-util-dev libxcb-xinerama0-dev libxcb-xinput-dev \
+                libxkbcommon-dev libfontconfig1-dev libwayland-dev wayland-protocols \
+                wayland-scanner librsvg2-bin
+            package: bash scripts/package-linux.sh x86_64-unknown-linux-gnu "$VERSION"
+            artifact: crossh-linux-x86_64
+            glob: |
+              dist/*linux-x86_64.tar.gz
+              dist/*linux-x86_64.AppImage
+
+          - name: Linux aarch64
+            os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            setup: |
+              sudo apt-get update
+              sudo apt-get install -y build-essential cmake pkg-config \
+                libxcb1-dev libxcb-composite0-dev libxcb-dri3-0-dev libxcb-icccm4-dev \
+                libxcb-keysyms1-dev libxcb-present-dev libxcb-render-util0-dev \
+                libxcb-render0-dev libxcb-shape0-dev libxcb-shm0-dev libxcb-xfixes0-dev \
+                libxcb-xkb-dev libxcb-util-dev libxcb-xinerama0-dev libxcb-xinput-dev \
+                libxkbcommon-dev libfontconfig1-dev libwayland-dev wayland-protocols \
+                wayland-scanner librsvg2-bin
+            package: bash scripts/package-linux.sh aarch64-unknown-linux-gnu "$VERSION"
+            artifact: crossh-linux-aarch64
+            glob: |
+              dist/*linux-aarch64.tar.gz
+              dist/*linux-aarch64.AppImage
+
+          - name: Windows x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            package: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows.ps1 -Target x86_64-pc-windows-msvc -Version "$VERSION"
+            artifact: crossh-windows-x86_64
+            glob: dist/*windows-x86_64.zip
+
+          - name: Windows aarch64 (experimental)
+            os: windows-latest
+            target: aarch64-pc-windows-msvc
+            continue_on_error: true
+            package: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows.ps1 -Target aarch64-pc-windows-msvc -Version "$VERSION"
+            artifact: crossh-windows-aarch64
+            glob: dist/*windows-aarch64.zip
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,24 +100,50 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Build & package
+      - name: Resolve version
+        id: ver
+        shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          scripts/package.sh "$VERSION"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=$(grep '^version' Cargo.toml | head -1 | sed 's/.*= *"\(.*\)".*/\1/')" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Upload .app artifact
+      - name: Install system dependencies
+        if: matrix.setup != ''
+        shell: bash
+        run: ${{ matrix.setup }}
+
+      - name: Build & package
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.value }}
+        run: ${{ matrix.package }}
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: crossh-macos
-          path: dist/crossh.app
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.glob }}
           if-no-files-found: error
 
-      - name: Upload zip artifact
-        uses: actions/upload-artifact@v4
+  release:
+    name: Create GitHub release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
         with:
-          name: crossh-zip
-          path: dist/*.zip
-          if-no-files-found: error
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: crossh-*
+          path: dist
+          merge-multiple: true
 
       - name: Generate release notes
         id: notes
@@ -60,9 +160,17 @@ jobs:
             git log --oneline --no-merges | sed 's/^/- /' > RELEASE_NOTES.md
           fi
 
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum * | tee sha256sums.txt
+
       - name: Create GitHub release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.zip
+          files: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*.AppImage
+            dist/sha256sums.txt
           body_path: RELEASE_NOTES.md

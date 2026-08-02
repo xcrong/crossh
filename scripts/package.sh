@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # 打包 crossh.app（macOS）：release 构建 → 组装 .app bundle → ad-hoc 签名 → zip。
 #
-# 用法:  scripts/package.sh [version]
-# 输出:  dist/crossh.app 与 dist/crossh-<version>-macos.zip
+# 用法:  scripts/package.sh [target] [version]
+#         target: aarch64-apple-darwin（默认，arm64 宿主机本机）| x86_64-apple-darwin
+# 输出:  dist/crossh.app 与 dist/crossh-<version>-<arch>-macos.zip
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-VERSION="${1:-$(grep '^version' Cargo.toml | head -1 | sed 's/.*= *"\(.*\)".*/\1/')}"
+TARGET="${1:-}"
+VERSION="${2:-$(grep '^version' Cargo.toml | head -1 | sed 's/.*= *"\(.*\)".*/\1/')}"
 APP_NAME="crossh"
 BUNDLE_ID="io.crossh.app"
 DIST="dist"
@@ -16,14 +18,28 @@ CONTENTS="$APP_DIR/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 
-echo "==> cargo build --release"
-cargo build --release
+CARGO_ARGS=("--release")
+BIN_DIR="target/release"
+ARCH="$(uname -m)"
+if [ -n "$TARGET" ]; then
+    echo "==> rustup target add $TARGET"
+    rustup target add "$TARGET"
+    CARGO_ARGS+=("--target" "$TARGET")
+    BIN_DIR="target/$TARGET/release"
+    case "$TARGET" in
+        x86_64-*) ARCH="x86_64" ;;
+        aarch64-*) ARCH="aarch64" ;;
+    esac
+fi
+
+echo "==> cargo build --release${TARGET:+ --target $TARGET}"
+cargo build "${CARGO_ARGS[@]}"
 
 echo "==> assembling $APP_DIR"
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS" "$RESOURCES"
 
-cp "target/release/$APP_NAME" "$MACOS/$APP_NAME"
+cp "$BIN_DIR/$APP_NAME" "$MACOS/$APP_NAME"
 cp assets/appicon/AppIcon.icns "$RESOURCES/AppIcon.icns"
 
 cat > "$CONTENTS/Info.plist" <<PLIST
@@ -63,7 +79,7 @@ echo "==> ad-hoc signing (runs locally, no Apple developer account needed)"
 codesign --force --deep --sign - "$APP_DIR"
 
 echo "==> zipping"
-ZIP="$DIST/$APP_NAME-$VERSION-macos.zip"
+ZIP="$DIST/$APP_NAME-$VERSION-$ARCH-macos.zip"
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP_DIR" "$ZIP"
 
