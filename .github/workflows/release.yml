@@ -17,6 +17,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -43,9 +45,24 @@ jobs:
           path: dist/*.zip
           if-no-files-found: error
 
+      - name: Generate release notes
+        id: notes
+        run: |
+          PREV="$(git tag --sort=-v:refname | sed -n '2p' || true)"
+          if [ -n "$PREV" ]; then
+            {
+              echo "## What's Changed"
+              git log --oneline --no-merges "$PREV"..HEAD | sed 's/^/- /'
+              echo ""
+              echo "**Full Changelog**: https://github.com/$GITHUB_REPOSITORY/compare/$PREV...${GITHUB_REF_NAME}"
+            } > RELEASE_NOTES.md
+          else
+            git log --oneline --no-merges | sed 's/^/- /' > RELEASE_NOTES.md
+          fi
+
       - name: Create GitHub release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.zip
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
