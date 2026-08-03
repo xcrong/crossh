@@ -4,7 +4,7 @@ use gpui::{Keystroke, ParentElement, Render, SharedString, Styled, Window, div, 
 
 use crate::ui::theme;
 
-/// 简单的纯文本 tooltip（宽 480px，自动换行），用于路径与功能提示。
+/// 简单的纯文本 tooltip：按内容收缩，长文本最多 480px 并自动换行。
 pub struct LocalPathTooltip {
     pub path: SharedString,
 }
@@ -16,7 +16,8 @@ impl Render for LocalPathTooltip {
         _cx: &mut gpui::Context<Self>,
     ) -> impl gpui::IntoElement {
         div()
-            .w(px(480.))
+            .w_auto()
+            .max_w(px(480.))
             .px_2()
             .py_1()
             .bg(theme::raised())
