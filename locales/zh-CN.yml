@@ -81,6 +81,9 @@ project:
   choose_directory: 选择项目目录
   open: 打开本地项目
 
+git:
+  clean: 干净
+
 connection:
   connecting_with_separator: "连接中 · "
   connected_with_separator: "已连接 · "

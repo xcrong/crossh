@@ -245,7 +245,7 @@ impl AppShell {
                 this.close_remote_terminal(terminal.entity_id(), cx);
             }
             TerminalEvent::TitleChanged => cx.notify(),
-            TerminalEvent::CwdChanged => {}
+            TerminalEvent::CwdChanged | TerminalEvent::PromptReached => {}
         });
         self.terminal_subscriptions.push(subscription);
         self.remote_tabs.push(Tab {
@@ -332,15 +332,31 @@ impl AppShell {
             }
             TerminalEvent::CwdChanged => {
                 this.sync_local_dirs(cx);
+                if let Some(session_id) = this.local_session_id_for_terminal(terminal.entity_id()) {
+                    this.refresh_git_status(session_id, true, cx);
+                }
                 cx.notify();
+            }
+            TerminalEvent::PromptReached => {
+                if let Some(session_id) = this.local_session_id_for_terminal(terminal.entity_id()) {
+                    this.refresh_git_status(session_id, false, cx);
+                }
             }
             TerminalEvent::TitleChanged => cx.notify(),
         });
         self.terminal_subscriptions.push(subscription);
-        self.local_sessions
-            .insert(session_id, LocalSession { cwd, terminal });
+        self.local_sessions.insert(
+            session_id,
+            LocalSession {
+                cwd,
+                terminal,
+                git_status: None,
+                git_refresh_generation: 0,
+            },
+        );
         self.sync_local_dirs(cx);
         self.select_local_session(session_id, cx);
+        self.refresh_git_status(session_id, false, cx);
         self.status = None;
         cx.notify();
     }
@@ -1017,6 +1033,49 @@ impl AppShell {
             self.settings.recent_local_dirs.iter().cloned(),
             active_local_session,
         );
+    }
+
+    fn local_session_id_for_terminal(&self, terminal_id: EntityId) -> Option<LocalSessionId> {
+        self.local_sessions
+            .iter()
+            .find_map(|(&session_id, session)| {
+                (session.terminal.entity_id() == terminal_id).then_some(session_id)
+            })
+    }
+
+    fn refresh_git_status(
+        &mut self,
+        session_id: LocalSessionId,
+        clear_stale: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.local_sessions.get_mut(&session_id) else {
+            return;
+        };
+        session.git_refresh_generation = session.git_refresh_generation.wrapping_add(1);
+        let generation = session.git_refresh_generation;
+        let cwd = session.cwd.clone();
+        if clear_stale {
+            session.git_status = None;
+        }
+
+        cx.spawn(async move |weak, cx| {
+            let status = cx
+                .background_executor()
+                .spawn(async move { crate::git_status::inspect(&cwd) })
+                .await;
+            let _ = weak.update(cx, |this, cx| {
+                let Some(session) = this.local_sessions.get_mut(&session_id) else {
+                    return;
+                };
+                if session.git_refresh_generation != generation {
+                    return;
+                }
+                session.git_status = status;
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// 把目录记入「最近本地目录」历史（最近优先、去重、截断到上限）并持久化。

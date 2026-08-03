@@ -4,6 +4,7 @@
 //! SFTP 与端口转发为后续阶段（见 .kilo/plans）。
 
 mod config;
+mod git_status;
 mod i18n;
 mod local;
 mod ssh;

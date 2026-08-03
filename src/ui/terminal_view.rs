@@ -76,6 +76,8 @@ pub enum ConnState {
 pub enum TerminalEvent {
     /// shell 报告的当前工作目录已变化（仅本地终端）。
     CwdChanged,
+    /// 本地 shell 已回到提示符；仓库等外部状态可以刷新。
+    PromptReached,
     /// 应用通过 OSC 设置了窗口标题。
     TitleChanged,
     /// shell/SSH channel 已正常结束，拥有者应移除对应标签。
@@ -543,6 +545,9 @@ impl TerminalView {
                 for activity in self.shell_activity_parser.feed(&bytes) {
                     self.shell_activity_available = true;
                     self.command_running = activity == ShellActivity::CommandStarted;
+                    if self.is_local && activity == ShellActivity::Prompt {
+                        cx.emit(TerminalEvent::PromptReached);
+                    }
                 }
                 // alternate screen 是 Codex/vim/top 等 TUI 的绘制缓冲区；只保留
                 // 普通 shell 网格的时间戳，避免全屏重绘产生大量错误行。

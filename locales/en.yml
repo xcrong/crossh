@@ -81,6 +81,9 @@ project:
   choose_directory: Choose project directory
   open: Open local project
 
+git:
+  clean: Clean
+
 connection:
   connecting_with_separator: "Connecting · "
   connected_with_separator: "Connected · "

@@ -9,6 +9,7 @@ use gpui::{
     div, hsla, px, rgb,
 };
 
+use crate::git_status::GitStatus;
 use crate::i18n;
 use crate::ui::app_shell::AppShell;
 use crate::ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
@@ -44,6 +45,8 @@ pub enum ActiveView {
 pub struct LocalSession {
     pub cwd: PathBuf,
     pub terminal: Entity<TerminalView>,
+    pub git_status: Option<GitStatus>,
+    pub git_refresh_generation: u64,
 }
 
 pub struct LocalDir {
@@ -107,7 +110,84 @@ pub fn render_main(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
         );
     }
     pane = pane.child(content);
+    if let Some(ActiveView::LocalSession(session_id)) = shell.active_view
+        && let Some(session) = shell.local_sessions.get(&session_id)
+    {
+        pane = pane.child(render_terminal_status_bar(session));
+    }
     pane.into_any_element()
+}
+
+fn render_terminal_status_bar(session: &LocalSession) -> AnyElement {
+    let cwd = session.cwd.to_string_lossy().to_string();
+    let mut bar = div()
+        .h(px(25.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap_3()
+        .px_3()
+        .border_t_1()
+        .border_color(theme::border())
+        .bg(theme::surface())
+        .text_xs()
+        .text_color(theme::muted_text())
+        .child(div().min_w_0().truncate().child(SharedString::from(cwd)));
+
+    if let Some(status) = &session.git_status {
+        let mut git = div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(icons::icon(icons::IconName::GitBranch, 13.).text_color(theme::accent()))
+            .child(
+                div()
+                    .text_color(theme::text())
+                    .child(SharedString::from(status.branch.clone())),
+            );
+
+        if status.ahead > 0 {
+            git = git.child(status_badge(format!("↑{}", status.ahead), theme::info()));
+        }
+        if status.behind > 0 {
+            git = git.child(status_badge(format!("↓{}", status.behind), theme::info()));
+        }
+        if status.staged > 0 {
+            git = git.child(status_badge(format!("+{}", status.staged), theme::accent()));
+        }
+        if status.modified > 0 {
+            git = git.child(status_badge(
+                format!("~{}", status.modified),
+                theme::warning(),
+            ));
+        }
+        if status.untracked > 0 {
+            git = git.child(status_badge(
+                format!("?{}", status.untracked),
+                theme::muted_text(),
+            ));
+        }
+        if status.conflicts > 0 {
+            git = git.child(status_badge(
+                format!("!{}", status.conflicts),
+                theme::danger(),
+            ));
+        }
+        if status.is_clean() {
+            git = git.child(status_badge(i18n::text("git.clean"), theme::accent()));
+        }
+        bar = bar.child(git);
+    }
+
+    bar.into_any_element()
+}
+
+fn status_badge(text: String, color: impl Into<gpui::Hsla>) -> impl IntoElement {
+    div()
+        .text_color(color.into())
+        .child(SharedString::from(text))
 }
 
 fn render_empty_state(cx: &mut Context<AppShell>) -> AnyElement {
