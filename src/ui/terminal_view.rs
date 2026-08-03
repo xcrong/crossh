@@ -2168,6 +2168,78 @@ fn utf16_slice(text: &str, range: Range<usize>) -> Option<(String, Range<usize>)
     ))
 }
 
+const URL_PREFIXES: [&str; 3] = ["https://", "http://", "www."];
+
+fn next_url_start(chars: &[char], from: usize) -> Option<(usize, usize)> {
+    for index in from..chars.len() {
+        for prefix in URL_PREFIXES {
+            let prefix_len = prefix.len();
+            if index + prefix_len <= chars.len()
+                && chars[index..]
+                    .iter()
+                    .take(prefix_len)
+                    .copied()
+                    .eq(prefix.chars())
+            {
+                return Some((index, prefix_len));
+            }
+        }
+    }
+    None
+}
+
+fn is_url_delimiter(ch: char) -> bool {
+    ch.is_whitespace() || matches!(ch, '"' | '\'' | '>' | '<' | ')' | ']')
+}
+
+fn is_trailing_url_punctuation(ch: char) -> bool {
+    matches!(ch, '.' | ',' | ';' | ':' | '!' | '?')
+}
+
+/// Find plain-text URLs using logical characters, then translate their ranges
+/// back to terminal columns. A terminal cell is not a UTF-8 byte: wide cells
+/// and non-ASCII text make those coordinate systems diverge.
+fn detect_plain_urls(
+    row: &mut [RenderCell],
+    row_index: usize,
+) -> Vec<(usize, usize, usize, String)> {
+    let display_chars: Vec<(usize, char)> = row
+        .iter()
+        .enumerate()
+        .filter(|(_, cell)| !cell.spacer)
+        .map(|(col, cell)| (col, cell.ch))
+        .collect();
+    let chars: Vec<char> = display_chars.iter().map(|(_, ch)| *ch).collect();
+    let mut urls = Vec::new();
+    let mut position = 0;
+
+    while let Some((url_start, prefix_len)) = next_url_start(&chars, position) {
+        let mut url_end = url_start + prefix_len;
+        while url_end < chars.len() && !is_url_delimiter(chars[url_end]) {
+            url_end += 1;
+        }
+        while url_end > url_start + prefix_len && is_trailing_url_punctuation(chars[url_end - 1]) {
+            url_end -= 1;
+        }
+
+        if url_end > url_start + prefix_len {
+            let start_col = display_chars[url_start].0;
+            let end_cell_col = display_chars[url_end - 1].0;
+            let end_col = end_cell_col + if row[end_cell_col].wide { 2 } else { 1 };
+            let url = chars[url_start..url_end].iter().collect();
+
+            for cell in row.iter_mut().take(end_col).skip(start_col) {
+                cell.is_url = true;
+            }
+            urls.push((row_index, start_col, end_col, url));
+        }
+
+        position = url_end.max(url_start + prefix_len);
+    }
+
+    urls
+}
+
 /// 把 Term 可见区快照成 owned 数据。
 fn snapshot_visible(
     term: &Term<NoopListener>,
@@ -2259,56 +2331,7 @@ fn snapshot_visible(
             urls.push((vy, start, col, url));
         }
 
-        let line_text: String = out_rows[vy]
-            .iter()
-            .map(|c| if c.spacer { ' ' } else { c.ch })
-            .collect();
-        let line_len = line_text.len();
-        let mut pos = 0;
-        while pos < line_len {
-            let rest = &line_text[pos..];
-            let (offset, _) = match rest
-                .find("https://")
-                .or_else(|| rest.find("http://"))
-                .or_else(|| rest.find("www."))
-            {
-                Some(idx) => (idx, ()),
-                None => break,
-            };
-            let url_start = pos + offset;
-            let mut url_end = url_start + 4;
-            while url_end < line_len {
-                let c = line_text.as_bytes()[url_end] as char;
-                if c.is_whitespace()
-                    || c == '"'
-                    || c == '\''
-                    || c == '>'
-                    || c == '<'
-                    || c == ')'
-                    || c == ']'
-                {
-                    break;
-                }
-                url_end += 1;
-            }
-            // 去掉尾部的标点。
-            while url_end > url_start + 4 {
-                let c = line_text.as_bytes()[url_end - 1] as char;
-                if c == '.' || c == ',' || c == ';' || c == ':' || c == '!' || c == '?' {
-                    url_end -= 1;
-                } else {
-                    break;
-                }
-            }
-            if url_end > url_start + 4 {
-                let url_str = &line_text[url_start..url_end];
-                urls.push((vy, url_start, url_end, url_str.to_string()));
-                for c in url_start..url_end.min(out_rows[vy].len()) {
-                    out_rows[vy][c].is_url = true;
-                }
-            }
-            pos = url_end;
-        }
+        urls.extend(detect_plain_urls(&mut out_rows[vy], vy));
     }
 
     Snapshot {
@@ -4252,6 +4275,39 @@ mod tests {
         assert_eq!(snapshot.rows[0][0].underline, UnderlineKind::Solid);
         assert!(snapshot.rows[0][0].strikeout);
         assert_eq!(snapshot.rows[0][1].fg, snapshot.rows[0][1].bg);
+    }
+
+    #[test]
+    fn terminal_snapshot_maps_plain_urls_to_cell_columns() {
+        let config = Config {
+            scrolling_history: SCROLLBACK,
+            ..Default::default()
+        };
+        let mut term: Term<NoopListener> = Term::new(
+            config,
+            &TermSize { cols: 64, rows: 1 },
+            NoopListener::default(),
+        );
+        let mut parser: Processor = Processor::new();
+        parser.advance(
+            &mut term,
+            "中文 www.first.test https://second.test".as_bytes(),
+        );
+
+        let snapshot = snapshot_visible(&term, None, 64, false, &[]);
+        assert_eq!(
+            snapshot.urls,
+            vec![
+                (0, 5, 19, "www.first.test".to_string()),
+                (0, 20, 39, "https://second.test".to_string()),
+            ]
+        );
+        assert!(snapshot.rows[0][5].is_url);
+        assert!(snapshot.rows[0][18].is_url);
+        assert!(!snapshot.rows[0][19].is_url);
+        assert!(snapshot.rows[0][20].is_url);
+        assert!(snapshot.rows[0][38].is_url);
+        assert!(!snapshot.rows[0][39].is_url);
     }
 
     #[test]
