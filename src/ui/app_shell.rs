@@ -1,7 +1,7 @@
 //! 应用外壳：左侧主机列表 + 顶部标签条 + 终端工作区 + 模态弹窗。
 //!
 //! - 连接池：同主机复用一条已认证会话（开新终端 channel），全部终端关闭才断开。
-//! - 多标签：每点击主机新开一个终端标签；可切换/关闭。
+//! - 多标签：侧栏点击主机优先切换已有终端，显式新建时才追加标签；可切换/关闭。
 //! - sidebar：Local、Active、Bank 为同级可折叠组。
 //! - 模态：池中任一连接出现 pending_prompt（未知主机密钥/凭据）时弹覆盖层。
 //!
@@ -29,7 +29,7 @@ use crate::ssh::{Connection, ConnectionPool, HostKeyDecision, PendingPrompt, def
 use crate::ui::context_menu::{ContextMenuState, MenuEntry, ShellMenuAction, render_context_menu};
 use crate::ui::prompt::{PromptDisplay, render_prompt_modal};
 use crate::ui::sidebar::{HostEntry, build_entries, render_sidebar};
-use crate::ui::terminal_view::{TerminalEvent, TerminalView};
+use crate::ui::terminal_view::{ConnState, TerminalEvent, TerminalView};
 use crate::ui::theme;
 use crate::ui::widgets::printable_char;
 use crate::ui::workspace::{
@@ -194,7 +194,34 @@ impl AppShell {
             Some(e) => e.clone(),
             None => return,
         };
+
+        // The sidebar is navigation. Reuse the existing terminal for a live
+        // connection instead of opening another channel when returning from a
+        // local session.
+        if let Some(tab_idx) = self.remote_terminal_to_switch(&entry.key, cx) {
+            self.switch_remote_tab(tab_idx, cx);
+            return;
+        }
+
         self.open_terminal_target(entry.alias.clone(), entry.alias, cx);
+    }
+
+    fn remote_terminal_to_switch(&self, host_key: &str, cx: &Context<Self>) -> Option<usize> {
+        let state = self.pool.state_for_key(host_key, cx);
+        if !is_reusable_connection_state(&state) {
+            return None;
+        }
+
+        find_remote_terminal_index(
+            self.remote_tabs.iter().enumerate().map(|(idx, tab)| {
+                (
+                    idx,
+                    tab.host_key.as_str(),
+                    matches!(&tab.pane, Pane::Terminal(_)),
+                )
+            }),
+            host_key,
+        )
     }
 
     /// 按别名或 `user@host[:port]` 打开一个终端标签。
@@ -1221,6 +1248,22 @@ fn host_entry_matches(entry: &HostEntry, query: &str) -> bool {
         || entry.detail.to_ascii_lowercase().contains(query)
 }
 
+fn is_reusable_connection_state(state: &Option<ConnState>) -> bool {
+    matches!(
+        state,
+        Some(ConnState::Connecting) | Some(ConnState::Connected)
+    )
+}
+
+fn find_remote_terminal_index<'a>(
+    tabs: impl DoubleEndedIterator<Item = (usize, &'a str, bool)>,
+    host_key: &str,
+) -> Option<usize> {
+    tabs.rev().find_map(|(idx, tab_host_key, is_terminal)| {
+        (tab_host_key == host_key && is_terminal).then_some(idx)
+    })
+}
+
 /// 打开主窗口。在 main.rs 中调用。
 pub fn open_main_window(cx: &mut App) {
     let bounds = gpui::Bounds::centered(None, size(px(1100.), px(720.)), cx);
@@ -1253,7 +1296,9 @@ pub fn open_main_window(cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::QuitRiskSummary;
+    use super::{
+        ConnState, QuitRiskSummary, find_remote_terminal_index, is_reusable_connection_state,
+    };
 
     #[test]
     fn quit_confirmation_is_only_required_for_material_activity() {
@@ -1279,5 +1324,28 @@ mod tests {
         ] {
             assert!(risks.needs_confirmation());
         }
+    }
+
+    #[test]
+    fn sidebar_host_reuse_only_accepts_live_connection_states() {
+        assert!(is_reusable_connection_state(&Some(ConnState::Connecting)));
+        assert!(is_reusable_connection_state(&Some(ConnState::Connected)));
+        assert!(!is_reusable_connection_state(&None));
+        assert!(!is_reusable_connection_state(&Some(ConnState::Closed)));
+        assert!(!is_reusable_connection_state(&Some(ConnState::Error(
+            "connection failed".into(),
+        ))));
+    }
+
+    #[test]
+    fn sidebar_host_reuse_selects_latest_matching_terminal() {
+        let tabs = vec![
+            (0, "vps", true),
+            (1, "vps", false),
+            (2, "other", true),
+            (3, "vps", true),
+        ];
+
+        assert_eq!(find_remote_terminal_index(tabs.into_iter(), "vps"), Some(3));
     }
 }
