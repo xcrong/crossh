@@ -26,6 +26,17 @@ pub struct ForwardPane {
 }
 
 impl ForwardPane {
+    pub(crate) fn active_count(&self) -> usize {
+        self.active.len()
+    }
+
+    pub(crate) fn stop_all(&mut self, cx: &mut Context<Self>) {
+        for (kind, spec) in std::mem::take(&mut self.active) {
+            self.conn.read(cx).stop_forward(spec, kind);
+        }
+        cx.notify();
+    }
+
     pub fn new(
         conn: Entity<Connection>,
         cx: &mut App,

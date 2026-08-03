@@ -75,9 +75,74 @@ pub enum TerminalEvent {
     CwdChanged,
     /// 应用通过 OSC 设置了窗口标题。
     TitleChanged,
+    /// shell/SSH channel 已正常结束，拥有者应移除对应标签。
+    Closed,
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShellActivity {
+    Prompt,
+    CommandStarted,
+}
+
+/// Incrementally recognizes FinalTerm/iTerm2 shell-integration markers.
+#[derive(Default)]
+struct ShellActivityParser {
+    pending: Vec<u8>,
+}
+
+impl ShellActivityParser {
+    fn feed(&mut self, bytes: &[u8]) -> Vec<ShellActivity> {
+        const MARKER: &[u8] = b"\x1b]133;";
+
+        self.pending.extend_from_slice(bytes);
+        let mut events = Vec::new();
+        loop {
+            let Some(start) = find_subslice(&self.pending, MARKER) else {
+                let keep = MARKER.len().saturating_sub(1);
+                if self.pending.len() > keep {
+                    self.pending.drain(..self.pending.len() - keep);
+                }
+                break;
+            };
+            if start > 0 {
+                self.pending.drain(..start);
+            }
+
+            let payload_start = MARKER.len();
+            let bel = self.pending[payload_start..]
+                .iter()
+                .position(|byte| *byte == 0x07)
+                .map(|index| (payload_start + index, 1));
+            let st = find_subslice(&self.pending[payload_start..], b"\x1b\\")
+                .map(|index| (payload_start + index, 2));
+            let Some((end, terminator_len)) = (match (bel, st) {
+                (Some(bel), Some(st)) => Some(bel.min(st)),
+                (Some(bel), None) => Some(bel),
+                (None, Some(st)) => Some(st),
+                (None, None) => None,
+            }) else {
+                break;
+            };
+
+            match self.pending.get(payload_start).copied() {
+                Some(b'A' | b'D') => events.push(ShellActivity::Prompt),
+                Some(b'C') => events.push(ShellActivity::CommandStarted),
+                _ => {}
+            }
+            self.pending.drain(..end + terminator_len);
+        }
+        events
+    }
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
 
 /// Events emitted by the terminal parser that require a UI/platform action.
 /// They are buffered because `EventListener::send_event` has no GPUI context.
@@ -217,6 +282,9 @@ pub struct TerminalView {
     input_tx: Sender<InputCmd>,
     pending_input: VecDeque<InputCmd>,
     pub state: ConnState,
+    command_running: bool,
+    shell_activity_available: bool,
+    shell_activity_parser: ShellActivityParser,
     /// 当前 shell 报告的工作目录；用于本地终端的侧栏分组。
     pub cwd: Option<String>,
     focus: FocusHandle,
@@ -321,6 +389,9 @@ impl TerminalView {
             input_tx: input_tx.clone(),
             pending_input: VecDeque::new(),
             state: ConnState::Connecting,
+            command_running: false,
+            shell_activity_available: false,
+            shell_activity_parser: ShellActivityParser::default(),
             cwd: initial_cwd,
             focus: cx.focus_handle(),
             cell_w: px(0.),
@@ -431,6 +502,12 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// Ask the PTY/SSH channel to close cleanly before its entity is dropped.
+    pub(crate) fn request_close(&mut self) {
+        self.queue_input(InputCmd::Close);
+        self.flush_pending_input();
+    }
+
     fn apply_session_event(&mut self, event: SessionEvent, cx: &mut Context<Self>) {
         match event {
             SessionEvent::Connected => {
@@ -439,6 +516,10 @@ impl TerminalView {
             }
             SessionEvent::Output(bytes) => {
                 log::trace!("pty output ({}B): {}", bytes.len(), debug_bytes(&bytes));
+                for activity in self.shell_activity_parser.feed(&bytes) {
+                    self.shell_activity_available = true;
+                    self.command_running = activity == ShellActivity::CommandStarted;
+                }
                 // alternate screen 是 Codex/vim/top 等 TUI 的绘制缓冲区；只保留
                 // 普通 shell 网格的时间戳，避免全屏重绘产生大量错误行。
                 let was_alt_screen = self.term.mode().contains(TermMode::ALT_SCREEN);
@@ -464,7 +545,12 @@ impl TerminalView {
             }
             SessionEvent::Closed => {
                 log::info!("terminal: closed");
+                let was_connected = self.state == ConnState::Connected;
                 self.state = ConnState::Closed;
+                self.command_running = false;
+                if was_connected {
+                    cx.emit(TerminalEvent::Closed);
+                }
             }
         }
     }
@@ -515,6 +601,11 @@ impl TerminalView {
 
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
+    }
+
+    pub(crate) fn is_command_running(&self) -> bool {
+        self.state == ConnState::Connected
+            && (self.command_running || self.term.mode().contains(TermMode::ALT_SCREEN))
     }
 
     /// 发送输入字节到远端。
@@ -640,6 +731,9 @@ impl TerminalView {
         let event_type = if ev.is_held { 2 } else { 1 };
         match encode_keystroke_with_event(ks, mode, event_type) {
             Some(bytes) => {
+                if self.shell_activity_available && matches!(ks.key.as_str(), "enter" | "return") {
+                    self.command_running = true;
+                }
                 self.send_input(bytes);
                 // macOS 会在 key callback 未消费时继续把事件交给
                 // NSTextInputContext；终端已将它编码写入 PTY，必须阻止第二次文本提交。
@@ -3473,6 +3567,24 @@ mod tests {
 
     fn keystroke(source: &str) -> gpui::Keystroke {
         gpui::Keystroke::parse(source).expect("valid test keystroke")
+    }
+
+    #[test]
+    fn shell_activity_parser_tracks_chunked_command_markers() {
+        let mut parser = ShellActivityParser::default();
+        assert!(parser.feed(b"output\x1b]13").is_empty());
+        assert_eq!(
+            parser.feed(b"3;C\x07command output"),
+            vec![ShellActivity::CommandStarted]
+        );
+        assert_eq!(
+            parser.feed(b"\x1b]133;D;0\x1b\\"),
+            vec![ShellActivity::Prompt]
+        );
+        assert_eq!(
+            parser.feed(b"\x1b]133;A\x07prompt"),
+            vec![ShellActivity::Prompt]
+        );
     }
 
     #[test]

@@ -191,6 +191,14 @@ pub struct SftpPane {
 }
 
 impl SftpPane {
+    pub(crate) fn has_active_write(&self) -> bool {
+        self.progress.is_some() || self.editor.as_ref().is_some_and(|editor| editor.saving)
+    }
+
+    pub(crate) fn has_unsaved_changes(&self) -> bool {
+        self.editor.as_ref().is_some_and(|editor| editor.dirty)
+    }
+
     /// 用一个已有的 SFTP 桥接创建面板，并立即请求列出当前目录。
     pub fn from_bridge(
         cmd_tx: Sender<SftpCmd>,

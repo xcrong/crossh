@@ -711,6 +711,9 @@ async fn relay_terminal(
         }
     }
 
+    // A remote shell can close its read side while the UI still holds the
+    // input sender. Do not wait forever for the input task in that case.
+    write_task.abort();
     let _ = write_task.await;
     let _ = term_event_tx.send(SessionEvent::Closed).await;
 }

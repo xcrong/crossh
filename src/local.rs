@@ -218,13 +218,13 @@ impl Drop for ShellIntegration {
     }
 }
 
-/// 将 shell 的提示符钩子接到 OSC 7，终端应用可以据此知道用户执行了 `cd`。
+/// 将 shell 的提示符钩子接到 OSC 7/133，上报 cwd 并标记命令已经结束。
 #[cfg(unix)]
 fn prepare_shell_integration(options: &mut tty::Options, pty_id: u64) -> Option<ShellIntegration> {
     let shell = std::env::var_os("SHELL")?;
     let shell_name = Path::new(&shell).file_name()?.to_str()?;
     if shell_name == "bash" {
-        let report = r#"printf '\033]7;file://localhost%s\007' "$PWD""#;
+        let report = r#"printf '\033]133;A\007\033]7;file://localhost%s\007' "$PWD""#;
         let original = std::env::var("PROMPT_COMMAND").unwrap_or_default();
         let prompt_command = if original.is_empty() {
             report.to_string()
@@ -268,7 +268,8 @@ fn prepare_shell_integration(options: &mut tty::Options, pty_id: u64) -> Option<
         "if [[ -r {original_rc} ]]; then source {original_rc}; fi\n\
 autoload -Uz add-zsh-hook\n\
 __crossh_report_pwd() {{ printf '\\033]7;file://localhost%s\\007' \"$PWD\"; }}\n\
-add-zsh-hook precmd __crossh_report_pwd\n\
+__crossh_report_prompt() {{ printf '\\033]133;A\\007'; __crossh_report_pwd; }}\n\
+add-zsh-hook precmd __crossh_report_prompt\n\
 add-zsh-hook chpwd __crossh_report_pwd\n",
         original_rc = shell_quote(&original_rc),
     );

@@ -111,6 +111,18 @@ prompt:
   wrong_passphrase_retry: "Wrong passphrase, retry:"
   password_for: "Password for %{user}:"
 
+quit:
+  title: Quit Crossh?
+  warning: "Closing Crossh can interrupt active work:"
+  commands: "Terminal commands still running: %{count}"
+  transfers: "SFTP transfers or saves in progress: %{count}"
+  unsaved_editors: "Remote files with unsaved changes: %{count}"
+  forwards: "Active port forwards: %{count}"
+  cleanup: Crossh will ask sessions and forwards to close before quitting.
+  confirm: Quit Anyway
+  cancel: Cancel
+  closing: Closing active sessions…
+
 sftp:
   channel_unavailable: SFTP channel unavailable
   not_utf8: This file is not a UTF-8 text file

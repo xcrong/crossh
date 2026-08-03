@@ -111,6 +111,18 @@ prompt:
   wrong_passphrase_retry: "私钥口令错误，请重试："
   password_for: "请输入 %{user} 的密码："
 
+quit:
+  title: 要退出 Crossh 吗？
+  warning: "关闭 Crossh 可能会中断以下活动："
+  commands: "正在运行的终端命令：%{count}"
+  transfers: "正在进行的 SFTP 传输或保存：%{count}"
+  unsaved_editors: "有未保存修改的远程文件：%{count}"
+  forwards: "活动端口转发：%{count}"
+  cleanup: 退出前会先请求会话和端口转发正常关闭。
+  confirm: 仍然退出
+  cancel: 取消
+  closing: 正在关闭活动会话…
+
 sftp:
   channel_unavailable: SFTP 通道不可用
   not_utf8: 该文件不是 UTF-8 文本文件

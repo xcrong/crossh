@@ -13,11 +13,13 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{
-    App, AppContext, Context, Entity, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent,
-    ParentElement, PathPromptOptions, Pixels, Point, Render, Styled, Subscription, Task,
-    TitlebarOptions, Window, WindowBounds, WindowOptions, div, px, size,
+    App, AppContext, Context, Entity, EntityId, FocusHandle, InteractiveElement, IntoElement,
+    KeyDownEvent, ParentElement, PathPromptOptions, Pixels, Point, PromptButton, PromptLevel,
+    Render, Styled, Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowOptions, div,
+    px, size,
 };
 
 use crate::config::SshConfig;
@@ -34,6 +36,50 @@ use crate::ui::workspace::{
     ActiveView, LocalDir, LocalSession, LocalSessionId, Pane, Tab, rebuild_local_dirs, render_main,
 };
 use crate::ui::{ForwardPane, SftpPane};
+
+#[derive(Clone, Copy)]
+enum ExitIntent {
+    QuitApp,
+    CloseWindow,
+}
+
+#[derive(Default)]
+struct QuitRiskSummary {
+    running_commands: usize,
+    sftp_writes: usize,
+    unsaved_editors: usize,
+    active_forwards: usize,
+}
+
+impl QuitRiskSummary {
+    fn needs_confirmation(&self) -> bool {
+        self.running_commands > 0
+            || self.sftp_writes > 0
+            || self.unsaved_editors > 0
+            || self.active_forwards > 0
+    }
+
+    fn detail(&self) -> String {
+        let mut lines = vec![i18n::text("quit.warning")];
+        if self.running_commands > 0 {
+            lines.push(rust_i18n::t!("quit.commands", count = self.running_commands).to_string());
+        }
+        if self.sftp_writes > 0 {
+            lines.push(rust_i18n::t!("quit.transfers", count = self.sftp_writes).to_string());
+        }
+        if self.unsaved_editors > 0 {
+            lines.push(
+                rust_i18n::t!("quit.unsaved_editors", count = self.unsaved_editors).to_string(),
+            );
+        }
+        if self.active_forwards > 0 {
+            lines.push(rust_i18n::t!("quit.forwards", count = self.active_forwards).to_string());
+        }
+        lines.push(String::new());
+        lines.push(i18n::text("quit.cleanup"));
+        lines.join("\n")
+    }
+}
 
 pub struct AppShell {
     config: Arc<SshConfig>,
@@ -73,8 +119,10 @@ pub struct AppShell {
     pub(crate) sidebar_width: Rc<Cell<f32>>,
     pub(crate) sidebar_dragging: Rc<Cell<bool>>,
     pub(crate) sidebar_scroll: gpui::ScrollHandle,
-    /// 本地终端 cwd 变化订阅；终端销毁时 gpui 自动解除，条目保留为惰性 no-op。
+    /// 终端事件订阅；终端销毁时 gpui 自动解除，条目保留为惰性 no-op。
     terminal_subscriptions: Vec<Subscription>,
+    quit_confirmation_open: bool,
+    shutdown_in_progress: bool,
 }
 
 impl AppShell {
@@ -136,6 +184,8 @@ impl AppShell {
             sidebar_dragging: Rc::new(Cell::new(false)),
             sidebar_scroll: gpui::ScrollHandle::new(),
             terminal_subscriptions: Vec::new(),
+            quit_confirmation_open: false,
+            shutdown_in_progress: false,
         })
     }
 
@@ -163,10 +213,12 @@ impl AppShell {
             .acquire(resolved, methods, self.config.clone(), cx);
         let (input_tx, event_rx) = conn.read(cx).open_terminal(100, 30);
         let terminal = TerminalView::from_bridge(input_tx, event_rx, 100, 30, cx);
-        let subscription = cx.subscribe(&terminal, |_this, _terminal, event, cx| {
-            if matches!(event, TerminalEvent::TitleChanged) {
-                cx.notify();
+        let subscription = cx.subscribe(&terminal, |this, terminal, event, cx| match event {
+            TerminalEvent::Closed => {
+                this.close_remote_terminal(terminal.entity_id(), cx);
             }
+            TerminalEvent::TitleChanged => cx.notify(),
+            TerminalEvent::CwdChanged => {}
         });
         self.terminal_subscriptions.push(subscription);
         self.remote_tabs.push(Tab {
@@ -239,7 +291,18 @@ impl AppShell {
         let session_id = self.next_local_session_id;
         self.next_local_session_id += 1;
         // shell 内 `cd` 会经 OSC 7 上报新目录；订阅后把 session 自动挪到对应目录 view。
-        let subscription = cx.subscribe(&terminal, |this, _terminal, event, cx| match event {
+        let subscription = cx.subscribe(&terminal, |this, terminal, event, cx| match event {
+            TerminalEvent::Closed => {
+                let session_id = this
+                    .local_sessions
+                    .iter()
+                    .find_map(|(&session_id, session)| {
+                        (session.terminal.entity_id() == terminal.entity_id()).then_some(session_id)
+                    });
+                if let Some(session_id) = session_id {
+                    this.close_local_session(session_id, cx);
+                }
+            }
             TerminalEvent::CwdChanged => {
                 this.sync_local_dirs(cx);
                 cx.notify();
@@ -379,6 +442,15 @@ impl AppShell {
             other => other,
         };
         cx.notify();
+    }
+
+    fn close_remote_terminal(&mut self, terminal_id: EntityId, cx: &mut Context<Self>) {
+        let Some(idx) = self.remote_tabs.iter().position(|tab| {
+            matches!(&tab.pane, Pane::Terminal(terminal) if terminal.entity_id() == terminal_id)
+        }) else {
+            return;
+        };
+        self.close_remote_tab(idx, cx);
     }
 
     fn close_active_tab(&mut self, cx: &mut Context<Self>) {
@@ -525,6 +597,128 @@ impl AppShell {
                 }
             }
         }
+    }
+
+    fn handle_quit(&mut self, _: &crate::Quit, window: &mut Window, cx: &mut Context<Self>) {
+        self.request_exit(ExitIntent::QuitApp, window, cx);
+    }
+
+    fn should_close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.shutdown_in_progress {
+            return true;
+        }
+        if !self.quit_risks(cx).needs_confirmation() {
+            self.begin_shutdown(cx);
+            return true;
+        }
+        self.request_exit(ExitIntent::CloseWindow, window, cx);
+        false
+    }
+
+    fn request_exit(&mut self, intent: ExitIntent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.shutdown_in_progress || self.quit_confirmation_open {
+            return;
+        }
+
+        let risks = self.quit_risks(cx);
+        if !risks.needs_confirmation() {
+            self.begin_shutdown(cx);
+            match intent {
+                ExitIntent::QuitApp => cx.quit(),
+                ExitIntent::CloseWindow => window.remove_window(),
+            }
+            return;
+        }
+
+        self.quit_confirmation_open = true;
+        let answers = [
+            PromptButton::ok(i18n::text("quit.confirm")),
+            PromptButton::cancel(i18n::text("quit.cancel")),
+        ];
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &i18n::text("quit.title"),
+            Some(&risks.detail()),
+            &answers,
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            let confirmed = answer.await == Ok(0);
+            let _ = this.update(cx, |this, cx| {
+                this.quit_confirmation_open = false;
+                if confirmed {
+                    this.begin_shutdown(cx);
+                }
+            });
+            if !confirmed {
+                return;
+            }
+
+            cx.background_executor()
+                .timer(Duration::from_millis(400))
+                .await;
+            let _ = cx.update(|window, cx| match intent {
+                ExitIntent::QuitApp => cx.quit(),
+                ExitIntent::CloseWindow => window.remove_window(),
+            });
+        })
+        .detach();
+    }
+
+    fn quit_risks(&self, cx: &Context<Self>) -> QuitRiskSummary {
+        let mut risks = QuitRiskSummary::default();
+        for session in self.local_sessions.values() {
+            if session.terminal.read(cx).is_command_running() {
+                risks.running_commands += 1;
+            }
+        }
+        for tab in &self.remote_tabs {
+            match &tab.pane {
+                Pane::Terminal(terminal) => {
+                    if terminal.read(cx).is_command_running() {
+                        risks.running_commands += 1;
+                    }
+                }
+                Pane::Sftp(sftp) => {
+                    let sftp = sftp.read(cx);
+                    risks.sftp_writes += usize::from(sftp.has_active_write());
+                    risks.unsaved_editors += usize::from(sftp.has_unsaved_changes());
+                }
+                Pane::Forward(forward) => {
+                    risks.active_forwards += forward.read(cx).active_count();
+                }
+            }
+        }
+        risks
+    }
+
+    fn begin_shutdown(&mut self, cx: &mut Context<Self>) {
+        if self.shutdown_in_progress {
+            return;
+        }
+        self.shutdown_in_progress = true;
+        self.status = Some(i18n::text("quit.closing"));
+
+        let mut terminals = self
+            .local_sessions
+            .values()
+            .map(|session| session.terminal.clone())
+            .collect::<Vec<_>>();
+        let mut forwards = Vec::new();
+        for tab in &self.remote_tabs {
+            match &tab.pane {
+                Pane::Terminal(terminal) => terminals.push(terminal.clone()),
+                Pane::Forward(forward) => forwards.push(forward.clone()),
+                Pane::Sftp(_) => {}
+            }
+        }
+        for terminal in terminals {
+            terminal.update(cx, |terminal, _cx| terminal.request_close());
+        }
+        for forward in forwards {
+            forward.update(cx, |forward, cx| forward.stop_all(cx));
+        }
+        cx.notify();
     }
 
     fn handle_shell_key_down(
@@ -976,6 +1170,7 @@ impl Render for AppShell {
             .size_full()
             .bg(theme::canvas())
             .text_color(theme::text())
+            .on_action(cx.listener(AppShell::handle_quit))
             .on_key_down(cx.listener(AppShell::handle_shell_key_down))
             .child(sidebar)
             .child(main);
@@ -1042,8 +1237,47 @@ pub fn open_main_window(cx: &mut App) {
             }),
             ..Default::default()
         },
-        |_window, cx| AppShell::new(cx),
+        |window, cx| {
+            let shell = AppShell::new(cx);
+            let weak = shell.downgrade();
+            window.on_window_should_close(cx, move |window, cx| {
+                weak.update(cx, |shell, cx| shell.should_close_window(window, cx))
+                    .unwrap_or(true)
+            });
+            shell
+        },
     )
     .expect("Failed to open window");
     cx.activate(true);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::QuitRiskSummary;
+
+    #[test]
+    fn quit_confirmation_is_only_required_for_material_activity() {
+        assert!(!QuitRiskSummary::default().needs_confirmation());
+
+        for risks in [
+            QuitRiskSummary {
+                running_commands: 1,
+                ..Default::default()
+            },
+            QuitRiskSummary {
+                sftp_writes: 1,
+                ..Default::default()
+            },
+            QuitRiskSummary {
+                unsaved_editors: 1,
+                ..Default::default()
+            },
+            QuitRiskSummary {
+                active_forwards: 1,
+                ..Default::default()
+            },
+        ] {
+            assert!(risks.needs_confirmation());
+        }
+    }
 }

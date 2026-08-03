@@ -276,6 +276,11 @@ mod tests {
             text_for("language.english", Locale::SimplifiedChinese),
             "英语"
         );
+        assert_eq!(text_for("quit.title", Locale::English), "Quit Crossh?");
+        assert_eq!(
+            text_for("quit.title", Locale::SimplifiedChinese),
+            "要退出 Crossh 吗？"
+        );
     }
 
     #[test]
