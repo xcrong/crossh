@@ -61,7 +61,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run terminal replay tests
-        run: cargo test --release terminal_replay::tests:: -- --test-threads=1
+        run: "cargo test --release terminal_replay::tests:: -- --test-threads=1"
 
       - name: Run Windows ConPTY smoke test
         if: runner.os == 'Windows'
