@@ -43,6 +43,9 @@ pub enum ActiveView {
 }
 
 pub struct LocalSession {
+    /// 创建会话时所属的项目目录；shell 内 `cd` 不会改变它。
+    pub project_dir: PathBuf,
+    /// shell 当前工作目录；可以独立于项目归属变化。
     pub cwd: PathBuf,
     pub terminal: Entity<TerminalView>,
     pub git_status: Option<GitStatus>,
@@ -50,7 +53,8 @@ pub struct LocalSession {
 }
 
 pub struct LocalDir {
-    pub cwd: PathBuf,
+    /// 侧栏分组对应的项目目录。
+    pub project_dir: PathBuf,
     pub sessions: Vec<LocalSessionId>,
     pub active_session: Option<LocalSessionId>,
 }
@@ -596,7 +600,7 @@ fn tab_label(tab: &Tab, cx: &mut Context<AppShell>) -> String {
     }
 }
 
-/// 把会话按 cwd 重建目录视图：同一目录的会话合并，保留上一次的活动会话。
+/// 把会话按项目归属目录重建目录视图：同一项目的会话合并，保留上一次的活动会话。
 /// `remembered` 是最近打开过的本地目录（无活动会话），合并进来后仍显示在侧栏。
 pub fn rebuild_local_dirs(
     previous: &BTreeMap<PathBuf, LocalDir>,
@@ -605,17 +609,17 @@ pub fn rebuild_local_dirs(
     active_local_session: Option<LocalSessionId>,
 ) -> BTreeMap<PathBuf, LocalDir> {
     let mut next = BTreeMap::new();
-    for cwd in remembered {
-        next.entry(cwd.clone()).or_insert_with(|| LocalDir {
-            cwd,
+    for project_dir in remembered {
+        next.entry(project_dir.clone()).or_insert_with(|| LocalDir {
+            project_dir,
             sessions: Vec::new(),
             active_session: None,
         });
     }
-    for (session_id, cwd) in sessions {
-        next.entry(cwd.clone())
+    for (session_id, project_dir) in sessions {
+        next.entry(project_dir.clone())
             .or_insert_with(|| LocalDir {
-                cwd,
+                project_dir,
                 sessions: Vec::new(),
                 active_session: None,
             })
@@ -623,8 +627,8 @@ pub fn rebuild_local_dirs(
             .push(session_id);
     }
 
-    for (cwd, dir) in &mut next {
-        let previous_active = previous.get(cwd).and_then(|old| old.active_session);
+    for (project_dir, dir) in &mut next {
+        let previous_active = previous.get(project_dir).and_then(|old| old.active_session);
         dir.active_session = active_local_session
             .filter(|id| dir.sessions.contains(id))
             .or_else(|| previous_active.filter(|id| dir.sessions.contains(id)))
@@ -661,7 +665,7 @@ mod tests {
             (
                 PathBuf::from("/Users/me/one"),
                 LocalDir {
-                    cwd: PathBuf::from("/Users/me/one"),
+                    project_dir: PathBuf::from("/Users/me/one"),
                     sessions: vec![1, 2],
                     active_session: Some(2),
                 },
@@ -669,7 +673,7 @@ mod tests {
             (
                 PathBuf::from("/Users/me/two"),
                 LocalDir {
-                    cwd: PathBuf::from("/Users/me/two"),
+                    project_dir: PathBuf::from("/Users/me/two"),
                     sessions: vec![3],
                     active_session: Some(3),
                 },
@@ -692,6 +696,21 @@ mod tests {
             dirs[&PathBuf::from("/Users/me/two")].active_session,
             Some(2)
         );
+    }
+
+    #[test]
+    fn project_group_does_not_follow_a_session_cwd() {
+        let project_dir = PathBuf::from("/Users/me/one");
+        let dirs = rebuild_local_dirs(
+            &BTreeMap::new(),
+            vec![(1, project_dir.clone()), (2, project_dir.clone())],
+            Vec::new(),
+            Some(2),
+        );
+
+        assert_eq!(dirs[&project_dir].sessions, vec![1, 2]);
+        assert_eq!(dirs[&project_dir].active_session, Some(2));
+        assert!(!dirs.contains_key(&PathBuf::from("/Users/me/two")));
     }
 
     #[test]

@@ -146,7 +146,7 @@ impl AppShell {
                 local_dirs.insert(
                     normalize_local_cwd(cwd.clone()),
                     LocalDir {
-                        cwd: cwd.clone(),
+                        project_dir: normalize_local_cwd(cwd.clone()),
                         sessions: Vec::new(),
                         active_session: None,
                     },
@@ -306,18 +306,26 @@ impl AppShell {
         cx.notify();
     }
 
-    /// 在目录 view 中打开一个独立的本地 PTY session。
-    pub(crate) fn open_local_session(&mut self, cwd: PathBuf, cx: &mut Context<Self>) {
+    /// 在项目目录 view 中打开一个独立的本地 PTY session。
+    /// `project_dir` 决定侧栏归属，`cwd` 只决定 shell 的初始工作目录。
+    pub(crate) fn open_local_session(
+        &mut self,
+        project_dir: PathBuf,
+        cwd: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
         self.settings_open = false;
+        let project_dir = normalize_local_cwd(project_dir);
         let cwd = normalize_local_cwd(cwd);
-        self.remember_local_dir(&cwd, cx);
+        self.remember_local_dir(&project_dir, cx);
         let cwd_text = cwd.to_string_lossy().to_string();
         let (input_tx, event_rx) = local::open_terminal(cwd.clone(), 100, 30);
         let terminal =
             TerminalView::from_local_bridge(input_tx, event_rx, 100, 30, cwd_text.clone(), cx);
         let session_id = self.next_local_session_id;
         self.next_local_session_id += 1;
-        // shell 内 `cd` 会经 OSC 7 上报新目录；订阅后把 session 自动挪到对应目录 view。
+        // shell 内 `cd` 会经 OSC 7 上报新目录；订阅后更新 cwd 和 Git 状态，
+        // 但不会改变 session 的项目归属。
         let subscription = cx.subscribe(&terminal, |this, terminal, event, cx| match event {
             TerminalEvent::Closed => {
                 let session_id = this
@@ -348,6 +356,7 @@ impl AppShell {
         self.local_sessions.insert(
             session_id,
             LocalSession {
+                project_dir,
                 cwd,
                 terminal,
                 git_status: None,
@@ -361,17 +370,17 @@ impl AppShell {
         cx.notify();
     }
 
-    pub(crate) fn activate_local_dir(&mut self, cwd: PathBuf, cx: &mut Context<Self>) {
-        let cwd = normalize_local_cwd(cwd);
+    pub(crate) fn activate_local_dir(&mut self, project_dir: PathBuf, cx: &mut Context<Self>) {
+        let project_dir = normalize_local_cwd(project_dir);
         self.sync_local_dirs(cx);
         let session_id = self
             .local_dirs
-            .get(&cwd)
+            .get(&project_dir)
             .and_then(|dir| dir.active_session.or_else(|| dir.sessions.first().copied()));
         if let Some(session_id) = session_id {
             self.select_local_session(session_id, cx);
         } else {
-            self.open_local_session(cwd, cx);
+            self.open_local_session(project_dir.clone(), project_dir, cx);
         }
     }
 
@@ -535,8 +544,9 @@ impl AppShell {
     pub(crate) fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.active_view {
             Some(ActiveView::LocalSession(session_id)) => {
+                let project_dir = self.local_session_project_dir(session_id);
                 let cwd = self.local_session_cwd(session_id, cx);
-                self.open_local_session(cwd, cx);
+                self.open_local_session(project_dir, cwd, cx);
                 return;
             }
             Some(ActiveView::RemoteTab(idx)) => {
@@ -856,7 +866,9 @@ impl AppShell {
                 std::process::Command::new("open").arg(&path).spawn().ok();
             }
             ShellMenuAction::ForgetLocalDir(cwd) => self.forget_local_dir(cwd, cx),
-            ShellMenuAction::OpenLocalTerminal(cwd) => self.open_local_session(cwd, cx),
+            ShellMenuAction::OpenLocalTerminal(cwd) => {
+                self.open_local_session(cwd.clone(), cwd, cx)
+            }
             ShellMenuAction::SelectRemoteTab(idx) => self.switch_remote_tab(idx, cx),
             ShellMenuAction::CloseRemoteTab(idx) => self.close_remote_tab(idx, cx),
             ShellMenuAction::CloseOtherRemoteTabs(idx) => self.close_other_remote_tabs(idx, cx),
@@ -1010,7 +1022,7 @@ impl AppShell {
         self.sync_local_dirs(cx);
     }
 
-    /// 把本地会话按各终端当前 cwd 重建目录视图（打开/关闭/`cd` 时调用）。
+    /// 把本地会话按创建时的项目归属目录重建目录视图（打开/关闭/`cd` 时调用）。
     pub(crate) fn sync_local_dirs(&mut self, cx: &Context<Self>) {
         let previous = std::mem::take(&mut self.local_dirs);
         let active_local_session = match self.active_view {
@@ -1024,7 +1036,7 @@ impl AppShell {
                 if let Some(cwd) = session.terminal.read(cx).cwd.as_deref() {
                     session.cwd = normalize_local_cwd(PathBuf::from(cwd));
                 }
-                (session_id, session.cwd.clone())
+                (session_id, session.project_dir.clone())
             })
             .collect::<Vec<_>>();
         self.local_dirs = rebuild_local_dirs(
@@ -1079,12 +1091,12 @@ impl AppShell {
     }
 
     /// 把目录记入「最近本地目录」历史（最近优先、去重、截断到上限）并持久化。
-    fn remember_local_dir(&mut self, cwd: &Path, cx: &mut Context<Self>) {
-        let cwd = normalize_local_cwd(cwd.to_path_buf());
+    fn remember_local_dir(&mut self, project_dir: &Path, cx: &mut Context<Self>) {
+        let project_dir = normalize_local_cwd(project_dir.to_path_buf());
         self.settings
             .recent_local_dirs
-            .retain(|existing| existing != &cwd);
-        self.settings.recent_local_dirs.insert(0, cwd);
+            .retain(|existing| existing != &project_dir);
+        self.settings.recent_local_dirs.insert(0, project_dir);
         self.settings
             .recent_local_dirs
             .truncate(self.settings.recent_local_dirs_max);
@@ -1145,6 +1157,13 @@ impl AppShell {
                     .map(|cwd| normalize_local_cwd(PathBuf::from(cwd)))
                     .unwrap_or_else(|| session.cwd.clone())
             })
+            .unwrap_or_else(current_local_cwd)
+    }
+
+    fn local_session_project_dir(&self, session_id: LocalSessionId) -> PathBuf {
+        self.local_sessions
+            .get(&session_id)
+            .map(|session| session.project_dir.clone())
             .unwrap_or_else(current_local_cwd)
     }
 

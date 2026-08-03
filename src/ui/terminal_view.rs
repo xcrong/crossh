@@ -301,7 +301,7 @@ pub struct TerminalView {
     command_running: bool,
     shell_activity_available: bool,
     shell_activity_parser: ShellActivityParser,
-    /// 当前 shell 报告的工作目录；用于本地终端的侧栏分组。
+    /// 当前 shell 报告的工作目录；用于本地终端状态栏和 Git 状态。
     pub cwd: Option<String>,
     focus: FocusHandle,
     cell_w: Pixels,

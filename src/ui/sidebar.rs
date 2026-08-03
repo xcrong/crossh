@@ -78,13 +78,13 @@ pub fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElemen
             .settings
             .recent_local_dirs
             .iter()
-            .position(|cwd| cwd == &dir.cwd);
+            .position(|project_dir| project_dir == &dir.project_dir);
         (!dir.sessions.is_empty(), recency.unwrap_or(usize::MAX))
     });
     let mut project_name_counts = BTreeMap::new();
     for dir in shell.local_dirs.values() {
         *project_name_counts
-            .entry(local_dir_name_key(&dir.cwd))
+            .entry(local_dir_name_key(&dir.project_dir))
             .or_insert(0usize) += 1;
     }
     let project_query = matches!(
@@ -145,7 +145,7 @@ pub fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElemen
         for (idx, dir) in project_dirs.iter().enumerate() {
             let selected = is_active_local_dir(shell, dir);
             let duplicate_name = project_name_counts
-                .get(&local_dir_name_key(&dir.cwd))
+                .get(&local_dir_name_key(&dir.project_dir))
                 .is_some_and(|count| *count > 1);
             project_list = project_list.child(render_local_dir(
                 idx,
@@ -550,7 +550,7 @@ fn local_dir_matches_query(dir: &LocalDir, query: &str) -> bool {
     query.is_empty()
         || matches!(query, "local" | "project" | "projects" | "本地" | "项目")
         || dir
-            .cwd
+            .project_dir
             .to_string_lossy()
             .to_ascii_lowercase()
             .contains(query)
@@ -576,11 +576,11 @@ fn render_local_dir(
     shell: &AppShell,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
-    let cwd = dir.cwd.clone();
-    let cwd_for_row = cwd.clone();
-    let cwd_for_new = cwd.clone();
-    let label = local_dir_label(&cwd, duplicate_name);
-    let tooltip_path = SharedString::from(cwd.to_string_lossy().to_string());
+    let project_dir = dir.project_dir.clone();
+    let project_dir_for_row = project_dir.clone();
+    let project_dir_for_new = project_dir.clone();
+    let label = local_dir_label(&project_dir, duplicate_name);
+    let tooltip_path = SharedString::from(project_dir.to_string_lossy().to_string());
     let count = dir.sessions.len();
     let state = local_dir_state(shell, dir, cx);
     let folder_color = if selected {
@@ -617,10 +617,10 @@ fn render_local_dir(
             cx.new(|_| LocalPathTooltip { path }).into()
         })
         .on_click(cx.listener(move |this, _ev, _window, cx| {
-            this.activate_local_dir(cwd_for_row.clone(), cx);
+            this.activate_local_dir(project_dir_for_row.clone(), cx);
         }))
         .on_mouse_down(MouseButton::Right, {
-            let cwd_menu = cwd.clone();
+            let cwd_menu = project_dir.clone();
             cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
                 let mut entries = vec![
                     MenuEntry::Item(MenuItem {
@@ -697,7 +697,7 @@ fn render_local_dir(
                 )
                 .on_click(cx.listener(move |this, _ev, _window, cx| {
                     cx.stop_propagation();
-                    this.forget_local_dir(cwd.clone(), cx);
+                    this.forget_local_dir(project_dir.clone(), cx);
                 })),
         );
     }
@@ -726,7 +726,11 @@ fn render_local_dir(
             )
             .on_click(cx.listener(move |this, _ev, _window, cx| {
                 cx.stop_propagation();
-                this.open_local_session(cwd_for_new.clone(), cx);
+                this.open_local_session(
+                    project_dir_for_new.clone(),
+                    project_dir_for_new.clone(),
+                    cx,
+                );
             })),
     )
     .into_any_element()
@@ -1047,7 +1051,7 @@ mod tests {
     #[test]
     fn project_search_matches_directory_view() {
         let dir = LocalDir {
-            cwd: PathBuf::from("/Users/me/projects/crossh"),
+            project_dir: PathBuf::from("/Users/me/projects/crossh"),
             sessions: vec![1, 2],
             active_session: Some(1),
         };
