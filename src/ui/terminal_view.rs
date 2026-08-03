@@ -21,7 +21,7 @@ use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::ClipboardType;
 use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::term::cell::Flags as CellFlags;
-use alacritty_terminal::term::{Config, Term, TermMode};
+use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
 use async_channel::{Receiver, Sender, TrySendError};
 use chrono::Local;
 use gpui::{
@@ -57,6 +57,9 @@ const TIMESTAMP_GUTTER_WIDTH: f32 = 104.0;
 const TIMESTAMP_GUTTER_PADDING: f32 = 8.0;
 /// gutter 分隔线与终端第 0 列之间的视觉留白。
 const TIMESTAMP_GUTTER_GAP: f32 = 8.0;
+/// OSC 52 单次剪贴板文本上限。
+const MAX_OSC52_CLIPBOARD_BYTES: usize = 1024 * 1024;
+const MAX_OSC52_RESPONSE_BYTES: usize = MAX_OSC52_CLIPBOARD_BYTES * 2;
 
 /// 连接状态。
 #[derive(Default, Clone, Debug, PartialEq)]
@@ -159,19 +162,20 @@ enum TerminalSideEffect {
 
 type WindowSizeHandle = Arc<Mutex<WindowSize>>;
 type SideEffectQueue = Arc<Mutex<VecDeque<TerminalSideEffect>>>;
+/// 解析器同步路径使用的非阻塞回复暂存区。
+type ProtocolResponseQueue = Arc<Mutex<VecDeque<Vec<u8>>>>;
 
 /// alacritty EventListener：把终端模拟器需要回写的响应送回远端 PTY。
 #[derive(Clone)]
 struct NoopListener {
-    input_tx: Option<Sender<InputCmd>>,
     window_size: WindowSizeHandle,
     side_effects: SideEffectQueue,
+    protocol_responses: ProtocolResponseQueue,
 }
 
 impl Default for NoopListener {
     fn default() -> Self {
         Self {
-            input_tx: None,
             window_size: Arc::new(Mutex::new(WindowSize {
                 num_lines: 30,
                 num_cols: 100,
@@ -179,16 +183,21 @@ impl Default for NoopListener {
                 cell_height: (FONT_SIZE * 1.3) as u16,
             })),
             side_effects: Arc::new(Mutex::new(VecDeque::new())),
+            protocol_responses: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 }
 
 impl NoopListener {
     fn for_bridge(
-        input_tx: Sender<InputCmd>,
         cols: usize,
         rows: usize,
-    ) -> (Self, WindowSizeHandle, SideEffectQueue) {
+    ) -> (
+        Self,
+        WindowSizeHandle,
+        SideEffectQueue,
+        ProtocolResponseQueue,
+    ) {
         let window_size = Arc::new(Mutex::new(WindowSize {
             num_lines: rows as u16,
             num_cols: cols as u16,
@@ -196,14 +205,16 @@ impl NoopListener {
             cell_height: (FONT_SIZE * 1.3) as u16,
         }));
         let side_effects = Arc::new(Mutex::new(VecDeque::new()));
+        let protocol_responses = Arc::new(Mutex::new(VecDeque::new()));
         (
             Self {
-                input_tx: Some(input_tx),
                 window_size: window_size.clone(),
                 side_effects: side_effects.clone(),
+                protocol_responses: protocol_responses.clone(),
             },
             window_size,
             side_effects,
+            protocol_responses,
         )
     }
 
@@ -214,11 +225,14 @@ impl NoopListener {
     }
 
     fn write_to_pty(&self, bytes: Vec<u8>) {
-        let Some(input_tx) = &self.input_tx else {
+        if bytes.is_empty() {
             return;
-        };
-        if let Err(error) = input_tx.try_send(InputCmd::Write(bytes)) {
-            log::warn!("terminal response could not be sent to PTY: {error}");
+        }
+        // EventListener::send_event is synchronous. Never wait for the relay
+        // here: the Entity drains this queue into its ordered input backlog.
+        match self.protocol_responses.lock() {
+            Ok(mut responses) => responses.push_back(bytes),
+            Err(poisoned) => poisoned.into_inner().push_back(bytes),
         }
     }
 }
@@ -296,6 +310,9 @@ pub struct TerminalView {
     content_origin: Point<Pixels>,
     window_size: Arc<Mutex<WindowSize>>,
     side_effects: Arc<Mutex<VecDeque<TerminalSideEffect>>>,
+    protocol_responses: ProtocolResponseQueue,
+    /// Local PTYs retain OSC 52 paste; remote sessions deny clipboard reads.
+    is_local: bool,
     font: Font,
     font_size: f32,
     scrollback: usize,
@@ -343,7 +360,7 @@ impl TerminalView {
         rows: usize,
         cx: &mut App,
     ) -> Entity<Self> {
-        Self::from_bridge_with_cwd(input_tx, event_rx, cols, rows, None, cx)
+        Self::from_bridge_with_cwd(input_tx, event_rx, cols, rows, None, false, cx)
     }
 
     /// 创建一个本地 PTY 终端。除工作目录事件外，其渲染和交互路径与 SSH 终端一致。
@@ -355,7 +372,7 @@ impl TerminalView {
         cwd: String,
         cx: &mut App,
     ) -> Entity<Self> {
-        Self::from_bridge_with_cwd(input_tx, event_rx, cols, rows, Some(cwd), cx)
+        Self::from_bridge_with_cwd(input_tx, event_rx, cols, rows, Some(cwd), true, cx)
     }
 
     fn from_bridge_with_cwd(
@@ -364,17 +381,19 @@ impl TerminalView {
         cols: usize,
         rows: usize,
         initial_cwd: Option<String>,
+        is_local: bool,
         cx: &mut App,
     ) -> Entity<Self> {
         let settings = i18n::settings(cx);
         let config = Config {
             scrolling_history: settings.terminal_scrollback,
             kitty_keyboard: true,
+            osc52: osc52_mode(is_local),
             ..Default::default()
         };
         let size = TermSize { cols, rows };
-        let (listener, window_size, side_effects) =
-            NoopListener::for_bridge(input_tx.clone(), cols, rows);
+        let (listener, window_size, side_effects, protocol_responses) =
+            NoopListener::for_bridge(cols, rows);
         let font = Font {
             family: "Menlo".into(),
             weight: FontWeight::NORMAL,
@@ -401,6 +420,8 @@ impl TerminalView {
             content_origin: Point::new(px(0.), px(0.)),
             window_size,
             side_effects,
+            protocol_responses,
+            is_local,
             font,
             font_size: settings.terminal_font_size,
             scrollback: settings.terminal_scrollback,
@@ -441,6 +462,7 @@ impl TerminalView {
                     for event in events {
                         this.apply_session_event(event, cx);
                     }
+                    this.drain_protocol_responses();
                     this.flush_pending_input();
                     cx.notify();
                 });
@@ -494,6 +516,7 @@ impl TerminalView {
             self.term.set_options(Config {
                 scrolling_history: self.scrollback,
                 kitty_keyboard: true,
+                osc52: osc52_mode(self.is_local),
                 ..Default::default()
             });
         }
@@ -504,6 +527,7 @@ impl TerminalView {
 
     /// Ask the PTY/SSH channel to close cleanly before its entity is dropped.
     pub(crate) fn request_close(&mut self) {
+        self.drain_protocol_responses();
         self.queue_input(InputCmd::Close);
         self.flush_pending_input();
     }
@@ -526,6 +550,7 @@ impl TerminalView {
                 let timestamp = (!was_alt_screen).then(|| format_timestamp(Local::now()));
                 self.parser.advance(&mut self.term, &bytes);
                 self.drain_terminal_side_effects(cx);
+                self.drain_protocol_responses();
                 if !self.term.mode().contains(TermMode::ALT_SCREEN) {
                     self.line_timestamps.observe(
                         &self.term,
@@ -545,6 +570,7 @@ impl TerminalView {
             }
             SessionEvent::Closed => {
                 log::info!("terminal: closed");
+                self.drain_protocol_responses();
                 let was_connected = self.state == ConnState::Connected;
                 self.state = ConnState::Closed;
                 self.command_running = false;
@@ -573,6 +599,13 @@ impl TerminalView {
                     cx.emit(TerminalEvent::TitleChanged);
                 }
                 TerminalSideEffect::ClipboardStore(clipboard, text) => {
+                    if !osc52_text_within_limit(&text) {
+                        log::warn!(
+                            "ignoring oversized OSC 52 clipboard write ({} bytes)",
+                            text.len()
+                        );
+                        continue;
+                    }
                     let item = gpui::ClipboardItem::new_string(text);
                     // GPUI exposes the platform clipboard consistently across
                     // desktop targets; Selection is treated as the same store
@@ -580,11 +613,21 @@ impl TerminalView {
                     let _ = clipboard;
                     cx.write_to_clipboard(item);
                 }
-                TerminalSideEffect::ClipboardLoad(clipboard, formatter) => {
-                    let _ = clipboard;
+                TerminalSideEffect::ClipboardLoad(_clipboard, formatter) => {
+                    if !osc52_load_allowed(self.is_local) {
+                        log::debug!("ignoring OSC 52 clipboard read from remote terminal");
+                        continue;
+                    }
                     let item = cx.read_from_clipboard();
                     if let Some(text) = item.and_then(|item| item.text()) {
-                        self.send_input(formatter(&text).into_bytes());
+                        if let Some(response) = format_osc52_response(&formatter, &text) {
+                            self.send_input(response);
+                        } else {
+                            log::warn!(
+                                "ignoring oversized OSC 52 clipboard response ({} bytes)",
+                                text.len()
+                            );
+                        }
                     }
                 }
                 TerminalSideEffect::ColorRequest(index, formatter) => {
@@ -596,6 +639,16 @@ impl TerminalView {
                     }
                 }
             }
+        }
+    }
+
+    /// Move parser-generated protocol replies into the same ordered queue used
+    /// for keyboard input. Locking is bounded to a short drain operation and
+    /// never awaits the channel consumer.
+    fn drain_protocol_responses(&mut self) {
+        let responses = take_protocol_responses(&self.protocol_responses);
+        for response in responses {
+            self.queue_input(InputCmd::Write(response));
         }
     }
 
@@ -616,32 +669,11 @@ impl TerminalView {
 
     /// 非阻塞地把输入命令送入 SSH relay；暂时满载时保留顺序，避免丢键。
     fn queue_input(&mut self, command: InputCmd) {
-        self.flush_pending_input();
-        match self.input_tx.try_send(command) {
-            Ok(()) => {}
-            Err(TrySendError::Full(command)) => self.pending_input.push_back(command),
-            Err(TrySendError::Closed(_)) => {
-                log::warn!("input_tx is closed");
-                self.pending_input.clear();
-            }
-        }
+        queue_input_nonblocking(&self.input_tx, &mut self.pending_input, command);
     }
 
     fn flush_pending_input(&mut self) {
-        while let Some(command) = self.pending_input.pop_front() {
-            match self.input_tx.try_send(command) {
-                Ok(()) => {}
-                Err(TrySendError::Full(command)) => {
-                    self.pending_input.push_front(command);
-                    break;
-                }
-                Err(TrySendError::Closed(_)) => {
-                    log::warn!("input_tx is closed");
-                    self.pending_input.clear();
-                    break;
-                }
-            }
-        }
+        flush_pending_commands(&self.input_tx, &mut self.pending_input);
     }
 
     /// 请求在下次 render 时自动聚焦终端（用于打开/切回 tab）。
@@ -2954,6 +2986,73 @@ fn encode_normal_mouse(button: u8, col: usize, row: usize, utf8: bool) -> Option
 }
 
 // ─── 输入编码 ───────────────────────────────────────────────────────────────
+fn osc52_text_within_limit(text: &str) -> bool {
+    text.len() <= MAX_OSC52_CLIPBOARD_BYTES
+}
+
+fn osc52_mode(is_local: bool) -> Osc52 {
+    if is_local {
+        Osc52::CopyPaste
+    } else {
+        Osc52::OnlyCopy
+    }
+}
+
+fn osc52_load_allowed(is_local: bool) -> bool {
+    is_local
+}
+
+fn take_protocol_responses(queue: &ProtocolResponseQueue) -> Vec<Vec<u8>> {
+    match queue.lock() {
+        Ok(mut queue) => queue.drain(..).collect::<Vec<_>>(),
+        Err(poisoned) => poisoned.into_inner().drain(..).collect::<Vec<_>>(),
+    }
+}
+
+fn queue_input_nonblocking(
+    input_tx: &Sender<InputCmd>,
+    pending_input: &mut VecDeque<InputCmd>,
+    command: InputCmd,
+) {
+    flush_pending_commands(input_tx, pending_input);
+    match input_tx.try_send(command) {
+        Ok(()) => {}
+        Err(TrySendError::Full(command)) => pending_input.push_back(command),
+        Err(TrySendError::Closed(_)) => {
+            log::warn!("input_tx is closed");
+            pending_input.clear();
+        }
+    }
+}
+
+fn flush_pending_commands(input_tx: &Sender<InputCmd>, pending_input: &mut VecDeque<InputCmd>) {
+    while let Some(command) = pending_input.pop_front() {
+        match input_tx.try_send(command) {
+            Ok(()) => {}
+            Err(TrySendError::Full(command)) => {
+                pending_input.push_front(command);
+                break;
+            }
+            Err(TrySendError::Closed(_)) => {
+                log::warn!("input_tx is closed");
+                pending_input.clear();
+                break;
+            }
+        }
+    }
+}
+
+fn format_osc52_response(
+    formatter: &Arc<dyn Fn(&str) -> String + Sync + Send + 'static>,
+    text: &str,
+) -> Option<Vec<u8>> {
+    if !osc52_text_within_limit(text) {
+        return None;
+    }
+    let response = formatter(text);
+    (response.len() <= MAX_OSC52_RESPONSE_BYTES).then(|| response.into_bytes())
+}
+
 /// 调试用：把字节流转成可读字符串（控制字符转义，ESC 显示为 \x1b）。
 fn debug_bytes(b: &[u8]) -> String {
     let mut out = String::with_capacity(b.len());
@@ -3934,20 +4033,18 @@ mod tests {
 
     #[test]
     fn terminal_listener_forwards_terminal_responses() {
-        let (input_tx, input_rx) = async_channel::bounded(2);
-        let (listener, _, _) = NoopListener::for_bridge(input_tx, 80, 24);
+        let (listener, _, _, responses) = NoopListener::for_bridge(80, 24);
         listener.send_event(Event::PtyWrite("\x1b[0n".to_string()));
 
-        match input_rx.try_recv().expect("terminal response") {
-            InputCmd::Write(bytes) => assert_eq!(bytes, b"\x1b[0n"),
-            _ => panic!("expected a PTY write response"),
-        }
+        assert_eq!(
+            take_protocol_responses(&responses),
+            vec![b"\x1b[0n".to_vec()]
+        );
     }
 
     #[test]
     fn terminal_listener_buffers_ui_side_effects() {
-        let (input_tx, _) = async_channel::bounded(2);
-        let (listener, _, side_effects) = NoopListener::for_bridge(input_tx, 80, 24);
+        let (listener, _, side_effects, _) = NoopListener::for_bridge(80, 24);
         listener.send_event(Event::Title("OpenCode".to_string()));
 
         let mut effects = side_effects.lock().expect("side effect queue");
@@ -3955,6 +4052,101 @@ mod tests {
             effects.pop_front(),
             Some(TerminalSideEffect::Title(title)) if title == "OpenCode"
         ));
+    }
+
+    #[test]
+    fn protocol_responses_survive_a_saturated_input_queue_in_order() {
+        let (listener, _, _, responses) = NoopListener::for_bridge(80, 24);
+        listener.send_event(Event::PtyWrite("one".to_string()));
+        listener.send_event(Event::PtyWrite("two".to_string()));
+        listener.send_event(Event::PtyWrite("three".to_string()));
+
+        let (input_tx, input_rx) = async_channel::bounded(1);
+        input_tx
+            .try_send(InputCmd::Write(b"user".to_vec()))
+            .expect("fill input queue");
+        let mut pending = VecDeque::new();
+        pending.extend(
+            take_protocol_responses(&responses)
+                .into_iter()
+                .map(InputCmd::Write),
+        );
+
+        while let Some(command) = pending.pop_front() {
+            match input_tx.try_send(command) {
+                Ok(()) => {}
+                Err(TrySendError::Full(command)) => {
+                    pending.push_front(command);
+                    break;
+                }
+                Err(TrySendError::Closed(_)) => panic!("input queue unexpectedly closed"),
+            }
+        }
+
+        assert!(matches!(
+            input_rx.try_recv().expect("user input"),
+            InputCmd::Write(bytes) if bytes == b"user"
+        ));
+        let mut observed = Vec::new();
+        while let Some(command) = pending.pop_front() {
+            input_tx.try_send(command).expect("drain response queue");
+            let command = input_rx.try_recv().expect("queued response");
+            match command {
+                InputCmd::Write(bytes) => observed.push(bytes),
+                InputCmd::Resize { .. } | InputCmd::Close => panic!("unexpected command"),
+            }
+        }
+        assert_eq!(
+            observed,
+            vec![b"one".to_vec(), b"two".to_vec(), b"three".to_vec()]
+        );
+    }
+
+    #[test]
+    fn protocol_responses_are_flushed_before_close() {
+        let (listener, _, _, responses) = NoopListener::for_bridge(80, 24);
+        listener.send_event(Event::PtyWrite("reply".to_string()));
+
+        let (input_tx, input_rx) = async_channel::bounded(1);
+        input_tx
+            .try_send(InputCmd::Write(b"user".to_vec()))
+            .expect("fill input queue");
+        let mut pending = VecDeque::new();
+        for response in take_protocol_responses(&responses) {
+            queue_input_nonblocking(&input_tx, &mut pending, InputCmd::Write(response));
+        }
+        queue_input_nonblocking(&input_tx, &mut pending, InputCmd::Close);
+
+        assert!(matches!(
+            input_rx.try_recv().expect("user input"),
+            InputCmd::Write(bytes) if bytes == b"user"
+        ));
+        flush_pending_commands(&input_tx, &mut pending);
+        assert!(matches!(
+            input_rx.try_recv().expect("protocol response"),
+            InputCmd::Write(bytes) if bytes == b"reply"
+        ));
+        flush_pending_commands(&input_tx, &mut pending);
+        assert!(matches!(
+            input_rx.try_recv().expect("close"),
+            InputCmd::Close
+        ));
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn osc52_policy_denies_remote_reads_and_rejects_oversized_payloads() {
+        assert!(!osc52_load_allowed(false));
+        assert!(osc52_load_allowed(true));
+        assert_eq!(osc52_mode(false), Osc52::OnlyCopy);
+        assert_eq!(osc52_mode(true), Osc52::CopyPaste);
+        assert!(osc52_text_within_limit("safe"));
+        let oversized = "x".repeat(MAX_OSC52_CLIPBOARD_BYTES + 1);
+        assert!(!osc52_text_within_limit(&oversized));
+
+        let formatter: Arc<dyn Fn(&str) -> String + Sync + Send> =
+            Arc::new(|_| "x".repeat(MAX_OSC52_RESPONSE_BYTES + 1));
+        assert!(format_osc52_response(&formatter, "safe").is_none());
     }
 
     #[test]

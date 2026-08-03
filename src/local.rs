@@ -94,6 +94,9 @@ async fn run_local_terminal(
     options
         .env
         .insert("COLORTERM".to_string(), "truecolor".to_string());
+    options
+        .env
+        .insert("TERM_PROGRAM".to_string(), "crossh".to_string());
     let _shell_integration = prepare_shell_integration(&mut options, pty_id);
 
     let window_size = WindowSize {
@@ -241,17 +244,27 @@ fn prepare_shell_integration(options: &mut tty::Options, pty_id: u64) -> Option<
     }
 
     let home = PathBuf::from(std::env::var_os("HOME")?);
-    let original_zdotdir = std::env::var_os("ZDOTDIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.clone());
-    let directory = std::env::temp_dir().join(format!("crossh-zsh-{pty_id}"));
-    fs::create_dir_all(&directory).ok()?;
+    let temp_root = std::env::temp_dir();
+    let directory = create_shell_integration_dir(&temp_root, pty_id).ok()?;
+    let original_zdotdir = original_zdotdir(
+        std::env::var_os("ZDOTDIR").map(PathBuf::from),
+        &home,
+        &temp_root,
+        &directory,
+    );
+    let self_source = paths_equivalent(&original_zdotdir, &directory);
 
     // ZDOTDIR 重定向会让 zsh 找不到 ~/.zprofile、~/.zshenv、~/.zlogin，
     // 而很多用户的 PATH（brew shellenv 等）都写在 .zprofile 里。
     // 为每个 dotfile 写一个 source 原文件的包装器，保留 login shell 完整语义。
     for name in [".zshenv", ".zprofile", ".zlogin"] {
         let original = original_zdotdir.join(name);
+        // Keep this guard even though `create_shell_integration_dir` uses a
+        // fresh directory: it prevents a future naming change or path alias
+        // from producing a wrapper that sources itself recursively.
+        if self_source || paths_equivalent(&original, &directory.join(name)) {
+            continue;
+        }
         let wrapper = format!(
             "if [[ -r {} ]]; then source {}; fi\n",
             shell_quote(&original),
@@ -264,15 +277,24 @@ fn prepare_shell_integration(options: &mut tty::Options, pty_id: u64) -> Option<
     }
 
     let original_rc = original_zdotdir.join(".zshrc");
-    let rc = format!(
-        "if [[ -r {original_rc} ]]; then source {original_rc}; fi\n\
+    let rc = if self_source || paths_equivalent(&original_rc, &directory.join(".zshrc")) {
+        "autoload -Uz add-zsh-hook\n\
+__crossh_report_pwd() { printf '\\033]7;file://localhost%s\\007' \"$PWD\"; }\n\
+__crossh_report_prompt() { printf '\\033]133;A\\007'; __crossh_report_pwd; }\n\
+add-zsh-hook precmd __crossh_report_prompt\n\
+add-zsh-hook chpwd __crossh_report_pwd\n"
+            .to_string()
+    } else {
+        format!(
+            "if [[ -r {original_rc} ]]; then source {original_rc}; fi\n\
 autoload -Uz add-zsh-hook\n\
 __crossh_report_pwd() {{ printf '\\033]7;file://localhost%s\\007' \"$PWD\"; }}\n\
 __crossh_report_prompt() {{ printf '\\033]133;A\\007'; __crossh_report_pwd; }}\n\
 add-zsh-hook precmd __crossh_report_prompt\n\
 add-zsh-hook chpwd __crossh_report_pwd\n",
-        original_rc = shell_quote(&original_rc),
-    );
+            original_rc = shell_quote(&original_rc),
+        )
+    };
     if fs::write(directory.join(".zshrc"), rc).is_err() {
         let _ = fs::remove_dir_all(&directory);
         return None;
@@ -283,6 +305,80 @@ add-zsh-hook chpwd __crossh_report_pwd\n",
         directory.to_string_lossy().to_string(),
     );
     Some(ShellIntegration { directory })
+}
+
+#[cfg(unix)]
+fn create_shell_integration_dir(temp_root: &Path, pty_id: u64) -> io::Result<PathBuf> {
+    let pid = std::process::id();
+    for attempt in 0..1000u16 {
+        let directory = shell_integration_directory(temp_root, pid, pty_id, attempt);
+        match fs::create_dir(&directory) {
+            Ok(()) => return Ok(directory),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        ErrorKind::AlreadyExists,
+        "unable to allocate a unique Crossh zsh integration directory",
+    ))
+}
+
+#[cfg(unix)]
+fn shell_integration_directory(temp_root: &Path, pid: u32, pty_id: u64, attempt: u16) -> PathBuf {
+    temp_root.join(format!("crossh-zsh-{pid}-{pty_id}-{attempt}"))
+}
+
+#[cfg(unix)]
+fn original_zdotdir(
+    inherited: Option<PathBuf>,
+    home: &Path,
+    temp_root: &Path,
+    generated: &Path,
+) -> PathBuf {
+    match inherited {
+        Some(path)
+            if !paths_equivalent(&path, generated)
+                && !is_generated_shell_directory(&path, temp_root) =>
+        {
+            path
+        }
+        _ => home.to_path_buf(),
+    }
+}
+
+#[cfg(unix)]
+fn is_generated_shell_directory(path: &Path, temp_root: &Path) -> bool {
+    let parent_matches = match (fs::canonicalize(path), fs::canonicalize(temp_root)) {
+        (Ok(path), Ok(temp_root)) => path.parent() == Some(temp_root.as_path()),
+        _ => path.parent() == Some(temp_root),
+    };
+    parent_matches
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(is_generated_shell_directory_name)
+}
+
+#[cfg(unix)]
+fn is_generated_shell_directory_name(name: &str) -> bool {
+    let Some(suffix) = name.strip_prefix("crossh-zsh-") else {
+        return false;
+    };
+    let parts = suffix.split('-').collect::<Vec<_>>();
+    matches!(parts.len(), 1 | 3)
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+#[cfg(unix)]
+fn paths_equivalent(left: &Path, right: &Path) -> bool {
+    left == right
+        || fs::canonicalize(left)
+            .ok()
+            .zip(fs::canonicalize(right).ok())
+            .is_some_and(|(left, right)| left == right)
 }
 
 fn shell_quote(path: &Path) -> String {
@@ -413,6 +509,52 @@ mod tests {
         assert_eq!(percent_decode("a%20b"), Some("a b".into()));
         assert_eq!(percent_decode("a%2"), None);
         assert_eq!(percent_decode("a%GG"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_integration_ignores_stale_generated_zdotdir() {
+        let temp_root = Path::new("/tmp");
+        let home = Path::new("/Users/tester");
+        let generated = temp_root.join("crossh-zsh-123-1-0");
+        assert!(is_generated_shell_directory(&generated, temp_root));
+        assert_eq!(
+            original_zdotdir(Some(generated.clone()), home, temp_root, &generated),
+            home
+        );
+        assert_eq!(original_zdotdir(None, home, temp_root, &generated), home);
+
+        let custom = PathBuf::from("/Users/tester/custom-zsh");
+        assert_eq!(
+            original_zdotdir(Some(custom.clone()), home, temp_root, &generated),
+            custom
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_integration_directory_names_include_process_identity() {
+        let directory = shell_integration_directory(Path::new("/tmp"), 42, 7, 3);
+        assert_eq!(directory, PathBuf::from("/tmp/crossh-zsh-42-7-3"));
+        assert!(is_generated_shell_directory(&directory, Path::new("/tmp")));
+        // Old releases used `crossh-zsh-{pty_id}`; treat those as generated
+        // too so a stale inherited ZDOTDIR cannot recurse.
+        assert!(is_generated_shell_directory(
+            Path::new("/tmp/crossh-zsh-42"),
+            Path::new("/tmp")
+        ));
+        assert!(!is_generated_shell_directory(
+            Path::new("/tmp/crossh-user-zsh"),
+            Path::new("/tmp")
+        ));
+        assert!(!is_generated_shell_directory(
+            Path::new("/tmp/crossh-zsh-user"),
+            Path::new("/tmp")
+        ));
+        assert!(!is_generated_shell_directory(
+            Path::new("/var/tmp/crossh-zsh-42-7-3"),
+            Path::new("/tmp")
+        ));
     }
 
     #[cfg(unix)]

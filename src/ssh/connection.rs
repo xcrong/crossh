@@ -663,6 +663,9 @@ async fn open_terminal_channel(
     if let Err(error) = channel.set_env(false, "COLORTERM", "truecolor").await {
         log::debug!("remote server ignored COLORTERM request: {error}");
     }
+    if let Err(error) = channel.set_env(false, "TERM_PROGRAM", "crossh").await {
+        log::debug!("remote server ignored TERM_PROGRAM request: {error}");
+    }
     channel.request_shell(false).await?;
 
     let _ = term_event_tx.send(SessionEvent::Connected).await;
