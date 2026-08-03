@@ -1163,13 +1163,7 @@ impl TerminalView {
         let _rows = self.term.screen_lines();
 
         let (y0, y1) = if sy <= ey { (sy, ey) } else { (ey, sy) };
-        let (x0, x1) = if sy == ey && sx > ex {
-            (ex, sx)
-        } else if sy < ey {
-            (sx, ex)
-        } else {
-            (ex, sx)
-        };
+        let (x0, x1) = selection_column_bounds(sx, sy, ex, ey);
 
         let mut out = String::new();
         for vy in y0..=y1 {
@@ -1216,6 +1210,16 @@ impl TerminalView {
             ),
             size: gpui::size(self.cell_w, self.line_h),
         })
+    }
+}
+
+fn selection_column_bounds(sx: usize, sy: usize, ex: usize, ey: usize) -> (usize, usize) {
+    if sy == ey {
+        (sx.min(ex), sx.max(ex))
+    } else if sy < ey {
+        (sx, ex)
+    } else {
+        (ex, sx)
     }
 }
 
@@ -3707,6 +3711,12 @@ mod tests {
             parser.feed(b"\x1b]133;A\x07prompt"),
             vec![ShellActivity::Prompt]
         );
+    }
+
+    #[test]
+    fn selection_columns_are_ordered_for_same_line_drags() {
+        assert_eq!(selection_column_bounds(2, 4, 8, 4), (2, 8));
+        assert_eq!(selection_column_bounds(8, 4, 2, 4), (2, 8));
     }
 
     #[test]
