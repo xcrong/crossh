@@ -28,3 +28,40 @@ jobs:
 
       - name: Test
         run: cargo test --release
+
+  terminal-compat:
+    name: terminal replay / smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake nasm pkg-config \
+            libfontconfig1-dev libwayland-dev wayland-protocols libxkbcommon-dev \
+            libxcb1-dev libxcb-composite0-dev libxcb-dri3-dev libxcb-icccm4-dev \
+            libxcb-keysyms1-dev libxcb-present-dev libxcb-render-util0-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-shm0-dev libxcb-xfixes0-dev \
+            libxcb-xkb-dev libxcb-util-dev libxcb-xinerama0-dev libxcb-xinput-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run terminal replay tests
+        run: cargo test --release terminal_replay::tests:: -- --test-threads=1
+
+      - name: Run Windows ConPTY smoke test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cargo test --release windows_conpty_smoke_round_trip -- --nocapture

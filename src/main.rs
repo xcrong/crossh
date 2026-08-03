@@ -7,6 +7,8 @@ mod config;
 mod i18n;
 mod local;
 mod ssh;
+#[cfg(test)]
+mod terminal_replay;
 mod ui;
 
 use std::fs::{self, OpenOptions};

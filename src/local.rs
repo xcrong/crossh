@@ -6,7 +6,9 @@ use std::fs::{self, File};
 use std::io;
 #[cfg(unix)]
 use std::io::{ErrorKind, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(not(windows))]
+use std::path::PathBuf;
 #[cfg(unix)]
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(unix)]
@@ -16,11 +18,19 @@ use std::sync::{Arc, Mutex};
 use alacritty_terminal::event::{OnResize, WindowSize};
 #[cfg(unix)]
 use alacritty_terminal::tty;
+#[cfg(not(windows))]
 use async_channel::{Receiver, Sender};
 #[cfg(unix)]
 use tokio::io::unix::AsyncFd;
 
+#[cfg(not(windows))]
 use crate::ssh::{InputCmd, SessionEvent};
+
+#[cfg(any(windows, test))]
+mod windows;
+
+#[cfg(windows)]
+pub use windows::open_terminal;
 
 #[cfg(unix)]
 static NEXT_LOCAL_PTY_ID: AtomicU64 = AtomicU64::new(1);
@@ -48,7 +58,7 @@ pub fn open_terminal(
     (input_tx, event_rx)
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn open_terminal(
     _cwd: PathBuf,
     _cols: u16,
