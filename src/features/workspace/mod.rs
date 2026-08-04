@@ -1,0 +1,8 @@
+//! Main workspace: navigation, tabs, local projects, and pane composition.
+
+pub(crate) mod registry;
+pub(crate) mod shell;
+pub(crate) mod sidebar;
+pub(crate) mod view;
+
+pub(crate) use shell::{AppShell, open_main_window};

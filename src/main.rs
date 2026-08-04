@@ -3,15 +3,10 @@
 //! 常驻开发工具：复用 `~/.ssh/config`（只读），提供交互式终端（russh + alacritty_terminal）。
 //! SFTP 与端口转发为后续阶段（见 .kilo/plans）。
 
-mod config;
-mod git_status;
-mod i18n;
-mod local;
-mod ssh;
-mod terminal_protocol;
-#[cfg(test)]
-mod terminal_replay;
-mod ui;
+mod app;
+mod features;
+mod infrastructure;
+mod shared;
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -37,22 +32,22 @@ fn main() {
     log::info!("──── crossh 启动 (pid {}) ────", std::process::id());
 
     // 预热 tokio 运行时（单例，限 2 worker 线程，控内存）。
-    let _rt = ssh::ssh_runtime();
+    let _rt = infrastructure::ssh::ssh_runtime();
 
-    let app = gpui_platform::application().with_assets(ui::assets::UiAssetSource);
+    let app = gpui_platform::application().with_assets(shared::ui::assets::UiAssetSource);
     app.on_reopen(|cx| {
         // macOS 关闭最后一个窗口后应用仍驻留在 Dock；再次点击时恢复主窗口。
         // 已有窗口时不重复创建，避免 Dock/快捷方式触发多个主窗口。
         if cx.windows().is_empty() {
-            ui::app_shell::open_main_window(cx);
+            app::open_main_window(cx);
         }
     });
     app.run(move |cx: &mut App| {
         cx.set_app_identity("io.crossh.app", "Crossh");
         cx.init_colors();
-        i18n::init(cx);
+        shared::i18n::init(cx);
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
-        ui::app_shell::open_main_window(cx);
+        app::open_main_window(cx);
     });
 }
 
