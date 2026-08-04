@@ -6,6 +6,8 @@ use std::fs::{self, File};
 use std::io;
 #[cfg(unix)]
 use std::io::{ErrorKind, Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 use std::path::Path;
 #[cfg(not(windows))]
 use std::path::PathBuf;
@@ -272,6 +274,11 @@ fn prepare_shell_integration(options: &mut tty::Options, pty_id: u64) -> Option<
         let config_root = std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".config"));
+        if let Err(error) = preserve_fish_config_state(&fish_directory, &config_root) {
+            log::warn!("unable to preserve fish config state: {error}");
+            let _ = fs::remove_dir_all(&directory);
+            return None;
+        }
         let original_config = config_root.join("fish").join("config.fish");
         let source_original =
             if !paths_equivalent(&original_config, &fish_directory.join("config.fish")) {
@@ -325,6 +332,11 @@ end\n",
         &directory,
     );
     let self_source = paths_equivalent(&original_zdotdir, &directory);
+    if let Err(error) = preserve_zsh_history(&directory, &original_zdotdir) {
+        log::warn!("unable to preserve zsh history: {error}");
+        let _ = fs::remove_dir_all(&directory);
+        return None;
+    }
 
     // ZDOTDIR 重定向会让 zsh 找不到 ~/.zprofile、~/.zshenv、~/.zlogin，
     // 而很多用户的 PATH（brew shellenv 等）都写在 .zprofile 里。
@@ -381,6 +393,40 @@ add-zsh-hook chpwd __crossh_report_pwd\n",
         directory.to_string_lossy().to_string(),
     );
     Some(ShellIntegration { directory })
+}
+
+/// Keep fish's automatically loaded config state visible through the temporary
+/// XDG_CONFIG_HOME used for the prompt wrapper.
+#[cfg(unix)]
+fn preserve_fish_config_state(fish_directory: &Path, config_root: &Path) -> io::Result<()> {
+    let original_fish_directory = config_root.join("fish");
+    if !original_fish_directory.is_dir() {
+        return Ok(());
+    }
+
+    for name in [
+        "conf.d",
+        "completions",
+        "functions",
+        "themes",
+        "fish_variables",
+    ] {
+        let original = original_fish_directory.join(name);
+        if original.exists() {
+            symlink(&original, fish_directory.join(name))?;
+        }
+    }
+    Ok(())
+}
+
+/// zsh derives its default HISTFILE from ZDOTDIR, so expose the user's real
+/// history file at the generated directory before zsh startup reads it.
+#[cfg(unix)]
+fn preserve_zsh_history(directory: &Path, original_zdotdir: &Path) -> io::Result<()> {
+    symlink(
+        original_zdotdir.join(".zsh_history"),
+        directory.join(".zsh_history"),
+    )
 }
 
 #[cfg(unix)]
@@ -465,7 +511,7 @@ fn shell_quote(path: &Path) -> String {
 mod tests {
     use super::*;
     #[cfg(unix)]
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[cfg(unix)]
     #[test]
@@ -511,6 +557,87 @@ mod tests {
             Path::new("/var/tmp/crossh-zsh-42-7-3"),
             Path::new("/tmp")
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zsh_history_is_linked_to_the_original_zdotdir() {
+        let root = std::env::temp_dir().join(format!(
+            "crossh-history-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let original = root.join("home");
+        let generated = root.join("generated");
+        fs::create_dir_all(&original).unwrap();
+        fs::create_dir_all(&generated).unwrap();
+        fs::write(original.join(".zsh_history"), "old-command\n").unwrap();
+
+        preserve_zsh_history(&generated, &original).unwrap();
+
+        assert!(
+            fs::symlink_metadata(generated.join(".zsh_history"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read_to_string(generated.join(".zsh_history")).unwrap(),
+            "old-command\n"
+        );
+        fs::write(generated.join(".zsh_history"), "new-command\n").unwrap();
+        assert_eq!(
+            fs::read_to_string(original.join(".zsh_history")).unwrap(),
+            "new-command\n"
+        );
+
+        fs::remove_dir_all(&generated).unwrap();
+        assert_eq!(
+            fs::read_to_string(original.join(".zsh_history")).unwrap(),
+            "new-command\n"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fish_config_state_is_linked_through_the_temporary_root() {
+        let root = std::env::temp_dir().join(format!(
+            "crossh-fish-state-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let config_root = root.join("config");
+        let original_fish = config_root.join("fish");
+        let generated_fish = root.join("generated").join("fish");
+        fs::create_dir_all(original_fish.join("functions")).unwrap();
+        fs::create_dir_all(original_fish.join("conf.d")).unwrap();
+        fs::create_dir_all(&generated_fish).unwrap();
+        fs::write(
+            original_fish.join("fish_variables"),
+            "set -U fish_greeting\n",
+        )
+        .unwrap();
+
+        preserve_fish_config_state(&generated_fish, &config_root).unwrap();
+
+        for name in ["functions", "conf.d", "fish_variables"] {
+            assert!(
+                fs::symlink_metadata(generated_fish.join(name))
+                    .unwrap()
+                    .file_type()
+                    .is_symlink(),
+                "fish state path was not linked: {name}"
+            );
+        }
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]
