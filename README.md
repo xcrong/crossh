@@ -71,7 +71,7 @@ src/
 
 ## 路线图
 
-见 [.kilo/plans/](.kilo/plans/)。已实现的规划外补强：设置面板、i18n、时间戳 gutter、连接池生命周期。
+见 [ROADMAP.md](ROADMAP.md) 和 [.kilo/plans/](.kilo/plans/)。已实现的规划外补强：设置面板、i18n、时间戳 gutter、连接池生命周期。
 未落地的 stretch 项：
 
 - SFTP 拖拽上传 / 批量 / 断点续传
