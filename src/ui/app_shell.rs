@@ -37,6 +37,8 @@ use crate::ui::workspace::{
 };
 use crate::ui::{ForwardPane, SftpPane};
 
+const GIT_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+
 #[derive(Clone, Copy)]
 enum ExitIntent {
     QuitApp,
@@ -121,6 +123,8 @@ pub struct AppShell {
     pub(crate) sidebar_scroll: gpui::ScrollHandle,
     /// 终端事件订阅；终端销毁时 gpui 自动解除，条目保留为惰性 no-op。
     terminal_subscriptions: Vec<Subscription>,
+    /// 周期性刷新本地会话的 Git 状态，覆盖 shell 空闲时的外部文件变更。
+    _git_status_refresh_task: Option<Task<()>>,
     quit_confirmation_open: bool,
     shutdown_in_progress: bool,
 }
@@ -184,6 +188,7 @@ impl AppShell {
             sidebar_dragging: Rc::new(Cell::new(false)),
             sidebar_scroll: gpui::ScrollHandle::new(),
             terminal_subscriptions: Vec::new(),
+            _git_status_refresh_task: None,
             quit_confirmation_open: false,
             shutdown_in_progress: false,
         })
@@ -363,6 +368,7 @@ impl AppShell {
                 git_refresh_generation: 0,
             },
         );
+        self.ensure_git_status_refresh_task(cx);
         self.sync_local_dirs(cx);
         self.select_local_session(session_id, cx);
         self.refresh_git_status(session_id, false, cx);
@@ -431,6 +437,9 @@ impl AppShell {
             false
         };
         self.local_sessions.remove(&session_id);
+        if self.local_sessions.is_empty() {
+            self._git_status_refresh_task.take();
+        }
         if remove_dir {
             self.local_dirs.remove(&cwd);
         }
@@ -1128,6 +1137,32 @@ impl AppShell {
             });
         })
         .detach();
+    }
+
+    fn ensure_git_status_refresh_task(&mut self, cx: &mut Context<Self>) {
+        if self._git_status_refresh_task.is_some() {
+            return;
+        }
+
+        self._git_status_refresh_task = Some(cx.spawn(async move |weak, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(GIT_STATUS_REFRESH_INTERVAL)
+                    .await;
+
+                if weak
+                    .update(cx, |this, cx| {
+                        let session_ids = this.local_sessions.keys().copied().collect::<Vec<_>>();
+                        for session_id in session_ids {
+                            this.refresh_git_status(session_id, false, cx);
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
     }
 
     /// 把目录记入「最近本地目录」历史（最近优先、去重、截断到上限）并持久化。
