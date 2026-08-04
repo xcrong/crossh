@@ -326,6 +326,7 @@ impl AppShell {
         let terminal =
             TerminalView::from_local_bridge(input_tx, event_rx, 100, 30, cwd_text.clone(), cx);
         let session_id = self.workspace.sessions.allocate_local_session_id();
+        log::info!("local session {session_id} opened for {}", cwd_text);
         // shell 内 `cd` 会经 OSC 7 上报新目录；订阅后更新 cwd 和 Git 状态，
         // 但不会改变 session 的项目归属。
         let subscription = cx.subscribe(&terminal, |this, terminal, event, cx| match event {
@@ -1138,10 +1139,20 @@ impl AppShell {
         }
 
         cx.spawn(async move |weak, cx| {
+            let started = std::time::Instant::now();
+            let cwd_for_log = cwd.clone();
             let status = cx
                 .background_executor()
                 .spawn(async move { inspect(&cwd) })
                 .await;
+            let elapsed = started.elapsed();
+            if elapsed > Duration::from_secs(1) {
+                log::warn!(
+                    "git status inspection for {} took {}ms",
+                    cwd_for_log.display(),
+                    elapsed.as_millis()
+                );
+            }
             let _ = weak.update(cx, |this, cx| {
                 let Some(session) = this.workspace.sessions.local_sessions.get_mut(&session_id)
                 else {
@@ -1163,10 +1174,15 @@ impl AppShell {
         }
 
         self._git_status_refresh_task = Some(cx.spawn(async move |weak, cx| {
+            let mut tick = 0u64;
             loop {
                 cx.background_executor()
                     .timer(GIT_STATUS_REFRESH_INTERVAL)
                     .await;
+                tick += 1;
+                if tick.is_multiple_of(60) {
+                    log::info!("git status refresh loop alive (tick {tick})");
+                }
 
                 if weak
                     .update(cx, |this, cx| {

@@ -452,6 +452,10 @@ pub struct TerminalView {
     context_menu: Option<ContextMenuState<TerminalMenuAction>>,
     /// canvas 在窗口坐标中的 bounds（右键菜单定位/外点关闭用）。
     anchor_bounds: Rc<StdCell<Option<Bounds<Pixels>>>>,
+    /// 诊断：最近一次成功执行到 render/drain 的时间（用于检测 UI 卡死）。
+    last_progress: Instant,
+    /// 诊断：累计处理的 SessionEvent 数。
+    events_processed: u64,
 }
 
 impl TerminalView {
@@ -567,6 +571,8 @@ impl TerminalView {
             title: None,
             context_menu: None,
             anchor_bounds: Rc::new(StdCell::new(None)),
+            last_progress: Instant::now(),
+            events_processed: 0,
         });
 
         // drain：在主线程上从 event_rx 取事件喂给 Term。
@@ -582,17 +588,14 @@ impl TerminalView {
                     }
                 }
                 let applied = weak.update(cx, |this, cx| {
-                    for event in events {
-                        this.apply_session_event(event, cx);
-                    }
-                    this.drain_protocol_responses();
-                    this.flush_pending_input();
+                    this.apply_session_event_batch(events, cx);
                     cx.notify();
                 });
                 if applied.is_err() {
                     break; // Entity 已销毁。
                 }
             }
+            log::info!("terminal: drain loop ended");
         });
         entity.update(cx, |this, _cx| this._drain = Some(drain));
 
@@ -656,7 +659,27 @@ impl TerminalView {
         self.flush_pending_input();
     }
 
+    /// 处理一批来自 drain 循环的 SessionEvent，并维护诊断心跳。
+    fn apply_session_event_batch(&mut self, events: Vec<SessionEvent>, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        for event in events {
+            self.apply_session_event(event, cx);
+        }
+        self.drain_protocol_responses();
+        self.flush_pending_input();
+        self.last_progress = Instant::now();
+        let elapsed = now.elapsed();
+        if elapsed > Duration::from_millis(250) {
+            log::warn!(
+                "terminal: slow drain batch took {}ms ({} events)",
+                elapsed.as_millis(),
+                self.events_processed
+            );
+        }
+    }
+
     fn apply_session_event(&mut self, event: SessionEvent, cx: &mut Context<Self>) {
+        self.events_processed += 1;
         match event {
             SessionEvent::Connected => {
                 log::info!("terminal: connected");
@@ -2790,6 +2813,18 @@ impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.finish_expired_sync_update();
         self.flush_pending_input();
+
+        // 诊断：如果 render 帧间隔异常大，说明主线程之前卡住了很久。
+        let now = Instant::now();
+        let stalled = now.saturating_duration_since(self.last_progress);
+        self.last_progress = now;
+        if stalled > Duration::from_secs(5) {
+            log::warn!(
+                "terminal: UI stalled {}s before this frame (events_processed={})",
+                stalled.as_secs(),
+                self.events_processed
+            );
+        }
 
         if self._focus_in.is_none() {
             let focus = self.focus.clone();

@@ -20,6 +20,8 @@ use std::sync::{Arc, Mutex};
 use alacritty_terminal::event::{OnResize, WindowSize};
 #[cfg(unix)]
 use alacritty_terminal::tty;
+#[cfg(unix)]
+use alacritty_terminal::tty::EventedPty;
 #[cfg(not(windows))]
 use async_channel::{Receiver, Sender};
 #[cfg(unix)]
@@ -162,12 +164,21 @@ async fn read_local_output(
     // cwd updates before the output reaches a TerminalView. The view still
     // parses the complete stream for all other terminal protocol events.
     let mut protocol_parser = TerminalProtocolParser::default();
+    let mut bytes_read = 0u64;
+    let mut last_report = std::time::Instant::now();
     loop {
         let mut guard = reader.readable().await?;
         let mut buffer = [0u8; 32 * 1024];
         match guard.try_io(|inner| inner.get_ref().read(&mut buffer)) {
             Ok(Ok(0)) => return Ok(()),
             Ok(Ok(size)) => {
+                bytes_read += size as u64;
+                let now = std::time::Instant::now();
+                if now.saturating_duration_since(last_report) >= std::time::Duration::from_secs(10)
+                {
+                    log::info!("local pty reader alive: {} bytes read", bytes_read);
+                    last_report = now;
+                }
                 for event in protocol_parser.feed(&buffer[..size]) {
                     if let ProtocolEvent::Cwd(cwd) = event {
                         let _ = event_tx.send(SessionEvent::Cwd(cwd)).await;
@@ -189,20 +200,36 @@ async fn drive_local_input(
     mut writer: AsyncFd<File>,
     pty: Arc<Mutex<tty::Pty>>,
 ) -> io::Result<()> {
-    while let Ok(command) = input_rx.recv().await {
-        match command {
-            InputCmd::Write(bytes) => write_all(&mut writer, &bytes).await?,
-            InputCmd::Resize { cols, rows } => {
-                if let Ok(mut pty) = pty.lock() {
-                    pty.on_resize(WindowSize {
-                        num_lines: rows,
-                        num_cols: cols,
-                        cell_width: 8,
-                        cell_height: 18,
-                    });
+    // 每 50ms 消费一次 SIGCHLD self-pipe（alacritty 的 `Pty::next_child_event`）。
+    // 不消费的话，SIGCHLD 风暴会让 self-pipe 写满，信号处理器里的 `sendto` 阻塞，
+    // 主线程卡死在 signal handler 里（表现为整个 UI 冻结）。
+    let mut child_poll = tokio::time::interval(std::time::Duration::from_millis(50));
+    child_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            command = input_rx.recv() => {
+                let Ok(command) = command else { break };
+                match command {
+                    InputCmd::Write(bytes) => write_all(&mut writer, &bytes).await?,
+                    InputCmd::Resize { cols, rows } => {
+                        if let Ok(mut pty) = pty.lock() {
+                            pty.on_resize(WindowSize {
+                                num_lines: rows,
+                                num_cols: cols,
+                                cell_width: 8,
+                                cell_height: 18,
+                            });
+                        }
+                    }
+                    InputCmd::Close => break,
                 }
             }
-            InputCmd::Close => break,
+            _ = child_poll.tick() => {
+                if let Ok(mut pty) = pty.lock() {
+                    // 回收僵尸子进程 + 排空 SIGCHLD pipe。
+                    while pty.next_child_event().is_some() {}
+                }
+            }
         }
     }
     Ok(())
@@ -638,6 +665,101 @@ mod tests {
         }
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 大量快速退出的子进程会触发 SIGCHLD 风暴。如果 self-pipe 不被消费，
+    /// 信号处理器里的 sendto 会阻塞，导致整个进程（包括主线程）冻结。
+    /// 用真实子进程（非 kill 信号，因为标准信号会被合并）制造风暴，
+    /// 验证 50ms 轮询消费能扛住，终端仍能正常收发输入。
+    #[cfg(unix)]
+    #[test]
+    fn local_terminal_survives_sigchld_storm() {
+        let cwd = std::env::current_dir().unwrap();
+        let (input_tx, event_rx) = open_terminal(cwd, 80, 24);
+        let input_for_task = input_tx.clone();
+
+        // 独立线程：快速 fork 大量立即退出的真子进程。
+        // 每个子进程退出都触发 SIGCHLD handler（不可合并，因为每次都是新事件）。
+        let flooder = std::thread::spawn(move || {
+            use std::process::{Command, Stdio};
+            let start = std::time::Instant::now();
+            let mut count = 0u64;
+            // 分批 spawn，每批 200 个，共 2000 个。
+            for batch in 0..10 {
+                let children = (0..200)
+                    .map(|_| {
+                        Command::new("/bin/sh")
+                            .arg("-c")
+                            .arg("exit 0")
+                            .stdin(Stdio::null())
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .spawn()
+                            .expect("spawn child")
+                    })
+                    .collect::<Vec<_>>();
+                count += children.len() as u64;
+                for mut child in children {
+                    let _ = child.wait();
+                }
+                if batch % 3 == 2 {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+            eprintln!(
+                "[test] spawned {count} real children in {:?}",
+                start.elapsed()
+            );
+            count
+        });
+
+        crate::infrastructure::ssh::ssh_runtime().block_on(async move {
+            let mut connected = false;
+            let mut sent_echo = false;
+            let mut output = Vec::new();
+            let timer = tokio::time::sleep(Duration::from_secs(15));
+            tokio::pin!(timer);
+
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = &mut timer => break,
+                    event = event_rx.recv() => match event {
+                        Ok(SessionEvent::Connected) => {
+                            connected = true;
+                            // 风暴期间发出一个 echo，若终端被冻结就收不到。
+                            let _ = input_for_task.send(InputCmd::Write(
+                                b"echo CROSSH_ALIVE\r".to_vec()
+                            )).await;
+                            sent_echo = true;
+                        }
+                        Ok(SessionEvent::Output(bytes)) => {
+                            output.extend_from_slice(&bytes);
+                            let text = String::from_utf8_lossy(&output);
+                            if sent_echo && text.contains("CROSSH_ALIVE") {
+                                break;
+                            }
+                        }
+                        Ok(SessionEvent::Error(message)) => {
+                            panic!("local terminal error: {message}");
+                        }
+                        Ok(SessionEvent::Closed) | Err(_) => break,
+                        Ok(SessionEvent::Cwd(_)) => {}
+                    }
+                }
+            }
+
+            assert!(connected, "local terminal did not connect");
+            assert!(
+                String::from_utf8_lossy(&output).contains("CROSSH_ALIVE"),
+                "terminal froze under SIGCHLD storm: {:?}",
+                String::from_utf8_lossy(&output)
+            );
+        });
+
+        let spawned = flooder.join().unwrap();
+        eprintln!("[test] spawned {spawned} children total");
+        drop(input_tx);
     }
 
     #[cfg(unix)]
