@@ -518,7 +518,7 @@ impl AppShell {
         &mut self,
         response: SystemNotificationResponse,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let mut terminals = Vec::new();
         for (index, tab) in self.remote_tabs.iter().enumerate() {
             if let Pane::Terminal(terminal) = &tab.pane {
@@ -544,8 +544,9 @@ impl AppShell {
                 terminal.update(cx, |terminal, _cx| terminal.request_focus());
                 cx.notify();
             }
-            break;
+            return true;
         }
+        false
     }
 
     fn close_active_tab(&mut self, cx: &mut Context<Self>) {
@@ -1438,9 +1439,14 @@ pub fn open_main_window(cx: &mut App) {
             let weak = shell.downgrade();
             let notification_weak = shell.downgrade();
             cx.on_system_notification_response(move |response, cx| {
-                let _ = notification_weak.update(cx, |shell, cx| {
-                    shell.handle_system_notification_response(response, cx)
-                });
+                let handled = notification_weak
+                    .update(cx, |shell, cx| {
+                        shell.handle_system_notification_response(response, cx)
+                    })
+                    .unwrap_or(false);
+                if handled {
+                    cx.activate(true);
+                }
             });
             window.on_window_should_close(cx, move |window, cx| {
                 weak.update(cx, |shell, cx| shell.should_close_window(window, cx))

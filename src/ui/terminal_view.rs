@@ -383,11 +383,22 @@ impl Default for PendingKittyNotification {
     }
 }
 
-struct KittyNotificationState {
+#[derive(Clone)]
+struct NotificationState {
     tag: String,
+    kitty_id: Option<String>,
     report_activation: bool,
     report_close: bool,
     focus_on_activation: bool,
+}
+
+fn notification_state_for_tag(
+    states: &HashMap<String, NotificationState>,
+    tag: &str,
+) -> Option<(String, NotificationState)> {
+    states
+        .iter()
+        .find_map(|(key, state)| (state.tag == tag).then_some((key.clone(), state.clone())))
 }
 
 pub struct TerminalView {
@@ -448,7 +459,8 @@ pub struct TerminalView {
     next_kitty_image_id: u32,
     kitty_active_image_id: Option<u32>,
     kitty_notifications: HashMap<String, PendingKittyNotification>,
-    kitty_notification_states: HashMap<String, KittyNotificationState>,
+    notification_states: HashMap<String, NotificationState>,
+    notification_state_order: VecDeque<String>,
     kitty_notification_expiry: HashMap<String, Task<()>>,
     notification_serial: u64,
     _sync_timeout_task: Option<Task<()>>,
@@ -567,7 +579,8 @@ impl TerminalView {
             next_kitty_image_id: 1,
             kitty_active_image_id: None,
             kitty_notifications: HashMap::new(),
-            kitty_notification_states: HashMap::new(),
+            notification_states: HashMap::new(),
+            notification_state_order: VecDeque::new(),
             kitty_notification_expiry: HashMap::new(),
             notification_serial: 0,
             _sync_timeout_task: None,
@@ -908,7 +921,7 @@ impl TerminalView {
                 },
                 report_activation: false,
                 report_close: false,
-                focus_on_activation: false,
+                focus_on_activation: true,
                 buttons: Vec::new(),
                 expiry_ms: None,
             },
@@ -940,12 +953,18 @@ impl TerminalView {
         } else {
             title.as_str()
         };
-        let tag = if let Some(id) = kitty_id.as_deref() {
-            format!("crossh-terminal-{}-kitty-{id}", cx.entity_id())
+        let (tag, notification_key) = if let Some(id) = kitty_id.as_deref() {
+            (
+                format!("crossh-terminal-{}-kitty-{id}", cx.entity_id()),
+                id.to_string(),
+            )
         } else {
             let serial = self.notification_serial;
             self.notification_serial = self.notification_serial.wrapping_add(1);
-            format!("crossh-terminal-{}-{serial}", cx.entity_id())
+            (
+                format!("crossh-terminal-{}-{serial}", cx.entity_id()),
+                format!("system-{serial}"),
+            )
         };
         let actions = buttons
             .iter()
@@ -962,18 +981,20 @@ impl TerminalView {
             actions,
         });
 
-        let Some(id) = kitty_id else {
-            return;
-        };
-        self.kitty_notification_states.insert(
-            id.clone(),
-            KittyNotificationState {
+        self.insert_notification_state(
+            notification_key.clone(),
+            NotificationState {
                 tag: tag.clone(),
+                kitty_id: kitty_id.clone(),
                 report_activation,
                 report_close,
                 focus_on_activation,
             },
         );
+
+        let Some(id) = kitty_id else {
+            return;
+        };
         // A replacement resets the locally enforced expiry. An omitted `w`
         // therefore falls back to the platform policy for the new payload.
         self.kitty_notification_expiry.remove(&id);
@@ -986,15 +1007,14 @@ impl TerminalView {
                     .await;
                 let _ = weak.update(cx, |this, cx| {
                     let is_current = this
-                        .kitty_notification_states
+                        .notification_states
                         .get(&id_for_task)
                         .is_some_and(|state| state.tag == tag_for_task);
                     if !is_current {
                         return;
                     }
                     let report_close = this
-                        .kitty_notification_states
-                        .remove(&id_for_task)
+                        .remove_notification_state(&id_for_task)
                         .is_some_and(|state| state.report_close);
                     this.kitty_notification_expiry.remove(&id_for_task);
                     cx.dismiss_system_notification(&tag_for_task);
@@ -1005,6 +1025,28 @@ impl TerminalView {
             });
             self.kitty_notification_expiry.insert(id, task);
         }
+    }
+
+    fn insert_notification_state(&mut self, key: String, state: NotificationState) {
+        self.notification_states.insert(key.clone(), state);
+        self.notification_state_order
+            .retain(|existing| existing != &key);
+        self.notification_state_order.push_back(key);
+        while self.notification_state_order.len() > MAX_PENDING_KITTY_NOTIFICATIONS {
+            let Some(oldest) = self.notification_state_order.pop_front() else {
+                break;
+            };
+            self.notification_states.remove(&oldest);
+        }
+    }
+
+    fn remove_notification_state(&mut self, key: &str) -> Option<NotificationState> {
+        let state = self.notification_states.remove(key);
+        if state.is_some() {
+            self.notification_state_order
+                .retain(|existing| existing != key);
+        }
+        state
     }
 
     fn should_show_notification(&self, occasion: NotificationOccasion) -> bool {
@@ -1020,7 +1062,12 @@ impl TerminalView {
             return;
         };
         self.kitty_notification_expiry.remove(&id);
-        let Some(state) = self.kitty_notification_states.remove(&id) else {
+        let Some(key) = self.notification_states.iter().find_map(|(key, state)| {
+            (state.kitty_id.as_deref() == Some(id.as_str())).then_some(key.clone())
+        }) else {
+            return;
+        };
+        let Some(state) = self.remove_notification_state(&key) else {
             return;
         };
         cx.dismiss_system_notification(&state.tag);
@@ -1042,9 +1089,9 @@ impl TerminalView {
     fn respond_kitty_notification_alive(&mut self, id: &str) {
         let id = sanitize_kitty_notification_id(id).unwrap_or_default();
         let mut alive = self
-            .kitty_notification_states
-            .keys()
-            .cloned()
+            .notification_states
+            .values()
+            .filter_map(|state| state.kitty_id.clone())
             .collect::<Vec<_>>();
         alive.sort();
         self.send_input(format!("\x1b]99;i={id}:p=alive;{}\x1b\\", alive.join(",")).into_bytes());
@@ -1062,39 +1109,25 @@ impl TerminalView {
         response: &SystemNotificationResponse,
         cx: &mut Context<Self>,
     ) -> Option<bool> {
-        let (id, state) = self
-            .kitty_notification_states
-            .iter()
-            .find_map(|(id, state)| {
-                (state.tag == response.tag.as_ref()).then_some((id.clone(), state))
-            })
-            .map(|(id, state)| {
-                (
-                    id,
-                    (
-                        state.report_activation,
-                        state.report_close,
-                        state.focus_on_activation,
-                        state.tag.clone(),
-                    ),
-                )
-            })?;
-        self.kitty_notification_states.remove(&id);
-        self.kitty_notification_expiry.remove(&id);
-        cx.dismiss_system_notification(&state.3);
-        if state.0 {
-            let action = response
-                .action_id
-                .as_ref()
-                .filter(|action| action.chars().all(|character| character.is_ascii_digit()))
-                .map(|action| action.as_ref())
-                .unwrap_or("");
-            self.send_input(format!("\x1b]99;i={id};{action}\x1b\\").into_bytes());
+        let (key, state) = notification_state_for_tag(&self.notification_states, &response.tag)?;
+        self.remove_notification_state(&key);
+        cx.dismiss_system_notification(&state.tag);
+        if let Some(id) = state.kitty_id.as_deref() {
+            self.kitty_notification_expiry.remove(id);
+            if state.report_activation {
+                let action = response
+                    .action_id
+                    .as_ref()
+                    .filter(|action| action.chars().all(|character| character.is_ascii_digit()))
+                    .map(|action| action.as_ref())
+                    .unwrap_or("");
+                self.send_input(format!("\x1b]99;i={id};{action}\x1b\\").into_bytes());
+            }
+            if state.report_close {
+                self.send_kitty_notification_close(id, false);
+            }
         }
-        if state.1 {
-            self.send_kitty_notification_close(&id, false);
-        }
-        Some(state.2)
+        Some(state.focus_on_activation)
     }
 
     fn store_image(&mut self, payload: ImagePayload) {
@@ -6180,6 +6213,27 @@ mod tests {
 
     fn keystroke(source: &str) -> gpui::Keystroke {
         gpui::Keystroke::parse(source).expect("valid test keystroke")
+    }
+
+    #[test]
+    fn standard_system_notification_can_be_resolved_by_tag() {
+        let states = HashMap::from([(
+            "system-0".to_string(),
+            NotificationState {
+                tag: "crossh-terminal-7-0".to_string(),
+                kitty_id: None,
+                report_activation: false,
+                report_close: false,
+                focus_on_activation: true,
+            },
+        )]);
+
+        let (key, state) =
+            notification_state_for_tag(&states, "crossh-terminal-7-0").expect("notification");
+        assert_eq!(key, "system-0");
+        assert!(state.kitty_id.is_none());
+        assert!(state.focus_on_activation);
+        assert!(notification_state_for_tag(&states, "missing").is_none());
     }
 
     #[test]
