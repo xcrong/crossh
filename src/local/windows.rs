@@ -66,9 +66,8 @@ async fn run_local_terminal(
     };
     let pty = Arc::new(Mutex::new(tty::new(&options, window_size, pty_id)?));
 
-    // Windows shell integration is intentionally not injected. PowerShell and
-    // cmd.exe do not share a stable OSC 7/133 hook contract, so Cwd is only
-    // reported for the directory used to create the session.
+    // PowerShell reports Cwd and command completion through its prompt hook.
+    // cmd.exe has no equivalent prompt callback, so it remains output-only.
     let display_cwd = cwd.to_string_lossy().to_string();
     let _ = event_tx.send(SessionEvent::Cwd(display_cwd)).await;
     let _ = event_tx.send(SessionEvent::Connected).await;
@@ -126,13 +125,28 @@ fn windows_shell() -> tty::Shell {
         // Keep the user's profile semantics intact, matching the login shell
         // behavior used by the Unix backend. CI runners provide a clean
         // profile, while interactive users retain their normal setup.
-        return tty::Shell::new("powershell.exe".to_string(), vec!["-NoLogo".to_string()]);
+        return tty::Shell::new(
+            "powershell.exe".to_string(),
+            vec![
+                "-NoLogo".to_string(),
+                "-NoExit".to_string(),
+                "-Command".to_string(),
+                powershell_shell_integration(),
+            ],
+        );
     }
 
     let command = std::env::var_os("COMSPEC")
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "cmd.exe".into());
     tty::Shell::new(command.to_string_lossy().to_string(), Vec::new())
+}
+
+#[cfg(windows)]
+fn powershell_shell_integration() -> String {
+    // Use [char] escapes instead of PowerShell 7's backtick-e syntax so this
+    // also works with the Windows PowerShell 5 that ships with older hosts.
+    "$global:__crossh_original_prompt = $function:prompt; function global:prompt { $status = if ($?) { 0 } else { 1 }; $esc = [char]27; $bel = [char]7; $path = (Get-Location).Path.Replace('\\', '/'); [Console]::Write($esc + ']133;D;' + $status + $bel + $esc + ']133;B' + $bel + $esc + ']7;file://localhost' + $path + $bel + $esc + ']133;A' + $bel); if ($global:__crossh_original_prompt) { & $global:__crossh_original_prompt } else { 'PS ' + $path + '> ' } }".to_string()
 }
 
 #[cfg(windows)]

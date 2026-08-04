@@ -8,6 +8,7 @@ mod git_status;
 mod i18n;
 mod local;
 mod ssh;
+mod terminal_protocol;
 #[cfg(test)]
 mod terminal_replay;
 mod ui;
@@ -47,6 +48,7 @@ fn main() {
         }
     });
     app.run(move |cx: &mut App| {
+        cx.set_app_identity("io.crossh.app", "Crossh");
         cx.init_colors();
         i18n::init(cx);
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);

@@ -25,6 +25,8 @@ use tokio::io::unix::AsyncFd;
 
 #[cfg(not(windows))]
 use crate::ssh::{InputCmd, SessionEvent};
+#[cfg(unix)]
+use crate::terminal_protocol::{ProtocolEvent, TerminalProtocolParser};
 
 #[cfg(any(windows, test))]
 mod windows;
@@ -154,15 +156,20 @@ async fn read_local_output(
     reader: AsyncFd<File>,
     event_tx: Sender<SessionEvent>,
 ) -> io::Result<()> {
-    let mut cwd_parser = CwdParser::default();
+    // Keep the low-level local session contract useful to consumers that need
+    // cwd updates before the output reaches a TerminalView. The view still
+    // parses the complete stream for all other terminal protocol events.
+    let mut protocol_parser = TerminalProtocolParser::default();
     loop {
         let mut guard = reader.readable().await?;
         let mut buffer = [0u8; 32 * 1024];
         match guard.try_io(|inner| inner.get_ref().read(&mut buffer)) {
             Ok(Ok(0)) => return Ok(()),
             Ok(Ok(size)) => {
-                for cwd in cwd_parser.feed(&buffer[..size]) {
-                    let _ = event_tx.send(SessionEvent::Cwd(cwd)).await;
+                for event in protocol_parser.feed(&buffer[..size]) {
+                    if let ProtocolEvent::Cwd(cwd) = event {
+                        let _ = event_tx.send(SessionEvent::Cwd(cwd)).await;
+                    }
                 }
                 let _ = event_tx
                     .send(SessionEvent::Output(buffer[..size].to_vec()))
@@ -237,17 +244,72 @@ fn prepare_shell_integration(options: &mut tty::Options, pty_id: u64) -> Option<
     let shell = std::env::var_os("SHELL")?;
     let shell_name = Path::new(&shell).file_name()?.to_str()?;
     if shell_name == "bash" {
-        let report = r#"printf '\033]133;A\007\033]7;file://localhost%s\007' "$PWD""#;
+        let report = r#"__crossh_status=$?; printf '\033]133;D;%s\007\033]133;B\007\033]7;file://localhost%s\007\033]133;A\007' "$__crossh_status" "$PWD""#;
         let original = std::env::var("PROMPT_COMMAND").unwrap_or_default();
         let prompt_command = if original.is_empty() {
             report.to_string()
         } else {
             format!("{report};{original}")
         };
+        let original_ps0 = std::env::var("PS0").unwrap_or_default();
+        let ps0 = format!("\x1b]133;C\x07{original_ps0}");
         options
             .env
             .insert("PROMPT_COMMAND".to_string(), prompt_command);
+        options.env.insert("PS0".to_string(), ps0);
         return None;
+    }
+    if shell_name == "fish" {
+        let home = PathBuf::from(std::env::var_os("HOME")?);
+        let temp_root = std::env::temp_dir();
+        let directory = create_shell_integration_dir(&temp_root, pty_id).ok()?;
+        let fish_directory = directory.join("fish");
+        if fs::create_dir(&fish_directory).is_err() {
+            let _ = fs::remove_dir_all(&directory);
+            return None;
+        }
+
+        let config_root = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".config"));
+        let original_config = config_root.join("fish").join("config.fish");
+        let source_original =
+            if !paths_equivalent(&original_config, &fish_directory.join("config.fish")) {
+                format!(
+                    "if test -r {}; source {}; end\n",
+                    shell_quote(&original_config),
+                    shell_quote(&original_config),
+                )
+            } else {
+                String::new()
+            };
+        let config = format!(
+            "{source_original}\
+function __crossh_report_pwd\n\
+    printf '\\033]7;file://localhost%s\\007' \"$PWD\"\n\
+end\n\
+function __crossh_report_prompt --on-event fish_prompt\n\
+    set -l __crossh_status $status\n\
+    printf '\\033]133;D;%s\\007\\033]133;B\\007' \"$__crossh_status\"\n\
+    __crossh_report_pwd\n\
+    printf '\\033]133;A\\007'\n\
+end\n\
+function __crossh_report_command --on-event fish_preexec\n\
+    printf '\\033]133;C\\007'\n\
+end\n\
+function __crossh_report_cwd --on-variable PWD\n\
+    __crossh_report_pwd\n\
+end\n",
+        );
+        if fs::write(fish_directory.join("config.fish"), config).is_err() {
+            let _ = fs::remove_dir_all(&directory);
+            return None;
+        }
+        options.env.insert(
+            "XDG_CONFIG_HOME".to_string(),
+            directory.to_string_lossy().to_string(),
+        );
+        return Some(ShellIntegration { directory });
     }
     if shell_name != "zsh" {
         return None;
@@ -290,8 +352,10 @@ fn prepare_shell_integration(options: &mut tty::Options, pty_id: u64) -> Option<
     let rc = if self_source || paths_equivalent(&original_rc, &directory.join(".zshrc")) {
         "autoload -Uz add-zsh-hook\n\
 __crossh_report_pwd() { printf '\\033]7;file://localhost%s\\007' \"$PWD\"; }\n\
-__crossh_report_prompt() { printf '\\033]133;A\\007'; __crossh_report_pwd; }\n\
+__crossh_report_prompt() { local __crossh_status=$?; printf '\\033]133;D;%s\\007\\033]133;B\\007' \"$__crossh_status\"; __crossh_report_pwd; printf '\\033]133;A\\007'; }\n\
+__crossh_report_command() { printf '\\033]133;C\\007'; }\n\
 add-zsh-hook precmd __crossh_report_prompt\n\
+add-zsh-hook preexec __crossh_report_command\n\
 add-zsh-hook chpwd __crossh_report_pwd\n"
             .to_string()
     } else {
@@ -299,8 +363,10 @@ add-zsh-hook chpwd __crossh_report_pwd\n"
             "if [[ -r {original_rc} ]]; then source {original_rc}; fi\n\
 autoload -Uz add-zsh-hook\n\
 __crossh_report_pwd() {{ printf '\\033]7;file://localhost%s\\007' \"$PWD\"; }}\n\
-__crossh_report_prompt() {{ printf '\\033]133;A\\007'; __crossh_report_pwd; }}\n\
+__crossh_report_prompt() {{ local __crossh_status=$?; printf '\\033]133;D;%s\\007\\033]133;B\\007' \"$__crossh_status\"; __crossh_report_pwd; printf '\\033]133;A\\007'; }}\n\
+__crossh_report_command() {{ printf '\\033]133;C\\007'; }}\n\
 add-zsh-hook precmd __crossh_report_prompt\n\
+add-zsh-hook preexec __crossh_report_command\n\
 add-zsh-hook chpwd __crossh_report_pwd\n",
             original_rc = shell_quote(&original_rc),
         )
@@ -395,131 +461,11 @@ fn shell_quote(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
 }
 
-#[derive(Default)]
-struct CwdParser {
-    pending: Vec<u8>,
-}
-
-impl CwdParser {
-    fn feed(&mut self, bytes: &[u8]) -> Vec<String> {
-        self.pending.extend_from_slice(bytes);
-        let marker = b"\x1b]7;";
-        let mut paths = Vec::new();
-
-        loop {
-            let Some(start) = find_bytes(&self.pending, marker) else {
-                let keep = marker.len().saturating_sub(1);
-                if self.pending.len() > keep {
-                    let drain_to = self.pending.len() - keep;
-                    self.pending.drain(..drain_to);
-                }
-                break;
-            };
-            if start > 0 {
-                self.pending.drain(..start);
-            }
-
-            let payload_start = marker.len();
-            let bel = self.pending[payload_start..]
-                .iter()
-                .position(|byte| *byte == 0x07)
-                .map(|idx| (payload_start + idx, 1));
-            let st = find_bytes(&self.pending[payload_start..], b"\x1b\\")
-                .map(|idx| (payload_start + idx, 2));
-            let Some((end, terminator_len)) = (match (bel, st) {
-                (Some(bel), Some(st)) => Some(bel.min(st)),
-                (Some(bel), None) => Some(bel),
-                (None, Some(st)) => Some(st),
-                (None, None) => None,
-            }) else {
-                break;
-            };
-
-            let payload = String::from_utf8_lossy(&self.pending[payload_start..end]);
-            if let Some(path) = cwd_from_osc7(&payload) {
-                paths.push(path);
-            }
-            self.pending.drain(..end + terminator_len);
-        }
-        paths
-    }
-}
-
-fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
-fn cwd_from_osc7(value: &str) -> Option<String> {
-    let path = if let Some(rest) = value.strip_prefix("file://") {
-        if rest.starts_with('/') {
-            rest.to_string()
-        } else {
-            rest.find('/').map(|index| rest[index..].to_string())?
-        }
-    } else {
-        value.to_string()
-    };
-    let path = percent_decode(&path)?;
-    Path::new(&path).is_absolute().then_some(path)
-}
-
-fn percent_decode(value: &str) -> Option<String> {
-    let bytes = value.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' {
-            let hi = hex_value(*bytes.get(index + 1)?)?;
-            let lo = hex_value(*bytes.get(index + 2)?)?;
-            decoded.push((hi << 4) | lo);
-            index += 3;
-        } else {
-            decoded.push(bytes[index]);
-            index += 1;
-        }
-    }
-    String::from_utf8(decoded).ok()
-}
-
-fn hex_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     #[cfg(unix)]
     use std::time::Duration;
-
-    #[test]
-    fn cwd_parser_handles_split_osc7_sequences() {
-        let mut parser = CwdParser::default();
-        assert!(parser.feed(b"\x1b]7;file://localhost/Users/me").is_empty());
-        assert_eq!(parser.feed(b"%20project\x07"), vec!["/Users/me project"]);
-    }
-
-    #[test]
-    fn cwd_parser_accepts_st_terminator() {
-        let mut parser = CwdParser::default();
-        assert_eq!(
-            parser.feed(b"\x1b]7;file:///tmp/crossh\x1b\\"),
-            vec!["/tmp/crossh"]
-        );
-    }
-
-    #[test]
-    fn percent_decode_rejects_invalid_sequences() {
-        assert_eq!(percent_decode("a%20b"), Some("a b".into()));
-        assert_eq!(percent_decode("a%2"), None);
-        assert_eq!(percent_decode("a%GG"), None);
-    }
 
     #[cfg(unix)]
     #[test]

@@ -14,6 +14,8 @@ settings:
   language_description: 选择 Crossh 使用的界面语言。
   timestamps: 行时间戳
   timestamps_description: 在终端左侧 gutter 显示精确到毫秒的时间戳。
+  notifications: 终端通知
+  notifications_description: 终端未获得焦点时，显示终端应用发出的系统通知。
   font_size: 字体大小
   font_size_description: 终端文字的像素大小。
   scrollback: 滚动缓冲

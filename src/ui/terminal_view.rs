@@ -8,12 +8,14 @@
 //! Term 只在 gpui 主线程被触碰（drain 与 paint 都在主线程）。
 
 use std::cell::Cell as StdCell;
-use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
+use std::io::{Cursor, Read};
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
@@ -24,18 +26,24 @@ use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
 use async_channel::{Receiver, Sender, TrySendError};
 use chrono::Local;
+use flate2::read::ZlibDecoder;
 use gpui::{
     App, AppContext, Bounds, Context, Corners, Edges, ElementInputHandler, Entity,
     EntityInputHandler, EventEmitter, FocusHandle, Font, FontWeight, Hsla, InteractiveElement,
     IntoElement, KeyDownEvent, KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent,
-    SharedString, StatefulInteractiveElement, StrikethroughStyle, Styled, Subscription, Task,
-    TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window, canvas, div, hsla, px, quad,
+    SharedString, StatefulInteractiveElement, StrikethroughStyle, Styled, Subscription,
+    SystemNotificationAction, SystemNotificationResponse, Task, TextAlign, TextRun, UTF16Selection,
+    UnderlineStyle, Window, canvas, div, hsla, px, quad,
 };
-use vte::ansi::{Color, NamedColor, Processor, Rgb};
+use vte::ansi::{Color, CursorShape, NamedColor, Processor, Rgb};
 
 use crate::i18n::{self, AppSettings};
 use crate::ssh::{InputCmd, SessionEvent};
+use crate::terminal_protocol::{
+    ImageDimension, ImagePayload, KittyGraphicsPayload, NotificationOccasion, ProtocolEvent,
+    ShellEvent, TerminalProtocolParser,
+};
 use crate::ui::context_menu::{
     ContextMenuState, MenuEntry, MenuItem, TerminalMenuAction, render_context_menu,
 };
@@ -60,6 +68,13 @@ const TIMESTAMP_GUTTER_GAP: f32 = 8.0;
 /// OSC 52 单次剪贴板文本上限。
 const MAX_OSC52_CLIPBOARD_BYTES: usize = 1024 * 1024;
 const MAX_OSC52_RESPONSE_BYTES: usize = MAX_OSC52_CLIPBOARD_BYTES * 2;
+const MAX_TERMINAL_IMAGES: usize = 64;
+const MAX_PENDING_KITTY_NOTIFICATIONS: usize = 128;
+const MAX_KITTY_IMAGE_BYTES: usize = 6 * 1024 * 1024;
+const MAX_DECODED_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_IMAGE_DIMENSION: usize = 16 * 1024;
+const KITTY_BACKGROUND_Z_INDEX: i32 = -1_073_741_824;
+const KITTY_PLACEHOLDER_CHAR: char = '\u{10eeee}';
 
 /// 连接状态。
 #[derive(Default, Clone, Debug, PartialEq)]
@@ -80,78 +95,18 @@ pub enum TerminalEvent {
     PromptReached,
     /// 应用通过 OSC 设置了窗口标题。
     TitleChanged,
+    /// 终端产生了需要用户注意的通知或 Bell。
+    Notification,
     /// shell/SSH channel 已正常结束，拥有者应移除对应标签。
     Closed,
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ShellActivity {
-    Prompt,
-    CommandStarted,
-}
-
-/// Incrementally recognizes FinalTerm/iTerm2 shell-integration markers.
-#[derive(Default)]
-struct ShellActivityParser {
-    pending: Vec<u8>,
-}
-
-impl ShellActivityParser {
-    fn feed(&mut self, bytes: &[u8]) -> Vec<ShellActivity> {
-        const MARKER: &[u8] = b"\x1b]133;";
-
-        self.pending.extend_from_slice(bytes);
-        let mut events = Vec::new();
-        loop {
-            let Some(start) = find_subslice(&self.pending, MARKER) else {
-                let keep = MARKER.len().saturating_sub(1);
-                if self.pending.len() > keep {
-                    self.pending.drain(..self.pending.len() - keep);
-                }
-                break;
-            };
-            if start > 0 {
-                self.pending.drain(..start);
-            }
-
-            let payload_start = MARKER.len();
-            let bel = self.pending[payload_start..]
-                .iter()
-                .position(|byte| *byte == 0x07)
-                .map(|index| (payload_start + index, 1));
-            let st = find_subslice(&self.pending[payload_start..], b"\x1b\\")
-                .map(|index| (payload_start + index, 2));
-            let Some((end, terminator_len)) = (match (bel, st) {
-                (Some(bel), Some(st)) => Some(bel.min(st)),
-                (Some(bel), None) => Some(bel),
-                (None, Some(st)) => Some(st),
-                (None, None) => None,
-            }) else {
-                break;
-            };
-
-            match self.pending.get(payload_start).copied() {
-                Some(b'A' | b'D') => events.push(ShellActivity::Prompt),
-                Some(b'C') => events.push(ShellActivity::CommandStarted),
-                _ => {}
-            }
-            self.pending.drain(..end + terminator_len);
-        }
-        events
-    }
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
 /// Events emitted by the terminal parser that require a UI/platform action.
 /// They are buffered because `EventListener::send_event` has no GPUI context.
 enum TerminalSideEffect {
+    Bell,
     Title(String),
     ResetTitle,
     ClipboardStore(ClipboardType, String),
@@ -270,6 +225,7 @@ impl EventListener for NoopListener {
             Event::ColorRequest(index, formatter) => {
                 self.queue_side_effect(TerminalSideEffect::ColorRequest(index, formatter));
             }
+            Event::Bell => self.queue_side_effect(TerminalSideEffect::Bell),
             _ => {}
         }
     }
@@ -292,6 +248,148 @@ impl alacritty_terminal::grid::Dimensions for TermSize {
     }
 }
 
+#[derive(Clone)]
+struct TerminalImage {
+    image: Arc<gpui::Image>,
+    kitty_id: Option<u32>,
+    placement_id: Option<u32>,
+    /// Absolute line in the terminal grid: history size + screen-relative line.
+    origin_line: i64,
+    origin_col: usize,
+    width: Option<ImageDimension>,
+    height: Option<ImageDimension>,
+    preserve_aspect_ratio: bool,
+    offset_x: usize,
+    offset_y: usize,
+    z_index: i32,
+    virtual_placement: bool,
+    relative_image_id: Option<u32>,
+    relative_placement_id: Option<u32>,
+    relative_offset_x: i32,
+    relative_offset_y: i32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct KittyPlacement {
+    source_x: Option<usize>,
+    source_y: Option<usize>,
+    source_width: Option<usize>,
+    source_height: Option<usize>,
+    offset_x: usize,
+    offset_y: usize,
+    z_index: i32,
+    relative_image_id: Option<u32>,
+    relative_placement_id: Option<u32>,
+    relative_offset_x: i32,
+    relative_offset_y: i32,
+}
+
+#[derive(Default)]
+struct KittyImageData {
+    data: Vec<u8>,
+    action: Option<String>,
+    format: Option<u32>,
+    width: Option<usize>,
+    height: Option<usize>,
+    columns: Option<usize>,
+    rows: Option<usize>,
+    placement_id: Option<u32>,
+    do_not_move_cursor: bool,
+    compressed: bool,
+    source_x: Option<usize>,
+    source_y: Option<usize>,
+    source_width: Option<usize>,
+    source_height: Option<usize>,
+    offset_x: usize,
+    offset_y: usize,
+    z_index: i32,
+    image_number: Option<u32>,
+    virtual_placement: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct KittyPlaceholder {
+    image_id: u32,
+    placement_id: Option<u32>,
+    row: usize,
+    column: usize,
+    viewport_row: usize,
+    viewport_column: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct KittyPlaceholderState {
+    foreground: u32,
+    underline: Option<u32>,
+    row: usize,
+    column: usize,
+    image_id_high: u8,
+}
+
+#[derive(Clone, Copy)]
+struct TerminalProgress {
+    state: u8,
+    progress: Option<u8>,
+}
+
+struct PendingKittyNotification {
+    title: String,
+    body: String,
+    occasion: NotificationOccasion,
+    report_activation: bool,
+    report_close: bool,
+    focus_on_activation: bool,
+    expiry_ms: Option<i64>,
+    buttons: Vec<String>,
+}
+
+struct KittyNotificationUpdate {
+    id: String,
+    title: Option<String>,
+    body: Option<String>,
+    complete: bool,
+    occasion: Option<NotificationOccasion>,
+    report_activation: Option<bool>,
+    report_close: Option<bool>,
+    focus_on_activation: Option<bool>,
+    expiry_ms: Option<i64>,
+    buttons: Option<Vec<String>>,
+}
+
+struct DisplayNotification {
+    kitty_id: Option<String>,
+    title: String,
+    body: String,
+    occasion: NotificationOccasion,
+    report_activation: bool,
+    report_close: bool,
+    focus_on_activation: bool,
+    buttons: Vec<String>,
+    expiry_ms: Option<i64>,
+}
+
+impl Default for PendingKittyNotification {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            body: String::new(),
+            occasion: NotificationOccasion::Always,
+            report_activation: false,
+            report_close: false,
+            focus_on_activation: true,
+            expiry_ms: None,
+            buttons: Vec::new(),
+        }
+    }
+}
+
+struct KittyNotificationState {
+    tag: String,
+    report_activation: bool,
+    report_close: bool,
+    focus_on_activation: bool,
+}
+
 pub struct TerminalView {
     term: Term<NoopListener>,
     parser: Processor,
@@ -300,7 +398,7 @@ pub struct TerminalView {
     pub state: ConnState,
     command_running: bool,
     shell_activity_available: bool,
-    shell_activity_parser: ShellActivityParser,
+    protocol_parser: TerminalProtocolParser,
     /// 当前 shell 报告的工作目录；用于本地终端状态栏和 Git 状态。
     pub cwd: Option<String>,
     focus: FocusHandle,
@@ -336,6 +434,24 @@ pub struct TerminalView {
     scroll_acc: f32,
     /// 光标闪烁状态（true = 显示，false = 隐藏）。
     cursor_blink_on: bool,
+    /// xterm's legacy CSI 1015 mouse mode is not modeled by alacritty yet.
+    urxvt_mouse: bool,
+    /// xterm modifyOtherKeys level (0 means the legacy encoding is active).
+    modify_other_keys: u8,
+    /// GPUI focus state, used to avoid raising a notification for the active terminal.
+    focused: bool,
+    notifications_enabled: bool,
+    progress: Option<TerminalProgress>,
+    images: Vec<TerminalImage>,
+    kitty_image_data: HashMap<u32, KittyImageData>,
+    kitty_image_numbers: HashMap<u32, u32>,
+    next_kitty_image_id: u32,
+    kitty_active_image_id: Option<u32>,
+    kitty_notifications: HashMap<String, PendingKittyNotification>,
+    kitty_notification_states: HashMap<String, KittyNotificationState>,
+    kitty_notification_expiry: HashMap<String, Task<()>>,
+    notification_serial: u64,
+    _sync_timeout_task: Option<Task<()>>,
     _blink_task: Option<Task<()>>,
     /// 最近一帧检测到的 URL（用于点击跳转）。
     detected_urls: Vec<(usize, usize, usize, String)>,
@@ -412,7 +528,7 @@ impl TerminalView {
             state: ConnState::Connecting,
             command_running: false,
             shell_activity_available: false,
-            shell_activity_parser: ShellActivityParser::default(),
+            protocol_parser: TerminalProtocolParser::default(),
             cwd: initial_cwd,
             focus: cx.focus_handle(),
             cell_w: px(0.),
@@ -440,6 +556,21 @@ impl TerminalView {
             remote_mouse_button: None,
             scroll_acc: 0.,
             cursor_blink_on: true,
+            urxvt_mouse: false,
+            modify_other_keys: 0,
+            focused: true,
+            notifications_enabled: settings.terminal_notifications,
+            progress: None,
+            images: Vec::new(),
+            kitty_image_data: HashMap::new(),
+            kitty_image_numbers: HashMap::new(),
+            next_kitty_image_id: 1,
+            kitty_active_image_id: None,
+            kitty_notifications: HashMap::new(),
+            kitty_notification_states: HashMap::new(),
+            kitty_notification_expiry: HashMap::new(),
+            notification_serial: 0,
+            _sync_timeout_task: None,
             _blink_task: None,
             detected_urls: Vec::new(),
             line_timestamps: TerminalTimestampState::default(),
@@ -524,6 +655,7 @@ impl TerminalView {
         }
 
         self.show_timestamps = settings.show_timestamps;
+        self.notifications_enabled = settings.terminal_notifications;
         cx.notify();
     }
 
@@ -542,18 +674,14 @@ impl TerminalView {
             }
             SessionEvent::Output(bytes) => {
                 log::trace!("pty output ({}B): {}", bytes.len(), debug_bytes(&bytes));
-                for activity in self.shell_activity_parser.feed(&bytes) {
-                    self.shell_activity_available = true;
-                    self.command_running = activity == ShellActivity::CommandStarted;
-                    if self.is_local && activity == ShellActivity::Prompt {
-                        cx.emit(TerminalEvent::PromptReached);
-                    }
-                }
                 // alternate screen 是 Codex/vim/top 等 TUI 的绘制缓冲区；只保留
                 // 普通 shell 网格的时间戳，避免全屏重绘产生大量错误行。
                 let was_alt_screen = self.term.mode().contains(TermMode::ALT_SCREEN);
                 let timestamp = (!was_alt_screen).then(|| format_timestamp(Local::now()));
                 self.parser.advance(&mut self.term, &bytes);
+                let protocol_events = self.protocol_parser.feed(&bytes);
+                self.process_protocol_events(protocol_events, cx, 0);
+                self.schedule_sync_timeout(cx);
                 self.drain_terminal_side_effects(cx);
                 self.drain_protocol_responses();
                 if !self.term.mode().contains(TermMode::ALT_SCREEN) {
@@ -586,6 +714,1252 @@ impl TerminalView {
         }
     }
 
+    fn process_protocol_events(
+        &mut self,
+        events: Vec<ProtocolEvent>,
+        cx: &mut Context<Self>,
+        passthrough_depth: usize,
+    ) {
+        for event in events {
+            match event {
+                ProtocolEvent::Cwd(cwd) => {
+                    if self.cwd.as_deref() != Some(cwd.as_str()) {
+                        self.cwd = Some(cwd);
+                        cx.emit(TerminalEvent::CwdChanged);
+                    }
+                }
+                ProtocolEvent::Shell(shell_event) => {
+                    self.shell_activity_available = true;
+                    match shell_event {
+                        ShellEvent::PromptStart => {
+                            self.command_running = false;
+                            cx.emit(TerminalEvent::PromptReached);
+                        }
+                        ShellEvent::PromptEnd => {}
+                        ShellEvent::CommandStart => self.command_running = true,
+                        ShellEvent::CommandFinished { .. } => self.command_running = false,
+                    }
+                }
+                ProtocolEvent::Notification { title, body } => {
+                    self.notify_user(title, body, false, cx);
+                }
+                ProtocolEvent::NotificationPart {
+                    id,
+                    title,
+                    body,
+                    complete,
+                    occasion,
+                    report_activation,
+                    report_close,
+                    focus_on_activation,
+                    expiry_ms,
+                    buttons,
+                } => self.process_kitty_notification(
+                    KittyNotificationUpdate {
+                        id,
+                        title,
+                        body,
+                        complete,
+                        occasion,
+                        report_activation,
+                        report_close,
+                        focus_on_activation,
+                        expiry_ms,
+                        buttons,
+                    },
+                    cx,
+                ),
+                ProtocolEvent::KittyNotificationQuery { id } => {
+                    self.respond_kitty_notification_query(&id)
+                }
+                ProtocolEvent::KittyNotificationClose { id } => {
+                    self.close_kitty_notification(&id, cx)
+                }
+                ProtocolEvent::KittyNotificationAliveQuery { id } => {
+                    self.respond_kitty_notification_alive(&id)
+                }
+                ProtocolEvent::KittyNotificationAliveResponse { .. } => {}
+                ProtocolEvent::Progress { state, progress } => {
+                    self.progress = (state != 0).then_some(TerminalProgress { state, progress });
+                }
+                ProtocolEvent::Image(payload) => self.store_image(payload),
+                ProtocolEvent::KittyGraphics(payload) => self.process_kitty_graphics(payload),
+                ProtocolEvent::Sixel(data) => self.process_sixel(data),
+                ProtocolEvent::Decrqss(query) => self.respond_decrqss(&query),
+                ProtocolEvent::XtGetTcap(query) => self.respond_xtgettcap(&query),
+                ProtocolEvent::UrxvtMouse(enabled) => self.urxvt_mouse = enabled,
+                ProtocolEvent::ModifyOtherKeys(level) => self.modify_other_keys = level,
+                ProtocolEvent::ModifyOtherKeysQuery => self.respond_modify_other_keys_query(),
+                ProtocolEvent::WindowSizeQuery => self.respond_window_size_query(),
+                ProtocolEvent::TextAreaSizeQuery => self.respond_text_area_size_query(),
+                ProtocolEvent::CellSizeQuery => self.respond_cell_size_query(),
+                ProtocolEvent::Passthrough(bytes) => {
+                    if passthrough_depth >= 4 {
+                        log::warn!("ignoring deeply nested terminal passthrough sequence");
+                        continue;
+                    }
+                    let nested_events = self.protocol_parser.feed(&bytes);
+                    self.process_protocol_events(nested_events, cx, passthrough_depth + 1);
+                    self.parser.advance(&mut self.term, &bytes);
+                }
+                ProtocolEvent::Reset
+                | ProtocolEvent::ClearImages
+                | ProtocolEvent::ScreenBufferSwitch(_) => {
+                    self.images.clear();
+                    self.kitty_image_data.clear();
+                    self.kitty_image_numbers.clear();
+                    self.kitty_active_image_id = None;
+                }
+            }
+        }
+    }
+
+    fn process_kitty_notification(
+        &mut self,
+        update: KittyNotificationUpdate,
+        cx: &mut Context<Self>,
+    ) {
+        let KittyNotificationUpdate {
+            id,
+            title,
+            body,
+            complete,
+            occasion,
+            report_activation,
+            report_close,
+            focus_on_activation,
+            expiry_ms,
+            buttons,
+        } = update;
+        if !self.kitty_notifications.contains_key(&id)
+            && self.kitty_notifications.len() >= MAX_PENDING_KITTY_NOTIFICATIONS
+            && let Some(oldest_id) = self.kitty_notifications.keys().next().cloned()
+        {
+            self.kitty_notifications.remove(&oldest_id);
+        }
+        let notification = self.kitty_notifications.entry(id.clone()).or_default();
+        if let Some(title) = title {
+            append_bounded_notification_text(&mut notification.title, &title);
+        }
+        if let Some(body) = body {
+            append_bounded_notification_text(&mut notification.body, &body);
+        }
+        if let Some(occasion) = occasion {
+            notification.occasion = occasion;
+        }
+        if let Some(report_activation) = report_activation {
+            notification.report_activation = report_activation;
+        }
+        if let Some(report_close) = report_close {
+            notification.report_close = report_close;
+        }
+        if let Some(focus_on_activation) = focus_on_activation {
+            notification.focus_on_activation = focus_on_activation;
+        }
+        if let Some(expiry_ms) = expiry_ms {
+            notification.expiry_ms = Some(expiry_ms);
+        }
+        if let Some(buttons) = buttons {
+            notification.buttons.extend(buttons.into_iter().take(8));
+            notification.buttons.truncate(8);
+        }
+        if !complete || (notification.title.is_empty() && notification.body.is_empty()) {
+            return;
+        }
+
+        let notification = self
+            .kitty_notifications
+            .remove(&id)
+            .expect("notification entry was just inserted");
+        self.display_notification(
+            DisplayNotification {
+                kitty_id: (!id.is_empty())
+                    .then(|| sanitize_kitty_notification_id(&id))
+                    .flatten(),
+                title: notification.title,
+                body: notification.body,
+                occasion: notification.occasion,
+                report_activation: notification.report_activation,
+                report_close: notification.report_close,
+                focus_on_activation: notification.focus_on_activation,
+                buttons: notification.buttons,
+                expiry_ms: notification.expiry_ms,
+            },
+            cx,
+        );
+    }
+
+    fn notify_user(
+        &mut self,
+        title: String,
+        body: String,
+        notify_when_focused: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.display_notification(
+            DisplayNotification {
+                kitty_id: None,
+                title,
+                body,
+                occasion: if notify_when_focused {
+                    NotificationOccasion::Always
+                } else {
+                    NotificationOccasion::Unfocused
+                },
+                report_activation: false,
+                report_close: false,
+                focus_on_activation: false,
+                buttons: Vec::new(),
+                expiry_ms: None,
+            },
+            cx,
+        );
+    }
+
+    fn display_notification(&mut self, notification: DisplayNotification, cx: &mut Context<Self>) {
+        let DisplayNotification {
+            kitty_id,
+            title,
+            body,
+            occasion,
+            report_activation,
+            report_close,
+            focus_on_activation,
+            buttons,
+            expiry_ms,
+        } = notification;
+        cx.emit(TerminalEvent::Notification);
+        if !self.notifications_enabled
+            || !self.should_show_notification(occasion)
+            || (title.is_empty() && body.is_empty())
+        {
+            return;
+        }
+        let title = if title.is_empty() {
+            self.title.as_deref().unwrap_or("Terminal")
+        } else {
+            title.as_str()
+        };
+        let tag = if let Some(id) = kitty_id.as_deref() {
+            format!("crossh-terminal-{}-kitty-{id}", cx.entity_id())
+        } else {
+            let serial = self.notification_serial;
+            self.notification_serial = self.notification_serial.wrapping_add(1);
+            format!("crossh-terminal-{}-{serial}", cx.entity_id())
+        };
+        let actions = buttons
+            .iter()
+            .enumerate()
+            .map(|(index, label)| SystemNotificationAction {
+                id: (index + 1).to_string().into(),
+                label: label.clone().into(),
+            })
+            .collect();
+        cx.show_system_notification(gpui::SystemNotification {
+            tag: tag.clone().into(),
+            title: title.into(),
+            body: body.into(),
+            actions,
+        });
+
+        let Some(id) = kitty_id else {
+            return;
+        };
+        self.kitty_notification_states.insert(
+            id.clone(),
+            KittyNotificationState {
+                tag: tag.clone(),
+                report_activation,
+                report_close,
+                focus_on_activation,
+            },
+        );
+        // A replacement resets the locally enforced expiry. An omitted `w`
+        // therefore falls back to the platform policy for the new payload.
+        self.kitty_notification_expiry.remove(&id);
+        if let Some(expiry_ms) = expiry_ms.filter(|expiry| *expiry > 0) {
+            let tag_for_task = tag.clone();
+            let id_for_task = id.clone();
+            let task = cx.spawn(async move |weak, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(expiry_ms as u64))
+                    .await;
+                let _ = weak.update(cx, |this, cx| {
+                    let is_current = this
+                        .kitty_notification_states
+                        .get(&id_for_task)
+                        .is_some_and(|state| state.tag == tag_for_task);
+                    if !is_current {
+                        return;
+                    }
+                    let report_close = this
+                        .kitty_notification_states
+                        .remove(&id_for_task)
+                        .is_some_and(|state| state.report_close);
+                    this.kitty_notification_expiry.remove(&id_for_task);
+                    cx.dismiss_system_notification(&tag_for_task);
+                    if report_close {
+                        this.send_kitty_notification_close(&id_for_task, false);
+                    }
+                });
+            });
+            self.kitty_notification_expiry.insert(id, task);
+        }
+    }
+
+    fn should_show_notification(&self, occasion: NotificationOccasion) -> bool {
+        match occasion {
+            NotificationOccasion::Always => true,
+            NotificationOccasion::Unfocused | NotificationOccasion::Invisible => !self.focused,
+        }
+    }
+
+    fn close_kitty_notification(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.kitty_notifications.remove(id);
+        let Some(id) = sanitize_kitty_notification_id(id) else {
+            return;
+        };
+        self.kitty_notification_expiry.remove(&id);
+        let Some(state) = self.kitty_notification_states.remove(&id) else {
+            return;
+        };
+        cx.dismiss_system_notification(&state.tag);
+        if state.report_close {
+            self.send_kitty_notification_close(&id, false);
+        }
+    }
+
+    fn respond_kitty_notification_query(&mut self, id: &str) {
+        let id = sanitize_kitty_notification_id(id).unwrap_or_default();
+        self.send_input(
+            format!(
+                "\x1b]99;i={id}:p=?;a=report,focus:o=always,unfocused:p=title,body,close,alive,buttons:w=1\x1b\\"
+            )
+            .into_bytes(),
+        );
+    }
+
+    fn respond_kitty_notification_alive(&mut self, id: &str) {
+        let id = sanitize_kitty_notification_id(id).unwrap_or_default();
+        let mut alive = self
+            .kitty_notification_states
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        alive.sort();
+        self.send_input(format!("\x1b]99;i={id}:p=alive;{}\x1b\\", alive.join(",")).into_bytes());
+    }
+
+    fn send_kitty_notification_close(&mut self, id: &str, untracked: bool) {
+        let suffix = if untracked { "untracked" } else { "" };
+        self.send_input(format!("\x1b]99;i={id}:p=close;{suffix}\x1b\\").into_bytes());
+    }
+
+    /// Handle an OS notification activation. The return value tells AppShell
+    /// whether the originating terminal should become the active tab.
+    pub(crate) fn handle_system_notification_response(
+        &mut self,
+        response: &SystemNotificationResponse,
+        cx: &mut Context<Self>,
+    ) -> Option<bool> {
+        let (id, state) = self
+            .kitty_notification_states
+            .iter()
+            .find_map(|(id, state)| {
+                (state.tag == response.tag.as_ref()).then_some((id.clone(), state))
+            })
+            .map(|(id, state)| {
+                (
+                    id,
+                    (
+                        state.report_activation,
+                        state.report_close,
+                        state.focus_on_activation,
+                        state.tag.clone(),
+                    ),
+                )
+            })?;
+        self.kitty_notification_states.remove(&id);
+        self.kitty_notification_expiry.remove(&id);
+        cx.dismiss_system_notification(&state.3);
+        if state.0 {
+            let action = response
+                .action_id
+                .as_ref()
+                .filter(|action| action.chars().all(|character| character.is_ascii_digit()))
+                .map(|action| action.as_ref())
+                .unwrap_or("");
+            self.send_input(format!("\x1b]99;i={id};{action}\x1b\\").into_bytes());
+        }
+        if state.1 {
+            self.send_kitty_notification_close(&id, false);
+        }
+        Some(state.2)
+    }
+
+    fn store_image(&mut self, payload: ImagePayload) {
+        let width = image_dimension_cells(payload.width);
+        let height = image_dimension_cells(payload.height);
+        let do_not_move_cursor = payload.do_not_move_cursor;
+        if self.store_image_with_id(payload, None, None, KittyPlacement::default(), false) {
+            self.advance_image_cursor(width, height, do_not_move_cursor);
+        }
+    }
+
+    fn store_image_with_id(
+        &mut self,
+        payload: ImagePayload,
+        kitty_id: Option<u32>,
+        placement_id: Option<u32>,
+        placement: KittyPlacement,
+        virtual_placement: bool,
+    ) -> bool {
+        let Some(format) = terminal_image_format(&payload.data) else {
+            log::debug!("ignoring terminal image with an unsupported format");
+            return false;
+        };
+        if !terminal_image_within_limits(&payload.data, format) {
+            log::debug!("ignoring terminal image outside renderer limits");
+            return false;
+        }
+        let grid = self.term.grid();
+        let origin_line = grid.history_size() as i64 + grid.cursor.point.line.0 as i64;
+        let image = TerminalImage {
+            image: Arc::new(gpui::Image::from_bytes(format, payload.data)),
+            kitty_id,
+            placement_id,
+            origin_line,
+            origin_col: grid.cursor.point.column.0,
+            width: payload.width,
+            height: payload.height,
+            preserve_aspect_ratio: payload.preserve_aspect_ratio,
+            offset_x: placement.offset_x,
+            offset_y: placement.offset_y,
+            z_index: if virtual_placement {
+                0
+            } else {
+                placement.z_index
+            },
+            virtual_placement,
+            relative_image_id: placement.relative_image_id,
+            relative_placement_id: placement.relative_placement_id,
+            relative_offset_x: placement.relative_offset_x,
+            relative_offset_y: placement.relative_offset_y,
+        };
+        if virtual_placement {
+            if let Some(kitty_id) = kitty_id {
+                self.images
+                    .retain(|image| !(image.virtual_placement && image.kitty_id == Some(kitty_id)));
+            }
+        } else if let (Some(kitty_id), Some(placement_id)) = (kitty_id, placement_id) {
+            self.images.retain(|image| {
+                !(image.kitty_id == Some(kitty_id) && image.placement_id == Some(placement_id))
+            });
+        }
+        if self.images.len() >= MAX_TERMINAL_IMAGES {
+            self.images.remove(0);
+        }
+        self.images.push(image);
+        true
+    }
+
+    fn advance_image_cursor(
+        &mut self,
+        width_cells: Option<usize>,
+        height_cells: Option<usize>,
+        do_not_move_cursor: bool,
+    ) {
+        if do_not_move_cursor {
+            return;
+        }
+        let mut sequence = Vec::new();
+        if let Some(height) = height_cells.filter(|height| *height > 0) {
+            sequence.extend_from_slice(format!("\x1b[{height}B").as_bytes());
+        }
+        if let Some(width) = width_cells.filter(|width| *width > 0) {
+            sequence.extend_from_slice(format!("\x1b[{width}C").as_bytes());
+        }
+        if !sequence.is_empty() {
+            self.parser.advance(&mut self.term, &sequence);
+        }
+    }
+
+    fn process_sixel(&mut self, data: Vec<u8>) {
+        let Ok(image) = icy_sixel::SixelImage::decode(&data) else {
+            log::debug!("ignoring invalid Sixel image");
+            return;
+        };
+        let (width, height) = image.corrected_dimensions();
+        let Some(encoded) = encode_rgba_png(&image.pixels, image.width, image.height) else {
+            log::debug!("ignoring oversized Sixel image");
+            return;
+        };
+        let (width, height) = if image.aspect_ratio.is_square() {
+            (None, None)
+        } else {
+            (
+                Some(ImageDimension::Pixels(width)),
+                Some(ImageDimension::Pixels(height)),
+            )
+        };
+        self.store_image(ImagePayload {
+            data: encoded,
+            width,
+            height,
+            preserve_aspect_ratio: false,
+            do_not_move_cursor: false,
+        });
+    }
+
+    fn allocate_kitty_image_id(&mut self) -> u32 {
+        for _ in 0..u32::MAX {
+            let id = self.next_kitty_image_id.max(1);
+            self.next_kitty_image_id = id.wrapping_add(1).max(1);
+            let used = self.kitty_image_data.contains_key(&id)
+                || self.images.iter().any(|image| image.kitty_id == Some(id));
+            if !used {
+                return id;
+            }
+        }
+        0
+    }
+
+    fn process_kitty_graphics(&mut self, payload: KittyGraphicsPayload) {
+        let requested_action = kitty_parameter(&payload.control, "a");
+        let action = requested_action.unwrap_or("t");
+        let requested_image_id = kitty_parameter(&payload.control, "i")
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or_default();
+        let requested_image_number =
+            kitty_parameter(&payload.control, "I").and_then(|value| value.parse::<u32>().ok());
+        let more_chunks = kitty_parameter(&payload.control, "m") == Some("1");
+        let virtual_requested = kitty_parameter(&payload.control, "U") == Some("1");
+        let relative_image_id = kitty_parameter(&payload.control, "P")
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|value| *value > 0);
+        let relative_placement_id = kitty_parameter(&payload.control, "Q")
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|value| *value > 0);
+        let relative_offset_x = kitty_parameter(&payload.control, "H")
+            .and_then(|value| value.parse::<i32>().ok())
+            .unwrap_or_default();
+        let relative_offset_y = kitty_parameter(&payload.control, "V")
+            .and_then(|value| value.parse::<i32>().ok())
+            .unwrap_or_default();
+
+        if requested_image_id != 0 && requested_image_number.is_some() {
+            self.respond_kitty_graphics(&payload.control, "EINVAL");
+            return;
+        }
+        if virtual_requested && !matches!(action, "p" | "T") {
+            self.respond_kitty_graphics(&payload.control, "EINVAL");
+            return;
+        }
+        if relative_image_id.is_some() && (virtual_requested || !matches!(action, "p"))
+            || relative_image_id.is_none() && relative_placement_id.is_some()
+        {
+            self.respond_kitty_graphics(&payload.control, "ENOTSUP");
+            return;
+        }
+        if let Some(medium) = kitty_parameter(&payload.control, "t")
+            && medium != "d"
+        {
+            // File and shared-memory transmission are deliberately rejected:
+            // the path/name arrives from the remote PTY and must not become an
+            // arbitrary local filesystem read primitive.
+            self.respond_kitty_graphics(&payload.control, "ENOTSUP");
+            return;
+        }
+        if matches!(action, "a" | "c" | "f") {
+            self.respond_kitty_graphics(&payload.control, "ENOTSUP");
+            return;
+        }
+        if !matches!(action, "d" | "p" | "q" | "t" | "T") {
+            self.respond_kitty_graphics(&payload.control, "EINVAL");
+            return;
+        }
+
+        let mut image_id = requested_image_id;
+        if requested_action.is_none() && image_id == 0 && requested_image_number.is_none() {
+            image_id = self.kitty_active_image_id.unwrap_or_default();
+        }
+        if let Some(image_number) = requested_image_number {
+            if matches!(action, "t" | "T") {
+                image_id = self.allocate_kitty_image_id();
+                if image_id == 0 {
+                    self.respond_kitty_graphics(&payload.control, "ENOSPC");
+                    return;
+                }
+                self.kitty_image_numbers.insert(image_number, image_id);
+            } else {
+                image_id = self
+                    .kitty_image_numbers
+                    .get(&image_number)
+                    .copied()
+                    .unwrap_or_default();
+                if image_id == 0 {
+                    self.respond_kitty_graphics(&payload.control, "ENOENT");
+                    return;
+                }
+            }
+        }
+
+        if let Some(parent_id) = relative_image_id {
+            if image_id == 0 || image_id == parent_id {
+                self.respond_kitty_graphics(&payload.control, "EINVAL");
+                return;
+            }
+            let parent_exists = self.images.iter().any(|image| {
+                image.kitty_id == Some(parent_id)
+                    && relative_placement_id
+                        .is_none_or(|placement| image.placement_id == Some(placement))
+            });
+            if !parent_exists {
+                self.respond_kitty_graphics(&payload.control, "ENOPARENT");
+                return;
+            }
+            let mut current_id = parent_id;
+            let mut current_placement_id = relative_placement_id;
+            for depth in 0..=8 {
+                let Some(parent) = self.images.iter().find(|image| {
+                    image.kitty_id == Some(current_id)
+                        && current_placement_id
+                            .is_none_or(|placement| image.placement_id == Some(placement))
+                }) else {
+                    break;
+                };
+                let Some(next_id) = parent.relative_image_id else {
+                    break;
+                };
+                if next_id == image_id {
+                    self.respond_kitty_graphics(&payload.control, "ECYCLE");
+                    return;
+                }
+                if depth == 8 {
+                    self.respond_kitty_graphics(&payload.control, "ETOODEEP");
+                    return;
+                }
+                current_id = next_id;
+                current_placement_id = parent.relative_placement_id;
+            }
+        }
+
+        // Every explicit transmit action starts a new image. Continuation
+        // chunks omit `a` and therefore retain the partial payload.
+        if matches!(requested_action, Some("t" | "T" | "q")) {
+            self.kitty_image_data.remove(&image_id);
+            self.kitty_active_image_id = Some(image_id);
+            if action == "T" {
+                self.images.retain(|image| image.kitty_id != Some(image_id));
+            }
+            if let Some(image_number) = requested_image_number
+                && matches!(action, "t" | "T")
+            {
+                self.kitty_image_data
+                    .entry(image_id)
+                    .or_default()
+                    .image_number = Some(image_number);
+            }
+        }
+
+        if action == "d" {
+            let active_image_id = self.kitty_active_image_id.take();
+            if let Some(active_image_id) = active_image_id {
+                self.kitty_image_data.remove(&active_image_id);
+            }
+            let placement_id =
+                kitty_parameter(&payload.control, "p").and_then(|value| value.parse::<u32>().ok());
+            let deletion = kitty_parameter(&payload.control, "d").unwrap_or("a");
+            let history_size = self.term.grid().history_size() as i64;
+            let cursor_line = history_size + self.term.grid().cursor.point.line.0 as i64;
+            let cursor_column = self.term.grid().cursor.point.column.0;
+            let contains_cell = |image: &TerminalImage, line: i64, column: usize| {
+                let width = image_dimension_cells(image.width).unwrap_or(1);
+                let height = image_dimension_cells(image.height).unwrap_or(1);
+                line >= image.origin_line
+                    && line < image.origin_line.saturating_add(height as i64)
+                    && column >= image.origin_col
+                    && column < image.origin_col.saturating_add(width)
+            };
+            let delete_image = |image: &TerminalImage, image_id: u32, placement_id: Option<u32>| {
+                image.kitty_id == Some(image_id)
+                    && placement_id.is_none_or(|placement| image.placement_id == Some(placement))
+            };
+            let mut status = "OK";
+            match deletion {
+                // Visible deletion never touches virtual prototypes; their
+                // real placements are represented by ordinary grid cells.
+                "a" | "A" => self
+                    .images
+                    .retain(|image| image.virtual_placement || image.kitty_id.is_none()),
+                "i" | "I" | "n" | "N" => {
+                    if image_id == 0 {
+                        status = "ENOENT";
+                    } else {
+                        self.images
+                            .retain(|image| !delete_image(image, image_id, placement_id));
+                        if matches!(deletion, "I" | "N") {
+                            self.kitty_image_data.remove(&image_id);
+                            self.kitty_image_numbers
+                                .retain(|_, mapped_id| *mapped_id != image_id);
+                        }
+                    }
+                }
+                "c" | "C" => self.images.retain(|image| {
+                    image.virtual_placement || !contains_cell(image, cursor_line, cursor_column)
+                }),
+                "p" | "P" | "q" | "Q" => {
+                    let x = kitty_parameter(&payload.control, "x")
+                        .and_then(|value| value.parse::<usize>().ok());
+                    let y = kitty_parameter(&payload.control, "y")
+                        .and_then(|value| value.parse::<usize>().ok());
+                    let target = x.zip(y).and_then(|(x, y)| {
+                        (x > 0 && y > 0).then_some((history_size + y as i64 - 1, x - 1))
+                    });
+                    let z = kitty_parameter(&payload.control, "z")
+                        .and_then(|value| value.parse::<i32>().ok());
+                    if target.is_none() || (matches!(deletion, "q" | "Q") && z.is_none()) {
+                        status = "EINVAL";
+                    } else if let Some((line, column)) = target {
+                        self.images.retain(|image| {
+                            image.virtual_placement
+                                || (matches!(deletion, "q" | "Q")
+                                    && image.z_index != z.unwrap_or_default())
+                                || !contains_cell(image, line, column)
+                        });
+                    }
+                }
+                "r" | "R" => {
+                    let lower = kitty_parameter(&payload.control, "x")
+                        .and_then(|value| value.parse::<u32>().ok());
+                    let upper = kitty_parameter(&payload.control, "y")
+                        .and_then(|value| value.parse::<u32>().ok());
+                    let Some((lower, upper)) = lower.zip(upper) else {
+                        status = "EINVAL";
+                        self.respond_kitty_graphics_for_image(
+                            &payload.control,
+                            image_id,
+                            requested_image_number,
+                            status,
+                        );
+                        return;
+                    };
+                    self.images.retain(|image| {
+                        !image.kitty_id.is_some_and(|id| id >= lower && id <= upper)
+                    });
+                    if deletion == "R" {
+                        self.kitty_image_data
+                            .retain(|id, _| !(*id >= lower && *id <= upper));
+                        self.kitty_image_numbers
+                            .retain(|_, id| !(*id >= lower && *id <= upper));
+                    }
+                }
+                "f" | "F" => status = "ENOTSUP",
+                "x" | "X" => {
+                    let Some(column) = kitty_parameter(&payload.control, "x")
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .filter(|column| *column > 0)
+                    else {
+                        status = "EINVAL";
+                        self.respond_kitty_graphics_for_image(
+                            &payload.control,
+                            image_id,
+                            requested_image_number,
+                            status,
+                        );
+                        return;
+                    };
+                    let column = column - 1;
+                    self.images.retain(|image| {
+                        image.virtual_placement
+                            || column < image.origin_col
+                            || column
+                                >= image
+                                    .origin_col
+                                    .saturating_add(image_dimension_cells(image.width).unwrap_or(1))
+                    });
+                }
+                "y" | "Y" => {
+                    let Some(row) = kitty_parameter(&payload.control, "y")
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .filter(|row| *row > 0)
+                    else {
+                        status = "EINVAL";
+                        self.respond_kitty_graphics_for_image(
+                            &payload.control,
+                            image_id,
+                            requested_image_number,
+                            status,
+                        );
+                        return;
+                    };
+                    let line = history_size + row as i64 - 1;
+                    self.images.retain(|image| {
+                        image.virtual_placement
+                            || line < image.origin_line
+                            || line
+                                >= image.origin_line.saturating_add(
+                                    image_dimension_cells(image.height).unwrap_or(1) as i64,
+                                )
+                    });
+                }
+                "z" | "Z" => {
+                    let Some(z_index) = kitty_parameter(&payload.control, "z")
+                        .and_then(|value| value.parse::<i32>().ok())
+                    else {
+                        status = "EINVAL";
+                        self.respond_kitty_graphics_for_image(
+                            &payload.control,
+                            image_id,
+                            requested_image_number,
+                            status,
+                        );
+                        return;
+                    };
+                    self.images
+                        .retain(|image| image.virtual_placement || image.z_index != z_index);
+                    if deletion == "Z" {
+                        self.kitty_image_data
+                            .retain(|_, data| data.z_index != z_index);
+                    }
+                }
+                _ => status = "EINVAL",
+            }
+            self.respond_kitty_graphics_for_image(
+                &payload.control,
+                image_id,
+                requested_image_number,
+                status,
+            );
+            return;
+        }
+
+        if !payload.data.is_empty() {
+            let image_data = self.kitty_image_data.entry(image_id).or_default();
+            if image_data.data.len().saturating_add(payload.data.len()) > MAX_KITTY_IMAGE_BYTES {
+                self.kitty_image_data.remove(&image_id);
+                log::warn!("ignoring oversized Kitty graphics image");
+                return;
+            }
+            image_data.data.extend(payload.data);
+        }
+        if let Some(action @ ("t" | "T")) = requested_action {
+            self.kitty_image_data.entry(image_id).or_default().action = Some(action.to_string());
+        }
+        if virtual_requested {
+            self.kitty_image_data
+                .entry(image_id)
+                .or_default()
+                .virtual_placement = true;
+        }
+        if kitty_parameter(&payload.control, "o") == Some("z") {
+            self.kitty_image_data
+                .entry(image_id)
+                .or_default()
+                .compressed = true;
+        }
+        if let Some(placement_id) = kitty_parameter(&payload.control, "p")
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|placement| *placement > 0)
+        {
+            self.kitty_image_data
+                .entry(image_id)
+                .or_default()
+                .placement_id = Some(placement_id);
+        }
+        if kitty_parameter(&payload.control, "C") == Some("1") {
+            self.kitty_image_data
+                .entry(image_id)
+                .or_default()
+                .do_not_move_cursor = true;
+        }
+        if let Some(format) =
+            kitty_parameter(&payload.control, "f").and_then(|value| value.parse::<u32>().ok())
+        {
+            self.kitty_image_data.entry(image_id).or_default().format = Some(format);
+        }
+        if let Some(width) = kitty_parameter(&payload.control, "s")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| (1..=MAX_IMAGE_DIMENSION).contains(value))
+        {
+            self.kitty_image_data.entry(image_id).or_default().width = Some(width);
+        }
+        if let Some(height) = kitty_parameter(&payload.control, "v")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| (1..=MAX_IMAGE_DIMENSION).contains(value))
+        {
+            self.kitty_image_data.entry(image_id).or_default().height = Some(height);
+        }
+        if let Some(columns) = kitty_parameter(&payload.control, "c")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| (1..=MAX_IMAGE_DIMENSION).contains(value))
+        {
+            self.kitty_image_data.entry(image_id).or_default().columns = Some(columns);
+        }
+        if let Some(rows) = kitty_parameter(&payload.control, "r")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| (1..=MAX_IMAGE_DIMENSION).contains(value))
+        {
+            self.kitty_image_data.entry(image_id).or_default().rows = Some(rows);
+        }
+        if let Some(source_x) =
+            kitty_parameter(&payload.control, "x").and_then(|value| value.parse::<usize>().ok())
+        {
+            self.kitty_image_data.entry(image_id).or_default().source_x = Some(source_x);
+        }
+        if let Some(source_y) =
+            kitty_parameter(&payload.control, "y").and_then(|value| value.parse::<usize>().ok())
+        {
+            self.kitty_image_data.entry(image_id).or_default().source_y = Some(source_y);
+        }
+        if let Some(source_width) = kitty_parameter(&payload.control, "w")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| (1..=MAX_IMAGE_DIMENSION).contains(value))
+        {
+            self.kitty_image_data
+                .entry(image_id)
+                .or_default()
+                .source_width = Some(source_width);
+        }
+        if let Some(source_height) = kitty_parameter(&payload.control, "h")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| (1..=MAX_IMAGE_DIMENSION).contains(value))
+        {
+            self.kitty_image_data
+                .entry(image_id)
+                .or_default()
+                .source_height = Some(source_height);
+        }
+        if let Some(offset_x) =
+            kitty_parameter(&payload.control, "X").and_then(|value| value.parse::<usize>().ok())
+        {
+            self.kitty_image_data.entry(image_id).or_default().offset_x = offset_x;
+        }
+        if let Some(offset_y) =
+            kitty_parameter(&payload.control, "Y").and_then(|value| value.parse::<usize>().ok())
+        {
+            self.kitty_image_data.entry(image_id).or_default().offset_y = offset_y;
+        }
+        if let Some(z_index) =
+            kitty_parameter(&payload.control, "z").and_then(|value| value.parse::<i32>().ok())
+        {
+            self.kitty_image_data.entry(image_id).or_default().z_index = z_index;
+        }
+        if more_chunks || !matches!(action, "p" | "T" | "t" | "q") {
+            return;
+        }
+        self.kitty_active_image_id = None;
+
+        let Some(image_data) = self.kitty_image_data.get(&image_id) else {
+            self.respond_kitty_graphics(&payload.control, "ENOENT");
+            return;
+        };
+        let stored_data = image_data.data.clone();
+        let stored_compressed = image_data.compressed;
+        let stored_action = image_data.action.clone();
+        let stored_format = image_data.format;
+        let stored_width = image_data.width;
+        let stored_height = image_data.height;
+        let stored_columns = image_data.columns;
+        let stored_rows = image_data.rows;
+        let stored_placement_id = image_data.placement_id;
+        let stored_do_not_move_cursor = image_data.do_not_move_cursor;
+        let stored_source_x = image_data.source_x;
+        let stored_source_y = image_data.source_y;
+        let stored_source_width = image_data.source_width;
+        let stored_source_height = image_data.source_height;
+        let stored_offset_x = image_data.offset_x;
+        let stored_offset_y = image_data.offset_y;
+        let stored_z_index = image_data.z_index;
+        let stored_image_number = image_data.image_number;
+        let stored_virtual_placement = image_data.virtual_placement;
+        let data = if stored_compressed {
+            let Some(data) = kitty_zlib_decode(&stored_data) else {
+                self.respond_kitty_graphics(&payload.control, "EINVAL");
+                return;
+            };
+            data
+        } else {
+            stored_data
+        };
+        let action = kitty_image_action(&payload.control, stored_action.as_deref());
+        let format = kitty_parameter(&payload.control, "f")
+            .and_then(|value| value.parse::<u32>().ok())
+            .or(stored_format)
+            .unwrap_or(32);
+        let pixel_width = kitty_parameter(&payload.control, "s")
+            .and_then(|value| value.parse::<usize>().ok())
+            .or(stored_width);
+        let pixel_height = kitty_parameter(&payload.control, "v")
+            .and_then(|value| value.parse::<usize>().ok())
+            .or(stored_height);
+        let encoded_data = match format {
+            24 | 32 => {
+                let (Some(width), Some(height)) = (pixel_width, pixel_height) else {
+                    log::debug!("ignoring Kitty raw image without pixel dimensions");
+                    self.respond_kitty_graphics(&payload.control, "EINVAL");
+                    return;
+                };
+                let channels = (format / 8) as usize;
+                let Some(encoded) = kitty_raw_to_png(&data, width, height, channels) else {
+                    log::debug!("ignoring invalid Kitty raw image");
+                    self.respond_kitty_graphics(&payload.control, "EINVAL");
+                    return;
+                };
+                encoded
+            }
+            100 if terminal_image_format(&data) == Some(gpui::ImageFormat::Png) => data,
+            _ => {
+                log::debug!("ignoring unsupported Kitty graphics format {format}");
+                self.respond_kitty_graphics(&payload.control, "EINVAL");
+                return;
+            }
+        };
+        let source_x = kitty_parameter(&payload.control, "x")
+            .and_then(|value| value.parse::<usize>().ok())
+            .or(stored_source_x);
+        let source_y = kitty_parameter(&payload.control, "y")
+            .and_then(|value| value.parse::<usize>().ok())
+            .or(stored_source_y);
+        let source_width = kitty_parameter(&payload.control, "w")
+            .and_then(|value| value.parse::<usize>().ok())
+            .or(stored_source_width);
+        let source_height = kitty_parameter(&payload.control, "h")
+            .and_then(|value| value.parse::<usize>().ok())
+            .or(stored_source_height);
+        let placement = KittyPlacement {
+            source_x,
+            source_y,
+            source_width,
+            source_height,
+            offset_x: kitty_parameter(&payload.control, "X")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(stored_offset_x),
+            offset_y: kitty_parameter(&payload.control, "Y")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(stored_offset_y),
+            z_index: kitty_parameter(&payload.control, "z")
+                .and_then(|value| value.parse::<i32>().ok())
+                .unwrap_or(stored_z_index),
+            relative_image_id,
+            relative_placement_id,
+            relative_offset_x,
+            relative_offset_y,
+        };
+        let Some(encoded_data) = crop_kitty_image(&encoded_data, placement) else {
+            self.respond_kitty_graphics(&payload.control, "EINVAL");
+            return;
+        };
+        if action == "q" {
+            self.kitty_image_data.remove(&image_id);
+            self.respond_kitty_graphics_for_image(
+                &payload.control,
+                image_id,
+                requested_image_number.or(stored_image_number),
+                "OK",
+            );
+            return;
+        }
+        if action == "t" {
+            self.respond_kitty_graphics_for_image(
+                &payload.control,
+                image_id,
+                requested_image_number.or(stored_image_number),
+                "OK",
+            );
+            return;
+        }
+        if action == "T" {
+            self.images.retain(|image| image.kitty_id != Some(image_id));
+        }
+        let width = kitty_parameter(&payload.control, "c")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| (1..=MAX_IMAGE_DIMENSION).contains(value))
+            .or(stored_columns)
+            .map(ImageDimension::Cells);
+        let height = kitty_parameter(&payload.control, "r")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| (1..=MAX_IMAGE_DIMENSION).contains(value))
+            .or(stored_rows)
+            .map(ImageDimension::Cells);
+        let placement_id = kitty_parameter(&payload.control, "p")
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|placement| *placement > 0)
+            .or(stored_placement_id);
+        let virtual_placement = virtual_requested || stored_virtual_placement;
+        if virtual_placement && (width.is_none() || height.is_none()) {
+            self.respond_kitty_graphics(&payload.control, "EINVAL");
+            return;
+        }
+        let do_not_move_cursor =
+            kitty_parameter(&payload.control, "C") == Some("1") || stored_do_not_move_cursor;
+        let stored = self.store_image_with_id(
+            ImagePayload {
+                data: encoded_data,
+                width,
+                height,
+                preserve_aspect_ratio: true,
+                do_not_move_cursor,
+            },
+            Some(image_id),
+            placement_id,
+            placement,
+            virtual_placement,
+        );
+        if stored && !virtual_placement {
+            self.advance_image_cursor(
+                image_dimension_cells(width),
+                image_dimension_cells(height),
+                do_not_move_cursor || relative_image_id.is_some(),
+            );
+        }
+        self.respond_kitty_graphics_for_image(
+            &payload.control,
+            image_id,
+            requested_image_number.or(stored_image_number),
+            "OK",
+        );
+    }
+
+    fn respond_kitty_graphics(&mut self, control: &str, message: &str) {
+        let image_id = kitty_parameter(control, "i")
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(0);
+        let image_number =
+            kitty_parameter(control, "I").and_then(|value| value.parse::<u32>().ok());
+        self.respond_kitty_graphics_for_image(control, image_id, image_number, message);
+    }
+
+    fn respond_kitty_graphics_for_image(
+        &mut self,
+        control: &str,
+        image_id: u32,
+        image_number: Option<u32>,
+        message: &str,
+    ) {
+        let quiet = kitty_parameter(control, "q");
+        if (message == "OK" && quiet == Some("1")) || (message != "OK" && quiet == Some("2")) {
+            return;
+        }
+        let image_number = image_number
+            .map(|number| format!(",I={number}"))
+            .unwrap_or_default();
+        let placement = kitty_parameter(control, "p")
+            .and_then(|value| value.parse::<u32>().ok())
+            .map(|placement| format!(",p={placement}"))
+            .unwrap_or_default();
+        self.send_input(
+            format!("\x1b_Gi={image_id}{image_number}{placement};{message}\x1b\\").into_bytes(),
+        );
+    }
+
+    fn respond_decrqss(&mut self, query: &[u8]) {
+        let value = match query {
+            b"m" => Some("0m".to_string()),
+            b" q" => {
+                let style = self.term.cursor_style();
+                let style_id = match (style.shape, style.blinking) {
+                    (CursorShape::Block, true) => 1,
+                    (CursorShape::Block, false) => 2,
+                    (CursorShape::Underline, true) => 3,
+                    (CursorShape::Underline, false) => 4,
+                    (CursorShape::Beam, true) => 5,
+                    (CursorShape::Beam, false) => 6,
+                    (CursorShape::HollowBlock, _) | (CursorShape::Hidden, _) => 2,
+                };
+                Some(format!("{style_id} q"))
+            }
+            b"r" => Some(format!("1;{}r", self.term.screen_lines())),
+            b"\"p" => Some("64;1\"p".to_string()),
+            _ => None,
+        };
+        let response = if let Some(value) = value {
+            format!("\x1bP1$r{value}\x1b\\")
+        } else {
+            format!("\x1bP0$r{}\x1b\\", String::from_utf8_lossy(query))
+        };
+        self.send_input(response.into_bytes());
+    }
+
+    fn respond_xtgettcap(&mut self, query: &[u8]) {
+        let Some(capability) = decode_hex_bytes(query) else {
+            self.send_input(
+                format!("\x1bP0+r{}\x1b\\", String::from_utf8_lossy(query)).into_bytes(),
+            );
+            return;
+        };
+        let value = match capability.as_slice() {
+            b"TN" => Some(b"xterm-256color".as_slice()),
+            b"Co" => Some(b"256".as_slice()),
+            b"RGB" => Some(b"8".as_slice()),
+            b"Tc" => Some(b"truecolor".as_slice()),
+            _ => None,
+        };
+        let response = if let Some(value) = value {
+            format!(
+                "\x1bP1+r{}={}\x1b\\",
+                String::from_utf8_lossy(query),
+                encode_hex_bytes(value)
+            )
+        } else {
+            format!("\x1bP0+r{}\x1b\\", String::from_utf8_lossy(query))
+        };
+        self.send_input(response.into_bytes());
+    }
+
+    fn respond_modify_other_keys_query(&mut self) {
+        self.send_input(format!("\x1b[>4;{}m", self.modify_other_keys).into_bytes());
+    }
+
+    fn respond_cell_size_query(&mut self) {
+        let size = self
+            .window_size
+            .lock()
+            .map(|size| *size)
+            .unwrap_or(WindowSize {
+                num_lines: 30,
+                num_cols: 100,
+                cell_width: 8,
+                cell_height: (FONT_SIZE * 1.3) as u16,
+            });
+        // xterm/Kitty encode this report as CSI 6 ; height ; width t.
+        self.send_input(format!("\x1b[6;{};{}t", size.cell_height, size.cell_width).into_bytes());
+    }
+
+    fn respond_window_size_query(&mut self) {
+        let size = self
+            .window_size
+            .lock()
+            .map(|size| *size)
+            .unwrap_or(WindowSize {
+                num_lines: 30,
+                num_cols: 100,
+                cell_width: 8,
+                cell_height: (FONT_SIZE * 1.3) as u16,
+            });
+        let width = u32::from(size.num_cols).saturating_mul(u32::from(size.cell_width));
+        let height = u32::from(size.num_lines).saturating_mul(u32::from(size.cell_height));
+        // xterm/Kitty encode this report as CSI 4 ; height ; width t.
+        self.send_input(format!("\x1b[4;{height};{width}t").into_bytes());
+    }
+
+    fn respond_text_area_size_query(&mut self) {
+        let size = self
+            .window_size
+            .lock()
+            .map(|size| *size)
+            .unwrap_or(WindowSize {
+                num_lines: 30,
+                num_cols: 100,
+                cell_width: 8,
+                cell_height: (FONT_SIZE * 1.3) as u16,
+            });
+        // CSI 8 reports rows and columns of the text area. CSI 19 has the
+        // same dimensions for Crossh because the terminal has no separate
+        // physical screen larger than its window.
+        self.send_input(format!("\x1b[8;{};{}t", size.num_lines, size.num_cols).into_bytes());
+    }
+
     fn drain_terminal_side_effects(&mut self, cx: &mut Context<Self>) {
         let effects = self
             .side_effects
@@ -595,6 +1969,14 @@ impl TerminalView {
 
         for effect in effects {
             match effect {
+                TerminalSideEffect::Bell => {
+                    self.notify_user(
+                        self.title.clone().unwrap_or_default(),
+                        "Terminal bell".to_string(),
+                        false,
+                        cx,
+                    );
+                }
                 TerminalSideEffect::Title(title) => {
                     self.title = Some(title);
                     cx.emit(TerminalEvent::TitleChanged);
@@ -670,6 +2052,40 @@ impl TerminalView {
     fn send_input(&mut self, bytes: Vec<u8>) {
         log::trace!("pty write: {}", debug_bytes(&bytes));
         self.queue_input(InputCmd::Write(bytes));
+    }
+
+    /// The standalone UI drives `vte::Processor` directly instead of using
+    /// Alacritty's PTY event loop, so it must enforce the synchronized-update
+    /// deadline itself. Otherwise an interrupted `?2026h` sequence can leave
+    /// the grid buffered indefinitely.
+    fn finish_expired_sync_update(&mut self) {
+        let expired = self
+            .parser
+            .sync_timeout()
+            .sync_timeout()
+            .is_some_and(|deadline| deadline <= Instant::now());
+        if expired {
+            self.parser.stop_sync(&mut self.term);
+            self._sync_timeout_task = None;
+            self.drain_protocol_responses();
+            self.line_timestamps.sync_to_term(&self.term);
+        }
+    }
+
+    fn schedule_sync_timeout(&mut self, cx: &mut Context<Self>) {
+        let Some(deadline) = self.parser.sync_timeout().sync_timeout() else {
+            self._sync_timeout_task = None;
+            return;
+        };
+        let delay = deadline.saturating_duration_since(Instant::now());
+        let task = cx.spawn(async move |weak, cx| {
+            cx.background_executor().timer(delay).await;
+            let _ = weak.update(cx, |this, cx| {
+                this.finish_expired_sync_update();
+                cx.notify();
+            });
+        });
+        self._sync_timeout_task = Some(task);
     }
 
     /// 非阻塞地把输入命令送入 SSH relay；暂时满载时保留顺序，避免丢键。
@@ -766,7 +2182,7 @@ impl TerminalView {
         }
         let mode = *self.term.mode();
         let event_type = if ev.is_held { 2 } else { 1 };
-        match encode_keystroke_with_event(ks, mode, event_type) {
+        match encode_keystroke_with_options(ks, mode, event_type, self.modify_other_keys) {
             Some(bytes) => {
                 if self.shell_activity_available && matches!(ks.key.as_str(), "enter" | "return") {
                     self.command_running = true;
@@ -840,7 +2256,7 @@ impl TerminalView {
             && let Some(url) = self.url_at(col, row)
         {
             log::info!("opening URL: {url}");
-            std::process::Command::new("open").arg(&url).spawn().ok();
+            cx.open_url(&url);
             return;
         }
 
@@ -850,8 +2266,15 @@ impl TerminalView {
         if ev.button == MouseButton::Right {
             if mode.intersects(TermMode::MOUSE_MODE) && !ev.modifiers.shift {
                 if let Some(button) = mouse_button_code(ev.button)
-                    && let Some(bytes) =
-                        encode_mouse_report(button, col, row, true, &ev.modifiers, mode)
+                    && let Some(bytes) = encode_mouse_report(
+                        button,
+                        col,
+                        row,
+                        true,
+                        &ev.modifiers,
+                        mode,
+                        self.urxvt_mouse,
+                    )
                 {
                     self.send_input(bytes);
                     self.remote_mouse_button = Some(button);
@@ -866,8 +2289,15 @@ impl TerminalView {
         // Shift 保留本地选择，即使远端应用开启了鼠标模式。
         if mode.intersects(TermMode::MOUSE_MODE) && !ev.modifiers.shift {
             if let Some(button) = mouse_button_code(ev.button)
-                && let Some(bytes) =
-                    encode_mouse_report(button, col, row, true, &ev.modifiers, mode)
+                && let Some(bytes) = encode_mouse_report(
+                    button,
+                    col,
+                    row,
+                    true,
+                    &ev.modifiers,
+                    mode,
+                    self.urxvt_mouse,
+                )
             {
                 self.send_input(bytes);
                 self.remote_mouse_button = Some(button);
@@ -905,9 +2335,15 @@ impl TerminalView {
         {
             let tracked_release = self.remote_mouse_button == Some(button);
             if !ev.modifiers.shift || tracked_release {
-                if let Some(bytes) =
-                    encode_mouse_report(button, col, row, false, &ev.modifiers, mode)
-                {
+                if let Some(bytes) = encode_mouse_report(
+                    button,
+                    col,
+                    row,
+                    false,
+                    &ev.modifiers,
+                    mode,
+                    self.urxvt_mouse,
+                ) {
                     self.send_input(bytes);
                 }
                 if tracked_release {
@@ -943,9 +2379,15 @@ impl TerminalView {
                     .and_then(mouse_button_code)
                     .map(|button| 32 + button)
                     .unwrap_or(35);
-                if let Some(bytes) =
-                    encode_mouse_report(button, col, row, true, &ev.modifiers, mode)
-                {
+                if let Some(bytes) = encode_mouse_report(
+                    button,
+                    col,
+                    row,
+                    true,
+                    &ev.modifiers,
+                    mode,
+                    self.urxvt_mouse,
+                ) {
                     self.send_input(bytes);
                 }
             }
@@ -982,9 +2424,15 @@ impl TerminalView {
                 self.rows.saturating_sub(1) / 2,
             ));
             for _ in 0..steps {
-                if let Some(bytes) =
-                    encode_mouse_report(dir, point.0, point.1, true, &ev.modifiers, mode)
-                {
+                if let Some(bytes) = encode_mouse_report(
+                    dir,
+                    point.0,
+                    point.1,
+                    true,
+                    &ev.modifiers,
+                    mode,
+                    self.urxvt_mouse,
+                ) {
                     self.send_input(bytes);
                 }
             }
@@ -1144,7 +2592,7 @@ impl TerminalView {
             TerminalMenuAction::SelectAll => self.select_all(),
             TerminalMenuAction::OpenUrl(url) => {
                 log::info!("opening URL: {url}");
-                std::process::Command::new("open").arg(&url).spawn().ok();
+                cx.open_url(&url);
             }
         }
         self.close_context_menu(cx);
@@ -1330,17 +2778,20 @@ impl EntityInputHandler for TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.finish_expired_sync_update();
         self.flush_pending_input();
 
         if self._focus_in.is_none() {
             let focus = self.focus.clone();
             self._focus_in = Some(cx.on_focus_in(&focus, window, |this, _window, cx| {
+                this.focused = true;
                 this.send_focus_event(true);
                 cx.notify();
             }));
             let focus = self.focus.clone();
             self._focus_out = Some(
                 cx.on_focus_out(&focus, window, |this, _event, _window, cx| {
+                    this.focused = false;
                     this.send_focus_event(false);
                     cx.notify();
                 }),
@@ -1455,11 +2906,13 @@ impl Render for TerminalView {
                 // paint：先快照可见单元格（避免持有对 cx 的不可变借用），
                 // 再用 &mut App 绘制。
                 if let Some(t) = weak2.upgrade() {
-                    let (snapshot, ime_marked_text) = {
+                    let (snapshot, ime_marked_text, images, progress) = {
                         let this = t.read(cx);
                         let sel = this.sel_start.zip(this.sel_end);
-                        let show_cur = this.cursor_blink_on
-                            && this.term.mode().contains(TermMode::SHOW_CURSOR);
+                        let cursor_style = this.term.cursor_style();
+                        let show_cur = this.term.mode().contains(TermMode::SHOW_CURSOR)
+                            && cursor_style.shape != CursorShape::Hidden
+                            && (!cursor_style.blinking || this.cursor_blink_on);
                         let timestamps = if this.show_timestamps {
                             this.line_timestamps.visible(&this.term)
                         } else {
@@ -1468,6 +2921,8 @@ impl Render for TerminalView {
                         (
                             snapshot_visible(&this.term, sel, this.cols, show_cur, &timestamps),
                             this.ime_marked_text.clone(),
+                            this.images.clone(),
+                            this.progress,
                         )
                     };
                     // 保存 URL 供点击跳转。
@@ -1488,6 +2943,8 @@ impl Render for TerminalView {
                             font: &font,
                             default_fg,
                             default_bg: bg,
+                            images: &images,
+                            progress,
                         },
                         window,
                         cx,
@@ -1592,6 +3049,7 @@ struct RenderCell {
     spacer: bool,
     wide: bool,
     zero_width: String,
+    kitty_placeholder: bool,
     is_url: bool,
     hyperlink: Option<String>,
 }
@@ -1760,7 +3218,7 @@ fn terminal_text_runs(row: &[RenderCell]) -> Vec<RenderTextRun> {
     let mut current: Option<RenderTextRun> = None;
 
     for (col, cell) in row.iter().enumerate() {
-        if cell.spacer {
+        if cell.spacer || cell.kitty_placeholder {
             continue;
         }
 
@@ -1807,10 +3265,14 @@ struct Snapshot {
     history_len: usize,
     /// 光标是否可见（闪烁控制 + DECTCEM）。
     cursor_visible: bool,
+    /// DECSCUSR/OSC 50 设置的光标形状。
+    cursor_shape: CursorShape,
     /// 可见区内的 URL：(row_in_viewport, col_start, col_end, url_string)。
     urls: Vec<(usize, usize, usize, String)>,
     /// 可见区每一行的时间戳；换行续行和 alternate screen 为 None。
     timestamps: Vec<Option<String>>,
+    /// Kitty Unicode placeholders decoded from the visible terminal grid.
+    kitty_placeholders: Vec<KittyPlaceholder>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -2215,7 +3677,7 @@ fn detect_plain_urls(
     let display_chars: Vec<(usize, char)> = row
         .iter()
         .enumerate()
-        .filter(|(_, cell)| !cell.spacer)
+        .filter(|(_, cell)| !cell.spacer && !cell.kitty_placeholder)
         .map(|(col, cell)| (col, cell.ch))
         .collect();
     let chars: Vec<char> = display_chars.iter().map(|(_, ch)| *ch).collect();
@@ -2249,6 +3711,403 @@ fn detect_plain_urls(
     urls
 }
 
+/// Kitty reserves this stable list of combining marks for placeholder row and
+/// column numbers. The first entries cover the common compact grid sizes;
+/// keeping the mapping explicit avoids treating an unrelated combining mark
+/// as image metadata.
+const KITTY_PLACEHOLDER_DIACRITICS: &[char] = &[
+    '\u{0305}',
+    '\u{030d}',
+    '\u{030e}',
+    '\u{0310}',
+    '\u{0312}',
+    '\u{033d}',
+    '\u{033e}',
+    '\u{033f}',
+    '\u{0346}',
+    '\u{034a}',
+    '\u{034b}',
+    '\u{034c}',
+    '\u{0350}',
+    '\u{0351}',
+    '\u{0352}',
+    '\u{0357}',
+    '\u{035b}',
+    '\u{0363}',
+    '\u{0364}',
+    '\u{0365}',
+    '\u{0366}',
+    '\u{0367}',
+    '\u{0368}',
+    '\u{0369}',
+    '\u{036a}',
+    '\u{036b}',
+    '\u{036c}',
+    '\u{036d}',
+    '\u{036e}',
+    '\u{036f}',
+    '\u{0483}',
+    '\u{0484}',
+    '\u{0485}',
+    '\u{0486}',
+    '\u{0487}',
+    '\u{0592}',
+    '\u{0593}',
+    '\u{0594}',
+    '\u{0595}',
+    '\u{0597}',
+    '\u{0598}',
+    '\u{0599}',
+    '\u{059c}',
+    '\u{059d}',
+    '\u{059e}',
+    '\u{059f}',
+    '\u{05a0}',
+    '\u{05a1}',
+    '\u{05a8}',
+    '\u{05a9}',
+    '\u{05ab}',
+    '\u{05ac}',
+    '\u{05af}',
+    '\u{05c4}',
+    '\u{0610}',
+    '\u{0611}',
+    '\u{0612}',
+    '\u{0613}',
+    '\u{0614}',
+    '\u{0615}',
+    '\u{0616}',
+    '\u{0617}',
+    '\u{0657}',
+    '\u{0658}',
+    '\u{0659}',
+    '\u{065a}',
+    '\u{065b}',
+    '\u{065d}',
+    '\u{065e}',
+    '\u{06d6}',
+    '\u{06d7}',
+    '\u{06d8}',
+    '\u{06d9}',
+    '\u{06da}',
+    '\u{06db}',
+    '\u{06dc}',
+    '\u{06df}',
+    '\u{06e0}',
+    '\u{06e1}',
+    '\u{06e2}',
+    '\u{06e4}',
+    '\u{06e7}',
+    '\u{06e8}',
+    '\u{06eb}',
+    '\u{06ec}',
+    '\u{0730}',
+    '\u{0732}',
+    '\u{0733}',
+    '\u{0735}',
+    '\u{0736}',
+    '\u{073a}',
+    '\u{073d}',
+    '\u{073f}',
+    '\u{0740}',
+    '\u{0741}',
+    '\u{0743}',
+    '\u{0745}',
+    '\u{0747}',
+    '\u{0749}',
+    '\u{074a}',
+    '\u{07eb}',
+    '\u{07ec}',
+    '\u{07ed}',
+    '\u{07ee}',
+    '\u{07ef}',
+    '\u{07f0}',
+    '\u{07f1}',
+    '\u{07f3}',
+    '\u{0816}',
+    '\u{0817}',
+    '\u{0818}',
+    '\u{0819}',
+    '\u{081b}',
+    '\u{081c}',
+    '\u{081d}',
+    '\u{081e}',
+    '\u{081f}',
+    '\u{0820}',
+    '\u{0821}',
+    '\u{0822}',
+    '\u{0823}',
+    '\u{0825}',
+    '\u{0826}',
+    '\u{0827}',
+    '\u{0829}',
+    '\u{082a}',
+    '\u{082b}',
+    '\u{082c}',
+    '\u{082d}',
+    '\u{0951}',
+    '\u{0953}',
+    '\u{0954}',
+    '\u{0f82}',
+    '\u{0f83}',
+    '\u{0f86}',
+    '\u{0f87}',
+    '\u{135d}',
+    '\u{135e}',
+    '\u{135f}',
+    '\u{17dd}',
+    '\u{193a}',
+    '\u{1a17}',
+    '\u{1a75}',
+    '\u{1a76}',
+    '\u{1a77}',
+    '\u{1a78}',
+    '\u{1a79}',
+    '\u{1a7a}',
+    '\u{1a7b}',
+    '\u{1a7c}',
+    '\u{1b6b}',
+    '\u{1b6d}',
+    '\u{1b6e}',
+    '\u{1b6f}',
+    '\u{1b70}',
+    '\u{1b71}',
+    '\u{1b72}',
+    '\u{1b73}',
+    '\u{1cd0}',
+    '\u{1cd1}',
+    '\u{1cd2}',
+    '\u{1cda}',
+    '\u{1cdb}',
+    '\u{1ce0}',
+    '\u{1dc0}',
+    '\u{1dc1}',
+    '\u{1dc3}',
+    '\u{1dc4}',
+    '\u{1dc5}',
+    '\u{1dc6}',
+    '\u{1dc7}',
+    '\u{1dc8}',
+    '\u{1dc9}',
+    '\u{1dcb}',
+    '\u{1dcc}',
+    '\u{1dd1}',
+    '\u{1dd2}',
+    '\u{1dd3}',
+    '\u{1dd4}',
+    '\u{1dd5}',
+    '\u{1dd6}',
+    '\u{1dd7}',
+    '\u{1dd8}',
+    '\u{1dd9}',
+    '\u{1dda}',
+    '\u{1ddb}',
+    '\u{1ddc}',
+    '\u{1ddd}',
+    '\u{1dde}',
+    '\u{1ddf}',
+    '\u{1de0}',
+    '\u{1de1}',
+    '\u{1de2}',
+    '\u{1de3}',
+    '\u{1de4}',
+    '\u{1de5}',
+    '\u{1de6}',
+    '\u{1dfe}',
+    '\u{20d0}',
+    '\u{20d1}',
+    '\u{20d4}',
+    '\u{20d5}',
+    '\u{20d6}',
+    '\u{20d7}',
+    '\u{20db}',
+    '\u{20dc}',
+    '\u{20e1}',
+    '\u{20e7}',
+    '\u{20e9}',
+    '\u{20f0}',
+    '\u{2cef}',
+    '\u{2cf0}',
+    '\u{2cf1}',
+    '\u{2de0}',
+    '\u{2de1}',
+    '\u{2de2}',
+    '\u{2de3}',
+    '\u{2de4}',
+    '\u{2de5}',
+    '\u{2de6}',
+    '\u{2de7}',
+    '\u{2de8}',
+    '\u{2de9}',
+    '\u{2dea}',
+    '\u{2deb}',
+    '\u{2dec}',
+    '\u{2ded}',
+    '\u{2dee}',
+    '\u{2def}',
+    '\u{2df0}',
+    '\u{2df1}',
+    '\u{2df2}',
+    '\u{2df3}',
+    '\u{2df4}',
+    '\u{2df5}',
+    '\u{2df6}',
+    '\u{2df7}',
+    '\u{2df8}',
+    '\u{2df9}',
+    '\u{2dfa}',
+    '\u{2dfb}',
+    '\u{2dfc}',
+    '\u{2dfd}',
+    '\u{2dfe}',
+    '\u{2dff}',
+    '\u{a66f}',
+    '\u{a67c}',
+    '\u{a67d}',
+    '\u{a6f0}',
+    '\u{a6f1}',
+    '\u{a8e0}',
+    '\u{a8e1}',
+    '\u{a8e2}',
+    '\u{a8e3}',
+    '\u{a8e4}',
+    '\u{a8e5}',
+    '\u{a8e6}',
+    '\u{a8e7}',
+    '\u{a8e8}',
+    '\u{a8e9}',
+    '\u{a8ea}',
+    '\u{a8eb}',
+    '\u{a8ec}',
+    '\u{a8ed}',
+    '\u{a8ee}',
+    '\u{a8ef}',
+    '\u{a8f0}',
+    '\u{a8f1}',
+    '\u{aab0}',
+    '\u{aab2}',
+    '\u{aab3}',
+    '\u{aab7}',
+    '\u{aab8}',
+    '\u{aabe}',
+    '\u{aabf}',
+    '\u{aac1}',
+    '\u{fe20}',
+    '\u{fe21}',
+    '\u{fe22}',
+    '\u{fe23}',
+    '\u{fe24}',
+    '\u{fe25}',
+    '\u{fe26}',
+    '\u{10a0f}',
+    '\u{10a38}',
+    '\u{1d185}',
+    '\u{1d186}',
+    '\u{1d187}',
+    '\u{1d188}',
+    '\u{1d189}',
+    '\u{1d1aa}',
+    '\u{1d1ab}',
+    '\u{1d1ac}',
+    '\u{1d1ad}',
+    '\u{1d242}',
+    '\u{1d243}',
+    '\u{1d244}',
+];
+
+fn kitty_placeholder_diacritic_value(character: char) -> Option<usize> {
+    KITTY_PLACEHOLDER_DIACRITICS
+        .iter()
+        .position(|candidate| *candidate == character)
+}
+
+fn kitty_placeholder_color_value(color: &Color) -> Option<u32> {
+    match color {
+        Color::Indexed(value) => Some(*value as u32),
+        Color::Spec(Rgb { r, g, b }) => Some((*r as u32) << 16 | (*g as u32) << 8 | *b as u32),
+        Color::Named(_) => None,
+    }
+}
+
+fn decode_kitty_placeholder(
+    cell: &Cell,
+    zero_width: &str,
+    viewport_row: usize,
+    viewport_column: usize,
+    previous: Option<KittyPlaceholderState>,
+) -> Option<(KittyPlaceholder, KittyPlaceholderState)> {
+    if cell.c != KITTY_PLACEHOLDER_CHAR {
+        return None;
+    }
+    let foreground = kitty_placeholder_color_value(&cell.fg)?;
+    let underline = cell
+        .underline_color()
+        .and_then(|color| kitty_placeholder_color_value(&color));
+    let marks = zero_width
+        .chars()
+        .filter_map(kitty_placeholder_diacritic_value)
+        .take(3)
+        .collect::<Vec<_>>();
+    let same_colors = previous.is_some_and(|previous| {
+        previous.foreground == foreground && previous.underline == underline
+    });
+    let previous = previous
+        .filter(|previous| previous.foreground == foreground && previous.underline == underline);
+
+    let (row, column, image_id_high) = match marks.as_slice() {
+        [] => {
+            let previous = previous?;
+            (
+                previous.row,
+                previous.column.checked_add(1)?,
+                previous.image_id_high,
+            )
+        }
+        [row] => {
+            let column = if same_colors && previous.is_some_and(|previous| previous.row == *row) {
+                previous?.column.checked_add(1)?
+            } else {
+                0
+            };
+            let image_id_high = previous
+                .filter(|previous| previous.row == *row)
+                .map(|previous| previous.image_id_high)
+                .unwrap_or(0);
+            (*row, column, image_id_high)
+        }
+        [row, column] => {
+            let image_id_high = previous
+                .filter(|previous| {
+                    previous.row == *row && previous.column.checked_add(1) == Some(*column)
+                })
+                .map(|previous| previous.image_id_high)
+                .unwrap_or(0);
+            (*row, *column, image_id_high)
+        }
+        [row, column, image_id_high] => (*row, *column, u8::try_from(*image_id_high).ok()?),
+        _ => unreachable!(),
+    };
+    let image_id = (foreground & 0x00ff_ffff) | (u32::from(image_id_high) << 24);
+    let state = KittyPlaceholderState {
+        foreground,
+        underline,
+        row,
+        column,
+        image_id_high,
+    };
+    Some((
+        KittyPlaceholder {
+            image_id,
+            placement_id: underline.filter(|value| *value != 0),
+            row,
+            column,
+            viewport_row,
+            viewport_column,
+        },
+        state,
+    ))
+}
+
 /// 把 Term 可见区快照成 owned 数据。
 fn snapshot_visible(
     term: &Term<NoopListener>,
@@ -2265,6 +4124,7 @@ fn snapshot_visible(
     let colors = term.colors();
     let default_fg = fg_of(term);
     let default_bg = bg_of(term);
+    let cursor_shape = term.cursor_style().shape;
 
     log::trace!(
         "snapshot_visible: display_offset={} top_visible={} cols={} rows={} total_lines={}",
@@ -2276,10 +4136,12 @@ fn snapshot_visible(
     );
 
     let mut out_rows: Vec<Vec<RenderCell>> = Vec::with_capacity(rows);
+    let mut kitty_placeholders = Vec::new();
     for r in 0..rows {
         let line = Line(top_visible.0 + r as i32);
         let row = &grid[line];
         let mut out: Vec<RenderCell> = Vec::with_capacity(cols);
+        let mut previous_placeholder = None;
         for c in 0..cols {
             let cell: &Cell = &row[Column(c)];
             let style = effective_cell_style(cell, colors, default_fg, default_bg);
@@ -2287,6 +4149,17 @@ fn snapshot_visible(
             if let Some(chars) = cell.zerowidth() {
                 zero_width.extend(chars.iter().copied());
             }
+            let kitty_placeholder =
+                decode_kitty_placeholder(cell, &zero_width, r, c, previous_placeholder)
+                    .map(|(placeholder, state)| {
+                        kitty_placeholders.push(placeholder);
+                        previous_placeholder = Some(state);
+                        true
+                    })
+                    .unwrap_or_else(|| {
+                        previous_placeholder = None;
+                        false
+                    });
             out.push(RenderCell {
                 ch: if cell.c == '\0' { ' ' } else { cell.c },
                 fg: style.fg,
@@ -2301,6 +4174,7 @@ fn snapshot_visible(
                     .intersects(CellFlags::WIDE_CHAR_SPACER | CellFlags::LEADING_WIDE_CHAR_SPACER),
                 wide: cell.flags.contains(CellFlags::WIDE_CHAR),
                 zero_width,
+                kitty_placeholder,
                 is_url: false,
                 hyperlink: cell.hyperlink().map(|link| link.uri().to_string()),
             });
@@ -2351,8 +4225,10 @@ fn snapshot_visible(
         display_offset,
         history_len,
         cursor_visible,
+        cursor_shape,
         urls,
         timestamps: timestamps.to_vec(),
+        kitty_placeholders,
     }
 }
 
@@ -2369,6 +4245,8 @@ struct PaintContext<'a> {
     font: &'a Font,
     default_fg: Hsla,
     default_bg: Hsla,
+    images: &'a [TerminalImage],
+    progress: Option<TerminalProgress>,
 }
 
 /// 根据快照绘制。
@@ -2494,6 +4372,207 @@ fn paint_cell_backgrounds(
     }
 }
 
+fn paint_terminal_images(
+    ctx: &PaintContext,
+    window: &mut Window,
+    cx: &mut App,
+    under_text: bool,
+    under_cell_background: bool,
+) {
+    if ctx.images.is_empty() {
+        return;
+    }
+    let snapshot = ctx.snapshot;
+    let top_line = snapshot.history_len.saturating_sub(snapshot.display_offset) as i64;
+    let cell_w = ctx.cell_w.as_f32();
+    let line_h = ctx.line_h.as_f32();
+    let mut images = ctx
+        .images
+        .iter()
+        .filter(|image| (image.z_index < 0) == under_text)
+        .filter(|image| (image.z_index < KITTY_BACKGROUND_Z_INDEX) == under_cell_background)
+        .collect::<Vec<_>>();
+    images.sort_by_key(|image| {
+        (
+            image.z_index,
+            image.kitty_id.unwrap_or(u32::MAX),
+            image.placement_id.unwrap_or(u32::MAX),
+        )
+    });
+
+    for image in images {
+        let Some(render_image) = image.image.clone().get_render_image(window, cx) else {
+            continue;
+        };
+        let natural = render_image.size(0);
+        let natural_width = natural.width.0.max(1) as f32;
+        let natural_height = natural.height.0.max(1) as f32;
+        let mut width = image
+            .width
+            .map(|dimension| image_dimension_pixels(dimension, cell_w))
+            .unwrap_or(natural_width);
+        let mut height = image
+            .height
+            .map(|dimension| image_dimension_pixels(dimension, line_h))
+            .unwrap_or(natural_height);
+
+        if image.preserve_aspect_ratio {
+            match (image.width, image.height) {
+                (Some(_), None) => height = natural_height * width / natural_width,
+                (None, Some(_)) => width = natural_width * height / natural_height,
+                _ => {}
+            }
+        }
+        if width <= 0.0 || height <= 0.0 {
+            continue;
+        }
+
+        let origins = terminal_image_origins(image, ctx.images, snapshot, top_line, 0);
+        for (row, column) in origins {
+            let offset_x = if image.virtual_placement {
+                0.
+            } else {
+                image.offset_x.min(cell_w.max(0.) as usize) as f32
+            };
+            let offset_y = if image.virtual_placement {
+                0.
+            } else {
+                image.offset_y.min(line_h.max(0.) as usize) as f32
+            };
+            let image_bounds = Bounds {
+                origin: Point::new(
+                    ctx.bounds.origin.x + px(column as f32 * cell_w) + px(offset_x),
+                    ctx.bounds.origin.y + px(row as f32 * line_h) + px(offset_y),
+                ),
+                size: gpui::size(px(width), px(height)),
+            };
+            if let Err(error) = window.paint_image(
+                ctx.bounds,
+                image_bounds,
+                Corners::default(),
+                render_image.clone(),
+                0,
+                false,
+            ) {
+                log::debug!("paint terminal image failed: {error}");
+            }
+        }
+    }
+}
+
+fn paint_terminal_progress(ctx: &PaintContext, window: &mut Window) {
+    let Some(progress) = ctx.progress else {
+        return;
+    };
+    let height = px(2.0);
+    let y = ctx.bounds.bottom() - height;
+    let track = hsla(0.0, 0.0, 0.0, 0.32);
+    let fill = match progress.state {
+        2 => Hsla::from(theme::danger()),
+        4 => Hsla::from(theme::warning()),
+        _ => Hsla::from(theme::accent()),
+    };
+    let fraction = match progress.state {
+        3 => 0.35,
+        _ => progress.progress.unwrap_or(0) as f32 / 100.0,
+    };
+    window.paint_quad(quad(
+        Bounds {
+            origin: Point::new(ctx.bounds.origin.x, y),
+            size: gpui::size(ctx.bounds.size.width, height),
+        },
+        Corners::default(),
+        track,
+        Edges::default(),
+        hsla(0.0, 0.0, 0.0, 0.0),
+        gpui::BorderStyle::default(),
+    ));
+    if fraction > 0.0 {
+        window.paint_quad(quad(
+            Bounds {
+                origin: Point::new(ctx.bounds.origin.x, y),
+                size: gpui::size(ctx.bounds.size.width * fraction.min(1.0), height),
+            },
+            Corners::default(),
+            fill,
+            Edges::default(),
+            hsla(0.0, 0.0, 0.0, 0.0),
+            gpui::BorderStyle::default(),
+        ));
+    }
+}
+
+fn image_dimension_pixels(dimension: ImageDimension, cell_size: f32) -> f32 {
+    match dimension {
+        ImageDimension::Cells(cells) => cells as f32 * cell_size,
+        ImageDimension::Pixels(pixels) => pixels as f32,
+    }
+}
+
+fn image_dimension_cells(dimension: Option<ImageDimension>) -> Option<usize> {
+    match dimension {
+        Some(ImageDimension::Cells(cells)) => Some(cells),
+        Some(ImageDimension::Pixels(_)) | None => None,
+    }
+}
+
+fn terminal_image_origins(
+    image: &TerminalImage,
+    images: &[TerminalImage],
+    snapshot: &Snapshot,
+    top_line: i64,
+    depth: usize,
+) -> Vec<(i64, i64)> {
+    if depth >= 8 {
+        return Vec::new();
+    }
+    if let Some(parent_id) = image.relative_image_id {
+        let Some(parent) = images.iter().rev().find(|parent| {
+            parent.kitty_id == Some(parent_id)
+                && image
+                    .relative_placement_id
+                    .is_none_or(|placement| parent.placement_id == Some(placement))
+        }) else {
+            return Vec::new();
+        };
+        return terminal_image_origins(parent, images, snapshot, top_line, depth + 1)
+            .into_iter()
+            .map(|(row, column)| {
+                (
+                    row.saturating_add(i64::from(image.relative_offset_y)),
+                    column.saturating_add(i64::from(image.relative_offset_x)),
+                )
+            })
+            .collect();
+    }
+
+    if image.virtual_placement {
+        let Some(image_id) = image.kitty_id else {
+            return Vec::new();
+        };
+        let mut origins = Vec::new();
+        for placeholder in snapshot
+            .kitty_placeholders
+            .iter()
+            .filter(|placeholder| placeholder.image_id == image_id)
+            .filter(|placeholder| {
+                image.placement_id.is_none() || image.placement_id == placeholder.placement_id
+            })
+        {
+            let origin = (
+                placeholder.viewport_row as i64 - placeholder.row as i64,
+                placeholder.viewport_column as i64 - placeholder.column as i64,
+            );
+            if !origins.contains(&origin) {
+                origins.push(origin);
+            }
+        }
+        origins
+    } else {
+        vec![(image.origin_line - top_line, image.origin_col as i64)]
+    }
+}
+
 fn paint_snapshot(ctx: &PaintContext, window: &mut Window, cx: &mut App) {
     let snapshot = ctx.snapshot;
     let ime_marked_text = ctx.ime_marked_text;
@@ -2526,7 +4605,13 @@ fn paint_snapshot(ctx: &PaintContext, window: &mut Window, cx: &mut App) {
         for (r, row) in snapshot.rows.iter().enumerate() {
             let s: String = row
                 .iter()
-                .map(|c| if c.spacer { ' ' } else { c.ch })
+                .map(|c| {
+                    if c.spacer || c.kitty_placeholder {
+                        ' '
+                    } else {
+                        c.ch
+                    }
+                })
                 .collect();
             let t = s.trim_end();
             if !t.is_empty() {
@@ -2545,10 +4630,19 @@ fn paint_snapshot(ctx: &PaintContext, window: &mut Window, cx: &mut App) {
         gpui::BorderStyle::default(),
     ));
 
+    // Kitty negative z-index placements sit below terminal text. They are
+    // painted after the base fill but before non-default cell backgrounds.
+    paint_terminal_images(ctx, window, cx, true, true);
+
     // Paint cell backgrounds separately from glyphs. GPUI text backgrounds are
     // glyph-run decorations and do not reliably cover blank cells or preserve
     // the terminal selection layer.
     paint_cell_backgrounds(snapshot, bounds, cell_wf, line_h, default_bg, window);
+
+    // Ordinary negative z-index images sit above non-default cell backgrounds
+    // but below text. Kitty reserves lower-than-INT32_MIN/2 z values for
+    // images that should also be covered by cell backgrounds.
+    paint_terminal_images(ctx, window, cx, true, false);
 
     // 选择高亮颜色。
     let sel_bg = hsla(0.6, 0.5, 0.3, 0.4);
@@ -2643,30 +4737,63 @@ fn paint_snapshot(ctx: &PaintContext, window: &mut Window, cx: &mut App) {
         }
     }
 
-    // 光标：实心块（受 blink + DECTCEM 控制）。
+    paint_terminal_images(ctx, window, cx, false, false);
+    paint_terminal_progress(ctx, window);
+
+    // 光标形状由 DECSCUSR/OSC 50 控制；blink 已在快照阶段按终端状态处理。
     if snapshot.cursor_visible
         && let Some((col, row)) = snapshot.cursor
         && let Some(cursor_cell) = snapshot.rows.get(row).and_then(|cells| cells.get(col))
+        && snapshot.cursor_shape != CursorShape::Hidden
     {
         let x = bounds.origin.x + px(col as f32 * cell_wf);
         let y = bounds.origin.y + px(row as f32 * line_hf);
+        let (cursor_origin, cursor_size, cursor_fill, cursor_edges) = match snapshot.cursor_shape {
+            CursorShape::Beam => (
+                Point::new(x, y),
+                gpui::size(px(cell_wf.clamp(1.0, 2.0)), line_h),
+                cursor_cell.fg,
+                Edges::default(),
+            ),
+            CursorShape::Underline => {
+                let height = px(2.0).min(line_h);
+                (
+                    Point::new(x, y + line_h - height),
+                    gpui::size(cell_w, height),
+                    cursor_cell.fg,
+                    Edges::default(),
+                )
+            }
+            CursorShape::HollowBlock => (
+                Point::new(x, y),
+                gpui::size(cell_w, line_h),
+                hsla(0., 0., 0., 0.),
+                Edges::all(px(1.)),
+            ),
+            CursorShape::Block | CursorShape::Hidden => (
+                Point::new(x, y),
+                gpui::size(cell_w, line_h),
+                cursor_cell.fg,
+                Edges::default(),
+            ),
+        };
         let cb = Bounds {
-            origin: Point::new(x, y),
-            size: gpui::size(cell_w, line_h),
+            origin: cursor_origin,
+            size: cursor_size,
         };
         window.paint_quad(quad(
             cb,
             Corners::default(),
+            cursor_fill,
+            cursor_edges,
             cursor_cell.fg,
-            Edges::default(),
-            hsla(0., 0., 0., 0.),
             gpui::BorderStyle::default(),
         ));
 
         // The cursor quad is painted after the row text, so repaint the cell's
         // glyph with the effective background color to keep the character
         // readable instead of hiding it beneath the cursor block.
-        if !cursor_cell.spacer {
+        if snapshot.cursor_shape == CursorShape::Block && !cursor_cell.spacer {
             let mut cursor_text =
                 String::with_capacity(cursor_cell.ch.len_utf8() + cursor_cell.zero_width.len());
             cursor_text.push(cursor_cell.ch);
@@ -2813,6 +4940,205 @@ fn bg_of(term: &Term<NoopListener>) -> Hsla {
 fn fg_of(term: &Term<NoopListener>) -> Hsla {
     color_to_hsla(&Color::Named(NamedColor::Foreground), term.colors())
         .unwrap_or_else(|| default_palette(&NamedColor::Foreground))
+}
+
+const MAX_KITTY_NOTIFICATION_TEXT_BYTES: usize = 8 * 1024;
+
+fn append_bounded_notification_text(target: &mut String, value: &str) {
+    let remaining = MAX_KITTY_NOTIFICATION_TEXT_BYTES.saturating_sub(target.len());
+    if remaining == 0 {
+        return;
+    }
+    let mut end = remaining.min(value.len());
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    target.push_str(&value[..end]);
+}
+
+fn terminal_image_format(bytes: &[u8]) -> Option<gpui::ImageFormat> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some(gpui::ImageFormat::Png)
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        Some(gpui::ImageFormat::Jpeg)
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some(gpui::ImageFormat::Gif)
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some(gpui::ImageFormat::Webp)
+    } else {
+        None
+    }
+}
+
+fn terminal_image_within_limits(data: &[u8], format: gpui::ImageFormat) -> bool {
+    if format != gpui::ImageFormat::Png {
+        return true;
+    }
+    let Ok(reader) = png::Decoder::new(Cursor::new(data)).read_info() else {
+        return false;
+    };
+    let width = reader.info().width as usize;
+    let height = reader.info().height as usize;
+    width > 0
+        && height > 0
+        && width <= MAX_IMAGE_DIMENSION
+        && height <= MAX_IMAGE_DIMENSION
+        && width
+            .checked_mul(height)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .is_some_and(|bytes| bytes <= MAX_DECODED_IMAGE_BYTES)
+}
+
+fn encode_rgba_png(pixels: &[u8], width: usize, height: usize) -> Option<Vec<u8>> {
+    if width == 0 || height == 0 || width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION {
+        return None;
+    }
+    let expected = width.checked_mul(height)?.checked_mul(4)?;
+    if expected != pixels.len() || pixels.len() > MAX_DECODED_IMAGE_BYTES {
+        return None;
+    }
+
+    let mut encoded = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut encoded, width as u32, height as u32);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().ok()?;
+        writer.write_image_data(pixels).ok()?;
+    }
+    Some(encoded)
+}
+
+fn kitty_raw_to_png(data: &[u8], width: usize, height: usize, channels: usize) -> Option<Vec<u8>> {
+    if !matches!(channels, 3 | 4) {
+        return None;
+    }
+    let pixel_count = width.checked_mul(height)?;
+    let expected = pixel_count.checked_mul(channels)?;
+    if expected != data.len() {
+        return None;
+    }
+
+    if channels == 4 {
+        return encode_rgba_png(data, width, height);
+    }
+
+    let mut rgba = Vec::with_capacity(pixel_count.checked_mul(4)?);
+    for rgb in data.chunks_exact(3) {
+        rgba.extend_from_slice(rgb);
+        rgba.push(0xff);
+    }
+    encode_rgba_png(&rgba, width, height)
+}
+
+fn crop_kitty_image(data: &[u8], placement: KittyPlacement) -> Option<Vec<u8>> {
+    if placement.source_x.is_none()
+        && placement.source_y.is_none()
+        && placement.source_width.is_none()
+        && placement.source_height.is_none()
+    {
+        return Some(data.to_vec());
+    }
+    if terminal_image_format(data) != Some(gpui::ImageFormat::Png) {
+        return None;
+    }
+
+    let mut decoder = png::Decoder::new(Cursor::new(data));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().ok()?;
+    let width = reader.info().width as usize;
+    let height = reader.info().height as usize;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let decoded_size = width.checked_mul(height)?.checked_mul(4)?;
+    if decoded_size > MAX_DECODED_IMAGE_BYTES {
+        return None;
+    }
+    let mut buffer = vec![0; reader.output_buffer_size()];
+    let output = reader.next_frame(&mut buffer).ok()?;
+    let bytes = &buffer[..output.buffer_size()];
+    let rgba = match output.color_type {
+        png::ColorType::Rgba if output.bit_depth == png::BitDepth::Eight => bytes.to_vec(),
+        png::ColorType::Rgb if output.bit_depth == png::BitDepth::Eight => {
+            let mut rgba = Vec::with_capacity(decoded_size);
+            for pixel in bytes.chunks_exact(3) {
+                rgba.extend_from_slice(pixel);
+                rgba.push(0xff);
+            }
+            rgba
+        }
+        png::ColorType::Grayscale if output.bit_depth == png::BitDepth::Eight => {
+            let mut rgba = Vec::with_capacity(decoded_size);
+            for &gray in bytes {
+                rgba.extend_from_slice(&[gray, gray, gray, 0xff]);
+            }
+            rgba
+        }
+        png::ColorType::GrayscaleAlpha if output.bit_depth == png::BitDepth::Eight => {
+            let mut rgba = Vec::with_capacity(decoded_size);
+            for pixel in bytes.chunks_exact(2) {
+                rgba.extend_from_slice(&[pixel[0], pixel[0], pixel[0], pixel[1]]);
+            }
+            rgba
+        }
+        _ => return None,
+    };
+
+    let x = placement.source_x.unwrap_or(0).min(width);
+    let y = placement.source_y.unwrap_or(0).min(height);
+    let crop_width = placement
+        .source_width
+        .unwrap_or(width.saturating_sub(x))
+        .min(width.saturating_sub(x));
+    let crop_height = placement
+        .source_height
+        .unwrap_or(height.saturating_sub(y))
+        .min(height.saturating_sub(y));
+    if crop_width == 0 || crop_height == 0 {
+        return None;
+    }
+    let mut cropped = Vec::with_capacity(crop_width.checked_mul(crop_height)?.checked_mul(4)?);
+    for row in y..y + crop_height {
+        let start = row.checked_mul(width)?.checked_add(x)?.checked_mul(4)?;
+        let end = start.checked_add(crop_width.checked_mul(4)?)?;
+        cropped.extend_from_slice(rgba.get(start..end)?);
+    }
+    encode_rgba_png(&cropped, crop_width, crop_height)
+}
+
+fn kitty_zlib_decode(data: &[u8]) -> Option<Vec<u8>> {
+    let decoder = ZlibDecoder::new(data);
+    let mut decoded = Vec::new();
+    decoder
+        .take((MAX_DECODED_IMAGE_BYTES + 1) as u64)
+        .read_to_end(&mut decoded)
+        .ok()?;
+    (decoded.len() <= MAX_DECODED_IMAGE_BYTES).then_some(decoded)
+}
+
+fn kitty_parameter<'a>(control: &'a str, key: &str) -> Option<&'a str> {
+    control.split(',').find_map(|field| {
+        let (field_key, value) = field.split_once('=')?;
+        (field_key == key).then_some(value)
+    })
+}
+
+fn sanitize_kitty_notification_id(value: &str) -> Option<String> {
+    let id = value
+        .chars()
+        .filter(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '+' | '.')
+        })
+        .take(128)
+        .collect::<String>();
+    (!id.is_empty()).then_some(id)
+}
+
+fn kitty_image_action<'a>(control: &'a str, stored_action: Option<&'a str>) -> &'a str {
+    kitty_parameter(control, "a")
+        .or(stored_action)
+        .unwrap_or("t")
 }
 
 /// 把 alacritty/vte 的 Color 解析为 Hsla。Named/Indexed 走终端调色板，Spec 直传。
@@ -2975,7 +5301,7 @@ fn mouse_modifier_bits(mods: &Modifiers) -> u8 {
     bits
 }
 
-/// 按当前终端模式生成 SGR、UTF-8 扩展或传统 xterm 鼠标序列。
+/// 按当前终端模式生成 SGR、urxvt、UTF-8 扩展或传统 xterm 鼠标序列。
 fn encode_mouse_report(
     button: u8,
     col: usize,
@@ -2983,9 +5309,14 @@ fn encode_mouse_report(
     pressed: bool,
     mods: &Modifiers,
     mode: TermMode,
+    urxvt_mouse: bool,
 ) -> Option<Vec<u8>> {
     let button = if pressed { button } else { 3 };
     let cb = button | mouse_modifier_bits(mods);
+
+    if urxvt_mouse {
+        return Some(format!("\x1b[{};{};{}M", cb, col + 1, row + 1).into_bytes());
+    }
 
     if mode.contains(TermMode::SGR_MOUSE) {
         let suffix = if pressed { 'M' } else { 'm' };
@@ -3085,6 +5416,35 @@ fn format_osc52_response(
     (response.len() <= MAX_OSC52_RESPONSE_BYTES).then(|| response.into_bytes())
 }
 
+fn decode_hex_bytes(value: &[u8]) -> Option<Vec<u8>> {
+    if !value.len().is_multiple_of(2) {
+        return None;
+    }
+    value
+        .chunks_exact(2)
+        .map(|pair| Some((hex_value(pair[0])? << 4) | hex_value(pair[1])?))
+        .collect()
+}
+
+fn encode_hex_bytes(value: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(value.len() * 2);
+    for &byte in value {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// 调试用：把字节流转成可读字符串（控制字符转义，ESC 显示为 \x1b）。
 fn debug_bytes(b: &[u8]) -> String {
     let mut out = String::with_capacity(b.len());
@@ -3121,11 +5481,24 @@ fn encode_keystroke_with_event(
     mode: TermMode,
     event_type: u8,
 ) -> Option<Vec<u8>> {
+    encode_keystroke_with_options(ks, mode, event_type, 0)
+}
+
+fn encode_keystroke_with_options(
+    ks: &gpui::Keystroke,
+    mode: TermMode,
+    event_type: u8,
+    modify_other_keys: u8,
+) -> Option<Vec<u8>> {
     let m = &ks.modifiers;
     let key = ks.key.as_str();
     let has_modifiers = m.shift || m.alt || m.control || m.platform;
 
     if let Some(bytes) = encode_kitty_keystroke(ks, mode, event_type) {
+        return Some(bytes);
+    }
+
+    if let Some(bytes) = encode_modify_other_keys(ks, modify_other_keys) {
         return Some(bytes);
     }
 
@@ -3198,6 +5571,9 @@ fn encode_keystroke_with_event(
     }
 
     if !has_modifiers {
+        if let Some(bytes) = keypad_key(key, mode) {
+            return Some(bytes);
+        }
         // A plain printable key is not a special key. Only return here when
         // the lookup actually matched; otherwise continue to the text path.
         if let Some(bytes) = plain_special_key(key, mode) {
@@ -3229,6 +5605,37 @@ fn encode_keystroke_with_event(
         }
     }
     None
+}
+
+/// Encode xterm's modifyOtherKeys extension. The extension deliberately only
+/// handles ordinary keys; arrows, function keys, keypad keys, and the common
+/// special keys keep their established encodings. Level 3 also reports
+/// unmodified ordinary keys.
+fn encode_modify_other_keys(ks: &gpui::Keystroke, level: u8) -> Option<Vec<u8>> {
+    if !matches!(level, 1..=3) || ks.modifiers.platform {
+        return None;
+    }
+    let key = ks.key.as_str();
+    if is_kitty_functional_key(key)
+        || matches!(
+            key,
+            "enter" | "return" | "tab" | "back" | "backspace" | "escape"
+        )
+    {
+        return None;
+    }
+    let modifiers = &ks.modifiers;
+    let modified = modifiers.shift || modifiers.alt || modifiers.control;
+    if level != 3
+        && (!modified || (level == 1 && modifiers.alt && !modifiers.shift && !modifiers.control))
+    {
+        return None;
+    }
+    if level == 1 && control_code(key).is_some() {
+        return None;
+    }
+    let (code, _) = kitty_text_key_code(ks)?;
+    Some(format!("\x1b[27;{};{}~", modifier_code(modifiers), code).into_bytes())
 }
 
 /// 生成 Kitty 键盘协议的增强编码。
@@ -3454,6 +5861,36 @@ fn associated_text_code(ks: &gpui::Keystroke) -> Option<u32> {
     }
 }
 
+/// Encode the xterm application keypad. GPUI uses slightly different key
+/// names across desktop backends, so accept the common aliases here.
+fn keypad_key(key: &str, mode: TermMode) -> Option<Vec<u8>> {
+    let (normal, application) = match key {
+        "kp0" | "numpad0" | "num0" => (b'0', "\x1bOp"),
+        "kp1" | "numpad1" | "num1" => (b'1', "\x1bOq"),
+        "kp2" | "numpad2" | "num2" => (b'2', "\x1bOr"),
+        "kp3" | "numpad3" | "num3" => (b'3', "\x1bOs"),
+        "kp4" | "numpad4" | "num4" => (b'4', "\x1bOt"),
+        "kp5" | "numpad5" | "num5" => (b'5', "\x1bOu"),
+        "kp6" | "numpad6" | "num6" => (b'6', "\x1bOv"),
+        "kp7" | "numpad7" | "num7" => (b'7', "\x1bOw"),
+        "kp8" | "numpad8" | "num8" => (b'8', "\x1bOx"),
+        "kp9" | "numpad9" | "num9" => (b'9', "\x1bOy"),
+        "kpdecimal" | "numpaddecimal" => (b'.', "\x1bOn"),
+        "kpcomma" | "numpadcomma" => (b',', "\x1bOl"),
+        "kpminus" | "numpadminus" => (b'-', "\x1bOm"),
+        "kpplus" | "numpadplus" => (b'+', "\x1bOk"),
+        "kpmultiply" | "numpadmultiply" => (b'*', "\x1bOj"),
+        "kpdivide" | "numpaddivide" => (b'/', "\x1bOo"),
+        "kpenter" | "numpadenter" => (b'\r', "\x1bOM"),
+        _ => return None,
+    };
+    if mode.contains(TermMode::APP_KEYPAD) {
+        Some(application.as_bytes().to_vec())
+    } else {
+        Some(vec![normal])
+    }
+}
+
 fn shifted_ascii_char(ch: char) -> char {
     match ch {
         'a'..='z' => ch.to_ascii_uppercase(),
@@ -3514,12 +5951,27 @@ fn is_kitty_functional_key(key: &str) -> bool {
             | "f18"
             | "f19"
             | "f20"
+            | "f21"
+            | "f22"
+            | "f23"
+            | "f24"
+            | "f25"
+            | "f26"
+            | "f27"
+            | "f28"
+            | "f29"
+            | "f30"
+            | "f31"
+            | "f32"
+            | "f33"
+            | "f34"
+            | "f35"
     )
 }
 
 fn kitty_private_key_code(key: &str) -> Option<u32> {
     let function = key.strip_prefix('f')?.parse::<u32>().ok()?;
-    if (13..=20).contains(&function) {
+    if (13..=35).contains(&function) {
         Some(57376 + function - 13)
     } else {
         None
@@ -3613,6 +6065,21 @@ fn plain_special_key(key: &str, mode: TermMode) -> Option<Vec<u8>> {
         "f18" => "\x1b[32~",
         "f19" => "\x1b[33~",
         "f20" => "\x1b[34~",
+        "f21" => "\x1b[38~",
+        "f22" => "\x1b[39~",
+        "f23" => "\x1b[40~",
+        "f24" => "\x1b[41~",
+        "f25" => "\x1b[42~",
+        "f26" => "\x1b[43~",
+        "f27" => "\x1b[44~",
+        "f28" => "\x1b[45~",
+        "f29" => "\x1b[46~",
+        "f30" => "\x1b[47~",
+        "f31" => "\x1b[48~",
+        "f32" => "\x1b[49~",
+        "f33" => "\x1b[50~",
+        "f34" => "\x1b[51~",
+        "f35" => "\x1b[52~",
         _ => return None,
     };
     Some(sequence.as_bytes().to_vec())
@@ -3658,6 +6125,21 @@ fn modified_special_key(key: &str, modifiers: &Modifiers) -> Option<Vec<u8>> {
         "f18" => Some(32),
         "f19" => Some(33),
         "f20" => Some(34),
+        "f21" => Some(38),
+        "f22" => Some(39),
+        "f23" => Some(40),
+        "f24" => Some(41),
+        "f25" => Some(42),
+        "f26" => Some(43),
+        "f27" => Some(44),
+        "f28" => Some(45),
+        "f29" => Some(46),
+        "f30" => Some(47),
+        "f31" => Some(48),
+        "f32" => Some(49),
+        "f33" => Some(50),
+        "f34" => Some(51),
+        "f35" => Some(52),
         _ => None,
     }?;
     Some(format!("\x1b[{};{}~", tilde_code, code).into_bytes())
@@ -3701,20 +6183,22 @@ mod tests {
     }
 
     #[test]
-    fn shell_activity_parser_tracks_chunked_command_markers() {
-        let mut parser = ShellActivityParser::default();
+    fn protocol_parser_tracks_chunked_command_markers() {
+        let mut parser = TerminalProtocolParser::default();
         assert!(parser.feed(b"output\x1b]13").is_empty());
         assert_eq!(
             parser.feed(b"3;C\x07command output"),
-            vec![ShellActivity::CommandStarted]
+            vec![ProtocolEvent::Shell(ShellEvent::CommandStart)]
         );
         assert_eq!(
             parser.feed(b"\x1b]133;D;0\x1b\\"),
-            vec![ShellActivity::Prompt]
+            vec![ProtocolEvent::Shell(ShellEvent::CommandFinished {
+                status: Some(0)
+            })]
         );
         assert_eq!(
             parser.feed(b"\x1b]133;A\x07prompt"),
-            vec![ShellActivity::Prompt]
+            vec![ProtocolEvent::Shell(ShellEvent::PromptStart)]
         );
     }
 
@@ -3944,6 +6428,118 @@ mod tests {
     }
 
     #[test]
+    fn kitty_raw_images_are_normalized_to_png() {
+        let rgba = kitty_raw_to_png(&[255, 0, 0, 255], 1, 1, 4).expect("RGBA PNG");
+        assert_eq!(terminal_image_format(&rgba), Some(gpui::ImageFormat::Png));
+        let rgb = kitty_raw_to_png(&[0, 255, 0], 1, 1, 3).expect("RGB PNG");
+        assert_eq!(terminal_image_format(&rgb), Some(gpui::ImageFormat::Png));
+        assert!(kitty_raw_to_png(&[0, 0, 0], 2, 1, 3).is_none());
+    }
+
+    #[test]
+    fn kitty_zlib_images_are_bounded_and_decoded() {
+        use std::io::Write;
+
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(b"kitty image data").unwrap();
+        let compressed = encoder.finish().unwrap();
+        assert_eq!(
+            kitty_zlib_decode(&compressed),
+            Some(b"kitty image data".to_vec())
+        );
+        assert!(kitty_zlib_decode(b"not zlib").is_none());
+    }
+
+    #[test]
+    fn kitty_graphics_chunks_keep_the_first_action() {
+        assert_eq!(kitty_image_action("a=t,m=1", None), "t");
+        assert_eq!(kitty_image_action("m=0", Some("t")), "t");
+        assert_eq!(kitty_image_action("m=0", None), "t");
+    }
+
+    #[test]
+    fn kitty_placeholders_decode_ids_coordinates_and_inheritance() {
+        assert_eq!(kitty_placeholder_diacritic_value('\u{0305}'), Some(0));
+        assert_eq!(kitty_placeholder_diacritic_value('\u{030d}'), Some(1));
+        assert_eq!(kitty_placeholder_diacritic_value('\u{030e}'), Some(2));
+        assert_eq!(kitty_placeholder_diacritic_value('\u{0300}'), None);
+
+        let mut first = Cell {
+            c: KITTY_PLACEHOLDER_CHAR,
+            fg: Color::Indexed(42),
+            ..Cell::default()
+        };
+        first.set_underline_color(Some(Color::Indexed(7)));
+        let (placeholder, state) = decode_kitty_placeholder(&first, "\u{0305}\u{0305}", 4, 8, None)
+            .expect("first placeholder");
+        assert_eq!(placeholder.image_id, 42);
+        assert_eq!(placeholder.placement_id, Some(7));
+        assert_eq!((placeholder.row, placeholder.column), (0, 0));
+
+        let mut second = Cell {
+            c: KITTY_PLACEHOLDER_CHAR,
+            fg: Color::Indexed(42),
+            ..Cell::default()
+        };
+        second.set_underline_color(Some(Color::Indexed(7)));
+        let (placeholder, _) = decode_kitty_placeholder(&second, "", 4, 9, Some(state))
+            .expect("inherited placeholder");
+        assert_eq!((placeholder.row, placeholder.column), (0, 1));
+        assert_eq!(placeholder.placement_id, Some(7));
+
+        let high_byte = Cell {
+            c: KITTY_PLACEHOLDER_CHAR,
+            fg: Color::Indexed(42),
+            ..Cell::default()
+        };
+        let (placeholder, _) =
+            decode_kitty_placeholder(&high_byte, "\u{0305}\u{0305}\u{030e}", 4, 10, None)
+                .expect("high image id byte");
+        assert_eq!(placeholder.image_id, 42 | (2 << 24));
+    }
+
+    #[test]
+    fn terminal_snapshot_extracts_kitty_placeholders_from_the_grid() {
+        let config = Config {
+            scrolling_history: SCROLLBACK,
+            ..Default::default()
+        };
+        let mut term: Term<NoopListener> = Term::new(
+            config,
+            &TermSize { cols: 4, rows: 2 },
+            NoopListener::default(),
+        );
+        let mut parser: Processor = Processor::new();
+        let bytes = format!(
+            "\x1b[38;5;42m{p}{r0}{c0}{p}{r0}{c1}\r\n{p}{r1}{c0}\x1b[0m",
+            p = KITTY_PLACEHOLDER_CHAR,
+            r0 = '\u{0305}',
+            r1 = '\u{030d}',
+            c0 = '\u{0305}',
+            c1 = '\u{030d}',
+        );
+        parser.advance(&mut term, bytes.as_bytes());
+
+        let snapshot = snapshot_visible(&term, None, 4, false, &[]);
+        assert_eq!(snapshot.kitty_placeholders.len(), 3);
+        assert_eq!(
+            snapshot
+                .kitty_placeholders
+                .iter()
+                .map(|placeholder| (placeholder.row, placeholder.column))
+                .collect::<Vec<_>>(),
+            vec![(0, 0), (0, 1), (1, 0)]
+        );
+        assert!(snapshot.rows[0][0].kitty_placeholder);
+        assert!(
+            terminal_text_runs(&snapshot.rows[0])
+                .iter()
+                .all(|run| run.start_col >= 2)
+        );
+    }
+
+    #[test]
     fn encodes_kitty_keyboard_modes() {
         let disambiguate = TermMode::DISAMBIGUATE_ESC_CODES;
         assert_eq!(
@@ -3991,6 +6587,16 @@ mod tests {
             Some(b"\x1b[97;1:3u".to_vec())
         );
 
+        assert_eq!(
+            encode_modify_other_keys(&keystroke("ctrl-;"), 2),
+            Some(b"\x1b[27;5;59~".to_vec())
+        );
+        assert_eq!(encode_modify_other_keys(&keystroke("ctrl-c"), 1), None);
+        assert_eq!(
+            encode_modify_other_keys(&keystroke("a"), 3),
+            Some(b"\x1b[27;1;97~".to_vec())
+        );
+
         let disambiguate_events =
             disambiguate | TermMode::REPORT_EVENT_TYPES | TermMode::REPORT_ALTERNATE_KEYS;
         assert_eq!(
@@ -4023,7 +6629,7 @@ mod tests {
         assert_eq!(mouse_button_code(MouseButton::Middle), Some(1));
         assert_eq!(mouse_button_code(MouseButton::Right), Some(2));
         assert_eq!(
-            encode_mouse_report(0, 0, 0, true, &Modifiers::default(), plain_mode),
+            encode_mouse_report(0, 0, 0, true, &Modifiers::default(), plain_mode, false),
             Some(vec![0x1b, b'[', b'M', 32, 33, 33])
         );
 
@@ -4033,17 +6639,17 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            encode_mouse_report(2, 7, 4, true, &modifiers, sgr_mode),
+            encode_mouse_report(2, 7, 4, true, &modifiers, sgr_mode, false),
             Some(b"\x1b[<6;8;5M".to_vec())
         );
         assert_eq!(
-            encode_mouse_report(2, 7, 4, false, &modifiers, sgr_mode),
+            encode_mouse_report(2, 7, 4, false, &modifiers, sgr_mode, false),
             Some(b"\x1b[<7;8;5m".to_vec())
         );
 
         let utf8_mode = TermMode::MOUSE_REPORT_CLICK | TermMode::UTF8_MOUSE;
         assert_eq!(
-            encode_mouse_report(0, 95, 0, true, &Modifiers::default(), utf8_mode),
+            encode_mouse_report(0, 95, 0, true, &Modifiers::default(), utf8_mode, false),
             Some(vec![0x1b, b'[', b'M', 32, 0xc2, 0x80, 33])
         );
     }

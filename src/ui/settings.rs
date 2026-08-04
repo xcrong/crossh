@@ -304,6 +304,36 @@ fn render_terminal_settings(shell: &AppShell, cx: &mut Context<AppShell>) -> Any
         this.toggle_timestamps(cx);
     }));
 
+    let mut notifications = div()
+        .id("settings-terminal-notifications-toggle")
+        .w(px(42.))
+        .h(px(24.))
+        .p_1()
+        .flex()
+        .items_center()
+        .rounded_full()
+        .cursor_pointer()
+        .bg(if shell.settings.terminal_notifications {
+            theme::accent()
+        } else {
+            theme::border_strong()
+        });
+    notifications = if shell.settings.terminal_notifications {
+        notifications.justify_end()
+    } else {
+        notifications.justify_start()
+    };
+    notifications = notifications.child(
+        div()
+            .w(px(18.))
+            .h(px(18.))
+            .rounded_full()
+            .bg(theme::canvas()),
+    );
+    notifications = notifications.on_click(cx.listener(|this, _ev, _window, cx| {
+        this.toggle_terminal_notifications(cx);
+    }));
+
     let font_size = shell.settings.terminal_font_size.round() as u32;
     let font_control = div()
         .flex()
@@ -380,6 +410,11 @@ fn render_terminal_settings(shell: &AppShell, cx: &mut Context<AppShell>) -> Any
             i18n::text("settings.timestamps"),
             i18n::text("settings.timestamps_description"),
             timestamps.into_any_element(),
+        ))
+        .child(settings_row(
+            i18n::text("settings.notifications"),
+            i18n::text("settings.notifications_description"),
+            notifications.into_any_element(),
         ))
         .child(settings_row(
             i18n::text("settings.font_size"),

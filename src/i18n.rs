@@ -29,6 +29,8 @@ pub struct AppSettings {
     pub language: LanguagePreference,
     #[serde(default = "default_show_timestamps")]
     pub show_timestamps: bool,
+    #[serde(default = "default_terminal_notifications")]
+    pub terminal_notifications: bool,
     #[serde(default = "default_terminal_font_size")]
     pub terminal_font_size: f32,
     #[serde(default = "default_terminal_scrollback")]
@@ -45,6 +47,7 @@ impl Default for AppSettings {
         Self {
             language: LanguagePreference::default(),
             show_timestamps: default_show_timestamps(),
+            terminal_notifications: default_terminal_notifications(),
             terminal_font_size: default_terminal_font_size(),
             terminal_scrollback: default_terminal_scrollback(),
             recent_local_dirs: Vec::new(),
@@ -75,6 +78,10 @@ impl AppSettings {
 }
 
 fn default_show_timestamps() -> bool {
+    true
+}
+
+fn default_terminal_notifications() -> bool {
     true
 }
 

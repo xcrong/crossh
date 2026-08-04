@@ -14,6 +14,8 @@ use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
 use alacritty_terminal::vte::ansi::NamedColor;
 use vte::ansi::Processor;
 
+use crate::terminal_protocol::{KittyGraphicsPayload, ProtocolEvent, TerminalProtocolParser};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ReplayEvent {
     ClipboardStore(String),
@@ -271,6 +273,34 @@ mod tests {
                 .cell(0, 12)
                 .hyperlink()
                 .map(|link| link.uri().to_string())
+        );
+    }
+
+    #[test]
+    fn side_channel_protocols_survive_one_byte_replay() {
+        let bytes = b"\x1b]9;4;1;42\x07\x1b]99;i=build:p=?;\x1b\\\x1b[>4;2m\x1b[16t\x1b_Ga=T,f=100,i=7,m=0;aGVsbG8=\x1b\\\x1bPq#0;2;100;0;0#0~-\x1b\\";
+        let mut parser = TerminalProtocolParser::default();
+        let mut events = Vec::new();
+        for byte in bytes {
+            events.extend(parser.feed(std::slice::from_ref(byte)));
+        }
+
+        assert_eq!(
+            events,
+            vec![
+                ProtocolEvent::Progress {
+                    state: 1,
+                    progress: Some(42),
+                },
+                ProtocolEvent::KittyNotificationQuery { id: "build".into() },
+                ProtocolEvent::ModifyOtherKeys(2),
+                ProtocolEvent::CellSizeQuery,
+                ProtocolEvent::KittyGraphics(KittyGraphicsPayload {
+                    control: "a=T,f=100,i=7,m=0".into(),
+                    data: b"hello".to_vec(),
+                }),
+                ProtocolEvent::Sixel(b"\x1bPq#0;2;100;0;0#0~-\x1b\\".to_vec(),),
+            ]
         );
     }
 }

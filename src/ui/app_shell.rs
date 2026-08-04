@@ -18,8 +18,8 @@ use std::time::Duration;
 use gpui::{
     App, AppContext, Context, Entity, EntityId, FocusHandle, InteractiveElement, IntoElement,
     KeyDownEvent, ParentElement, PathPromptOptions, Pixels, Point, PromptButton, PromptLevel,
-    Render, Styled, Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowOptions, div,
-    px, size,
+    Render, Styled, Subscription, SystemNotificationResponse, Task, TitlebarOptions, Window,
+    WindowBounds, WindowOptions, div, px, size,
 };
 
 use crate::config::SshConfig;
@@ -244,7 +244,7 @@ impl AppShell {
             TerminalEvent::Closed => {
                 this.close_remote_terminal(terminal.entity_id(), cx);
             }
-            TerminalEvent::TitleChanged => cx.notify(),
+            TerminalEvent::TitleChanged | TerminalEvent::Notification => cx.notify(),
             TerminalEvent::CwdChanged | TerminalEvent::PromptReached => {}
         });
         self.terminal_subscriptions.push(subscription);
@@ -350,7 +350,7 @@ impl AppShell {
                     this.refresh_git_status(session_id, false, cx);
                 }
             }
-            TerminalEvent::TitleChanged => cx.notify(),
+            TerminalEvent::TitleChanged | TerminalEvent::Notification => cx.notify(),
         });
         self.terminal_subscriptions.push(subscription);
         self.local_sessions.insert(
@@ -503,6 +503,40 @@ impl AppShell {
             return;
         };
         self.close_remote_tab(idx, cx);
+    }
+
+    fn handle_system_notification_response(
+        &mut self,
+        response: SystemNotificationResponse,
+        cx: &mut Context<Self>,
+    ) {
+        let mut terminals = Vec::new();
+        for (index, tab) in self.remote_tabs.iter().enumerate() {
+            if let Pane::Terminal(terminal) = &tab.pane {
+                terminals.push((ActiveView::RemoteTab(index), terminal.clone()));
+            }
+        }
+        for (&session_id, session) in &self.local_sessions {
+            terminals.push((
+                ActiveView::LocalSession(session_id),
+                session.terminal.clone(),
+            ));
+        }
+
+        for (view, terminal) in terminals {
+            let handled = terminal.update(cx, |terminal, cx| {
+                terminal.handle_system_notification_response(&response, cx)
+            });
+            let Some(focus) = handled else {
+                continue;
+            };
+            if focus {
+                self.active_view = Some(view);
+                terminal.update(cx, |terminal, _cx| terminal.request_focus());
+                cx.notify();
+            }
+            break;
+        }
     }
 
     fn close_active_tab(&mut self, cx: &mut Context<Self>) {
@@ -1001,6 +1035,12 @@ impl AppShell {
         self.apply_settings(settings, cx);
     }
 
+    pub(crate) fn toggle_terminal_notifications(&mut self, cx: &mut Context<Self>) {
+        let mut settings = self.settings.clone();
+        settings.terminal_notifications = !settings.terminal_notifications;
+        self.apply_settings(settings, cx);
+    }
+
     pub(crate) fn adjust_font_size(&mut self, delta: f32, cx: &mut Context<Self>) {
         let mut settings = self.settings.clone();
         settings.terminal_font_size = (settings.terminal_font_size + delta)
@@ -1361,6 +1401,12 @@ pub fn open_main_window(cx: &mut App) {
         |window, cx| {
             let shell = AppShell::new(cx);
             let weak = shell.downgrade();
+            let notification_weak = shell.downgrade();
+            cx.on_system_notification_response(move |response, cx| {
+                let _ = notification_weak.update(cx, |shell, cx| {
+                    shell.handle_system_notification_response(response, cx)
+                });
+            });
             window.on_window_should_close(cx, move |window, cx| {
                 weak.update(cx, |shell, cx| shell.should_close_window(window, cx))
                     .unwrap_or(true)
