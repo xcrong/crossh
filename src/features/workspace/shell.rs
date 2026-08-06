@@ -16,10 +16,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext, Context, Entity, EntityId, FocusHandle, InteractiveElement, IntoElement,
-    KeyDownEvent, ParentElement, PathPromptOptions, Pixels, Point, PromptButton, PromptLevel,
-    Render, Styled, SystemNotificationResponse, Task, TitlebarOptions, Window, WindowBounds,
-    WindowOptions, div, px, size,
+    App, AppContext, ClipboardEntry, Context, Entity, EntityId, FocusHandle, InteractiveElement,
+    IntoElement, KeyDownEvent, ParentElement, PathPromptOptions, Pixels, Point, PromptButton,
+    PromptLevel, Render, ScrollHandle, Styled, SystemNotificationResponse, Task, TitlebarOptions,
+    Window, WindowBounds, WindowOptions, div, px, size,
 };
 
 use crate::features::commands::{
@@ -60,7 +60,90 @@ pub(crate) struct QuickCommandEditor {
     pub(crate) scope: String,
     pub(crate) original: String,
     pub(crate) value: String,
+    pub(crate) cursor: usize,
+    pub(crate) anchor: Option<usize>,
+    pub(crate) scroll: ScrollHandle,
     pub(crate) focus: FocusHandle,
+}
+
+impl QuickCommandEditor {
+    pub(crate) fn selection(&self) -> Option<(usize, usize)> {
+        selection_bounds(self.anchor, self.cursor)
+    }
+
+    fn replace_selection(&mut self, text: &str) {
+        let (start, end) = self.selection().unwrap_or((self.cursor, self.cursor));
+        self.value.replace_range(start..end, text);
+        self.cursor = start + text.len();
+        self.anchor = None;
+    }
+
+    fn backspace(&mut self) {
+        if let Some((start, end)) = self.selection() {
+            self.value.replace_range(start..end, "");
+            self.cursor = start;
+            self.anchor = None;
+            return;
+        }
+        let start = previous_char_boundary(&self.value, self.cursor);
+        if start != self.cursor {
+            self.value.replace_range(start..self.cursor, "");
+            self.cursor = start;
+        }
+    }
+
+    fn delete(&mut self) {
+        if let Some((start, end)) = self.selection() {
+            self.value.replace_range(start..end, "");
+            self.cursor = start;
+            self.anchor = None;
+            return;
+        }
+        let end = next_char_boundary(&self.value, self.cursor);
+        if end != self.cursor {
+            self.value.replace_range(self.cursor..end, "");
+        }
+    }
+
+    fn move_horizontal(&mut self, direction: i8, extend: bool) {
+        if !extend && let Some((start, end)) = self.selection() {
+            self.cursor = if direction < 0 { start } else { end };
+            self.anchor = None;
+            return;
+        }
+
+        if extend && self.anchor.is_none() {
+            self.anchor = Some(self.cursor);
+        }
+        self.cursor = if direction < 0 {
+            previous_char_boundary(&self.value, self.cursor)
+        } else {
+            next_char_boundary(&self.value, self.cursor)
+        };
+        if !extend {
+            self.anchor = None;
+        }
+    }
+
+    fn move_to_boundary(&mut self, end: bool, extend: bool) {
+        if extend && self.anchor.is_none() {
+            self.anchor = Some(self.cursor);
+        }
+        self.cursor = if end { self.value.len() } else { 0 };
+        if !extend {
+            self.anchor = None;
+        }
+    }
+
+    fn select_all(&mut self) {
+        self.anchor = Some(0);
+        self.cursor = self.value.len();
+    }
+
+    fn selected_text(&self) -> Option<String> {
+        self.selection()
+            .map(|(start, end)| self.value[start..end].to_string())
+    }
 }
 
 struct ActiveCommandContext {
@@ -84,6 +167,33 @@ fn remote_tab_background_owner(tab: &Tab) -> Option<String> {
         Pane::Terminal(terminal) => Some(remote_background_owner(terminal.entity_id())),
         Pane::Sftp(_) | Pane::Forward(_) => None,
     }
+}
+
+fn previous_char_boundary(text: &str, cursor: usize) -> usize {
+    text[..cursor]
+        .char_indices()
+        .next_back()
+        .map(|(index, _)| index)
+        .unwrap_or(0)
+}
+
+fn next_char_boundary(text: &str, cursor: usize) -> usize {
+    text[cursor..]
+        .chars()
+        .next()
+        .map(|ch| cursor + ch.len_utf8())
+        .unwrap_or(cursor)
+}
+
+fn selection_bounds(anchor: Option<usize>, cursor: usize) -> Option<(usize, usize)> {
+    let anchor = anchor?;
+    (anchor != cursor).then_some({
+        if anchor < cursor {
+            (anchor, cursor)
+        } else {
+            (cursor, anchor)
+        }
+    })
 }
 
 #[derive(Default)]
@@ -855,10 +965,14 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         let focus = cx.focus_handle();
+        let cursor = command.len();
         self.quick_command_editor = Some(QuickCommandEditor {
             scope,
             original: command.clone(),
             value: command,
+            cursor,
+            anchor: None,
+            scroll: ScrollHandle::new(),
             focus: focus.clone(),
         });
         window.focus(&focus, cx);
@@ -886,20 +1000,91 @@ impl AppShell {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match ev.keystroke.key.as_str() {
+        let ks = &ev.keystroke;
+        let primary = ks.modifiers.control || ks.modifiers.platform;
+        let extend = ks.modifiers.shift;
+
+        if primary && ks.key == "a" {
+            if let Some(editor) = &mut self.quick_command_editor {
+                editor.select_all();
+            }
+            cx.notify();
+            return;
+        }
+
+        if primary && matches!(ks.key.as_str(), "c" | "x") {
+            if let Some(editor) = &mut self.quick_command_editor
+                && let Some(text) = editor.selected_text()
+            {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                if ks.key == "x" {
+                    editor.replace_selection("");
+                }
+            }
+            cx.notify();
+            return;
+        }
+
+        if primary && ks.key == "v" {
+            let pasted = cx.read_from_clipboard().and_then(|item| {
+                item.into_entries().find_map(|entry| match entry {
+                    ClipboardEntry::String(value) => Some(value.text),
+                    _ => None,
+                })
+            });
+            if let Some(editor) = &mut self.quick_command_editor
+                && let Some(text) = pasted
+            {
+                editor.replace_selection(&text);
+            }
+            cx.notify();
+            return;
+        }
+
+        match ks.key.as_str() {
             "enter" | "return" => self.submit_quick_command_editor(cx),
             "escape" => self.cancel_quick_command_editor(cx),
             "backspace" => {
                 if let Some(editor) = &mut self.quick_command_editor {
-                    editor.value.pop();
+                    editor.backspace();
+                }
+                cx.notify();
+            }
+            "delete" => {
+                if let Some(editor) = &mut self.quick_command_editor {
+                    editor.delete();
+                }
+                cx.notify();
+            }
+            "left" => {
+                if let Some(editor) = &mut self.quick_command_editor {
+                    editor.move_horizontal(-1, extend);
+                }
+                cx.notify();
+            }
+            "right" => {
+                if let Some(editor) = &mut self.quick_command_editor {
+                    editor.move_horizontal(1, extend);
+                }
+                cx.notify();
+            }
+            "home" => {
+                if let Some(editor) = &mut self.quick_command_editor {
+                    editor.move_to_boundary(false, extend);
+                }
+                cx.notify();
+            }
+            "end" => {
+                if let Some(editor) = &mut self.quick_command_editor {
+                    editor.move_to_boundary(true, extend);
                 }
                 cx.notify();
             }
             _ => {
-                if let Some(ch) = printable_char(&ev.keystroke)
+                if let Some(ch) = printable_char(ks)
                     && let Some(editor) = &mut self.quick_command_editor
                 {
-                    editor.value.push(ch);
+                    editor.replace_selection(&ch.to_string());
                     cx.notify();
                 }
             }
@@ -1154,6 +1339,9 @@ impl AppShell {
             return;
         }
         if !matches!(self.current_prompt(cx), PromptDisplay::None) {
+            return;
+        }
+        if self.quick_command_editor.is_some() {
             return;
         }
         let ks = &ev.keystroke;
@@ -1865,6 +2053,7 @@ pub fn open_main_window(cx: &mut App) {
 mod tests {
     use super::{
         ConnState, QuitRiskSummary, find_remote_terminal_index, is_reusable_connection_state,
+        next_char_boundary, previous_char_boundary, selection_bounds,
     };
 
     #[test]
@@ -1914,5 +2103,17 @@ mod tests {
         ];
 
         assert_eq!(find_remote_terminal_index(tabs.into_iter(), "vps"), Some(3));
+    }
+
+    #[test]
+    fn quick_command_editing_respects_utf8_boundaries_and_selection_direction() {
+        let text = "run 你好";
+        assert_eq!(previous_char_boundary(text, text.len()), "run 你".len());
+        assert_eq!(next_char_boundary(text, "run ".len()), "run 你".len());
+        assert_eq!(
+            selection_bounds(Some(text.len()), "run ".len()),
+            Some((4, text.len()))
+        );
+        assert_eq!(selection_bounds(Some(4), 4), None);
     }
 }

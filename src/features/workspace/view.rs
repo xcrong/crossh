@@ -549,15 +549,11 @@ fn render_quick_command_row(
             })
         })
         .child(icons::icon(icons::IconName::Terminal, 12.).text_color(theme::faint_text()))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_xs()
-                .text_color(theme::text())
-                .child(SharedString::from(command)),
-        )
+        .child(render_command_preview(
+            &command,
+            theme::text(),
+            SharedString::from(format!("quick-command-preview-{index}")),
+        ))
         .child(
             div()
                 .flex_shrink_0()
@@ -601,6 +597,79 @@ fn render_quick_command_row(
     row.into_any_element()
 }
 
+fn render_command_preview(command: &str, color: gpui::Rgba, id: SharedString) -> AnyElement {
+    let tooltip_command = command.to_string();
+    let mut preview = div()
+        .id(id)
+        .flex_1()
+        .min_w_0()
+        .text_xs()
+        .text_color(color)
+        .tooltip(move |_window, cx| {
+            cx.new(|_| crate::shared::ui::widgets::CommandTooltip {
+                command: SharedString::from(tooltip_command.clone()),
+            })
+            .into()
+        });
+
+    if let Some((head, tail)) = command_preview_parts(command) {
+        preview = preview
+            .flex()
+            .items_center()
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .child(SharedString::from(head)),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .px_1()
+                    .text_color(theme::faint_text())
+                    .child(SharedString::from("...")),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .child(SharedString::from(tail)),
+            );
+    } else {
+        preview = preview
+            .truncate()
+            .child(SharedString::from(command.to_string()));
+    }
+    preview.into_any_element()
+}
+
+fn command_preview_parts(command: &str) -> Option<(String, String)> {
+    const PREVIEW_CHARS: usize = 72;
+    let char_count = command.chars().count();
+    if char_count <= PREVIEW_CHARS {
+        return None;
+    }
+
+    let head_chars = PREVIEW_CHARS / 2;
+    let tail_chars = PREVIEW_CHARS - head_chars;
+    let head_end = command
+        .char_indices()
+        .nth(head_chars)
+        .map(|(index, _)| index)
+        .unwrap_or(command.len());
+    let tail_start = command
+        .char_indices()
+        .nth(char_count - tail_chars)
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+    Some((
+        command[..head_end].to_string(),
+        command[tail_start..].to_string(),
+    ))
+}
+
 fn render_background_task_row(task: &BackgroundTask, cx: &mut Context<AppShell>) -> AnyElement {
     let active = matches!(
         task.status,
@@ -630,15 +699,11 @@ fn render_background_task_row(task: &BackgroundTask, cx: &mut Context<AppShell>)
                 .rounded_full()
                 .bg(background_task_color(task.status)),
         )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_xs()
-                .text_color(theme::muted_text())
-                .child(SharedString::from(task.command.clone())),
-        )
+        .child(render_command_preview(
+            &task.command,
+            theme::muted_text(),
+            SharedString::from(format!("background-command-preview-{}", task.id)),
+        ))
         .child(
             div()
                 .flex_shrink_0()
@@ -693,14 +758,21 @@ pub fn render_quick_command_editor(shell: &mut AppShell, cx: &mut Context<AppShe
     };
     let focus = editor.focus.clone();
     let value = editor.value.clone();
-    let input = div()
+    let selection = editor.selection();
+    let (selection_start, selection_end) = selection.unwrap_or((editor.cursor, editor.cursor));
+    let scroll = editor.scroll.clone();
+    scroll.scroll_to_item(1);
+    let mut input = div()
         .id("quick-command-editor-input")
         .w_full()
+        .min_w_0()
         .min_h(px(38.))
         .px_3()
         .py_2()
         .flex()
         .items_center()
+        .overflow_x_scroll()
+        .track_scroll(&scroll)
         .bg(theme::canvas())
         .border_1()
         .border_color(theme::border_strong())
@@ -714,12 +786,50 @@ pub fn render_quick_command_editor(shell: &mut AppShell, cx: &mut Context<AppShe
             let focus = focus.clone();
             move |_ev, window, cx| window.focus(&focus, cx)
         })
-        .on_key_down(cx.listener(AppShell::handle_quick_command_editor_key))
-        .child(SharedString::from(if value.is_empty() {
-            i18n::text("quick_commands.command_placeholder")
+        .on_key_down(cx.listener(AppShell::handle_quick_command_editor_key));
+
+    if value.is_empty() {
+        input = input.child(
+            div()
+                .flex_shrink_0()
+                .whitespace_nowrap()
+                .text_color(theme::faint_text())
+                .child(SharedString::from(i18n::text(
+                    "quick_commands.command_placeholder",
+                ))),
+        );
+    } else {
+        input = input.child(
+            div()
+                .flex_shrink_0()
+                .whitespace_nowrap()
+                .child(SharedString::from(value[..selection_start].to_string())),
+        );
+        if let Some((start, end)) = selection {
+            input = input.child(
+                div()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .bg(theme::accent_soft())
+                    .text_color(theme::text())
+                    .child(SharedString::from(value[start..end].to_string())),
+            );
         } else {
-            value
-        }));
+            input = input.child(
+                div()
+                    .w(px(1.))
+                    .h(px(20.))
+                    .flex_shrink_0()
+                    .bg(theme::accent()),
+            );
+        }
+        input = input.child(
+            div()
+                .flex_shrink_0()
+                .whitespace_nowrap()
+                .child(SharedString::from(value[selection_end..].to_string())),
+        );
+    }
 
     let buttons = div()
         .flex()
@@ -1390,5 +1500,17 @@ mod tests {
             preferred_state(ConnState::Connected, ConnState::Error("failed".into())),
             ConnState::Connected
         );
+    }
+
+    #[test]
+    fn long_command_preview_keeps_both_ends() {
+        let command = format!("{} --target /srv/release.tar.gz", "deploy ".repeat(20));
+        let (head, tail) = command_preview_parts(&command).expect("long command preview");
+
+        assert_eq!(head.chars().count(), 36);
+        assert_eq!(tail.chars().count(), 36);
+        assert!(tail.ends_with("release.tar.gz"));
+        assert!(head.starts_with("deploy"));
+        assert!(command_preview_parts("git status").is_none());
     }
 }
