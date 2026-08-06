@@ -46,7 +46,8 @@ use crate::shared::terminal::{
     truncate_path_title,
 };
 use crate::shared::ui::context_menu::{
-    ContextMenuState, MenuEntry, MenuItem, TerminalMenuAction, render_context_menu,
+    CONTEXT_MENU_WIDTH, ContextMenuState, MenuEntry, MenuItem, TerminalMenuAction,
+    clamp_menu_position, estimate_menu_height, render_context_menu,
 };
 use crate::shared::ui::theme;
 
@@ -2383,6 +2384,11 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Menu clicks bubble through terminal-root. Keep them from starting a
+        // new one-cell terminal selection before the menu action runs.
+        if self.context_menu.is_some() {
+            return;
+        }
         if self.state != ConnState::Connected {
             return;
         }
@@ -2454,6 +2460,9 @@ impl TerminalView {
     }
 
     fn handle_mouse_up(&mut self, ev: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.context_menu.is_some() {
+            return;
+        }
         if self.state != ConnState::Connected {
             return;
         }
@@ -2494,6 +2503,9 @@ impl TerminalView {
     }
 
     fn handle_mouse_move(&mut self, ev: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.context_menu.is_some() {
+            return;
+        }
         if self.state != ConnState::Connected {
             return;
         }
@@ -2540,6 +2552,9 @@ impl TerminalView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.context_menu.is_some() {
+            return;
+        }
         let mode = *self.term.mode();
         let Some(delta) = wheel_lines_for_phase(
             ev.touch_phase,
@@ -3128,7 +3143,7 @@ impl Render for TerminalView {
         let line_h = self.line_h;
         let weak = entity.downgrade();
         let weak2 = weak.clone();
-        let context_menu_open = self.context_menu.is_some();
+        let context_menu_state = self.context_menu.clone();
         let context_menu_weak = entity.downgrade();
         let context_menu_anchor = self.anchor_bounds.clone();
         let input_entity = entity.clone();
@@ -3152,7 +3167,18 @@ impl Render for TerminalView {
                 bounds
             },
             move |bounds, _pre, window, cx| {
-                if context_menu_open {
+                if let Some(menu) = context_menu_state.as_ref() {
+                    let menu_position = clamp_menu_position(menu.position, window, &menu.entries);
+                    // Include padding, border, and the small gap between rows.
+                    // This is intentionally conservative so the outside-click
+                    // listener cannot dismiss a menu item near an edge.
+                    let menu_bounds = Bounds {
+                        origin: menu_position,
+                        size: gpui::size(
+                            px(CONTEXT_MENU_WIDTH + 32.0),
+                            px(estimate_menu_height(&menu.entries) + 32.0),
+                        ),
+                    };
                     let weak = context_menu_weak.clone();
                     let anchor = context_menu_anchor.clone();
                     window.on_mouse_event(move |ev: &MouseDownEvent, phase, window, cx| {
@@ -3161,10 +3187,11 @@ impl Render for TerminalView {
                         }
                         let closed = weak
                             .update(cx, |this, _| {
+                                let inside_menu = menu_bounds.contains(&ev.position);
                                 let outside = anchor
                                     .get()
                                     .is_some_and(|bounds| !bounds.contains(&ev.position));
-                                if this.context_menu.is_some() && outside {
+                                if this.context_menu.is_some() && outside && !inside_menu {
                                     this.context_menu = None;
                                     true
                                 } else {
