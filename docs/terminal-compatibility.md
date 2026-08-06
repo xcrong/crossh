@@ -101,10 +101,14 @@ terminal-vendor extension. The remaining notable gaps are:
   visibility semantics, and reliable OS-level close callbacks remain limited
   by the platform notification API. Explicit close, activation, replacement,
   expiry, buttons, and `alive` are handled.
-- SSH sessions do not inject shell hooks into arbitrary remote shells. They
-  still consume OSC 7/133 emitted by the remote shell or application, and all
-  BEL/OSC notifications work over SSH because they are carried in the output
-  byte stream.
+- SSH sessions probe the user's shell through a short-lived non-interactive
+  channel. Bash, Zsh, and Fish sessions start with Crossh's prompt/cwd/command
+  hooks without modifying the user's shell configuration; Zsh uses an
+  ephemeral `.zshrc` that is removed when the session exits. Unknown shells,
+  probe timeouts, and bootstrap failures fall back to a plain remote shell, so
+  terminal access remains available even when command history cannot be
+  collected. OSC 7/133 emitted by the remote shell or application and all
+  BEL/OSC notifications continue to work over SSH.
 
 ## Manual vttest pass
 

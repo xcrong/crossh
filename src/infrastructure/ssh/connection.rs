@@ -768,10 +768,22 @@ async fn open_terminal_channel(
     if let Err(error) = channel.set_env(false, "TERM_PROGRAM", "crossh").await {
         log::debug!("remote server ignored TERM_PROGRAM request: {error}");
     }
-    if let Some(shell) = detect_remote_shell(handle).await {
-        channel
+    let remote_shell =
+        match tokio::time::timeout(Duration::from_secs(2), detect_remote_shell(handle)).await {
+            Ok(shell) => shell,
+            Err(_) => {
+                log::debug!("remote shell probe timed out; using a plain shell");
+                None
+            }
+        };
+    if let Some(shell) = remote_shell {
+        if let Err(error) = channel
             .exec(true, remote_shell_bootstrap_command(shell))
-            .await?;
+            .await
+        {
+            log::debug!("remote shell bootstrap failed; using a plain shell: {error}");
+            channel.request_shell(false).await?;
+        }
     } else {
         channel.request_shell(false).await?;
     }
@@ -1216,6 +1228,104 @@ mod tests {
         let preview: String = sample.chars().take(160).collect();
         eprintln!("[test] connected={}, preview={:?}", connected, preview);
         assert!(connected, "failed to connect/authenticate to {target}");
+    }
+
+    /// 端到端验证同一 SSH 连接上的后台命令成功和终止。
+    /// 运行：`cargo test -- --ignored --nocapture connect_and_run_remote_command`
+    #[test]
+    #[ignore]
+    fn connect_and_run_remote_command() {
+        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+            .try_init();
+        let target = std::env::var("CROSSH_TEST_HOST").unwrap_or_else(|_| "txvps".to_string());
+        let cfg = Arc::new(SshConfig::from_default_location().unwrap());
+        let host = cfg.resolve(&target);
+        let methods = default_auth_for(&host);
+
+        let (cmd_tx, cmd_rx) = async_channel::bounded::<ConnCmd>(64);
+        let (conn_event_tx, conn_event_rx) = async_channel::bounded::<ConnEvent>(64);
+        let cfg_for_task = cfg.clone();
+        runtime().spawn(async move {
+            let _ = run_connection(host, methods, cfg_for_task, cmd_rx, conn_event_tx).await;
+        });
+
+        let (input_tx, input_rx) = async_channel::bounded::<InputCmd>(64);
+        let (term_event_tx, term_event_rx) = async_channel::bounded::<SessionEvent>(64);
+        cmd_tx
+            .send_blocking(ConnCmd::OpenTerminal {
+                cols: 80,
+                rows: 24,
+                input_rx,
+                event_tx: term_event_tx,
+            })
+            .unwrap();
+
+        let (success_tx, success_rx) = async_channel::bounded(1);
+        cmd_tx
+            .send_blocking(ConnCmd::OpenCommand {
+                id: 1,
+                command: "printf remote-command".into(),
+                cwd: "/tmp".into(),
+                event_tx: success_tx,
+            })
+            .unwrap();
+
+        let rt = runtime();
+        let (success, terminated) = rt.block_on(async move {
+            let timer = tokio::time::sleep(Duration::from_secs(15));
+            tokio::pin!(timer);
+            let mut terminal_connected = false;
+            let mut success_event = None;
+            loop {
+                if terminal_connected && success_event.is_some() {
+                    break;
+                }
+                tokio::select! {
+                    biased;
+                    _ = &mut timer => panic!("timed out waiting for remote command"),
+                    cev = conn_event_rx.recv() => {
+                        if let Ok(ConnEvent::NeedHostKey { reply, .. }) = cev {
+                            let _ = reply.send(HostKeyDecision::AcceptOnce);
+                        }
+                    }
+                    tev = term_event_rx.recv() => {
+                        match tev {
+                            Ok(SessionEvent::Connected) => terminal_connected = true,
+                            Ok(SessionEvent::Error(error)) => panic!("remote terminal error: {error}"),
+                            Ok(SessionEvent::Closed) | Err(_) => panic!("remote terminal closed"),
+                            _ => {}
+                        }
+                    }
+                    event = success_rx.recv() => {
+                        success_event = Some(event.expect("remote command event"));
+                    }
+                }
+            }
+
+            let (stop_tx, stop_rx) = async_channel::bounded(1);
+            cmd_tx
+                .send(ConnCmd::OpenCommand {
+                    id: 2,
+                    command: "sleep 30".into(),
+                    cwd: "/tmp".into(),
+                    event_tx: stop_tx,
+                })
+                .await
+                .unwrap();
+            cmd_tx.send(ConnCmd::StopCommand { id: 2 }).await.unwrap();
+            let terminated = tokio::time::timeout(Duration::from_secs(5), stop_rx.recv())
+                .await
+                .expect("timed out waiting for terminated command")
+                .expect("terminated command event");
+            drop(input_tx);
+            (success_event.expect("successful command event"), terminated)
+        });
+        assert_eq!(success.id, 1);
+        assert_eq!(success.status, RemoteCommandStatus::Succeeded);
+        assert_eq!(success.output, "remote-command");
+        assert_eq!(success.exit_code, Some(0));
+        assert_eq!(terminated.id, 2);
+        assert_eq!(terminated.status, RemoteCommandStatus::Terminated);
     }
 
     /// 诊断用：连接真实主机，开终端，等提示符出现后发送 `ls\r`，
