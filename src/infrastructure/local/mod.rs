@@ -7,6 +7,8 @@ use std::io;
 #[cfg(unix)]
 use std::io::{ErrorKind, Read, Write};
 #[cfg(unix)]
+use std::os::fd::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::fs::symlink;
 use std::path::Path;
 #[cfg(not(windows))]
@@ -169,8 +171,70 @@ async fn run_local_terminal(
         let _ = process_task.await;
     }
 
-    drop(pty);
+    // alacritty_terminal::tty::Pty::drop synchronously waits for the shell.
+    // A foreground child can keep that wait blocked, so never run the drop on
+    // a Tokio core worker shared by the other terminal I/O tasks.
+    let _ = tokio::task::spawn_blocking(move || close_local_pty(pty)).await;
     Ok(())
+}
+
+#[cfg(unix)]
+fn close_local_pty(pty: Arc<Mutex<tty::Pty>>) {
+    let pty = match pty.lock() {
+        Ok(pty) => pty,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    terminate_local_process_group(&pty);
+    drop(pty);
+}
+
+#[cfg(unix)]
+fn terminate_local_process_group(pty: &tty::Pty) {
+    let child_pid = pty.child().id() as libc::pid_t;
+    let foreground_pgid = unsafe { libc::tcgetpgrp(pty.file().as_raw_fd()) };
+    let process_group = if foreground_pgid > 0 {
+        foreground_pgid
+    } else {
+        child_pid
+    };
+    if process_group <= 0 {
+        return;
+    }
+
+    // Pty::drop only signals the shell PID. When a shell is waiting for a
+    // foreground command, that leaves the command alive and the shell's
+    // synchronous wait can block indefinitely. Close the whole PTY session
+    // instead, giving cooperative children a short chance to exit first.
+    unsafe {
+        libc::killpg(process_group, libc::SIGHUP);
+        if child_pid > 0 {
+            libc::kill(child_pid, libc::SIGHUP);
+        }
+    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    if process_group_exists(process_group) {
+        unsafe {
+            libc::killpg(process_group, libc::SIGKILL);
+        }
+    }
+    if child_pid > 0 && process_exists(child_pid) {
+        unsafe {
+            libc::kill(child_pid, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn process_group_exists(process_group: libc::pid_t) -> bool {
+    let result = unsafe { libc::killpg(process_group, 0) };
+    result == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(unix)]
+fn process_exists(pid: libc::pid_t) -> bool {
+    let result = unsafe { libc::kill(pid, 0) };
+    result == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 #[cfg(unix)]
@@ -779,6 +843,98 @@ mod tests {
         let spawned = flooder.join().unwrap();
         eprintln!("[test] spawned {spawned} children total");
         drop(input_tx);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn closing_busy_local_terminals_does_not_starve_runtime() {
+        let cwd = std::env::current_dir().unwrap();
+        let (first_input, first_events) = open_terminal(cwd.clone(), 80, 24);
+        let (second_input, second_events) = open_terminal(cwd, 80, 24);
+
+        let third_terminal_works = crate::infrastructure::ssh::ssh_runtime().block_on(async move {
+            let busy_command = b"sh -c 'printf CROSSH_BUSY_CHILD_READY; sleep 60'\r";
+            let first_ready = wait_for_terminal_marker(
+                &first_input,
+                &first_events,
+                busy_command,
+                b"CROSSH_BUSY_CHILD_READY",
+            )
+            .await;
+            let second_ready = wait_for_terminal_marker(
+                &second_input,
+                &second_events,
+                busy_command,
+                b"CROSSH_BUSY_CHILD_READY",
+            )
+            .await;
+
+            // Dropping both halves matches closing terminal views: the input
+            // receiver ends and the event receiver is no longer drained.
+            drop(first_input);
+            drop(first_events);
+            drop(second_input);
+            drop(second_events);
+
+            if !first_ready || !second_ready {
+                return false;
+            }
+
+            let (third_input, third_events) =
+                open_terminal(std::env::current_dir().unwrap(), 80, 24);
+            let works = wait_for_terminal_marker(
+                &third_input,
+                &third_events,
+                b"echo CROSSH_RUNTIME_ALIVE\r",
+                b"CROSSH_RUNTIME_ALIVE",
+            )
+            .await;
+            let _ = third_input.send(InputCmd::Close).await;
+            drop(third_input);
+            drop(third_events);
+            works
+        });
+
+        assert!(
+            third_terminal_works,
+            "closing busy terminals starved the shared Tokio runtime"
+        );
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_terminal_marker(
+        input_tx: &Sender<InputCmd>,
+        event_rx: &Receiver<SessionEvent>,
+        command: &[u8],
+        marker: &[u8],
+    ) -> bool {
+        let mut connected = false;
+        let mut output = Vec::new();
+        let timer = tokio::time::sleep(Duration::from_secs(5));
+        tokio::pin!(timer);
+
+        loop {
+            tokio::select! {
+                biased;
+                _ = &mut timer => return false,
+                event = event_rx.recv() => match event {
+                    Ok(SessionEvent::Connected) => {
+                        connected = true;
+                        if input_tx.send(InputCmd::Write(command.to_vec())).await.is_err() {
+                            return false;
+                        }
+                    }
+                    Ok(SessionEvent::Output(bytes)) => {
+                        output.extend_from_slice(&bytes);
+                        if connected && output.windows(marker.len()).any(|window| window == marker) {
+                            return true;
+                        }
+                    }
+                    Ok(SessionEvent::Cwd(_)) | Ok(SessionEvent::ProcessInfo(_)) => {}
+                    Ok(SessionEvent::Error(_)) | Ok(SessionEvent::Closed) | Err(_) => return false,
+                }
+            }
+        }
     }
 
     #[cfg(unix)]
