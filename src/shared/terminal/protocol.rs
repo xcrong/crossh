@@ -11,6 +11,8 @@ const MAX_IMAGE_BYTES: usize = 6 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProtocolEvent {
     Cwd(String),
+    /// The command about to be executed, emitted by Crossh's local shell hook.
+    Command(String),
     Shell(ShellEvent),
     Notification {
         title: String,
@@ -290,9 +292,25 @@ fn parse_osc(payload: &[u8]) -> Vec<ProtocolEvent> {
         b"777" => parse_osc777(value),
         b"99" => parse_kitty_notification(value),
         b"133" => parse_osc133(value),
-        b"1337" => parse_iterm_image(value),
+        b"1337" => parse_osc1337(value),
         _ => Vec::new(),
     }
+}
+
+fn parse_osc1337(value: &[u8]) -> Vec<ProtocolEvent> {
+    if let Some(encoded) = value.strip_prefix(b"crossh-command=") {
+        let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
+            return Vec::new();
+        };
+        let Ok(command) = String::from_utf8(decoded) else {
+            return Vec::new();
+        };
+        if command.is_empty() || command.len() > 16 * 1024 || command.contains('\0') {
+            return Vec::new();
+        }
+        return vec![ProtocolEvent::Command(command)];
+    }
+    parse_iterm_image(value)
 }
 
 fn parse_progress(value: &[u8]) -> Vec<ProtocolEvent> {
@@ -771,6 +789,15 @@ mod tests {
                 ProtocolEvent::Shell(ShellEvent::CommandFinished { status: Some(127) }),
                 ProtocolEvent::Shell(ShellEvent::PromptStart),
             ]
+        );
+    }
+
+    #[test]
+    fn parses_crossh_command_marker() {
+        let mut parser = TerminalProtocolParser::default();
+        assert_eq!(
+            parser.feed(b"\x1b]1337;crossh-command=Z2l0IHN0YXR1cw==\x07"),
+            vec![ProtocolEvent::Command("git status".into())]
         );
     }
 

@@ -22,6 +22,9 @@ use gpui::{
     WindowOptions, div, px, size,
 };
 
+use crate::features::commands::{
+    BackgroundTaskEvent, BackgroundTaskManager, CommandHistory, local_scope,
+};
 use crate::features::connections::{ConnectionManager, HostEntry};
 use crate::features::connections::{PromptDisplay, render_prompt_modal};
 use crate::features::forwarding::ForwardPane;
@@ -32,6 +35,7 @@ use crate::features::workspace::registry::WorkspaceState;
 use crate::features::workspace::sidebar::render_sidebar;
 use crate::features::workspace::view::{
     ActiveView, LocalDir, LocalSession, LocalSessionId, Pane, Tab, rebuild_local_dirs, render_main,
+    render_quick_command_editor,
 };
 use crate::infrastructure::config::SshConfig;
 use crate::infrastructure::local;
@@ -49,6 +53,13 @@ const GIT_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 enum ExitIntent {
     QuitApp,
     CloseWindow,
+}
+
+pub(crate) struct QuickCommandEditor {
+    pub(crate) scope: String,
+    pub(crate) original: String,
+    pub(crate) value: String,
+    pub(crate) focus: FocusHandle,
 }
 
 #[derive(Default)]
@@ -122,6 +133,13 @@ pub struct AppShell {
     pub(crate) sidebar_dragging: Rc<Cell<bool>>,
     pub(crate) sidebar_scroll: gpui::ScrollHandle,
     pub(crate) tab_scroll: gpui::ScrollHandle,
+    /// Right-side command panel width and drag state.
+    pub(crate) quick_commands_width: Rc<Cell<f32>>,
+    pub(crate) quick_commands_dragging: Rc<Cell<bool>>,
+    pub(crate) command_history: CommandHistory,
+    pub(crate) background_tasks: BackgroundTaskManager,
+    background_event_tasks: Vec<Task<()>>,
+    pub(crate) quick_command_editor: Option<QuickCommandEditor>,
     /// 周期性刷新本地会话的 Git 状态，覆盖 shell 空闲时的外部文件变更。
     _git_status_refresh_task: Option<Task<()>>,
     quit_confirmation_open: bool,
@@ -180,6 +198,12 @@ impl AppShell {
             sidebar_dragging: Rc::new(Cell::new(false)),
             sidebar_scroll: gpui::ScrollHandle::new(),
             tab_scroll: gpui::ScrollHandle::new(),
+            quick_commands_width: Rc::new(Cell::new(theme::QUICK_COMMANDS_WIDTH)),
+            quick_commands_dragging: Rc::new(Cell::new(false)),
+            command_history: CommandHistory::load(),
+            background_tasks: BackgroundTaskManager::default(),
+            background_event_tasks: Vec::new(),
+            quick_command_editor: None,
             _git_status_refresh_task: None,
             quit_confirmation_open: false,
             shutdown_in_progress: false,
@@ -245,6 +269,11 @@ impl AppShell {
                 this.close_remote_terminal(terminal.entity_id(), cx);
             }
             TerminalEvent::TitleChanged | TerminalEvent::Notification => cx.notify(),
+            TerminalEvent::CommandStarted { command, cwd } => {
+                if terminal.read(cx).is_local() {
+                    this.record_command(command.clone(), cwd.clone(), cx);
+                }
+            }
             TerminalEvent::CwdChanged | TerminalEvent::PromptReached => {}
         });
         self.workspace
@@ -350,6 +379,9 @@ impl AppShell {
                 if let Some(session_id) = this.local_session_id_for_terminal(terminal.entity_id()) {
                     this.refresh_git_status(session_id, false, cx);
                 }
+            }
+            TerminalEvent::CommandStarted { command, cwd } => {
+                this.record_command(command.clone(), cwd.clone(), cx);
             }
             TerminalEvent::TitleChanged | TerminalEvent::Notification => cx.notify(),
         });
@@ -614,6 +646,140 @@ impl AppShell {
         cx.notify();
     }
 
+    fn record_command(&mut self, command: String, cwd: Option<String>, cx: &mut Context<Self>) {
+        let Some(cwd) = cwd else {
+            return;
+        };
+        let cwd = normalize_local_cwd(PathBuf::from(cwd));
+        let scope = local_scope(&cwd);
+        if self.command_history.record(&scope, &command) {
+            cx.notify();
+        }
+    }
+
+    fn active_local_terminal(&self, cx: &Context<Self>) -> Option<(Entity<TerminalView>, PathBuf)> {
+        let ActiveView::LocalSession(session_id) = self.workspace.active_view? else {
+            return None;
+        };
+        let session = self.workspace.sessions.local_sessions.get(&session_id)?;
+        Some((
+            session.terminal.clone(),
+            session
+                .terminal
+                .read(cx)
+                .cwd
+                .clone()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| session.cwd.clone()),
+        ))
+    }
+
+    pub(crate) fn run_quick_command(
+        &mut self,
+        scope: String,
+        command: String,
+        background: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((terminal, cwd)) = self.active_local_terminal(cx) else {
+            return;
+        };
+        let cwd = normalize_local_cwd(cwd);
+        if local_scope(&cwd) != scope {
+            return;
+        }
+        if background {
+            let (id, event_rx) = self.background_tasks.start(scope, cwd, command);
+            let task = cx.spawn(async move |weak, cx| {
+                let Ok(event) = event_rx.recv().await else {
+                    return;
+                };
+                let _ = weak.update(cx, |this, cx| {
+                    this.apply_background_event(event);
+                    cx.notify();
+                });
+            });
+            self.background_event_tasks.push(task);
+            log::info!("started background command {id}");
+        } else {
+            terminal.update(cx, |terminal, _cx| terminal.run_command(&command));
+        }
+        cx.notify();
+    }
+
+    fn apply_background_event(&mut self, event: BackgroundTaskEvent) {
+        log::info!(
+            "background command {} finished as {:?}",
+            event.id,
+            event.status
+        );
+        self.background_tasks.apply_event(event);
+    }
+
+    pub(crate) fn stop_background_task(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.background_tasks.mark_stopping(id);
+        cx.notify();
+    }
+
+    pub(crate) fn open_quick_command_editor(
+        &mut self,
+        scope: String,
+        command: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let focus = cx.focus_handle();
+        self.quick_command_editor = Some(QuickCommandEditor {
+            scope,
+            original: command.clone(),
+            value: command,
+            focus: focus.clone(),
+        });
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn submit_quick_command_editor(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.quick_command_editor.take() else {
+            return;
+        };
+        self.command_history
+            .edit(&editor.scope, &editor.original, &editor.value);
+        cx.notify();
+    }
+
+    pub(crate) fn cancel_quick_command_editor(&mut self, cx: &mut Context<Self>) {
+        if self.quick_command_editor.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn handle_quick_command_editor_key(
+        &mut self,
+        ev: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match ev.keystroke.key.as_str() {
+            "enter" | "return" => self.submit_quick_command_editor(cx),
+            "escape" => self.cancel_quick_command_editor(cx),
+            "backspace" => {
+                if let Some(editor) = &mut self.quick_command_editor {
+                    editor.value.pop();
+                }
+                cx.notify();
+            }
+            _ => {
+                if let Some(ch) = printable_char(&ev.keystroke)
+                    && let Some(editor) = &mut self.quick_command_editor
+                {
+                    editor.value.push(ch);
+                    cx.notify();
+                }
+            }
+        }
+    }
+
     fn open_query(&mut self, cx: &mut Context<Self>) {
         let query = self.host_query.trim().to_string();
         if query.is_empty() {
@@ -772,7 +938,10 @@ impl AppShell {
     }
 
     fn quit_risks(&self, cx: &Context<Self>) -> QuitRiskSummary {
-        let mut risks = QuitRiskSummary::default();
+        let mut risks = QuitRiskSummary {
+            running_commands: self.background_tasks.running_count(),
+            ..QuitRiskSummary::default()
+        };
         for session in self.workspace.sessions.local_sessions.values() {
             if session.terminal.read(cx).is_command_running() {
                 risks.running_commands += 1;
@@ -804,6 +973,22 @@ impl AppShell {
         }
         self.shutdown_in_progress = true;
         self.status = Some(i18n::text("quit.closing"));
+        let running_background = self
+            .background_tasks
+            .tasks
+            .values()
+            .filter(|task| {
+                matches!(
+                    task.status,
+                    crate::features::commands::BackgroundTaskStatus::Running
+                        | crate::features::commands::BackgroundTaskStatus::Stopping
+                )
+            })
+            .map(|task| task.id)
+            .collect::<Vec<_>>();
+        for id in running_background {
+            self.background_tasks.mark_stopping(id);
+        }
 
         let mut terminals = self
             .workspace
@@ -907,7 +1092,7 @@ impl AppShell {
     fn dispatch_shell_menu_action(
         &mut self,
         action: ShellMenuAction,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match action {
@@ -937,6 +1122,19 @@ impl AppShell {
             ShellMenuAction::CloseOtherLocalSessions(session_id) => {
                 self.close_other_local_sessions(session_id, cx);
             }
+            ShellMenuAction::RunQuickCommand {
+                scope,
+                command,
+                background,
+            } => self.run_quick_command(scope, command, background, cx),
+            ShellMenuAction::EditQuickCommand { scope, command } => {
+                self.open_quick_command_editor(scope, command, window, cx)
+            }
+            ShellMenuAction::DeleteQuickCommand { scope, command } => {
+                self.command_history.remove(&scope, &command);
+                cx.notify();
+            }
+            ShellMenuAction::StopBackgroundTask(id) => self.stop_background_task(id, cx),
         }
         self.close_context_menu(cx);
     }
@@ -1409,6 +1607,9 @@ impl Render for AppShell {
             PromptDisplay::HostKey { .. } | PromptDisplay::Credential { .. }
         ) {
             root = root.child(render_prompt_modal(self, prompt, cx));
+        }
+        if self.quick_command_editor.is_some() {
+            root = root.child(render_quick_command_editor(self, cx));
         }
         if let Some(menu) = self.context_menu.clone() {
             root = root.child(render_context_menu(

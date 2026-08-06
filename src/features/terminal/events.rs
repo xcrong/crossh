@@ -6,6 +6,11 @@ pub(crate) use crate::infrastructure::ssh::ConnectionState as ConnState;
 /// Events emitted by a terminal entity to its workspace owner.
 #[derive(Clone, Debug)]
 pub(crate) enum TerminalEvent {
+    /// The local shell reported the command that is about to execute.
+    CommandStarted {
+        command: String,
+        cwd: Option<String>,
+    },
     /// Shell integration reported a new working directory.
     CwdChanged,
     /// The local shell returned to a prompt.

@@ -183,3 +183,21 @@ forward:
 terminal:
   connecting: Connecting…
   closed: Session closed.
+
+quick_commands:
+  title: Quick commands
+  empty: Commands from this directory will appear here.
+  run: Run in terminal
+  run_background: Run in background
+  edit: Edit command
+  edit_title: Edit quick command
+  command_placeholder: Enter a command
+  save: Save
+  delete: Remove command
+  background_tasks: Background tasks
+  running: Running
+  stopping: Stopping
+  succeeded: Done
+  failed: Failed
+  terminated: Stopped
+  stop: Stop task

@@ -821,6 +821,13 @@ impl TerminalView {
                         cx.emit(TerminalEvent::CwdChanged);
                     }
                 }
+                ProtocolEvent::Command(command) => {
+                    self.command_running = true;
+                    cx.emit(TerminalEvent::CommandStarted {
+                        command,
+                        cwd: self.cwd.clone(),
+                    });
+                }
                 ProtocolEvent::Shell(shell_event) => {
                     self.shell_activity_available = true;
                     match shell_event {
@@ -2184,6 +2191,10 @@ impl TerminalView {
         remote_terminal_title(None)
     }
 
+    pub fn is_local(&self) -> bool {
+        self.is_local
+    }
+
     pub(crate) fn is_command_running(&self) -> bool {
         self.state == ConnState::Connected
             && (self.command_running || self.term.mode().contains(TermMode::ALT_SCREEN))
@@ -2241,6 +2252,16 @@ impl TerminalView {
     /// 请求在下次 render 时自动聚焦终端（用于打开/切回 tab）。
     pub fn request_focus(&mut self) {
         self.focused_once = false;
+    }
+
+    /// Execute a command in this terminal's current interactive shell.
+    pub fn run_command(&mut self, command: &str) {
+        let command = command.trim();
+        if command.is_empty() {
+            return;
+        }
+        self.send_input(format!("{command}\r").into_bytes());
+        self.request_focus();
     }
 
     /// 根据当前尺寸调整远端 PTY 窗口。

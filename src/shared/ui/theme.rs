@@ -10,6 +10,9 @@ pub(crate) const TAB_HEIGHT: f32 = 36.0;
 pub(crate) const ROW_HEIGHT: f32 = 34.0;
 pub(crate) const RADIUS_SM: f32 = 5.0;
 pub(crate) const RADIUS_MD: f32 = 7.0;
+pub(crate) const QUICK_COMMANDS_WIDTH: f32 = 300.0;
+pub(crate) const QUICK_COMMANDS_MIN_WIDTH: f32 = 240.0;
+pub(crate) const QUICK_COMMANDS_MAX_WIDTH: f32 = 460.0;
 
 pub(crate) fn canvas() -> Rgba {
     rgb(0x0f1114)

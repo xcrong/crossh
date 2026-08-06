@@ -355,19 +355,15 @@ fn prepare_shell_integration(options: &mut tty::Options, pty_id: u64) -> Option<
     let shell = std::env::var_os("SHELL")?;
     let shell_name = Path::new(&shell).file_name()?.to_str()?;
     if shell_name == "bash" {
-        let report = r#"__crossh_status=$?; printf '\033]133;D;%s\007\033]133;B\007\033]7;file://localhost%s\007\033]133;A\007' "$__crossh_status" "$PWD""#;
         let original = std::env::var("PROMPT_COMMAND").unwrap_or_default();
-        let prompt_command = if original.is_empty() {
-            report.to_string()
-        } else {
-            format!("{report};{original}")
-        };
+        let prompt_command = bash_prompt_command(&original);
         let original_ps0 = std::env::var("PS0").unwrap_or_default();
-        let ps0 = format!("\x1b]133;C\x07{original_ps0}");
         options
             .env
             .insert("PROMPT_COMMAND".to_string(), prompt_command);
-        options.env.insert("PS0".to_string(), ps0);
+        if !original_ps0.is_empty() {
+            options.env.insert("PS0".to_string(), original_ps0);
+        }
         return None;
     }
     if shell_name == "fish" {
@@ -411,7 +407,8 @@ function __crossh_report_prompt --on-event fish_prompt\n\
     printf '\\033]133;A\\007'\n\
 end\n\
 function __crossh_report_command --on-event fish_preexec\n\
-    printf '\\033]133;C\\007'\n\
+    set -l __crossh_encoded (printf '%s' \"$argv[1]\" | base64 | tr -d '\\n')\n\
+    printf '\\033]1337;crossh-command=%s\\007\\033]133;C\\007' \"$__crossh_encoded\"\n\
 end\n\
 function __crossh_report_cwd --on-variable PWD\n\
     __crossh_report_pwd\n\
@@ -474,7 +471,7 @@ end\n",
         "autoload -Uz add-zsh-hook\n\
 __crossh_report_pwd() { printf '\\033]7;file://localhost%s\\007' \"$PWD\"; }\n\
 __crossh_report_prompt() { local __crossh_status=$?; printf '\\033]133;D;%s\\007\\033]133;B\\007' \"$__crossh_status\"; __crossh_report_pwd; printf '\\033]133;A\\007'; }\n\
-__crossh_report_command() { printf '\\033]133;C\\007'; }\n\
+__crossh_report_command() { local __crossh_encoded; __crossh_encoded=$(printf '%s' \"$1\" | base64 | tr -d '\\n'); printf '\\033]1337;crossh-command=%s\\007\\033]133;C\\007' \"$__crossh_encoded\"; }\n\
 add-zsh-hook precmd __crossh_report_prompt\n\
 add-zsh-hook preexec __crossh_report_command\n\
 add-zsh-hook chpwd __crossh_report_pwd\n"
@@ -485,7 +482,7 @@ add-zsh-hook chpwd __crossh_report_pwd\n"
 autoload -Uz add-zsh-hook\n\
 __crossh_report_pwd() {{ printf '\\033]7;file://localhost%s\\007' \"$PWD\"; }}\n\
 __crossh_report_prompt() {{ local __crossh_status=$?; printf '\\033]133;D;%s\\007\\033]133;B\\007' \"$__crossh_status\"; __crossh_report_pwd; printf '\\033]133;A\\007'; }}\n\
-__crossh_report_command() {{ printf '\\033]133;C\\007'; }}\n\
+__crossh_report_command() {{ local __crossh_encoded; __crossh_encoded=$(printf '%s' \"$1\" | base64 | tr -d '\\n'); printf '\\033]1337;crossh-command=%s\\007\\033]133;C\\007' \"$__crossh_encoded\"; }}\n\
 add-zsh-hook precmd __crossh_report_prompt\n\
 add-zsh-hook preexec __crossh_report_command\n\
 add-zsh-hook chpwd __crossh_report_pwd\n",
@@ -502,6 +499,30 @@ add-zsh-hook chpwd __crossh_report_pwd\n",
         directory.to_string_lossy().to_string(),
     );
     Some(ShellIntegration { directory })
+}
+
+#[cfg(unix)]
+fn bash_prompt_command(original: &str) -> String {
+    // DEBUG is available in the Bash 3.2 shipped with macOS, while PS0 is
+    // not. Disable the trap while the prompt and user prompt hooks run so
+    // Crossh's own commands never become history entries.
+    let original = if original.is_empty() {
+        String::new()
+    } else {
+        format!("{original};")
+    };
+    format!(
+        r#"__crossh_report_command() {{
+    case "$BASH_COMMAND" in
+        __crossh_status=*|trap\ *|__crossh_report_command*) return ;;
+    esac
+    local __crossh_command=$BASH_COMMAND
+    local __crossh_encoded
+    __crossh_encoded=$(printf '%s' "$__crossh_command" | base64 | tr -d '\n')
+    printf '\033]1337;crossh-command=%s\007\033]133;C\007' "$__crossh_encoded"
+}}
+__crossh_status=$?; trap - DEBUG; printf '\033]133;D;%s\007\033]133;B\007\033]7;file://localhost%s\007\033]133;A\007' "$__crossh_status" "$PWD"; {original}trap '__crossh_report_command' DEBUG"#
+    )
 }
 
 /// Keep fish's automatically loaded config state visible through the temporary
@@ -620,6 +641,8 @@ fn shell_quote(path: &Path) -> String {
 mod tests {
     use super::*;
     #[cfg(unix)]
+    use std::process::Command;
+    #[cfg(unix)]
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[cfg(unix)]
@@ -666,6 +689,34 @@ mod tests {
             Path::new("/var/tmp/crossh-zsh-42-7-3"),
             Path::new("/tmp")
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bash_prompt_hook_reports_user_commands() {
+        let output = Command::new("/bin/bash")
+            .args([
+                "--noprofile",
+                "--norc",
+                "-c",
+                r#"eval "$PROMPT_COMMAND"; printf hello"#,
+            ])
+            .env("PROMPT_COMMAND", bash_prompt_command(""))
+            .output()
+            .expect("run bash prompt hook");
+        assert!(output.status.success());
+
+        let marker = b"\x1b]1337;crossh-command=cHJpbnRmIGhlbGxv\x07";
+        assert_eq!(
+            output
+                .stdout
+                .windows(marker.len())
+                .filter(|window| *window == marker)
+                .count(),
+            1,
+            "bash hook output: {:?}",
+            String::from_utf8_lossy(&output.stdout)
+        );
     }
 
     #[cfg(unix)]

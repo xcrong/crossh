@@ -1,5 +1,6 @@
 //! User-facing features. Each feature owns its state, UI, and public boundary.
 
+pub(crate) mod commands;
 pub(crate) mod connections;
 pub(crate) mod forwarding;
 pub(crate) mod projects;

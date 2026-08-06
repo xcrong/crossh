@@ -1,14 +1,17 @@
 //! 工作区：标签条 + 终端/SFTP/转发主区，以及会话/标签的数据类型。
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use gpui::{
-    AnyElement, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement,
-    MouseButton, MouseDownEvent, ParentElement, SharedString, StatefulInteractiveElement, Styled,
-    div, hsla, px, rgb,
+    AnyElement, AppContext, Bounds, Context, Entity, FontWeight, InteractiveElement, IntoElement,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, SharedString,
+    StatefulInteractiveElement, Styled, canvas, div, hsla, px, rgb,
 };
 
+use crate::features::commands::{BackgroundTask, BackgroundTaskStatus, CommandRecord, local_scope};
 use crate::features::forwarding::ForwardPane;
 use crate::features::projects::GitStatus;
 use crate::features::settings::render_settings_page;
@@ -62,7 +65,7 @@ pub struct LocalDir {
 }
 
 /// 主区：设置页或标签条 + 内容区。
-pub fn render_main(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
+pub fn render_main(shell: &mut AppShell, cx: &mut Context<AppShell>) -> AnyElement {
     if shell.settings_open {
         return render_settings_page(shell, cx);
     }
@@ -79,7 +82,7 @@ pub fn render_main(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
     pane = pane.child(render_tab_strip(shell, cx));
 
     // 终端/SFTP 区。
-    let mut content = div().flex_1().min_h_0().relative();
+    let mut content = div().flex_1().min_h_0().flex().relative();
     let active_pane = match shell.workspace.active_view {
         Some(ActiveView::RemoteTab(idx)) => {
             shell
@@ -101,14 +104,24 @@ pub fn render_main(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
             .map(|session| session.terminal.clone().into_any_element()),
         None => None,
     };
+    let quick_context = match shell.workspace.active_view {
+        Some(ActiveView::LocalSession(session_id)) => shell
+            .workspace
+            .sessions
+            .local_sessions
+            .get(&session_id)
+            .map(|session| (local_scope(&session.cwd), session.cwd.clone())),
+        _ => None,
+    };
+    let mut terminal_area = div().flex_1().min_w_0().min_h_0().relative();
     if let Some(active_pane) = active_pane {
-        content = content.child(active_pane);
+        terminal_area = terminal_area.child(active_pane);
     } else {
-        content = content.child(render_empty_state(cx));
+        terminal_area = terminal_area.child(render_empty_state(cx));
     }
 
     if let Some(status) = &shell.status {
-        content = content.child(
+        terminal_area = terminal_area.child(
             div()
                 .absolute()
                 .bottom_2()
@@ -123,6 +136,10 @@ pub fn render_main(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
                 .text_color(theme::text())
                 .child(SharedString::from(status.clone())),
         );
+    }
+    content = content.child(terminal_area);
+    if let Some((scope, cwd)) = quick_context {
+        content = content.child(render_quick_commands(shell, scope, cwd, cx));
     }
     pane = pane.child(content);
     if let Some(ActiveView::LocalSession(session_id)) = shell.workspace.active_view
@@ -197,6 +214,559 @@ fn render_terminal_status_bar(session: &LocalSession) -> AnyElement {
     }
 
     bar.into_any_element()
+}
+
+fn render_quick_commands(
+    shell: &mut AppShell,
+    scope: String,
+    cwd: PathBuf,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    let width = shell.quick_commands_width.get().clamp(
+        theme::QUICK_COMMANDS_MIN_WIDTH,
+        theme::QUICK_COMMANDS_MAX_WIDTH,
+    );
+    let records = shell.command_history.top(&scope);
+    let total = shell.command_history.total(&scope);
+    let tasks = shell.background_tasks.tasks_for_scope(&scope);
+    let container: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::new(Cell::new(None));
+    let backing = canvas(
+        {
+            let container = container.clone();
+            move |bounds, _window, _cx| container.set(Some(bounds))
+        },
+        {
+            let container = container.clone();
+            let width_cell = shell.quick_commands_width.clone();
+            let dragging = shell.quick_commands_dragging.clone();
+            move |_bounds, _state, window, _cx| {
+                window.on_mouse_event({
+                    let container = container.clone();
+                    let width_cell = width_cell.clone();
+                    let dragging = dragging.clone();
+                    move |ev: &MouseMoveEvent, _phase, window, _cx| {
+                        if !dragging.get() {
+                            return;
+                        }
+                        let Some(bounds) = container.get() else {
+                            return;
+                        };
+                        let width = (bounds.right().as_f32() - ev.position.x.as_f32()).clamp(
+                            theme::QUICK_COMMANDS_MIN_WIDTH,
+                            theme::QUICK_COMMANDS_MAX_WIDTH,
+                        );
+                        width_cell.set(width);
+                        window.refresh();
+                    }
+                });
+                window.on_mouse_event({
+                    let dragging = dragging.clone();
+                    move |_ev: &MouseUpEvent, _phase, window, _cx| {
+                        if dragging.replace(false) {
+                            window.refresh();
+                        }
+                    }
+                });
+            }
+        },
+    )
+    .absolute()
+    .size_full();
+
+    let resizing = shell.quick_commands_dragging.get();
+    let resize_handle = div()
+        .id("quick-commands-resize")
+        .absolute()
+        .top_0()
+        .left(px(-4.))
+        .w(px(8.))
+        .h_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_col_resize()
+        .child(
+            div()
+                .w(px(1.))
+                .h_full()
+                .bg(if resizing {
+                    theme::accent()
+                } else {
+                    theme::border()
+                })
+                .hover(|style| style.bg(theme::accent())),
+        )
+        .on_mouse_down(MouseButton::Left, {
+            let dragging = shell.quick_commands_dragging.clone();
+            move |_ev, window, _cx| {
+                dragging.set(true);
+                window.refresh();
+            }
+        });
+
+    let header = div()
+        .h(px(46.))
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .justify_center()
+        .gap_1()
+        .px_3()
+        .border_b_1()
+        .border_color(theme::border())
+        .bg(theme::surface())
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .text_xs()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme::text())
+                .child(icons::icon(icons::IconName::Terminal, 13.).text_color(theme::accent()))
+                .child(SharedString::from(i18n::text("quick_commands.title")))
+                .child(
+                    div()
+                        .ml_auto()
+                        .text_color(theme::faint_text())
+                        .child(SharedString::from(format!("{}/{}", records.len(), total))),
+                ),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .text_xs()
+                .text_color(theme::faint_text())
+                .child(SharedString::from(cwd.to_string_lossy().to_string())),
+        );
+
+    let mut list = div().flex_1().min_h_0().flex().flex_col().gap_1().p_2();
+    list.style().overflow.y = Some(gpui::Overflow::Scroll);
+    if records.is_empty() {
+        list = list.child(
+            div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .px_3()
+                .text_xs()
+                .text_color(theme::faint_text())
+                .child(SharedString::from(i18n::text("quick_commands.empty"))),
+        );
+    } else {
+        for (index, record) in records.iter().enumerate() {
+            list = list.child(render_quick_command_row(shell, &scope, record, index, cx));
+        }
+    }
+
+    let mut task_section = div()
+        .flex_shrink_0()
+        .max_h(px(180.))
+        .border_t_1()
+        .border_color(theme::border())
+        .bg(theme::canvas())
+        .p_2();
+    task_section.style().overflow.y = Some(gpui::Overflow::Scroll);
+    if !tasks.is_empty() {
+        task_section = task_section.child(
+            div()
+                .mb_1()
+                .text_xs()
+                .text_color(theme::faint_text())
+                .child(SharedString::from(i18n::text(
+                    "quick_commands.background_tasks",
+                ))),
+        );
+        for task in tasks {
+            task_section = task_section.child(render_background_task_row(&task, cx));
+        }
+    }
+
+    let panel = div()
+        .relative()
+        .flex_shrink_0()
+        .w(px(width))
+        .h_full()
+        .flex()
+        .flex_col()
+        .bg(theme::surface())
+        .border_l_1()
+        .border_color(theme::border())
+        .child(backing)
+        .child(header)
+        .child(list)
+        .child(task_section)
+        .child(resize_handle);
+    panel.into_any_element()
+}
+
+fn render_quick_command_row(
+    shell: &AppShell,
+    scope: &str,
+    record: &CommandRecord,
+    index: usize,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    let command = record.command.clone();
+    let active_ids = shell.background_tasks.active_for_command(scope, &command);
+    let command_for_click = command.clone();
+    let scope_for_click = scope.to_string();
+    let mut row = div()
+        .id(SharedString::from(format!("quick-command-row-{index}")))
+        .min_h(px(32.))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .gap_2()
+        .px_2()
+        .rounded(px(theme::RADIUS_SM))
+        .cursor_pointer()
+        .hover(|style| style.bg(theme::raised()))
+        .on_click(cx.listener(move |this, _ev, _window, cx| {
+            this.run_quick_command(
+                scope_for_click.clone(),
+                command_for_click.clone(),
+                false,
+                cx,
+            );
+        }))
+        .on_mouse_down(MouseButton::Right, {
+            let menu_scope = scope.to_string();
+            let menu_command = command.clone();
+            let menu_active_id = active_ids.first().copied();
+            cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
+                let mut entries = vec![
+                    MenuEntry::Item(MenuItem {
+                        id: "quick-run".into(),
+                        label: i18n::text("quick_commands.run"),
+                        shortcut_hint: None,
+                        disabled: false,
+                        danger: false,
+                        action: ShellMenuAction::RunQuickCommand {
+                            scope: menu_scope.clone(),
+                            command: menu_command.clone(),
+                            background: false,
+                        },
+                    }),
+                    MenuEntry::Item(MenuItem {
+                        id: "quick-background".into(),
+                        label: i18n::text("quick_commands.run_background"),
+                        shortcut_hint: None,
+                        disabled: false,
+                        danger: false,
+                        action: ShellMenuAction::RunQuickCommand {
+                            scope: menu_scope.clone(),
+                            command: menu_command.clone(),
+                            background: true,
+                        },
+                    }),
+                    MenuEntry::Separator,
+                    MenuEntry::Item(MenuItem {
+                        id: "quick-edit".into(),
+                        label: i18n::text("quick_commands.edit"),
+                        shortcut_hint: None,
+                        disabled: false,
+                        danger: false,
+                        action: ShellMenuAction::EditQuickCommand {
+                            scope: menu_scope.clone(),
+                            command: menu_command.clone(),
+                        },
+                    }),
+                    MenuEntry::Item(MenuItem {
+                        id: "quick-copy".into(),
+                        label: i18n::text("context_menu.copy"),
+                        shortcut_hint: None,
+                        disabled: false,
+                        danger: false,
+                        action: ShellMenuAction::CopyText(menu_command.clone()),
+                    }),
+                    MenuEntry::Item(MenuItem {
+                        id: "quick-delete".into(),
+                        label: i18n::text("quick_commands.delete"),
+                        shortcut_hint: None,
+                        disabled: false,
+                        danger: true,
+                        action: ShellMenuAction::DeleteQuickCommand {
+                            scope: menu_scope.clone(),
+                            command: menu_command.clone(),
+                        },
+                    }),
+                ];
+                if let Some(id) = menu_active_id {
+                    entries.push(MenuEntry::Separator);
+                    entries.push(MenuEntry::Item(MenuItem {
+                        id: "quick-stop".into(),
+                        label: i18n::text("quick_commands.stop"),
+                        shortcut_hint: None,
+                        disabled: false,
+                        danger: true,
+                        action: ShellMenuAction::StopBackgroundTask(id),
+                    }));
+                }
+                this.open_context_menu(ev.position, entries, cx);
+            })
+        })
+        .child(icons::icon(icons::IconName::Terminal, 12.).text_color(theme::faint_text()))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_xs()
+                .text_color(theme::text())
+                .child(SharedString::from(command)),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_xs()
+                .text_color(theme::faint_text())
+                .child(SharedString::from(format!("x{}", record.count))),
+        );
+
+    if let Some(id) = active_ids.first().copied() {
+        row = row.child(
+            div()
+                .w(px(6.))
+                .h(px(6.))
+                .rounded_full()
+                .bg(theme::warning()),
+        );
+        row = row.child(
+            div()
+                .id(SharedString::from(format!("quick-stop-{id}")))
+                .w(px(20.))
+                .h(px(20.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(theme::RADIUS_SM))
+                .cursor_pointer()
+                .hover(|style| style.bg(theme::accent_soft()))
+                .tooltip(|_window, cx| {
+                    cx.new(|_| crate::shared::ui::widgets::LocalPathTooltip {
+                        path: SharedString::from(i18n::text("quick_commands.stop")),
+                    })
+                    .into()
+                })
+                .child(icons::icon(icons::IconName::CircleX, 12.).text_color(theme::warning()))
+                .on_click(cx.listener(move |this, _ev, _window, cx| {
+                    this.stop_background_task(id, cx);
+                    cx.stop_propagation();
+                })),
+        );
+    }
+    row.into_any_element()
+}
+
+fn render_background_task_row(task: &BackgroundTask, cx: &mut Context<AppShell>) -> AnyElement {
+    let active = matches!(
+        task.status,
+        BackgroundTaskStatus::Running | BackgroundTaskStatus::Stopping
+    );
+    let cwd = task.cwd.to_string_lossy().to_string();
+    let mut row = div()
+        .id(SharedString::from(format!("background-task-{}", task.id)))
+        .min_h(px(28.))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .gap_2()
+        .px_2()
+        .rounded(px(theme::RADIUS_SM))
+        .bg(theme::surface())
+        .tooltip(move |_window, cx| {
+            cx.new(|_| crate::shared::ui::widgets::LocalPathTooltip {
+                path: SharedString::from(cwd.clone()),
+            })
+            .into()
+        })
+        .child(
+            div()
+                .w(px(6.))
+                .h(px(6.))
+                .rounded_full()
+                .bg(background_task_color(task.status)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_xs()
+                .text_color(theme::muted_text())
+                .child(SharedString::from(task.command.clone())),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_xs()
+                .text_color(background_task_color(task.status))
+                .child(SharedString::from(background_task_label(task.status))),
+        );
+    if active {
+        let id = task.id;
+        row = row.child(
+            div()
+                .id(SharedString::from(format!("background-stop-{id}")))
+                .w(px(20.))
+                .h(px(20.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(|style| style.bg(theme::accent_soft()))
+                .child(icons::icon(icons::IconName::CircleX, 12.).text_color(theme::danger()))
+                .on_click(cx.listener(move |this, _ev, _window, cx| {
+                    this.stop_background_task(id, cx);
+                    cx.stop_propagation();
+                })),
+        );
+    }
+    row.into_any_element()
+}
+
+fn background_task_label(status: BackgroundTaskStatus) -> String {
+    i18n::text(match status {
+        BackgroundTaskStatus::Running => "quick_commands.running",
+        BackgroundTaskStatus::Stopping => "quick_commands.stopping",
+        BackgroundTaskStatus::Succeeded => "quick_commands.succeeded",
+        BackgroundTaskStatus::Failed => "quick_commands.failed",
+        BackgroundTaskStatus::Terminated => "quick_commands.terminated",
+    })
+}
+
+fn background_task_color(status: BackgroundTaskStatus) -> gpui::Rgba {
+    match status {
+        BackgroundTaskStatus::Running => theme::warning(),
+        BackgroundTaskStatus::Stopping | BackgroundTaskStatus::Terminated => theme::faint_text(),
+        BackgroundTaskStatus::Succeeded => theme::accent(),
+        BackgroundTaskStatus::Failed => theme::danger(),
+    }
+}
+
+pub fn render_quick_command_editor(shell: &mut AppShell, cx: &mut Context<AppShell>) -> AnyElement {
+    let Some(editor) = &shell.quick_command_editor else {
+        return div().into_any_element();
+    };
+    let focus = editor.focus.clone();
+    let value = editor.value.clone();
+    let input = div()
+        .id("quick-command-editor-input")
+        .w_full()
+        .min_h(px(38.))
+        .px_3()
+        .py_2()
+        .flex()
+        .items_center()
+        .bg(theme::canvas())
+        .border_1()
+        .border_color(theme::border_strong())
+        .rounded(px(theme::RADIUS_SM))
+        .text_sm()
+        .text_color(theme::text())
+        .track_focus(&focus)
+        .tab_stop(true)
+        .focus(|style| style.border_color(theme::focus_ring()))
+        .on_click({
+            let focus = focus.clone();
+            move |_ev, window, cx| window.focus(&focus, cx)
+        })
+        .on_key_down(cx.listener(AppShell::handle_quick_command_editor_key))
+        .child(SharedString::from(if value.is_empty() {
+            i18n::text("quick_commands.command_placeholder")
+        } else {
+            value
+        }));
+
+    let buttons = div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .mt_4()
+        .child(
+            div()
+                .id("quick-command-editor-save")
+                .h(px(30.))
+                .px_3()
+                .flex()
+                .items_center()
+                .gap_2()
+                .rounded(px(theme::RADIUS_SM))
+                .cursor_pointer()
+                .bg(theme::accent())
+                .text_xs()
+                .text_color(theme::canvas())
+                .child(icons::icon(icons::IconName::Check, 13.).text_color(theme::canvas()))
+                .child(SharedString::from(i18n::text("quick_commands.save")))
+                .on_click(cx.listener(|this, _ev, _window, cx| {
+                    this.submit_quick_command_editor(cx);
+                })),
+        )
+        .child(
+            div()
+                .id("quick-command-editor-cancel")
+                .h(px(30.))
+                .px_3()
+                .flex()
+                .items_center()
+                .gap_2()
+                .rounded(px(theme::RADIUS_SM))
+                .cursor_pointer()
+                .bg(theme::raised())
+                .text_xs()
+                .text_color(theme::text())
+                .child(icons::icon(icons::IconName::X, 13.).text_color(theme::muted_text()))
+                .child(SharedString::from(i18n::text("prompt.cancel")))
+                .on_click(cx.listener(|this, _ev, _window, cx| {
+                    this.cancel_quick_command_editor(cx);
+                })),
+        );
+
+    let card = div()
+        .id("quick-command-editor-card")
+        .w(px(500.))
+        .p_5()
+        .bg(theme::surface())
+        .border_1()
+        .border_color(theme::border_strong())
+        .rounded(px(theme::RADIUS_MD))
+        .shadow_md()
+        .flex()
+        .flex_col()
+        .on_click(cx.listener(|_this, _ev, _window, cx| {
+            cx.stop_propagation();
+        }))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme::text())
+                .child(icons::icon(icons::IconName::Pencil, 16.).text_color(theme::info()))
+                .child(SharedString::from(i18n::text("quick_commands.edit_title"))),
+        )
+        .child(input)
+        .child(buttons);
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme::scrim())
+        .id("quick-command-editor-scrim")
+        .on_click(cx.listener(|this, _ev, _window, cx| {
+            this.cancel_quick_command_editor(cx);
+        }))
+        .child(card)
+        .into_any_element()
 }
 
 fn status_badge(text: String, color: impl Into<gpui::Hsla>) -> impl IntoElement {
