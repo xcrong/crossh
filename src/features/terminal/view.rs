@@ -33,8 +33,8 @@ use gpui::{
     IntoElement, KeyDownEvent, KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent,
     SharedString, StatefulInteractiveElement, StrikethroughStyle, Styled, Subscription,
-    SystemNotificationAction, SystemNotificationResponse, Task, TextAlign, TextRun, UTF16Selection,
-    UnderlineStyle, Window, canvas, div, hsla, px, quad,
+    SystemNotificationAction, SystemNotificationResponse, Task, TextAlign, TextRun, TouchPhase,
+    UTF16Selection, UnderlineStyle, Window, canvas, div, hsla, px, quad,
 };
 use vte::ansi::{Color, CursorShape, NamedColor, Processor, Rgb};
 
@@ -92,6 +92,57 @@ enum TerminalSideEffect {
         Arc<dyn Fn(&str) -> String + Sync + Send + 'static>,
     ),
     ColorRequest(usize, Arc<dyn Fn(Rgb) -> String + Sync + Send + 'static>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WheelRoute {
+    LocalScrollback,
+    MouseReport,
+    AlternateScroll,
+}
+
+fn wheel_route(mode: TermMode, shift: bool) -> WheelRoute {
+    if mode.intersects(TermMode::MOUSE_MODE) && !shift {
+        WheelRoute::MouseReport
+    } else if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) && !shift {
+        WheelRoute::AlternateScroll
+    } else {
+        WheelRoute::LocalScrollback
+    }
+}
+
+fn wheel_lines_for_phase(
+    phase: TouchPhase,
+    delta: ScrollDelta,
+    scroll_acc: &mut f32,
+    line_height: f32,
+) -> Option<i32> {
+    match phase {
+        TouchPhase::Started => {
+            *scroll_acc = 0.;
+            None
+        }
+        TouchPhase::Moved => {
+            let line_height = line_height.max(1.);
+            let delta_pixels = match delta {
+                ScrollDelta::Lines(delta) => delta.y * line_height,
+                ScrollDelta::Pixels(delta) => delta.y.as_f32(),
+            };
+            *scroll_acc += delta_pixels;
+            let lines = (*scroll_acc / line_height) as i32;
+            *scroll_acc -= lines as f32 * line_height;
+            (lines != 0).then_some(lines)
+        }
+        TouchPhase::Ended | TouchPhase::Cancelled => None,
+    }
+}
+
+fn alternate_scroll_sequence(mode: TermMode, key: u8) -> [u8; 3] {
+    if mode.contains(TermMode::APP_CURSOR) {
+        [0x1b, b'O', key]
+    } else {
+        [0x1b, b'[', key]
+    }
 }
 
 type WindowSizeHandle = Arc<Mutex<WindowSize>>;
@@ -2434,56 +2485,50 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         let mode = *self.term.mode();
-
-        let delta = match ev.delta {
-            ScrollDelta::Lines(d) => d.y,
-            ScrollDelta::Pixels(d) => {
-                self.scroll_acc += d.y.as_f32();
-                let n = (self.scroll_acc / self.line_h.as_f32()) as i32;
-                self.scroll_acc -= n as f32 * self.line_h.as_f32();
-                n as f32
-            }
-        };
-
-        if delta == 0.0 {
+        let Some(delta) = wheel_lines_for_phase(
+            ev.touch_phase,
+            ev.delta,
+            &mut self.scroll_acc,
+            self.line_h.as_f32(),
+        ) else {
             return;
-        }
-        let steps = (delta.abs() as usize).clamp(1, 8);
-        let dir = if delta > 0.0 { 64 } else { 65 };
+        };
+        let steps = delta.unsigned_abs().clamp(1, 8) as usize;
 
-        if mode.intersects(TermMode::MOUSE_MODE) && !ev.modifiers.shift {
-            let point = self.pos_to_grid(ev.position).unwrap_or((
-                self.cols.saturating_sub(1) / 2,
-                self.rows.saturating_sub(1) / 2,
-            ));
-            for _ in 0..steps {
-                if let Some(bytes) = encode_mouse_report(
-                    dir,
-                    point.0,
-                    point.1,
-                    true,
-                    &ev.modifiers,
-                    mode,
-                    self.urxvt_mouse,
-                ) {
-                    self.send_input(bytes);
+        match wheel_route(mode, ev.modifiers.shift) {
+            WheelRoute::MouseReport => {
+                let dir = if delta > 0 { 64 } else { 65 };
+                let point = self.pos_to_grid(ev.position).unwrap_or((
+                    self.cols.saturating_sub(1) / 2,
+                    self.rows.saturating_sub(1) / 2,
+                ));
+                for _ in 0..steps {
+                    if let Some(bytes) = encode_mouse_report(
+                        dir,
+                        point.0,
+                        point.1,
+                        true,
+                        &ev.modifiers,
+                        mode,
+                        self.urxvt_mouse,
+                    ) {
+                        self.send_input(bytes);
+                    }
                 }
             }
-            return;
-        }
-
-        let alt = mode.contains(TermMode::ALT_SCREEN);
-        if alt && mode.contains(TermMode::ALTERNATE_SCROLL) {
-            let key = if delta > 0.0 { b'A' } else { b'B' };
-            for _ in 0..steps {
-                self.send_input(vec![0x1b, b'O', key]);
+            WheelRoute::AlternateScroll => {
+                let key = if delta > 0 { b'A' } else { b'B' };
+                let sequence = alternate_scroll_sequence(mode, key);
+                for _ in 0..steps {
+                    self.send_input(sequence.to_vec());
+                }
             }
-            return;
+            WheelRoute::LocalScrollback => {
+                let n = steps as i32 * delta.signum();
+                self.term.scroll_display(Scroll::Delta(n));
+                cx.notify();
+            }
         }
-
-        let n = steps as i32 * if delta > 0.0 { 1 } else { -1 };
-        self.term.scroll_display(Scroll::Delta(n));
-        cx.notify();
     }
 
     /// 将 GPUI 的窗口坐标转换为终端 canvas 内的 grid 坐标。
@@ -6434,6 +6479,73 @@ mod tests {
         assert_eq!(
             encode_keystroke(&keystroke("ctrl-f12")),
             Some(b"\x1b[24;5~".to_vec())
+        );
+    }
+
+    #[test]
+    fn scroll_wheel_routes_to_the_expected_terminal_layer() {
+        assert_eq!(
+            wheel_route(TermMode::empty(), false),
+            WheelRoute::LocalScrollback
+        );
+        assert_eq!(
+            wheel_route(TermMode::MOUSE_DRAG, false),
+            WheelRoute::MouseReport
+        );
+        assert_eq!(
+            wheel_route(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL, false),
+            WheelRoute::AlternateScroll
+        );
+        assert_eq!(
+            wheel_route(
+                TermMode::MOUSE_DRAG | TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL,
+                true,
+            ),
+            WheelRoute::LocalScrollback
+        );
+    }
+
+    #[test]
+    fn trackpad_scroll_waits_for_a_complete_terminal_line() {
+        let mut scroll_acc = 0.;
+        let pixels = |y| ScrollDelta::Pixels(Point::new(px(0.), px(y)));
+        let lines = |y| ScrollDelta::Lines(Point::new(0., y));
+
+        assert_eq!(
+            wheel_lines_for_phase(TouchPhase::Started, pixels(5.), &mut scroll_acc, 10.),
+            None
+        );
+        assert_eq!(
+            wheel_lines_for_phase(TouchPhase::Moved, pixels(5.), &mut scroll_acc, 10.),
+            None
+        );
+        assert_eq!(
+            wheel_lines_for_phase(TouchPhase::Moved, pixels(5.), &mut scroll_acc, 10.),
+            Some(1)
+        );
+        assert_eq!(
+            wheel_lines_for_phase(TouchPhase::Cancelled, pixels(5.), &mut scroll_acc, 10.),
+            None
+        );
+        assert_eq!(
+            wheel_lines_for_phase(TouchPhase::Moved, lines(0.5), &mut scroll_acc, 10.),
+            None
+        );
+        assert_eq!(
+            wheel_lines_for_phase(TouchPhase::Moved, lines(0.5), &mut scroll_acc, 10.),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn alternate_scroll_follows_application_cursor_mode() {
+        assert_eq!(
+            alternate_scroll_sequence(TermMode::empty(), b'A'),
+            [0x1b, b'[', b'A']
+        );
+        assert_eq!(
+            alternate_scroll_sequence(TermMode::APP_CURSOR, b'A'),
+            [0x1b, b'O', b'A']
         );
     }
 
