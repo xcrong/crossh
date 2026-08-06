@@ -4952,8 +4952,8 @@ fn paint_snapshot(ctx: &PaintContext, window: &mut Window, cx: &mut App) {
     // images that should also be covered by cell backgrounds.
     paint_terminal_images(ctx, window, cx, true, false);
 
-    // 选择高亮颜色。
-    let sel_bg = hsla(0.6, 0.5, 0.3, 0.4);
+    // 选择高亮使用主题的 mint/teal 色，提高深色终端中的可见度。
+    let sel_bg = hsla(0.43, 0.58, 0.42, 0.78);
 
     for (r, row) in snapshot.rows.iter().enumerate() {
         // 绘制选择高亮背景。
