@@ -121,6 +121,7 @@ pub struct AppShell {
     pub(crate) sidebar_width: Rc<Cell<f32>>,
     pub(crate) sidebar_dragging: Rc<Cell<bool>>,
     pub(crate) sidebar_scroll: gpui::ScrollHandle,
+    pub(crate) tab_scroll: gpui::ScrollHandle,
     /// 周期性刷新本地会话的 Git 状态，覆盖 shell 空闲时的外部文件变更。
     _git_status_refresh_task: Option<Task<()>>,
     quit_confirmation_open: bool,
@@ -178,6 +179,7 @@ impl AppShell {
             sidebar_width: Rc::new(Cell::new(theme::SIDEBAR_WIDTH)),
             sidebar_dragging: Rc::new(Cell::new(false)),
             sidebar_scroll: gpui::ScrollHandle::new(),
+            tab_scroll: gpui::ScrollHandle::new(),
             _git_status_refresh_task: None,
             quit_confirmation_open: false,
             shutdown_in_progress: false,

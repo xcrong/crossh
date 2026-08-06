@@ -274,12 +274,19 @@ fn render_empty_state(cx: &mut Context<AppShell>) -> AnyElement {
 
 fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoElement {
     let mut strip = div()
+        .id("tab-strip")
         .flex()
         .flex_row()
         .h(px(theme::TAB_HEIGHT))
         .px_2()
         .gap_1()
-        .items_center()
+        .items_center();
+    // This GPUI revision exposes horizontal scrolling through the style state;
+    // keeping the strip as a flex container lets its fixed-width children overflow.
+    strip.style().overflow.x = Some(gpui::Overflow::Scroll);
+    strip = strip
+        .track_scroll(&shell.tab_scroll)
+        .restrict_scroll_to_axis()
         .bg(theme::surface())
         .border_b_1()
         .border_color(theme::border());
@@ -294,6 +301,7 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                 // 容器不绑定 click；标签名与关闭按钮分别绑定，避免事件叠加。
                 let mut container = div()
                     .flex()
+                    .flex_none()
                     .flex_row()
                     .items_center()
                     .gap_1()
@@ -437,6 +445,7 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                 };
                 let mut container = div()
                     .flex()
+                    .flex_none()
                     .flex_row()
                     .items_center()
                     .gap_1()
@@ -571,7 +580,7 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
         None => {}
     }
 
-    strip.child(div().flex_1()).child(
+    strip.child(
         div()
             .id("new-tab")
             .flex_shrink_0()
