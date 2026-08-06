@@ -10,6 +10,7 @@ pub mod sftp;
 
 pub use connection::{
     Connection, ConnectionState, CredentialKind, ForwardKind, HostKeyDecision, PendingPrompt,
+    RemoteCommandStatus,
 };
 pub use pool::ConnectionPool;
 pub use runtime::runtime as ssh_runtime;

@@ -11,13 +11,16 @@ use gpui::{
     StatefulInteractiveElement, Styled, canvas, div, hsla, px, rgb,
 };
 
-use crate::features::commands::{BackgroundTask, BackgroundTaskStatus, CommandRecord, local_scope};
+use crate::features::commands::{
+    BackgroundTask, BackgroundTaskStatus, CommandRecord, local_scope, remote_scope,
+};
 use crate::features::forwarding::ForwardPane;
 use crate::features::projects::GitStatus;
 use crate::features::settings::render_settings_page;
 use crate::features::sftp::SftpPane;
 use crate::features::terminal::{ConnState, TerminalView};
 use crate::features::workspace::shell::AppShell;
+use crate::infrastructure::ssh::Connection;
 use crate::shared::i18n;
 use crate::shared::terminal::remote_pane_title;
 use crate::shared::ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
@@ -35,6 +38,7 @@ pub struct Tab {
     /// 重新打开终端时使用的原始目标（别名或 user@host:port）。
     pub target: String,
     pub host_key: String,
+    pub connection: Entity<Connection>,
     pub pane: Pane,
 }
 
@@ -104,15 +108,38 @@ pub fn render_main(shell: &mut AppShell, cx: &mut Context<AppShell>) -> AnyEleme
             .map(|session| session.terminal.clone().into_any_element()),
         None => None,
     };
-    let quick_context = match shell.workspace.active_view {
-        Some(ActiveView::LocalSession(session_id)) => shell
-            .workspace
-            .sessions
-            .local_sessions
-            .get(&session_id)
-            .map(|session| (local_scope(&session.cwd), session.cwd.clone())),
-        _ => None,
-    };
+    let quick_context =
+        match shell.workspace.active_view {
+            Some(ActiveView::LocalSession(session_id)) => shell
+                .workspace
+                .sessions
+                .local_sessions
+                .get(&session_id)
+                .map(|session| {
+                    let cwd = session
+                        .terminal
+                        .read(cx)
+                        .cwd
+                        .clone()
+                        .unwrap_or_else(|| session.cwd.to_string_lossy().to_string());
+                    let cwd = PathBuf::from(cwd);
+                    (local_scope(&cwd), cwd.to_string_lossy().to_string())
+                }),
+            Some(ActiveView::RemoteTab(idx)) => shell
+                .workspace
+                .sessions
+                .remote_tabs
+                .get(idx)
+                .and_then(|tab| match &tab.pane {
+                    Pane::Terminal(terminal) => terminal
+                        .read(cx)
+                        .cwd
+                        .clone()
+                        .map(|cwd| (remote_scope(&tab.host_key, &cwd), cwd)),
+                    Pane::Sftp(_) | Pane::Forward(_) => None,
+                }),
+            _ => None,
+        };
     let mut terminal_area = div().flex_1().min_w_0().min_h_0().relative();
     if let Some(active_pane) = active_pane {
         terminal_area = terminal_area.child(active_pane);
@@ -219,7 +246,7 @@ fn render_terminal_status_bar(session: &LocalSession) -> AnyElement {
 fn render_quick_commands(
     shell: &mut AppShell,
     scope: String,
-    cwd: PathBuf,
+    cwd: String,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
     let width = shell.quick_commands_width.get().clamp(
@@ -338,7 +365,7 @@ fn render_quick_commands(
                 .truncate()
                 .text_xs()
                 .text_color(theme::faint_text())
-                .child(SharedString::from(cwd.to_string_lossy().to_string())),
+                .child(SharedString::from(cwd)),
         );
 
     let mut list = div().flex_1().min_h_0().flex().flex_col().gap_1().p_2();

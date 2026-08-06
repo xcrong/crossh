@@ -23,7 +23,8 @@ use gpui::{
 };
 
 use crate::features::commands::{
-    BackgroundTaskEvent, BackgroundTaskManager, CommandHistory, local_scope,
+    BackgroundTaskEvent, BackgroundTaskManager, BackgroundTaskStatus, CommandHistory, local_scope,
+    remote_scope,
 };
 use crate::features::connections::{ConnectionManager, HostEntry};
 use crate::features::connections::{PromptDisplay, render_prompt_modal};
@@ -39,7 +40,7 @@ use crate::features::workspace::view::{
 };
 use crate::infrastructure::config::SshConfig;
 use crate::infrastructure::local;
-use crate::infrastructure::ssh::{Connection, HostKeyDecision, PendingPrompt};
+use crate::infrastructure::ssh::{Connection, HostKeyDecision, PendingPrompt, RemoteCommandStatus};
 use crate::shared::i18n::{self, AppSettings, LanguagePreference};
 use crate::shared::ui::context_menu::{
     ContextMenuState, MenuEntry, ShellMenuAction, render_context_menu,
@@ -60,6 +61,13 @@ pub(crate) struct QuickCommandEditor {
     pub(crate) original: String,
     pub(crate) value: String,
     pub(crate) focus: FocusHandle,
+}
+
+struct ActiveCommandContext {
+    terminal: Entity<TerminalView>,
+    scope: String,
+    cwd: String,
+    connection: Option<Entity<Connection>>,
 }
 
 #[derive(Default)]
@@ -138,6 +146,7 @@ pub struct AppShell {
     pub(crate) quick_commands_dragging: Rc<Cell<bool>>,
     pub(crate) command_history: CommandHistory,
     pub(crate) background_tasks: BackgroundTaskManager,
+    remote_background_controls: BTreeMap<u64, (Entity<Connection>, u64)>,
     background_event_tasks: Vec<Task<()>>,
     pub(crate) quick_command_editor: Option<QuickCommandEditor>,
     /// 周期性刷新本地会话的 Git 状态，覆盖 shell 空闲时的外部文件变更。
@@ -202,6 +211,7 @@ impl AppShell {
             quick_commands_dragging: Rc::new(Cell::new(false)),
             command_history: CommandHistory::load(),
             background_tasks: BackgroundTaskManager::default(),
+            remote_background_controls: BTreeMap::new(),
             background_event_tasks: Vec::new(),
             quick_command_editor: None,
             _git_status_refresh_task: None,
@@ -264,17 +274,21 @@ impl AppShell {
         let conn = self.connections.acquire(resolved, methods, cx);
         let (input_tx, event_rx) = conn.read(cx).open_terminal(100, 30);
         let terminal = TerminalView::from_bridge(input_tx, event_rx, 100, 30, cx);
-        let subscription = cx.subscribe(&terminal, |this, terminal, event, cx| match event {
+        let event_host_key = host_key.clone();
+        let subscription = cx.subscribe(&terminal, move |this, terminal, event, cx| match event {
             TerminalEvent::Closed => {
                 this.close_remote_terminal(terminal.entity_id(), cx);
             }
             TerminalEvent::TitleChanged | TerminalEvent::Notification => cx.notify(),
             TerminalEvent::CommandStarted { command, cwd } => {
-                if terminal.read(cx).is_local() {
-                    this.record_command(command.clone(), cwd.clone(), cx);
+                if !terminal.read(cx).is_local()
+                    && let Some(cwd) = cwd.as_deref()
+                {
+                    this.record_command(remote_scope(&event_host_key, cwd), command.clone(), cx);
                 }
             }
-            TerminalEvent::CwdChanged | TerminalEvent::PromptReached => {}
+            TerminalEvent::CwdChanged => cx.notify(),
+            TerminalEvent::PromptReached => {}
         });
         self.workspace
             .sessions
@@ -283,6 +297,7 @@ impl AppShell {
         self.workspace.sessions.remote_tabs.push(Tab {
             target,
             host_key,
+            connection: conn,
             pane: Pane::Terminal(terminal),
         });
         self.workspace.active_view = Some(ActiveView::RemoteTab(
@@ -307,6 +322,7 @@ impl AppShell {
         self.workspace.sessions.remote_tabs.push(Tab {
             target: entry.alias.clone(),
             host_key,
+            connection: conn.clone(),
             pane: Pane::Sftp(pane),
         });
         self.workspace.active_view = Some(ActiveView::RemoteTab(
@@ -325,10 +341,11 @@ impl AppShell {
         let methods = self.connections.auth_methods(&resolved);
         let host_key = ConnectionManager::pool_key(&resolved);
         let conn = self.connections.acquire(resolved.clone(), methods, cx);
-        let pane = ForwardPane::new(conn, cx, &resolved);
+        let pane = ForwardPane::new(conn.clone(), cx, &resolved);
         self.workspace.sessions.remote_tabs.push(Tab {
             target: entry.alias.clone(),
             host_key,
+            connection: conn,
             pane: Pane::Forward(pane),
         });
         self.workspace.active_view = Some(ActiveView::RemoteTab(
@@ -381,7 +398,10 @@ impl AppShell {
                 }
             }
             TerminalEvent::CommandStarted { command, cwd } => {
-                this.record_command(command.clone(), cwd.clone(), cx);
+                if let Some(cwd) = cwd {
+                    let cwd = normalize_local_cwd(PathBuf::from(cwd));
+                    this.record_command(local_scope(&cwd), command.clone(), cx);
+                }
             }
             TerminalEvent::TitleChanged | TerminalEvent::Notification => cx.notify(),
         });
@@ -646,32 +666,46 @@ impl AppShell {
         cx.notify();
     }
 
-    fn record_command(&mut self, command: String, cwd: Option<String>, cx: &mut Context<Self>) {
-        let Some(cwd) = cwd else {
-            return;
-        };
-        let cwd = normalize_local_cwd(PathBuf::from(cwd));
-        let scope = local_scope(&cwd);
+    fn record_command(&mut self, scope: String, command: String, cx: &mut Context<Self>) {
         if self.command_history.record(&scope, &command) {
             cx.notify();
         }
     }
 
-    fn active_local_terminal(&self, cx: &Context<Self>) -> Option<(Entity<TerminalView>, PathBuf)> {
-        let ActiveView::LocalSession(session_id) = self.workspace.active_view? else {
-            return None;
-        };
-        let session = self.workspace.sessions.local_sessions.get(&session_id)?;
-        Some((
-            session.terminal.clone(),
-            session
-                .terminal
-                .read(cx)
-                .cwd
-                .clone()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| session.cwd.clone()),
-        ))
+    fn active_command_context(&self, cx: &Context<Self>) -> Option<ActiveCommandContext> {
+        match self.workspace.active_view? {
+            ActiveView::LocalSession(session_id) => {
+                let session = self.workspace.sessions.local_sessions.get(&session_id)?;
+                let terminal = session.terminal.clone();
+                let cwd = terminal
+                    .read(cx)
+                    .cwd
+                    .clone()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| session.cwd.clone());
+                let cwd = normalize_local_cwd(cwd);
+                Some(ActiveCommandContext {
+                    terminal,
+                    scope: local_scope(&cwd),
+                    cwd: cwd.to_string_lossy().to_string(),
+                    connection: None,
+                })
+            }
+            ActiveView::RemoteTab(index) => {
+                let tab = self.workspace.sessions.remote_tabs.get(index)?;
+                let Pane::Terminal(terminal) = &tab.pane else {
+                    return None;
+                };
+                let terminal = terminal.clone();
+                let cwd = terminal.read(cx).cwd.clone()?;
+                Some(ActiveCommandContext {
+                    terminal,
+                    scope: remote_scope(&tab.host_key, &cwd),
+                    cwd,
+                    connection: Some(tab.connection.clone()),
+                })
+            }
+        }
     }
 
     pub(crate) fn run_quick_command(
@@ -681,30 +715,84 @@ impl AppShell {
         background: bool,
         cx: &mut Context<Self>,
     ) {
-        let Some((terminal, cwd)) = self.active_local_terminal(cx) else {
+        let Some(context) = self.active_command_context(cx) else {
             return;
         };
-        let cwd = normalize_local_cwd(cwd);
-        if local_scope(&cwd) != scope {
+        if context.scope != scope {
             return;
         }
         if background {
-            let (id, event_rx) = self.background_tasks.start(scope, cwd, command);
-            let task = cx.spawn(async move |weak, cx| {
-                let Ok(event) = event_rx.recv().await else {
-                    return;
-                };
-                let _ = weak.update(cx, |this, cx| {
-                    this.apply_background_event(event);
-                    cx.notify();
+            if let Some(connection) = context.connection {
+                self.start_remote_background(connection, scope, context.cwd, command, cx);
+            } else {
+                let cwd = normalize_local_cwd(PathBuf::from(context.cwd));
+                let (id, event_rx) = self.background_tasks.start(scope, cwd, command);
+                let task = cx.spawn(async move |weak, cx| {
+                    let Ok(event) = event_rx.recv().await else {
+                        return;
+                    };
+                    let _ = weak.update(cx, |this, cx| {
+                        this.apply_background_event(event);
+                        cx.notify();
+                    });
                 });
-            });
-            self.background_event_tasks.push(task);
-            log::info!("started background command {id}");
+                self.background_event_tasks.push(task);
+                log::info!("started background command {id}");
+            }
         } else {
-            terminal.update(cx, |terminal, _cx| terminal.run_command(&command));
+            context
+                .terminal
+                .update(cx, |terminal, _cx| terminal.run_command(&command));
         }
         cx.notify();
+    }
+
+    fn start_remote_background(
+        &mut self,
+        connection: Entity<Connection>,
+        scope: String,
+        cwd: String,
+        command: String,
+        cx: &mut Context<Self>,
+    ) {
+        let (remote_id, event_rx) = connection.update(cx, |connection, _cx| {
+            connection.open_command(command.clone(), cwd.clone())
+        });
+        let task_id = self
+            .background_tasks
+            .start_remote(scope, PathBuf::from(cwd), command);
+        self.remote_background_controls
+            .insert(task_id, (connection, remote_id));
+        let expected_remote_id = remote_id;
+        let task = cx.spawn(async move |weak, cx| {
+            let event = match event_rx.recv().await {
+                Ok(event) => {
+                    debug_assert_eq!(event.id, expected_remote_id);
+                    BackgroundTaskEvent {
+                        id: task_id,
+                        status: match event.status {
+                            RemoteCommandStatus::Succeeded => BackgroundTaskStatus::Succeeded,
+                            RemoteCommandStatus::Failed => BackgroundTaskStatus::Failed,
+                            RemoteCommandStatus::Terminated => BackgroundTaskStatus::Terminated,
+                        },
+                        output: event.output,
+                        exit_code: event.exit_code,
+                    }
+                }
+                Err(_) => BackgroundTaskEvent {
+                    id: task_id,
+                    status: BackgroundTaskStatus::Failed,
+                    output: "SSH connection closed".into(),
+                    exit_code: None,
+                },
+            };
+            let _ = weak.update(cx, |this, cx| {
+                this.apply_background_event(event);
+                cx.notify();
+            });
+        });
+        self.background_event_tasks.push(task);
+        log::info!("started remote background command {task_id}");
     }
 
     fn apply_background_event(&mut self, event: BackgroundTaskEvent) {
@@ -713,10 +801,14 @@ impl AppShell {
             event.id,
             event.status
         );
+        self.remote_background_controls.remove(&event.id);
         self.background_tasks.apply_event(event);
     }
 
     pub(crate) fn stop_background_task(&mut self, id: u64, cx: &mut Context<Self>) {
+        if let Some((connection, remote_id)) = self.remote_background_controls.get(&id).cloned() {
+            connection.read(cx).stop_command(remote_id);
+        }
         self.background_tasks.mark_stopping(id);
         cx.notify();
     }
@@ -987,7 +1079,7 @@ impl AppShell {
             .map(|task| task.id)
             .collect::<Vec<_>>();
         for id in running_background {
-            self.background_tasks.mark_stopping(id);
+            self.stop_background_task(id, cx);
         }
 
         let mut terminals = self

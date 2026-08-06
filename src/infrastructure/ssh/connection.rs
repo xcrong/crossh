@@ -11,6 +11,7 @@
 //! 反应式凭据/主机密钥：后台在需要时经 `ConnEvent::NeedHostKey` / `NeedCredential`
 //! 把 oneshot 回传通道交给 UI；UI 弹模态、用户决定后回传，后台继续。UI 不响应有超时兜底。
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,12 +20,14 @@ use gpui::{App, AppContext, Entity, Task};
 use russh::client::{self, Handle};
 use russh::keys;
 use russh::keys::ssh_key::PrivateKey;
-use russh::{ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect};
+use russh::{ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect, Sig};
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::sync::oneshot;
 
 use crate::infrastructure::config::HostConfig;
-use crate::shared::terminal::{InputCmd, SessionEvent};
+use crate::shared::terminal::{
+    InputCmd, RemoteShell, SessionEvent, remote_shell_from_path, remote_shell_setup_script,
+};
 
 use super::forward::{
     RemoteForwardRegistry, handle_forwarded_tcpip, new_remote_forward_registry,
@@ -64,6 +67,15 @@ pub enum ConnCmd {
         input_rx: Receiver<InputCmd>,
         event_tx: Sender<SessionEvent>,
     },
+    /// Run a non-interactive command on the same authenticated SSH connection.
+    OpenCommand {
+        id: u64,
+        command: String,
+        cwd: String,
+        event_tx: Sender<RemoteCommandEvent>,
+    },
+    /// Ask one remote command channel to terminate.
+    StopCommand { id: u64 },
     /// 开一个 SFTP 工作器。worker 在连接的 sftp 子系统 channel 上运行。
     OpenSftp {
         cmd_rx: Receiver<SftpCmd>,
@@ -119,12 +131,28 @@ pub enum ConnEvent {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemoteCommandStatus {
+    Succeeded,
+    Failed,
+    Terminated,
+}
+
+#[derive(Debug)]
+pub struct RemoteCommandEvent {
+    pub id: u64,
+    pub status: RemoteCommandStatus,
+    pub output: String,
+    pub exit_code: Option<i32>,
+}
+
 /// 一条 SSH 连接（gpui Entity）。
 pub struct Connection {
     cmd_tx: Sender<ConnCmd>,
     pub state: ConnectionState,
     /// 后台请求 UI 决定的弹窗（主机密钥确认 / 凭据输入）。None = 无待处理。
     pub pending_prompt: Option<PendingPrompt>,
+    next_command_id: u64,
     _drain: Option<Task<()>>,
 }
 
@@ -182,6 +210,7 @@ impl Connection {
             cmd_tx,
             state: ConnectionState::Connecting,
             pending_prompt: None,
+            next_command_id: 1,
             _drain: None,
         });
 
@@ -254,6 +283,38 @@ impl Connection {
             event_tx,
         });
         (input_tx, event_rx)
+    }
+
+    pub fn open_command(
+        &mut self,
+        command: String,
+        cwd: String,
+    ) -> (u64, Receiver<RemoteCommandEvent>) {
+        let id = self.next_command_id;
+        self.next_command_id = self.next_command_id.saturating_add(1);
+        let (event_tx, event_rx) = async_channel::bounded(1);
+        if self
+            .cmd_tx
+            .try_send(ConnCmd::OpenCommand {
+                id,
+                command,
+                cwd,
+                event_tx: event_tx.clone(),
+            })
+            .is_err()
+        {
+            let _ = event_tx.try_send(RemoteCommandEvent {
+                id,
+                status: RemoteCommandStatus::Failed,
+                output: "SSH connection is not available".into(),
+                exit_code: None,
+            });
+        }
+        (id, event_rx)
+    }
+
+    pub fn stop_command(&self, id: u64) {
+        let _ = self.cmd_tx.try_send(ConnCmd::StopCommand { id });
     }
 
     /// 主动断开。
@@ -340,9 +401,10 @@ async fn run_connection(
     let _ = event_tx.send(ConnEvent::Connected).await;
 
     // channel 服务循环：终端/SFTP/转发计数；全部关闭即断开。
-    let (ended_tx, mut ended_rx) = tokio_mpsc::unbounded_channel::<()>();
+    let (ended_tx, mut ended_rx) = tokio_mpsc::unbounded_channel::<ChannelEnded>();
     let mut active: usize = 0;
     let mut ever_opened = false;
+    let mut remote_commands: HashMap<u64, oneshot::Sender<()>> = HashMap::new();
     // 活动转发的停止信号 / -R 分配端口。
     let mut fw_state: std::collections::HashMap<
         (ForwardKind, crate::infrastructure::config::ForwardSpec),
@@ -352,7 +414,10 @@ async fn run_connection(
     let result: anyhow::Result<()> = loop {
         tokio::select! {
             biased;
-            _ = ended_rx.recv() => {
+            Some(ended) = ended_rx.recv() => {
+                if let ChannelEnded::RemoteCommand(id) = ended {
+                    remote_commands.remove(&id);
+                }
                 active = active.saturating_sub(1);
                 if ever_opened && active == 0 {
                     break Ok(());
@@ -373,13 +438,31 @@ async fn run_connection(
                         }
                     }
                 }
+                Ok(ConnCmd::OpenCommand { id, command, cwd, event_tx }) => {
+                    let (stop_tx, stop_rx) = oneshot::channel();
+                    remote_commands.insert(id, stop_tx);
+                    let handle = handle.clone();
+                    let ended_tx = ended_tx.clone();
+                    tokio::spawn(async move {
+                        let event = run_remote_command(&handle, id, command, cwd, stop_rx).await;
+                        let _ = event_tx.send(event).await;
+                        let _ = ended_tx.send(ChannelEnded::RemoteCommand(id));
+                    });
+                    active += 1;
+                    ever_opened = true;
+                }
+                Ok(ConnCmd::StopCommand { id }) => {
+                    if let Some(stop) = remote_commands.remove(&id) {
+                        let _ = stop.send(());
+                    }
+                }
                 Ok(ConnCmd::OpenSftp { cmd_rx, event_tx }) => {
                     match open_sftp_session(&handle).await {
                         Ok(sftp) => {
                             let ended_tx2 = ended_tx.clone();
                             tokio::spawn(async move {
                                 run_sftp_worker(sftp, cmd_rx, event_tx).await;
-                                let _ = ended_tx2.send(());
+                                let _ = ended_tx2.send(ChannelEnded::Regular);
                             });
                             active += 1;
                             ever_opened = true;
@@ -405,7 +488,7 @@ async fn run_connection(
                                     tokio::spawn(async move { let _ = run_dynamic_forward(h, spec2, stop_rx).await; })
                                 };
                                 let _ = task.await;
-                                let _ = ended_tx2.send(());
+                                let _ = ended_tx2.send(ChannelEnded::Regular);
                             });
                             fw_state.insert((kind, spec.clone()), ForwardState { stop: Some(stop_tx), allocated: None });
                             active += 1;
@@ -464,6 +547,11 @@ struct ForwardState {
     stop: Option<oneshot::Sender<()>>,
     /// -R 的服务端分配端口。
     allocated: Option<u32>,
+}
+
+enum ChannelEnded {
+    Regular,
+    RemoteCommand(u64),
 }
 
 /// connect（含反应式主机密钥确认）+ 认证（直连；不含 ProxyJump）。
@@ -665,7 +753,7 @@ async fn open_terminal_channel(
     rows: u16,
     input_rx: Receiver<InputCmd>,
     term_event_tx: Sender<SessionEvent>,
-    ended_tx: tokio_mpsc::UnboundedSender<()>,
+    ended_tx: tokio_mpsc::UnboundedSender<ChannelEnded>,
 ) -> anyhow::Result<()> {
     let channel = handle.channel_open_session().await?;
     channel
@@ -680,16 +768,161 @@ async fn open_terminal_channel(
     if let Err(error) = channel.set_env(false, "TERM_PROGRAM", "crossh").await {
         log::debug!("remote server ignored TERM_PROGRAM request: {error}");
     }
-    channel.request_shell(false).await?;
+    if let Some(shell) = detect_remote_shell(handle).await {
+        channel
+            .exec(true, remote_shell_bootstrap_command(shell))
+            .await?;
+    } else {
+        channel.request_shell(false).await?;
+    }
 
     let _ = term_event_tx.send(SessionEvent::Connected).await;
 
     let (read_half, write_half) = channel.split();
     tokio::spawn(async move {
         relay_terminal(read_half, write_half, input_rx, term_event_tx).await;
-        let _ = ended_tx.send(());
+        let _ = ended_tx.send(ChannelEnded::Regular);
     });
     Ok(())
+}
+
+async fn detect_remote_shell(handle: &Handle<ClientHandler>) -> Option<RemoteShell> {
+    let channel = handle.channel_open_session().await.ok()?;
+    channel.exec(true, "printf '%s' \"$SHELL\"").await.ok()?;
+    let (mut read_half, write_half) = channel.split();
+    let mut output = Vec::new();
+    while let Some(message) = read_half.wait().await {
+        match message {
+            ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
+                if output.len() < 256 {
+                    output.extend_from_slice(&data[..data.len().min(256 - output.len())]);
+                }
+            }
+            ChannelMsg::Close | ChannelMsg::Eof => break,
+            _ => {}
+        }
+    }
+    let _ = write_half.close().await;
+    let shell_path = String::from_utf8(output).ok()?;
+    remote_shell_from_path(shell_path.trim())
+}
+
+fn remote_shell_bootstrap_command(shell: RemoteShell) -> String {
+    let setup = remote_shell_setup_script(shell);
+    match shell {
+        RemoteShell::Bash => {
+            let rc = format!("source ~/.bashrc\n{setup}");
+            format!(
+                "bash --rcfile <(printf '%s\\n' {}) -i",
+                shell_quote_remote(&rc)
+            )
+        }
+        RemoteShell::Zsh => {
+            let rc = format!("source ~/.zshrc\n{setup}");
+            format!(
+                "d=$(mktemp -d \"${{TMPDIR:-/tmp}}/crossh-shell.XXXXXX\") || exit 1; trap 'rm -rf \"$d\"' 0; printf '%s\\n' {} > \"$d/.zshrc\"; ZDOTDIR=\"$d\" zsh -i; status=$?; exit \"$status\"",
+                shell_quote_remote(&rc)
+            )
+        }
+        RemoteShell::Fish => {
+            format!("fish --init-command {} -i", shell_quote_remote(setup))
+        }
+    }
+}
+
+const MAX_REMOTE_COMMAND_OUTPUT: usize = 24 * 1024;
+
+async fn run_remote_command(
+    handle: &Handle<ClientHandler>,
+    id: u64,
+    command: String,
+    cwd: String,
+    mut stop_rx: oneshot::Receiver<()>,
+) -> RemoteCommandEvent {
+    let channel = match handle.channel_open_session().await {
+        Ok(channel) => channel,
+        Err(error) => {
+            return RemoteCommandEvent {
+                id,
+                status: RemoteCommandStatus::Failed,
+                output: error.to_string(),
+                exit_code: None,
+            };
+        }
+    };
+    let remote_command = format!(
+        "cd -- {} && exec sh -lc {}",
+        shell_quote_remote(&cwd),
+        shell_quote_remote(&command),
+    );
+    if let Err(error) = channel.exec(true, remote_command).await {
+        return RemoteCommandEvent {
+            id,
+            status: RemoteCommandStatus::Failed,
+            output: error.to_string(),
+            exit_code: None,
+        };
+    }
+    let (mut read_half, write_half) = channel.split();
+    let mut output = String::new();
+    let mut exit_code = None;
+    let mut terminated = false;
+    loop {
+        tokio::select! {
+            biased;
+            _ = &mut stop_rx => {
+                terminated = true;
+                let _ = write_half.signal(Sig::TERM).await;
+                let _ = write_half.close().await;
+                break;
+            }
+            message = read_half.wait() => match message {
+                Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
+                    append_remote_output(&mut output, &data);
+                }
+                Some(ChannelMsg::ExitStatus { exit_status }) => {
+                    exit_code = i32::try_from(exit_status).ok();
+                }
+                Some(ChannelMsg::ExitSignal { .. }) => {}
+                Some(ChannelMsg::Close) | Some(ChannelMsg::Eof) | None => break,
+                _ => {}
+            }
+        }
+    }
+    let status = if terminated {
+        RemoteCommandStatus::Terminated
+    } else if exit_code == Some(0) {
+        RemoteCommandStatus::Succeeded
+    } else {
+        RemoteCommandStatus::Failed
+    };
+    RemoteCommandEvent {
+        id,
+        status,
+        output,
+        exit_code: if matches!(status, RemoteCommandStatus::Terminated) {
+            None
+        } else {
+            exit_code
+        },
+    }
+}
+
+fn append_remote_output(output: &mut String, bytes: &[u8]) {
+    output.push_str(&String::from_utf8_lossy(bytes));
+    if output.len() > MAX_REMOTE_COMMAND_OUTPUT {
+        let start = output.len() - MAX_REMOTE_COMMAND_OUTPUT;
+        let start = output
+            .char_indices()
+            .find(|(index, _)| *index >= start)
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        output.drain(..start);
+    }
+}
+
+fn shell_quote_remote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 /// 终端 channel relay：读循环转发字节，写循环消费输入。
@@ -1077,5 +1310,14 @@ mod tests {
             })
             .collect();
         eprintln!("[test] full output ({} bytes):\n{}", output.len(), readable);
+    }
+
+    #[test]
+    fn remote_shell_quote_preserves_command_text() {
+        assert_eq!(
+            shell_quote_remote("printf 'hello'"),
+            "'printf '\\''hello'\\'''"
+        );
+        assert_eq!(shell_quote_remote("/srv/app"), "'/srv/app'");
     }
 }

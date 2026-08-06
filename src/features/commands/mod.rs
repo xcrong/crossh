@@ -276,6 +276,10 @@ pub fn local_scope(cwd: &Path) -> String {
     format!("local:{}", cwd.to_string_lossy())
 }
 
+pub fn remote_scope(host_key: &str, cwd: &str) -> String {
+    format!("remote:{host_key}:{cwd}")
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackgroundTaskStatus {
     Running,
@@ -342,28 +346,40 @@ impl BackgroundTaskManager {
         cwd: PathBuf,
         command: String,
     ) -> (u64, Receiver<BackgroundTaskEvent>) {
-        let id = self.next_id;
-        self.next_id = self.next_id.saturating_add(1);
+        let id = self.insert_task(scope, cwd.clone(), command.clone());
         let control = Arc::new(BackgroundControl {
             stop_requested: AtomicBool::new(false),
             pid: AtomicU32::new(0),
         });
         let (event_tx, event_rx) = async_channel::bounded(1);
         self.controls.insert(id, control.clone());
+        thread::spawn(move || run_background_process(id, cwd, command, control, event_tx));
+        (id, event_rx)
+    }
+
+    /// Reserve a task id and display entry for a command executed by another
+    /// process, such as an SSH channel. Its completion event is applied by the
+    /// owner of that process.
+    pub fn start_remote(&mut self, scope: String, cwd: PathBuf, command: String) -> u64 {
+        self.insert_task(scope, cwd, command)
+    }
+
+    fn insert_task(&mut self, scope: String, cwd: PathBuf, command: String) -> u64 {
+        let id = self.next_id;
+        self.next_id = self.next_id.saturating_add(1);
         self.tasks.insert(
             id,
             BackgroundTask {
                 id,
-                scope: scope.clone(),
-                command: command.clone(),
-                cwd: cwd.clone(),
+                scope,
+                command,
+                cwd,
                 status: BackgroundTaskStatus::Running,
                 output: String::new(),
                 exit_code: None,
             },
         );
-        thread::spawn(move || run_background_process(id, cwd, command, control, event_tx));
-        (id, event_rx)
+        id
     }
 
     pub fn mark_stopping(&mut self, id: u64) {
@@ -669,6 +685,44 @@ mod tests {
     #[test]
     fn scope_keys_keep_directory_identity() {
         assert_eq!(local_scope(Path::new("/tmp/project")), "local:/tmp/project");
+    }
+
+    #[test]
+    fn remote_scope_keeps_host_and_directory_identity() {
+        assert_eq!(
+            remote_scope("deploy@example.com:22", "/srv/app"),
+            "remote:deploy@example.com:22:/srv/app"
+        );
+        assert_ne!(
+            remote_scope("deploy@example.com:22", "/srv/app"),
+            remote_scope("deploy@example.com:22", "/srv/other")
+        );
+    }
+
+    #[test]
+    fn remote_background_manager_tracks_completion() {
+        let mut manager = BackgroundTaskManager::default();
+        let id = manager.start_remote(
+            "remote:example.com:22:/srv/app".into(),
+            PathBuf::from("/srv/app"),
+            "deploy".into(),
+        );
+        assert_eq!(manager.running_count(), 1);
+        assert_eq!(
+            manager
+                .tasks_for_scope("remote:example.com:22:/srv/app")
+                .len(),
+            1
+        );
+
+        manager.apply_event(BackgroundTaskEvent {
+            id,
+            status: BackgroundTaskStatus::Succeeded,
+            output: "ok".into(),
+            exit_code: Some(0),
+        });
+        assert_eq!(manager.running_count(), 0);
+        assert_eq!(manager.tasks[&id].output, "ok");
     }
 
     #[cfg(unix)]
