@@ -10,16 +10,18 @@
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext, ClipboardEntry, Context, Entity, EntityId, FocusHandle, InteractiveElement,
-    IntoElement, KeyDownEvent, ParentElement, PathPromptOptions, Pixels, Point, PromptButton,
-    PromptLevel, Render, ScrollHandle, Styled, SystemNotificationResponse, Task, TitlebarOptions,
-    Window, WindowBounds, WindowOptions, div, px, size,
+    App, AppContext, Bounds, ClipboardEntry, Context, Entity, EntityId, EntityInputHandler,
+    FocusHandle, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, PathPromptOptions,
+    Pixels, Point, PromptButton, PromptLevel, Render, ScrollHandle, Styled,
+    SystemNotificationResponse, Task, TitlebarOptions, UTF16Selection, Window, WindowBounds,
+    WindowOptions, div, px, size,
 };
 
 use crate::features::commands::{
@@ -46,7 +48,10 @@ use crate::shared::ui::context_menu::{
     ContextMenuState, MenuEntry, ShellMenuAction, render_context_menu,
 };
 use crate::shared::ui::theme;
-use crate::shared::ui::widgets::printable_char;
+use crate::shared::ui::widgets::{
+    byte_index_for_utf16, ime_caret_bounds, printable_char, replace_utf16_range, utf16_len,
+    utf16_offset_for_byte, utf16_slice,
+};
 
 const GIT_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -64,6 +69,8 @@ pub(crate) struct QuickCommandEditor {
     pub(crate) anchor: Option<usize>,
     pub(crate) scroll: ScrollHandle,
     pub(crate) focus: FocusHandle,
+    pub(crate) ime_marked_text: String,
+    pub(crate) ime_replacement: Option<(usize, usize)>,
 }
 
 impl QuickCommandEditor {
@@ -240,6 +247,7 @@ pub struct AppShell {
     pub(crate) status: Option<String>,
     /// 侧栏搜索文本；未命中配置别名时也作为 QuickConnect 目标。
     pub(crate) host_query: String,
+    pub(crate) host_ime_marked_text: String,
     pub(crate) host_focus: FocusHandle,
     /// 主机分组折叠状态；Bank 默认收起，Local/Active 默认展开。
     pub(crate) bank_collapsed: bool,
@@ -249,6 +257,7 @@ pub struct AppShell {
     _project_picker: Option<Task<()>>,
     /// 模态文本输入缓冲（密码/口令）。
     pub(crate) prompt_input: String,
+    pub(crate) prompt_ime_marked_text: String,
     /// 模态输入框焦点。
     pub(crate) modal_focus: FocusHandle,
     /// 上一帧是否有活动模态（用于在弹窗出现时自动聚焦）。
@@ -314,12 +323,14 @@ impl AppShell {
             workspace: WorkspaceState::new(local_dirs),
             status: None,
             host_query: String::new(),
+            host_ime_marked_text: String::new(),
             host_focus: cx.focus_handle(),
             bank_collapsed: true,
             active_collapsed: false,
             projects_collapsed: false,
             _project_picker: None,
             prompt_input: String::new(),
+            prompt_ime_marked_text: String::new(),
             modal_focus: cx.focus_handle(),
             last_had_prompt: false,
             language_preference,
@@ -794,6 +805,7 @@ impl AppShell {
             None => {}
         }
         self.host_query.clear();
+        self.host_ime_marked_text.clear();
         self.host_focus.focus(window, cx);
         cx.notify();
     }
@@ -974,6 +986,8 @@ impl AppShell {
             anchor: None,
             scroll: ScrollHandle::new(),
             focus: focus.clone(),
+            ime_marked_text: String::new(),
+            ime_replacement: None,
         });
         window.focus(&focus, cx);
         cx.notify();
@@ -1006,6 +1020,8 @@ impl AppShell {
 
         if primary && ks.key == "a" {
             if let Some(editor) = &mut self.quick_command_editor {
+                editor.ime_marked_text.clear();
+                editor.ime_replacement = None;
                 editor.select_all();
             }
             cx.notify();
@@ -1018,6 +1034,8 @@ impl AppShell {
             {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
                 if ks.key == "x" {
+                    editor.ime_marked_text.clear();
+                    editor.ime_replacement = None;
                     editor.replace_selection("");
                 }
             }
@@ -1035,6 +1053,8 @@ impl AppShell {
             if let Some(editor) = &mut self.quick_command_editor
                 && let Some(text) = pasted
             {
+                editor.ime_marked_text.clear();
+                editor.ime_replacement = None;
                 editor.replace_selection(&text);
             }
             cx.notify();
@@ -1046,36 +1066,48 @@ impl AppShell {
             "escape" => self.cancel_quick_command_editor(cx),
             "backspace" => {
                 if let Some(editor) = &mut self.quick_command_editor {
+                    editor.ime_marked_text.clear();
+                    editor.ime_replacement = None;
                     editor.backspace();
                 }
                 cx.notify();
             }
             "delete" => {
                 if let Some(editor) = &mut self.quick_command_editor {
+                    editor.ime_marked_text.clear();
+                    editor.ime_replacement = None;
                     editor.delete();
                 }
                 cx.notify();
             }
             "left" => {
                 if let Some(editor) = &mut self.quick_command_editor {
+                    editor.ime_marked_text.clear();
+                    editor.ime_replacement = None;
                     editor.move_horizontal(-1, extend);
                 }
                 cx.notify();
             }
             "right" => {
                 if let Some(editor) = &mut self.quick_command_editor {
+                    editor.ime_marked_text.clear();
+                    editor.ime_replacement = None;
                     editor.move_horizontal(1, extend);
                 }
                 cx.notify();
             }
             "home" => {
                 if let Some(editor) = &mut self.quick_command_editor {
+                    editor.ime_marked_text.clear();
+                    editor.ime_replacement = None;
                     editor.move_to_boundary(false, extend);
                 }
                 cx.notify();
             }
             "end" => {
                 if let Some(editor) = &mut self.quick_command_editor {
+                    editor.ime_marked_text.clear();
+                    editor.ime_replacement = None;
                     editor.move_to_boundary(true, extend);
                 }
                 cx.notify();
@@ -1084,6 +1116,8 @@ impl AppShell {
                 if let Some(ch) = printable_char(ks)
                     && let Some(editor) = &mut self.quick_command_editor
                 {
+                    editor.ime_marked_text.clear();
+                    editor.ime_replacement = None;
                     editor.replace_selection(&ch.to_string());
                     cx.notify();
                 }
@@ -1149,6 +1183,7 @@ impl AppShell {
             };
             let _ = weak.update(cx, |this, cx| {
                 this.host_query.clear();
+                this.host_ime_marked_text.clear();
                 this.activate_local_dir(path, cx);
             });
         });
@@ -1165,15 +1200,18 @@ impl AppShell {
             "enter" | "return" => self.open_query(cx),
             "escape" => {
                 self.host_query.clear();
+                self.host_ime_marked_text.clear();
                 cx.notify();
             }
             "backspace" => {
                 self.host_query.pop();
+                self.host_ime_marked_text.clear();
                 cx.notify();
             }
             _ => {
                 if let Some(ch) = printable_char(&ev.keystroke) {
                     self.host_query.push(ch);
+                    self.host_ime_marked_text.clear();
                     cx.notify();
                 } else if ev.keystroke.key == "tab" {
                     self.host_focus.focus(window, cx);
@@ -1870,6 +1908,7 @@ impl AppShell {
             c.update(cx, |conn, _| conn.resolve_credential(value));
         }
         self.prompt_input.clear();
+        self.prompt_ime_marked_text.clear();
         self.refocus_active_terminal(cx);
         cx.notify();
     }
@@ -1912,6 +1951,280 @@ impl AppShell {
     }
 }
 
+#[derive(Clone, Copy)]
+enum AppShellInputField {
+    HostSearch,
+    Credential,
+    QuickCommand,
+}
+
+impl AppShell {
+    fn active_input_field(&self, window: &Window) -> Option<AppShellInputField> {
+        if self.modal_focus.is_focused(window) {
+            Some(AppShellInputField::Credential)
+        } else if self
+            .quick_command_editor
+            .as_ref()
+            .is_some_and(|editor| editor.focus.is_focused(window))
+        {
+            Some(AppShellInputField::QuickCommand)
+        } else if self.host_focus.is_focused(window) {
+            Some(AppShellInputField::HostSearch)
+        } else {
+            None
+        }
+    }
+}
+
+impl EntityInputHandler for AppShell {
+    fn text_for_range(
+        &mut self,
+        range: Range<usize>,
+        _adjusted_range: &mut Option<Range<usize>>,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let text = match self.active_input_field(window)? {
+            AppShellInputField::HostSearch => &self.host_query,
+            AppShellInputField::Credential => &self.prompt_input,
+            AppShellInputField::QuickCommand => &self.quick_command_editor.as_ref()?.value,
+        };
+        Some(utf16_slice(text, range))
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        match self.active_input_field(window)? {
+            AppShellInputField::HostSearch => {
+                let position = utf16_len(&self.host_query);
+                Some(UTF16Selection {
+                    range: position..position,
+                    reversed: false,
+                })
+            }
+            AppShellInputField::Credential => {
+                let position = utf16_len(&self.prompt_input);
+                Some(UTF16Selection {
+                    range: position..position,
+                    reversed: false,
+                })
+            }
+            AppShellInputField::QuickCommand => {
+                let editor = self.quick_command_editor.as_ref()?;
+                let (start, end) = editor.selection().unwrap_or((editor.cursor, editor.cursor));
+                Some(UTF16Selection {
+                    range: utf16_offset_for_byte(&editor.value, start)
+                        ..utf16_offset_for_byte(&editor.value, end),
+                    reversed: editor.anchor.is_some_and(|anchor| anchor > editor.cursor),
+                })
+            }
+        }
+    }
+
+    fn marked_text_range(
+        &self,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
+        match self.active_input_field(window)? {
+            AppShellInputField::HostSearch => (!self.host_ime_marked_text.is_empty()).then(|| {
+                let start = utf16_len(&self.host_query);
+                start..start + utf16_len(&self.host_ime_marked_text)
+            }),
+            AppShellInputField::Credential => {
+                (!self.prompt_ime_marked_text.is_empty()).then(|| {
+                    let start = utf16_len(&self.prompt_input);
+                    start..start + utf16_len(&self.prompt_ime_marked_text)
+                })
+            }
+            AppShellInputField::QuickCommand => {
+                let editor = self.quick_command_editor.as_ref()?;
+                let (start, _) = editor.ime_replacement?;
+                (!editor.ime_marked_text.is_empty()).then(|| {
+                    let start = utf16_offset_for_byte(&editor.value, start);
+                    start..start + utf16_len(&editor.ime_marked_text)
+                })
+            }
+        }
+    }
+
+    fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.active_input_field(window) {
+            Some(AppShellInputField::HostSearch) => self.host_ime_marked_text.clear(),
+            Some(AppShellInputField::Credential) => self.prompt_ime_marked_text.clear(),
+            Some(AppShellInputField::QuickCommand) => {
+                if let Some(editor) = &mut self.quick_command_editor {
+                    if let Some((start, end)) = editor.ime_replacement.take() {
+                        editor.cursor = end;
+                        editor.anchor = (start != end).then_some(start);
+                    }
+                    editor.ime_marked_text.clear();
+                }
+            }
+            None => {}
+        }
+        window.invalidate_character_coordinates();
+        cx.notify();
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        replacement_range: Option<Range<usize>>,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.active_input_field(window) {
+            Some(AppShellInputField::HostSearch) => {
+                let position = utf16_len(&self.host_query);
+                replace_utf16_range(
+                    &mut self.host_query,
+                    replacement_range.unwrap_or(position..position),
+                    text,
+                );
+                self.host_ime_marked_text.clear();
+            }
+            Some(AppShellInputField::Credential) => {
+                let position = utf16_len(&self.prompt_input);
+                replace_utf16_range(
+                    &mut self.prompt_input,
+                    replacement_range.unwrap_or(position..position),
+                    text,
+                );
+                self.prompt_ime_marked_text.clear();
+            }
+            Some(AppShellInputField::QuickCommand) => {
+                if let Some(editor) = &mut self.quick_command_editor {
+                    let (start, end) = if let Some(range) = editor.ime_replacement.take() {
+                        range
+                    } else if let Some(range) = replacement_range {
+                        (
+                            byte_index_for_utf16(&editor.value, range.start),
+                            byte_index_for_utf16(&editor.value, range.end),
+                        )
+                    } else {
+                        editor.selection().unwrap_or((editor.cursor, editor.cursor))
+                    };
+                    editor.value.replace_range(start..end, text);
+                    editor.cursor = start + text.len();
+                    editor.anchor = None;
+                    editor.ime_marked_text.clear();
+                }
+            }
+            None => return,
+        }
+        window.invalidate_character_coordinates();
+        cx.notify();
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _range: Option<Range<usize>>,
+        new_text: &str,
+        _new_selected_range: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.active_input_field(window) {
+            Some(AppShellInputField::HostSearch) => {
+                self.host_ime_marked_text.clear();
+                self.host_ime_marked_text.push_str(new_text);
+            }
+            Some(AppShellInputField::Credential) => {
+                self.prompt_ime_marked_text.clear();
+                self.prompt_ime_marked_text.push_str(new_text);
+            }
+            Some(AppShellInputField::QuickCommand) => {
+                if let Some(editor) = &mut self.quick_command_editor {
+                    if editor.ime_replacement.is_none() {
+                        let replacement =
+                            editor.selection().unwrap_or((editor.cursor, editor.cursor));
+                        editor.ime_replacement = Some(replacement);
+                        editor.cursor = replacement.0;
+                        editor.anchor = None;
+                    }
+                    editor.ime_marked_text.clear();
+                    editor.ime_marked_text.push_str(new_text);
+                }
+            }
+            None => return,
+        }
+        window.invalidate_character_coordinates();
+        cx.notify();
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        range: Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        match self.active_input_field(window)? {
+            AppShellInputField::HostSearch => {
+                let cursor = byte_index_for_utf16(&self.host_query, range.start);
+                Some(ime_caret_bounds(
+                    window,
+                    element_bounds,
+                    &self.host_query[..cursor],
+                    px(12.),
+                    px(30.),
+                    px(0.),
+                ))
+            }
+            AppShellInputField::Credential => {
+                let cursor = byte_index_for_utf16(&self.prompt_input, range.start);
+                let bullet_count = self.prompt_input[..cursor].chars().count();
+                let text_before = "•".repeat(bullet_count);
+                Some(ime_caret_bounds(
+                    window,
+                    element_bounds,
+                    &text_before,
+                    px(14.),
+                    px(12.),
+                    px(0.),
+                ))
+            }
+            AppShellInputField::QuickCommand => {
+                let editor = self.quick_command_editor.as_ref()?;
+                let cursor = byte_index_for_utf16(&editor.value, range.start);
+                Some(ime_caret_bounds(
+                    window,
+                    element_bounds,
+                    &editor.value[..cursor],
+                    px(14.),
+                    px(12.),
+                    editor.scroll.offset().x,
+                ))
+            }
+        }
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: Point<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        None
+    }
+
+    fn text_length_utf16(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> Option<usize> {
+        match self.active_input_field(window)? {
+            AppShellInputField::HostSearch => Some(utf16_len(&self.host_query)),
+            AppShellInputField::Credential => Some(utf16_len(&self.prompt_input)),
+            AppShellInputField::QuickCommand => self
+                .quick_command_editor
+                .as_ref()
+                .map(|editor| utf16_len(&editor.value)),
+        }
+    }
+}
+
 impl Render for AppShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let prompt = self.current_prompt(cx);
@@ -1922,10 +2235,11 @@ impl Render for AppShell {
         }
         if !has_prompt {
             self.prompt_input.clear();
+            self.prompt_ime_marked_text.clear();
         }
         self.last_had_prompt = has_prompt;
 
-        let sidebar = render_sidebar(self, cx);
+        let sidebar = render_sidebar(self, window, cx);
         // Materialize the opaque element before attaching the root listener so
         // Rust 2024 does not keep `cx` borrowed through `render_main`.
         let main = render_main(self, cx);
@@ -1946,10 +2260,10 @@ impl Render for AppShell {
             prompt,
             PromptDisplay::HostKey { .. } | PromptDisplay::Credential { .. }
         ) {
-            root = root.child(render_prompt_modal(self, prompt, cx));
+            root = root.child(render_prompt_modal(self, prompt, window, cx));
         }
         if self.quick_command_editor.is_some() {
-            root = root.child(render_quick_command_editor(self, cx));
+            root = root.child(render_quick_command_editor(self, window, cx));
         }
         if let Some(menu) = self.context_menu.clone() {
             root = root.child(render_context_menu(

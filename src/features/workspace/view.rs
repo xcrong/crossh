@@ -8,7 +8,7 @@ use std::rc::Rc;
 use gpui::{
     AnyElement, AppContext, Bounds, ClickEvent, Context, Entity, FontWeight, InteractiveElement,
     IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
-    SharedString, StatefulInteractiveElement, Styled, canvas, div, hsla, px, rgb,
+    SharedString, StatefulInteractiveElement, Styled, Window, canvas, div, hsla, px, rgb,
 };
 
 use crate::features::commands::{
@@ -24,6 +24,7 @@ use crate::infrastructure::ssh::Connection;
 use crate::shared::i18n;
 use crate::shared::terminal::remote_pane_title;
 use crate::shared::ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
+use crate::shared::ui::widgets::{ime_input_canvas, text_caret};
 use crate::shared::ui::{icons, theme};
 
 /// 一个标签内承载的面板。
@@ -752,15 +753,21 @@ fn background_task_color(status: BackgroundTaskStatus) -> gpui::Rgba {
     }
 }
 
-pub fn render_quick_command_editor(shell: &mut AppShell, cx: &mut Context<AppShell>) -> AnyElement {
+pub fn render_quick_command_editor(
+    shell: &mut AppShell,
+    window: &Window,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
     let Some(editor) = &shell.quick_command_editor else {
         return div().into_any_element();
     };
     let focus = editor.focus.clone();
     let value = editor.value.clone();
+    let ime_marked_text = editor.ime_marked_text.clone();
     let selection = editor.selection();
     let (selection_start, selection_end) = selection.unwrap_or((editor.cursor, editor.cursor));
     let scroll = editor.scroll.clone();
+    let focused = focus.is_focused(window);
     scroll.scroll_to_item(1);
     let mut input = div()
         .id("quick-command-editor-input")
@@ -777,6 +784,7 @@ pub fn render_quick_command_editor(shell: &mut AppShell, cx: &mut Context<AppShe
         .border_1()
         .border_color(theme::border_strong())
         .rounded(px(theme::RADIUS_SM))
+        .relative()
         .text_sm()
         .text_color(theme::text())
         .track_focus(&focus)
@@ -789,15 +797,29 @@ pub fn render_quick_command_editor(shell: &mut AppShell, cx: &mut Context<AppShe
         .on_key_down(cx.listener(AppShell::handle_quick_command_editor_key));
 
     if value.is_empty() {
-        input = input.child(
-            div()
-                .flex_shrink_0()
-                .whitespace_nowrap()
-                .text_color(theme::faint_text())
-                .child(SharedString::from(i18n::text(
-                    "quick_commands.command_placeholder",
-                ))),
-        );
+        if focused {
+            input = input.child(text_caret(px(20.)));
+        }
+        if ime_marked_text.is_empty() {
+            input = input.child(
+                div()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .text_color(theme::faint_text())
+                    .child(SharedString::from(i18n::text(
+                        "quick_commands.command_placeholder",
+                    ))),
+            );
+        } else {
+            input = input.child(
+                div()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .underline()
+                    .text_decoration_color(theme::accent())
+                    .child(SharedString::from(ime_marked_text.clone())),
+            );
+        }
     } else {
         input = input.child(
             div()
@@ -815,13 +837,19 @@ pub fn render_quick_command_editor(shell: &mut AppShell, cx: &mut Context<AppShe
                     .child(SharedString::from(value[start..end].to_string())),
             );
         } else {
-            input = input.child(
-                div()
-                    .w(px(1.))
-                    .h(px(20.))
-                    .flex_shrink_0()
-                    .bg(theme::accent()),
-            );
+            if focused {
+                input = input.child(text_caret(px(20.)));
+            }
+            if !ime_marked_text.is_empty() {
+                input = input.child(
+                    div()
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
+                        .underline()
+                        .text_decoration_color(theme::accent())
+                        .child(SharedString::from(ime_marked_text.clone())),
+                );
+            }
         }
         input = input.child(
             div()
@@ -830,6 +858,7 @@ pub fn render_quick_command_editor(shell: &mut AppShell, cx: &mut Context<AppShe
                 .child(SharedString::from(value[selection_end..].to_string())),
         );
     }
+    input = input.child(ime_input_canvas(focus, cx.entity()));
 
     let buttons = div()
         .flex()

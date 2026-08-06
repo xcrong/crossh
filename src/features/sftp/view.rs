@@ -4,20 +4,27 @@
 //! 主线程 drain `event_rx` 更新列表/进度。下载落到 ~/Downloads（重名自动加序号）。
 
 use std::cell::Cell;
+use std::ops::Range;
 use std::rc::Rc;
 
 use async_channel::{Receiver, Sender};
 use gpui::{
-    AnyElement, App, AppContext, Bounds, ClipboardEntry, Context, Entity, FocusHandle, FontWeight,
-    InteractiveElement, IntoElement, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent,
-    ParentElement, PathPromptOptions, Pixels, Point, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement, Styled, Task, Window, canvas, div, px, rgb,
+    AnyElement, App, AppContext, Bounds, ClipboardEntry, Context, Entity, EntityInputHandler,
+    FocusHandle, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, Keystroke, MouseButton,
+    MouseDownEvent, ParentElement, PathPromptOptions, Pixels, Point, Render, ScrollHandle,
+    SharedString, StatefulInteractiveElement, Styled, Task, UTF16Selection, Window, canvas, div,
+    px, rgb,
 };
 
 use crate::infrastructure::ssh::{MAX_EDITOR_FILE_BYTES, RemoteEntry, SftpCmd, SftpEvent};
 use crate::shared::i18n;
 use crate::shared::ui::context_menu::{
     ContextMenuState, MenuEntry, MenuItem, SftpMenuAction, render_context_menu,
+};
+use crate::shared::ui::widgets::text_caret;
+use crate::shared::ui::widgets::{
+    byte_index_for_utf16, ime_caret_bounds, ime_input_canvas, replace_utf16_range, utf16_len,
+    utf16_slice,
 };
 use crate::shared::ui::{icons, theme};
 
@@ -157,6 +164,7 @@ struct PendingPathInput {
     /// Some(旧名) = 重命名；None = 新建目录。
     rename_from: Option<String>,
     value: String,
+    ime_marked_text: String,
     focus: FocusHandle,
 }
 
@@ -173,6 +181,7 @@ pub struct SftpPane {
     message: Option<String>,
     loading: bool,
     upload_input: String,
+    upload_ime_marked_text: String,
     progress: Option<Progress>,
     editor: Option<RemoteEditor>,
     focus: FocusHandle,
@@ -219,6 +228,7 @@ impl SftpPane {
             message: (!initial_list_ok).then(sftp_channel_unavailable),
             loading: initial_list_ok,
             upload_input: String::new(),
+            upload_ime_marked_text: String::new(),
             progress: None,
             editor: None,
             focus: cx.focus_handle(),
@@ -426,6 +436,7 @@ impl SftpPane {
             };
             let _ = weak.update(cx, |this, cx| {
                 this.upload_input = path.to_string_lossy().to_string();
+                this.upload_ime_marked_text.clear();
                 this.message = None;
                 cx.notify();
             });
@@ -457,6 +468,7 @@ impl SftpPane {
         } else {
             self.message = Some(rust_i18n::t!("sftp.prepare_upload", name = basename).to_string());
             self.upload_input.clear();
+            self.upload_ime_marked_text.clear();
         }
         cx.notify();
     }
@@ -587,15 +599,18 @@ impl SftpPane {
             "enter" | "return" => self.do_upload(cx),
             "escape" => {
                 self.upload_input.clear();
+                self.upload_ime_marked_text.clear();
                 cx.notify();
             }
             "backspace" => {
                 self.upload_input.pop();
+                self.upload_ime_marked_text.clear();
                 cx.notify();
             }
             _ => {
                 if let Some(ch) = printable_char(ks) {
                     self.upload_input.push(ch);
+                    self.upload_ime_marked_text.clear();
                     cx.notify();
                 }
             }
@@ -642,6 +657,7 @@ impl SftpPane {
                 self.pending_path_input = Some(PendingPathInput {
                     rename_from: Some(name.clone()),
                     value: name,
+                    ime_marked_text: String::new(),
                     focus: focus.clone(),
                 });
                 window.focus(&focus, cx);
@@ -652,6 +668,7 @@ impl SftpPane {
                 self.pending_path_input = Some(PendingPathInput {
                     rename_from: None,
                     value: String::new(),
+                    ime_marked_text: String::new(),
                     focus: focus.clone(),
                 });
                 window.focus(&focus, cx);
@@ -705,6 +722,7 @@ impl SftpPane {
             "backspace" => {
                 if let Some(input) = &mut self.pending_path_input {
                     input.value.pop();
+                    input.ime_marked_text.clear();
                 }
                 cx.notify();
             }
@@ -713,6 +731,7 @@ impl SftpPane {
                     && let Some(input) = &mut self.pending_path_input
                 {
                     input.value.push(ch);
+                    input.ime_marked_text.clear();
                     cx.notify();
                 }
             }
@@ -751,12 +770,13 @@ impl SftpPane {
     }
 
     /// 路径输入模态（重命名 / 新建目录）；未打开时返回空元素。
-    fn render_path_input_modal(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_path_input_modal(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(input) = &self.pending_path_input else {
             return div().into_any_element();
         };
         let focus = input.focus.clone();
         let value = input.value.clone();
+        let input_focused = focus.is_focused(window);
         let is_rename = input.rename_from.is_some();
         let title = if is_rename {
             i18n::text("context_menu.rename")
@@ -764,7 +784,7 @@ impl SftpPane {
             i18n::text("context_menu.new_folder")
         };
 
-        let input_el = div()
+        let mut input_el = div()
             .id("sftp-path-input")
             .w_full()
             .h(px(34.))
@@ -776,6 +796,7 @@ impl SftpPane {
             .border_1()
             .border_color(theme::border_strong())
             .rounded(px(theme::RADIUS_SM))
+            .relative()
             .text_sm()
             .text_color(theme::text())
             .track_focus(&focus)
@@ -785,12 +806,43 @@ impl SftpPane {
                 let focus = focus.clone();
                 move |_ev, window, cx| window.focus(&focus, cx)
             })
-            .on_key_down(cx.listener(SftpPane::handle_path_input_key))
-            .child(SharedString::from(if value.is_empty() {
-                i18n::text("sftp.name_placeholder")
-            } else {
-                value
-            }));
+            .on_key_down(cx.listener(SftpPane::handle_path_input_key));
+        if value.is_empty() {
+            if input_focused {
+                input_el = input_el.child(text_caret(px(16.)));
+            }
+            if input.ime_marked_text.is_empty() {
+                input_el = input_el.child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .truncate()
+                        .child(SharedString::from(i18n::text("sftp.name_placeholder"))),
+                );
+            }
+        } else {
+            input_el = input_el.child(
+                div()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .child(SharedString::from(value)),
+            );
+            if input_focused {
+                input_el = input_el.child(text_caret(px(16.)));
+            }
+        }
+        if !input.ime_marked_text.is_empty() {
+            input_el = input_el.child(
+                div()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .underline()
+                    .text_decoration_color(theme::accent())
+                    .child(SharedString::from(input.ime_marked_text.clone())),
+            );
+        }
+        input_el = input_el.child(ime_input_canvas(focus, cx.entity()));
 
         let mut buttons = div().flex().flex_row().gap_2().mt_4();
         buttons = buttons
@@ -1335,6 +1387,207 @@ fn try_send_command(tx: &Sender<SftpCmd>, command: SftpCmd) -> Result<(), &'stat
     tx.try_send(command).map_err(|_| SFTP_CHANNEL_UNAVAILABLE)
 }
 
+#[derive(Clone, Copy)]
+enum SftpInputField {
+    Path,
+    Upload,
+}
+
+impl SftpPane {
+    fn active_input_field(&self, window: &Window) -> Option<SftpInputField> {
+        if self
+            .pending_path_input
+            .as_ref()
+            .is_some_and(|input| input.focus.is_focused(window))
+        {
+            Some(SftpInputField::Path)
+        } else if self.editor.is_none() && self.focus.is_focused(window) {
+            Some(SftpInputField::Upload)
+        } else {
+            None
+        }
+    }
+}
+
+impl EntityInputHandler for SftpPane {
+    fn text_for_range(
+        &mut self,
+        range: Range<usize>,
+        _adjusted_range: &mut Option<Range<usize>>,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let text = match self.active_input_field(window)? {
+            SftpInputField::Path => &self.pending_path_input.as_ref()?.value,
+            SftpInputField::Upload => &self.upload_input,
+        };
+        Some(utf16_slice(text, range))
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        let text = match self.active_input_field(window)? {
+            SftpInputField::Path => &self.pending_path_input.as_ref()?.value,
+            SftpInputField::Upload => &self.upload_input,
+        };
+        let position = utf16_len(text);
+        Some(UTF16Selection {
+            range: position..position,
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
+        match self.active_input_field(window)? {
+            SftpInputField::Path => {
+                let input = self.pending_path_input.as_ref()?;
+                (!input.ime_marked_text.is_empty()).then(|| {
+                    let start = utf16_len(&input.value);
+                    start..start + utf16_len(&input.ime_marked_text)
+                })
+            }
+            SftpInputField::Upload => (!self.upload_ime_marked_text.is_empty()).then(|| {
+                let start = utf16_len(&self.upload_input);
+                start..start + utf16_len(&self.upload_ime_marked_text)
+            }),
+        }
+    }
+
+    fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.active_input_field(window) {
+            Some(SftpInputField::Path) => {
+                if let Some(input) = &mut self.pending_path_input {
+                    input.ime_marked_text.clear();
+                }
+            }
+            Some(SftpInputField::Upload) => self.upload_ime_marked_text.clear(),
+            None => {}
+        }
+        window.invalidate_character_coordinates();
+        cx.notify();
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        replacement_range: Option<Range<usize>>,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.active_input_field(window) {
+            Some(SftpInputField::Path) => {
+                if let Some(input) = &mut self.pending_path_input {
+                    let position = utf16_len(&input.value);
+                    replace_utf16_range(
+                        &mut input.value,
+                        replacement_range.unwrap_or(position..position),
+                        text,
+                    );
+                    input.ime_marked_text.clear();
+                }
+            }
+            Some(SftpInputField::Upload) => {
+                let position = utf16_len(&self.upload_input);
+                replace_utf16_range(
+                    &mut self.upload_input,
+                    replacement_range.unwrap_or(position..position),
+                    text,
+                );
+                self.upload_ime_marked_text.clear();
+            }
+            None => return,
+        }
+        window.invalidate_character_coordinates();
+        cx.notify();
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _range: Option<Range<usize>>,
+        new_text: &str,
+        _new_selected_range: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.active_input_field(window) {
+            Some(SftpInputField::Path) => {
+                if let Some(input) = &mut self.pending_path_input {
+                    input.ime_marked_text.clear();
+                    input.ime_marked_text.push_str(new_text);
+                }
+            }
+            Some(SftpInputField::Upload) => {
+                self.upload_ime_marked_text.clear();
+                self.upload_ime_marked_text.push_str(new_text);
+            }
+            None => return,
+        }
+        window.invalidate_character_coordinates();
+        cx.notify();
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        range: Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        match self.active_input_field(window)? {
+            SftpInputField::Path => {
+                let input = self.pending_path_input.as_ref()?;
+                let cursor = byte_index_for_utf16(&input.value, range.start);
+                Some(ime_caret_bounds(
+                    window,
+                    element_bounds,
+                    &input.value[..cursor],
+                    px(14.),
+                    px(12.),
+                    px(0.),
+                ))
+            }
+            SftpInputField::Upload => {
+                let cursor = byte_index_for_utf16(&self.upload_input, range.start);
+                Some(ime_caret_bounds(
+                    window,
+                    element_bounds,
+                    &self.upload_input[..cursor],
+                    px(12.),
+                    px(8.),
+                    px(0.),
+                ))
+            }
+        }
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: Point<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        None
+    }
+
+    fn text_length_utf16(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> Option<usize> {
+        match self.active_input_field(window)? {
+            SftpInputField::Path => self
+                .pending_path_input
+                .as_ref()
+                .map(|input| utf16_len(&input.value)),
+            SftpInputField::Upload => Some(utf16_len(&self.upload_input)),
+        }
+    }
+}
+
 impl Render for SftpPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.editor.is_some() {
@@ -1558,14 +1811,18 @@ impl Render for SftpPane {
         // 底部：上传输入 + 进度/消息。
         let focus = self.focus.clone();
         let upload_val = self.upload_input.clone();
-        let input = div()
+        let upload_ime = self.upload_ime_marked_text.clone();
+        let input_focused = focus.is_focused(window);
+        let mut input = div()
             .id("sftp-upload-input")
             .flex_1()
+            .min_w_0()
             .h(px(32.))
             .px_2()
             .flex()
             .items_center()
             .rounded(px(theme::RADIUS_SM))
+            .relative()
             .bg(theme::canvas())
             .border_1()
             .border_color(theme::border_strong())
@@ -1579,12 +1836,45 @@ impl Render for SftpPane {
                 let focus = focus.clone();
                 move |_ev, window, cx| window.focus(&focus, cx)
             })
-            .on_key_down(cx.listener(SftpPane::handle_input_key))
-            .child(SharedString::from(if upload_val.is_empty() {
-                i18n::text("sftp.local_path_placeholder")
-            } else {
-                upload_val
-            }));
+            .on_key_down(cx.listener(SftpPane::handle_input_key));
+        if upload_val.is_empty() {
+            if input_focused {
+                input = input.child(text_caret(px(15.)));
+            }
+            if upload_ime.is_empty() {
+                input = input.child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .truncate()
+                        .child(SharedString::from(i18n::text(
+                            "sftp.local_path_placeholder",
+                        ))),
+                );
+            }
+        } else {
+            input = input.child(
+                div()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .child(SharedString::from(upload_val)),
+            );
+            if input_focused {
+                input = input.child(text_caret(px(15.)));
+            }
+        }
+        if !upload_ime.is_empty() {
+            input = input.child(
+                div()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .underline()
+                    .text_decoration_color(theme::accent())
+                    .child(SharedString::from(upload_ime)),
+            );
+        }
+        input = input.child(ime_input_canvas(focus, cx.entity()));
 
         let mut bottom = div()
             .flex()
@@ -1758,7 +2048,7 @@ impl Render for SftpPane {
                 |this, cx| this.close_context_menu(cx),
             ));
         }
-        root = root.child(self.render_path_input_modal(cx));
+        root = root.child(self.render_path_input_modal(window, cx));
         root = root.child(self.render_delete_confirm(cx));
         root.into_any_element()
     }

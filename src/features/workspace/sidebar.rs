@@ -8,7 +8,7 @@ use std::rc::Rc;
 use gpui::{
     AnyElement, AppContext, Bounds, Context, FontWeight, InteractiveElement, IntoElement,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, SharedString,
-    StatefulInteractiveElement, Styled, canvas, div, px,
+    StatefulInteractiveElement, Styled, Window, canvas, div, px,
 };
 
 use crate::features::connections::HostEntry;
@@ -17,7 +17,7 @@ use crate::features::workspace::shell::AppShell;
 use crate::features::workspace::view::{ActiveView, LocalDir};
 use crate::shared::i18n::{self, LanguagePreference};
 use crate::shared::ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
-use crate::shared::ui::widgets::LocalPathTooltip;
+use crate::shared::ui::widgets::{LocalPathTooltip, ime_input_canvas, text_caret};
 use crate::shared::ui::{icons, theme};
 
 fn host_entry_matches(entry: &HostEntry, query: &str) -> bool {
@@ -26,10 +26,12 @@ fn host_entry_matches(entry: &HostEntry, query: &str) -> bool {
 }
 
 /// 侧栏整体布局：标题栏（含语言切换/设置）+ 搜索框 + 分组列表 + 宽度拖拽。
-pub fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
+pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShell>) -> AnyElement {
     let query = shell.host_query.trim().to_ascii_lowercase();
     let search_focus = shell.host_focus.clone();
     let search_value = shell.host_query.clone();
+    let search_ime = shell.host_ime_marked_text.clone();
+    let input_entity = cx.entity();
     let active_remote_key = match shell.workspace.active_view {
         Some(ActiveView::RemoteTab(idx)) => shell
             .workspace
@@ -192,11 +194,57 @@ pub fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElemen
     }
     list = list.child(active_group).child(bank_group);
 
-    let search_placeholder = if search_value.is_empty() {
-        i18n::text("sidebar.search_placeholder")
+    let search_focused = search_focus.is_focused(window);
+    let mut search_content = div()
+        .min_w_0()
+        .flex_1()
+        .flex()
+        .items_center()
+        .overflow_x_hidden();
+    if search_value.is_empty() {
+        if search_focused {
+            search_content = search_content.child(text_caret(px(16.)));
+        }
+        if search_ime.is_empty() {
+            search_content = search_content.child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .child(SharedString::from(i18n::text("sidebar.search_placeholder"))),
+            );
+        } else {
+            search_content = search_content.child(
+                div()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .underline()
+                    .text_decoration_color(theme::accent())
+                    .child(SharedString::from(search_ime.clone())),
+            );
+        }
     } else {
-        search_value
-    };
+        search_content = search_content.child(
+            div()
+                .min_w_0()
+                .flex_shrink_0()
+                .whitespace_nowrap()
+                .child(SharedString::from(search_value)),
+        );
+        if search_focused {
+            search_content = search_content.child(text_caret(px(16.)));
+        }
+        if !search_ime.is_empty() {
+            search_content = search_content.child(
+                div()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .underline()
+                    .text_decoration_color(theme::accent())
+                    .child(SharedString::from(search_ime)),
+            );
+        }
+    }
     let search = div()
         .id("host-search")
         .mx_2()
@@ -210,6 +258,7 @@ pub fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElemen
         .border_1()
         .border_color(theme::border())
         .rounded(px(theme::RADIUS_SM))
+        .relative()
         .text_xs()
         .text_color(if shell.host_query.is_empty() {
             theme::faint_text()
@@ -224,13 +273,8 @@ pub fn render_sidebar(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElemen
         })
         .on_key_down(cx.listener(AppShell::handle_host_search_key))
         .child(icons::icon(icons::IconName::Search, 14.).text_color(theme::muted_text()))
-        .child(
-            div()
-                .min_w_0()
-                .flex_1()
-                .truncate()
-                .child(SharedString::from(search_placeholder)),
-        );
+        .child(search_content)
+        .child(ime_input_canvas(search_focus, input_entity));
 
     let list_footer =
         if visible_count == 0 && shell.connections.entries().is_empty() && !show_projects {
