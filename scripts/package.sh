@@ -67,6 +67,8 @@ cat > "$CONTENTS/Info.plist" <<PLIST
     <string>12.0</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.developer-tools</string>
+    <key>LSMultipleInstancesProhibited</key>
+    <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSPrincipalClass</key>

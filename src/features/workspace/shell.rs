@@ -1487,6 +1487,7 @@ pub fn open_main_window(cx: &mut App) {
             let shell = AppShell::new(cx);
             let weak = shell.downgrade();
             let notification_weak = shell.downgrade();
+            let window_handle = window.window_handle();
             cx.on_system_notification_response(move |response, cx| {
                 let handled = notification_weak
                     .update(cx, |shell, cx| {
@@ -1494,7 +1495,7 @@ pub fn open_main_window(cx: &mut App) {
                     })
                     .unwrap_or(false);
                 if handled {
-                    cx.activate(true);
+                    let _ = window_handle.update(cx, |_, window, _| window.activate_window());
                 }
             });
             window.on_window_should_close(cx, move |window, cx| {
