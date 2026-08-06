@@ -11,6 +11,14 @@ pub(crate) enum InputCmd {
     Close,
 }
 
+/// Snapshot of the process currently attached to a local terminal's
+/// foreground process group.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TerminalProcessInfo {
+    pub(crate) name: String,
+    pub(crate) cwd: Option<String>,
+}
+
 /// Event emitted by a local or remote terminal backend.
 #[derive(Debug)]
 pub(crate) enum SessionEvent {
@@ -20,6 +28,8 @@ pub(crate) enum SessionEvent {
     Output(Vec<u8>),
     /// Shell integration reported the current working directory.
     Cwd(String),
+    /// Local PTY process information used to build a dynamic tab title.
+    ProcessInfo(TerminalProcessInfo),
     /// Backend setup or relay failed.
     Error(String),
     /// Terminal channel or local PTY closed.

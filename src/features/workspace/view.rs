@@ -16,6 +16,7 @@ use crate::features::sftp::SftpPane;
 use crate::features::terminal::{ConnState, TerminalView};
 use crate::features::workspace::shell::AppShell;
 use crate::shared::i18n;
+use crate::shared::terminal::remote_pane_title;
 use crate::shared::ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crate::shared::ui::{icons, theme};
 
@@ -30,7 +31,6 @@ pub enum Pane {
 pub struct Tab {
     /// 重新打开终端时使用的原始目标（别名或 user@host:port）。
     pub target: String,
-    pub alias: String,
     pub host_key: String,
     pub pane: Pane,
 }
@@ -376,7 +376,13 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                                     .rounded_full()
                                     .bg(tab_badge_color(&state)),
                             )
-                            .child(SharedString::from(alias))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .max_w(px(220.))
+                                    .truncate()
+                                    .child(SharedString::from(alias)),
+                            )
                             .on_click(cx.listener(move |this, _ev, _w, cx| {
                                 this.switch_remote_tab(idx, cx);
                             })),
@@ -424,7 +430,11 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                     .local_sessions
                     .get(&session_id)
                     .map(|session| session.terminal.read(cx).state.clone());
-                let label = format!("ses{}", idx + 1);
+                let fallback = format!("ses{}", idx + 1);
+                let label = match shell.workspace.sessions.local_sessions.get(&session_id) {
+                    Some(session) => session.terminal.read(cx).tab_title(&fallback),
+                    None => fallback,
+                };
                 let mut container = div()
                     .flex()
                     .flex_row()
@@ -517,7 +527,13 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                                     .rounded_full()
                                     .bg(tab_badge_color(&state)),
                             )
-                            .child(SharedString::from(label))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .max_w(px(220.))
+                                    .truncate()
+                                    .child(SharedString::from(label)),
+                            )
                             .on_click(cx.listener(move |this, _ev, _w, cx| {
                                 this.select_local_session(session_id, cx);
                             })),
@@ -604,14 +620,9 @@ fn tab_badge_color(state: &Option<ConnState>) -> gpui::Hsla {
 
 fn tab_label(tab: &Tab, cx: &mut Context<AppShell>) -> String {
     match &tab.pane {
-        Pane::Terminal(terminal) => terminal
-            .read(cx)
-            .title()
-            .filter(|title| !title.trim().is_empty())
-            .map(str::to_owned)
-            .unwrap_or_else(|| tab.alias.clone()),
-        Pane::Sftp(_) => format!("{} ({})", tab.alias, i18n::text("tab.sftp")),
-        Pane::Forward(_) => format!("{} ({})", tab.alias, i18n::text("tab.forward")),
+        Pane::Terminal(terminal) => terminal.read(cx).tab_title("Terminal"),
+        Pane::Sftp(_) => remote_pane_title(&i18n::text("tab.sftp")),
+        Pane::Forward(_) => remote_pane_title(&i18n::text("tab.forward")),
     }
 }
 

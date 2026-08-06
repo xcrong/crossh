@@ -12,7 +12,7 @@ use std::path::Path;
 #[cfg(not(windows))]
 use std::path::PathBuf;
 #[cfg(unix)]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(unix)]
 use std::sync::{Arc, Mutex};
 
@@ -34,6 +34,12 @@ use crate::shared::terminal::{ProtocolEvent, TerminalProtocolParser};
 
 #[cfg(any(windows, test))]
 mod windows;
+
+#[cfg(unix)]
+mod process;
+
+#[cfg(unix)]
+use process::ProcessTracker;
 
 #[cfg(windows)]
 pub use windows::open_terminal;
@@ -124,12 +130,19 @@ async fn run_local_terminal(
     let pty = tty::new(&options, window_size, pty_id)?;
     let reader = AsyncFd::new(pty.file().try_clone()?)?;
     let writer = AsyncFd::new(pty.file().try_clone()?)?;
+    let process_tracker = ProcessTracker::new(&pty);
     let pty = Arc::new(Mutex::new(pty));
 
     let display_cwd = cwd.to_string_lossy().to_string();
     let _ = event_tx.send(SessionEvent::Cwd(display_cwd)).await;
     let _ = event_tx.send(SessionEvent::Connected).await;
 
+    let process_cancel = Arc::new(AtomicBool::new(false));
+    let process_task = process_tracker.map(|tracker| {
+        let cancel = process_cancel.clone();
+        let event_tx = event_tx.clone();
+        tokio::task::spawn_blocking(move || tracker.run(event_tx, cancel))
+    });
     let mut read_task = tokio::spawn(read_local_output(reader, event_tx.clone()));
     let mut write_task = tokio::spawn(drive_local_input(input_rx, writer, pty.clone()));
 
@@ -149,6 +162,11 @@ async fn run_local_terminal(
                 let _ = event_tx.send(SessionEvent::Error(error.to_string())).await;
             }
         }
+    }
+
+    process_cancel.store(true, Ordering::Release);
+    if let Some(process_task) = process_task {
+        let _ = process_task.await;
     }
 
     drop(pty);
@@ -745,6 +763,7 @@ mod tests {
                         }
                         Ok(SessionEvent::Closed) | Err(_) => break,
                         Ok(SessionEvent::Cwd(_)) => {}
+                        Ok(SessionEvent::ProcessInfo(_)) => {}
                     }
                 }
             }
@@ -816,6 +835,7 @@ mod tests {
                                 break;
                             }
                             Ok(SessionEvent::Closed) | Err(_) => break,
+                            Ok(SessionEvent::ProcessInfo(_)) => {}
                         }
                     }
                 }
@@ -873,6 +893,7 @@ mod tests {
                         }
                         Ok(SessionEvent::Closed) | Err(_) => break,
                         Ok(SessionEvent::Cwd(_)) => {}
+                        Ok(SessionEvent::ProcessInfo(_)) => {}
                     }
                 }
             }

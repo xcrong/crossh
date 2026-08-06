@@ -198,7 +198,7 @@ impl AppShell {
             return;
         }
 
-        self.open_terminal_target(entry.alias.clone(), entry.alias, cx);
+        self.open_terminal_target(entry.alias, cx);
     }
 
     fn remote_terminal_to_switch(&self, host_key: &str, cx: &Context<Self>) -> Option<usize> {
@@ -228,7 +228,7 @@ impl AppShell {
     ///
     /// 空认证候选也允许继续：Connection 会在认证失败前向 UI 请求密码，
     /// 这样密码登录主机不会被侧栏提前拦截。
-    fn open_terminal_target(&mut self, target: String, alias: String, cx: &mut Context<Self>) {
+    fn open_terminal_target(&mut self, target: String, cx: &mut Context<Self>) {
         self.settings_open = false;
         let resolved = self.connections.resolve(&target);
         let methods = self.connections.auth_methods(&resolved);
@@ -251,7 +251,6 @@ impl AppShell {
             .push(subscription);
         self.workspace.sessions.remote_tabs.push(Tab {
             target,
-            alias,
             host_key,
             pane: Pane::Terminal(terminal),
         });
@@ -276,7 +275,6 @@ impl AppShell {
         let pane = SftpPane::from_bridge(cmd_tx, event_rx, cx);
         self.workspace.sessions.remote_tabs.push(Tab {
             target: entry.alias.clone(),
-            alias: entry.alias,
             host_key,
             pane: Pane::Sftp(pane),
         });
@@ -299,7 +297,6 @@ impl AppShell {
         let pane = ForwardPane::new(conn, cx, &resolved);
         self.workspace.sessions.remote_tabs.push(Tab {
             target: entry.alias.clone(),
-            alias: entry.alias,
             host_key,
             pane: Pane::Forward(pane),
         });
@@ -604,7 +601,7 @@ impl AppShell {
             Some(ActiveView::RemoteTab(idx)) => {
                 if let Some(tab) = self.workspace.sessions.remote_tabs.get(idx) {
                     let target = tab.target.clone();
-                    self.open_terminal_target(target.clone(), target, cx);
+                    self.open_terminal_target(target, cx);
                     return;
                 }
             }
@@ -652,7 +649,7 @@ impl AppShell {
         if let Some(idx) = matching_idx {
             self.open_host(idx, cx);
         } else {
-            self.open_terminal_target(query.clone(), query, cx);
+            self.open_terminal_target(query, cx);
         }
     }
 

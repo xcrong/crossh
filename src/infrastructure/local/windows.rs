@@ -70,6 +70,8 @@ async fn run_local_terminal(
 
     // PowerShell reports Cwd and command completion through its prompt hook.
     // cmd.exe has no equivalent prompt callback, so it remains output-only.
+    // ConPTY does not expose a Unix-style foreground process group here; tab
+    // titles therefore use the cwd + shell fallback on Windows.
     let display_cwd = cwd.to_string_lossy().to_string();
     let _ = event_tx.send(SessionEvent::Cwd(display_cwd)).await;
     let _ = event_tx.send(SessionEvent::Connected).await;
@@ -284,21 +286,26 @@ async fn read_output(pty: Arc<Mutex<tty::Pty>>, event_tx: Sender<SessionEvent>) 
 
 #[cfg(windows)]
 async fn drive_input(input_rx: Receiver<InputCmd>, pty: Arc<Mutex<tty::Pty>>) -> io::Result<()> {
-    while let Ok(command) = input_rx.recv().await {
-        match command {
-            InputCmd::Write(bytes) => write_all(&pty, &bytes).await?,
-            InputCmd::Resize { cols, rows } => {
-                let mut pty = pty
-                    .lock()
-                    .map_err(|_| io::Error::other("local ConPTY state lock was poisoned"))?;
-                pty.on_resize(WindowSize {
-                    num_lines: rows,
-                    num_cols: cols,
-                    cell_width: 8,
-                    cell_height: 18,
-                });
+    loop {
+        tokio::select! {
+            command = input_rx.recv() => {
+                let Ok(command) = command else { break };
+                match command {
+                    InputCmd::Write(bytes) => write_all(&pty, &bytes).await?,
+                    InputCmd::Resize { cols, rows } => {
+                        let mut pty = pty
+                            .lock()
+                            .map_err(|_| io::Error::other("local ConPTY state lock was poisoned"))?;
+                        pty.on_resize(WindowSize {
+                            num_lines: rows,
+                            num_cols: cols,
+                            cell_width: 8,
+                            cell_height: 18,
+                        });
+                    }
+                    InputCmd::Close => break,
+                }
             }
-            InputCmd::Close => break,
         }
     }
     Ok(())
@@ -403,6 +410,7 @@ mod tests {
                             break;
                         }
                         Ok(SessionEvent::Cwd(_)) => {}
+                        Ok(SessionEvent::ProcessInfo(_)) => {}
                     }
                 }
             }

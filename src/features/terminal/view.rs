@@ -41,7 +41,9 @@ use vte::ansi::{Color, CursorShape, NamedColor, Processor, Rgb};
 use crate::shared::i18n::{self, AppSettings};
 use crate::shared::terminal::{
     ImageDimension, ImagePayload, InputCmd, KittyGraphicsPayload, NotificationOccasion,
-    ProtocolEvent, SessionEvent, ShellEvent, TerminalProtocolParser,
+    ProtocolEvent, SessionEvent, ShellEvent, TerminalProcessInfo, TerminalProtocolParser,
+    local_terminal_tab_title, local_terminal_title, remote_terminal_title, strip_shell_host_prefix,
+    truncate_path_title,
 };
 use crate::shared::ui::context_menu::{
     ContextMenuState, MenuEntry, MenuItem, TerminalMenuAction, render_context_menu,
@@ -77,6 +79,23 @@ const MAX_DECODED_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_IMAGE_DIMENSION: usize = 16 * 1024;
 const KITTY_BACKGROUND_Z_INDEX: i32 = -1_073_741_824;
 const KITTY_PLACEHOLDER_CHAR: char = '\u{10eeee}';
+
+fn default_local_shell_name() -> String {
+    #[cfg(windows)]
+    {
+        std::env::var_os("ComSpec")
+            .or_else(|| std::env::var_os("SHELL"))
+            .map(|shell| shell.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "powershell.exe".to_owned())
+    }
+
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("SHELL")
+            .map(|shell| shell.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "sh".to_owned())
+    }
+}
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
 
@@ -497,6 +516,10 @@ pub struct TerminalView {
     line_timestamps: TerminalTimestampState,
     /// 由 OSC 标题序列设置的窗口标题。
     title: Option<String>,
+    /// 本地 PTY 前台进程快照，用于生成动态 tab 标题。
+    process_info: Option<TerminalProcessInfo>,
+    /// 本地 PTY 的 shell 路径，进程快照暂不可用时作为 fallback。
+    local_shell: Option<String>,
     /// 当前打开的右键上下文菜单。
     context_menu: Option<ContextMenuState<TerminalMenuAction>>,
     /// canvas 在窗口坐标中的 bounds（右键菜单定位/外点关闭用）。
@@ -617,6 +640,8 @@ impl TerminalView {
             detected_urls: Vec::new(),
             line_timestamps: TerminalTimestampState::default(),
             title: None,
+            process_info: None,
+            local_shell: is_local.then(default_local_shell_name),
             context_menu: None,
             anchor_bounds: Rc::new(StdCell::new(None)),
             last_progress: Instant::now(),
@@ -756,6 +781,12 @@ impl TerminalView {
                 if self.cwd.as_deref() != Some(cwd.as_str()) {
                     self.cwd = Some(cwd);
                     cx.emit(TerminalEvent::CwdChanged);
+                }
+            }
+            SessionEvent::ProcessInfo(info) => {
+                if self.process_info.as_ref() != Some(&info) {
+                    self.process_info = Some(info);
+                    cx.emit(TerminalEvent::TitleChanged);
                 }
             }
             SessionEvent::Error(error) => {
@@ -2122,6 +2153,34 @@ impl TerminalView {
 
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
+    }
+
+    /// Return the compact tab title while keeping the raw OSC title available
+    /// through title() for callers that need the unmodified value.
+    pub fn tab_title(&self, fallback: &str) -> String {
+        if let Some(title) = self.title().filter(|title| !title.trim().is_empty()) {
+            let title = strip_shell_host_prefix(title);
+            return if self.is_local {
+                local_terminal_tab_title(title, self.cwd.as_deref())
+            } else {
+                truncate_path_title(title)
+            };
+        }
+
+        if self.is_local {
+            let title = local_terminal_title(
+                self.cwd.as_deref(),
+                self.process_info.as_ref(),
+                self.local_shell.as_deref(),
+            );
+            return if title != "Terminal" {
+                title
+            } else {
+                fallback.to_owned()
+            };
+        }
+
+        remote_terminal_title(None)
     }
 
     pub(crate) fn is_command_running(&self) -> bool {

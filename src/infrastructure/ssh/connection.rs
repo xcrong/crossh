@@ -965,6 +965,7 @@ mod tests {
                             if connected && sample.len() > 20 { break; }
                         }
                         Ok(SessionEvent::Cwd(_)) => {}
+                        Ok(SessionEvent::ProcessInfo(_)) => {}
                         Ok(SessionEvent::Error(e)) => {
                             eprintln!("[test] error: {e}");
                             break;
@@ -1049,6 +1050,7 @@ mod tests {
                             }
                         }
                         Ok(SessionEvent::Cwd(_)) => {}
+                        Ok(SessionEvent::ProcessInfo(_)) => {}
                         Ok(SessionEvent::Error(e)) => {
                             eprintln!("[test] err: {e}");
                             break;
