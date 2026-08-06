@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, AppContext, Bounds, Context, Entity, FontWeight, InteractiveElement, IntoElement,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, SharedString,
-    StatefulInteractiveElement, Styled, canvas, div, hsla, px, rgb,
+    AnyElement, AppContext, Bounds, ClickEvent, Context, Entity, FontWeight, InteractiveElement,
+    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
+    SharedString, StatefulInteractiveElement, Styled, canvas, div, hsla, px, rgb,
 };
 
 use crate::features::commands::{
@@ -451,13 +451,15 @@ fn render_quick_command_row(
         .rounded(px(theme::RADIUS_SM))
         .cursor_pointer()
         .hover(|style| style.bg(theme::raised()))
-        .on_click(cx.listener(move |this, _ev, _window, cx| {
-            this.run_quick_command(
-                scope_for_click.clone(),
-                command_for_click.clone(),
-                false,
-                cx,
-            );
+        .on_click(cx.listener(move |this, ev: &ClickEvent, _window, cx| {
+            if ev.click_count() == 2 {
+                this.run_quick_command(
+                    scope_for_click.clone(),
+                    command_for_click.clone(),
+                    false,
+                    cx,
+                );
+            }
         }))
         .on_mouse_down(MouseButton::Right, {
             let menu_scope = scope.to_string();
@@ -516,6 +518,17 @@ fn render_quick_command_row(
                         disabled: false,
                         danger: true,
                         action: ShellMenuAction::DeleteQuickCommand {
+                            scope: menu_scope.clone(),
+                            command: menu_command.clone(),
+                        },
+                    }),
+                    MenuEntry::Item(MenuItem {
+                        id: "quick-ignore".into(),
+                        label: i18n::text("quick_commands.ignore"),
+                        shortcut_hint: None,
+                        disabled: false,
+                        danger: true,
+                        action: ShellMenuAction::IgnoreQuickCommand {
                             scope: menu_scope.clone(),
                             command: menu_command.clone(),
                         },

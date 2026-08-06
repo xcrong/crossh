@@ -65,6 +65,8 @@ pub enum ShellMenuAction {
     EditQuickCommand { scope: String, command: String },
     /// Remove a command from the aggregate history.
     DeleteQuickCommand { scope: String, command: String },
+    /// Exclude a command from cwd-bound history.
+    IgnoreQuickCommand { scope: String, command: String },
     /// Stop one background command task.
     StopBackgroundTask(u64),
 }

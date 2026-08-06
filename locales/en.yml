@@ -194,6 +194,7 @@ quick_commands:
   command_placeholder: Enter a command
   save: Save
   delete: Remove command
+  ignore: Exclude from history
   background_tasks: Background tasks
   running: Running
   stopping: Stopping

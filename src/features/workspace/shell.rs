@@ -67,7 +67,23 @@ struct ActiveCommandContext {
     terminal: Entity<TerminalView>,
     scope: String,
     cwd: String,
+    owner: String,
     connection: Option<Entity<Connection>>,
+}
+
+fn local_background_owner(session_id: LocalSessionId) -> String {
+    format!("local-session:{session_id}")
+}
+
+fn remote_background_owner(terminal_id: EntityId) -> String {
+    format!("remote-terminal:{terminal_id}")
+}
+
+fn remote_tab_background_owner(tab: &Tab) -> Option<String> {
+    match &tab.pane {
+        Pane::Terminal(terminal) => Some(remote_background_owner(terminal.entity_id())),
+        Pane::Sftp(_) | Pane::Forward(_) => None,
+    }
 }
 
 #[derive(Default)]
@@ -470,6 +486,8 @@ impl AppShell {
         session_id: LocalSessionId,
         cx: &mut Context<Self>,
     ) {
+        let owner = local_background_owner(session_id);
+        self.stop_background_tasks_for_owner(&owner, cx);
         let Some(cwd) = self
             .workspace
             .sessions
@@ -542,6 +560,10 @@ impl AppShell {
     pub(crate) fn close_remote_tab(&mut self, idx: usize, cx: &mut Context<Self>) {
         if idx >= self.workspace.sessions.remote_tabs.len() {
             return;
+        }
+        if let Some(owner) = remote_tab_background_owner(&self.workspace.sessions.remote_tabs[idx])
+        {
+            self.stop_background_tasks_for_owner(&owner, cx);
         }
         self.workspace.sessions.remote_tabs.remove(idx);
         // 移除 Tab → Entity<TerminalView> 释放 → input_tx 断 → relay 结束 →
@@ -688,6 +710,7 @@ impl AppShell {
                     terminal,
                     scope: local_scope(&cwd),
                     cwd: cwd.to_string_lossy().to_string(),
+                    owner: local_background_owner(session_id),
                     connection: None,
                 })
             }
@@ -697,11 +720,13 @@ impl AppShell {
                     return None;
                 };
                 let terminal = terminal.clone();
+                let owner = remote_background_owner(terminal.entity_id());
                 let cwd = terminal.read(cx).cwd.clone()?;
                 Some(ActiveCommandContext {
                     terminal,
                     scope: remote_scope(&tab.host_key, &cwd),
                     cwd,
+                    owner,
                     connection: Some(tab.connection.clone()),
                 })
             }
@@ -722,11 +747,12 @@ impl AppShell {
             return;
         }
         if background {
+            let owner = context.owner.clone();
             if let Some(connection) = context.connection {
-                self.start_remote_background(connection, scope, context.cwd, command, cx);
+                self.start_remote_background(connection, owner, scope, context.cwd, command, cx);
             } else {
                 let cwd = normalize_local_cwd(PathBuf::from(context.cwd));
-                let (id, event_rx) = self.background_tasks.start(scope, cwd, command);
+                let (id, event_rx) = self.background_tasks.start(scope, cwd, command, owner);
                 let task = cx.spawn(async move |weak, cx| {
                     let Ok(event) = event_rx.recv().await else {
                         return;
@@ -750,6 +776,7 @@ impl AppShell {
     fn start_remote_background(
         &mut self,
         connection: Entity<Connection>,
+        owner: String,
         scope: String,
         cwd: String,
         command: String,
@@ -760,7 +787,7 @@ impl AppShell {
         });
         let task_id = self
             .background_tasks
-            .start_remote(scope, PathBuf::from(cwd), command);
+            .start_remote(scope, PathBuf::from(cwd), command, owner);
         self.remote_background_controls
             .insert(task_id, (connection, remote_id));
         let expected_remote_id = remote_id;
@@ -811,6 +838,13 @@ impl AppShell {
         }
         self.background_tasks.mark_stopping(id);
         cx.notify();
+    }
+
+    fn stop_background_tasks_for_owner(&mut self, owner: &str, cx: &mut Context<Self>) {
+        let ids = self.background_tasks.active_for_owner(owner);
+        for id in ids {
+            self.stop_background_task(id, cx);
+        }
     }
 
     pub(crate) fn open_quick_command_editor(
@@ -1226,6 +1260,10 @@ impl AppShell {
                 self.command_history.remove(&scope, &command);
                 cx.notify();
             }
+            ShellMenuAction::IgnoreQuickCommand { scope, command } => {
+                self.command_history.ignore(&scope, &command);
+                cx.notify();
+            }
             ShellMenuAction::StopBackgroundTask(id) => self.stop_background_task(id, cx),
         }
         self.close_context_menu(cx);
@@ -1236,6 +1274,18 @@ impl AppShell {
         if keep >= self.workspace.sessions.remote_tabs.len() {
             return;
         }
+        let owners = self
+            .workspace
+            .sessions
+            .remote_tabs
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != keep)
+            .filter_map(|(_, tab)| remote_tab_background_owner(tab))
+            .collect::<Vec<_>>();
+        for owner in owners {
+            self.stop_background_tasks_for_owner(&owner, cx);
+        }
         self.workspace.sessions.remote_tabs =
             vec![self.workspace.sessions.remote_tabs.swap_remove(keep)];
         self.workspace.active_view = Some(ActiveView::RemoteTab(0));
@@ -1245,6 +1295,16 @@ impl AppShell {
     fn close_all_remote_tabs(&mut self, cx: &mut Context<Self>) {
         if self.workspace.sessions.remote_tabs.is_empty() {
             return;
+        }
+        let owners = self
+            .workspace
+            .sessions
+            .remote_tabs
+            .iter()
+            .filter_map(remote_tab_background_owner)
+            .collect::<Vec<_>>();
+        for owner in owners {
+            self.stop_background_tasks_for_owner(&owner, cx);
         }
         self.workspace.sessions.remote_tabs.clear();
         self.workspace.active_view = self.first_local_view();

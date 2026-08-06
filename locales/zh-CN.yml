@@ -194,6 +194,7 @@ quick_commands:
   command_placeholder: 输入命令
   save: 保存
   delete: 移除命令
+  ignore: 从历史记录中排除
   background_tasks: 后台任务
   running: 运行中
   stopping: 正在停止

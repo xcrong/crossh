@@ -33,6 +33,8 @@ struct HistoryFile {
     version: u32,
     #[serde(default)]
     scopes: BTreeMap<String, Vec<CommandRecord>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    ignored_commands: BTreeMap<String, Vec<String>>,
 }
 
 fn history_file_version() -> u32 {
@@ -40,11 +42,13 @@ fn history_file_version() -> u32 {
 }
 
 /// Cache-backed aggregate statistics. The config file is only a top-30
-/// projection for the commands currently visible in the panel.
+/// projection for the commands currently visible in the panel, plus the
+/// cwd-bound commands excluded from future history.
 pub struct CommandHistory {
     cache_path: PathBuf,
     config_path: Option<PathBuf>,
     scopes: BTreeMap<String, Vec<CommandRecord>>,
+    ignored_commands: BTreeMap<String, Vec<String>>,
 }
 
 impl CommandHistory {
@@ -61,33 +65,53 @@ impl CommandHistory {
     }
 
     fn from_paths(cache_path: PathBuf, config_path: Option<PathBuf>) -> Self {
-        let scopes = read_scopes(&cache_path)
-            .or_else(|| config_path.as_deref().and_then(read_scopes))
+        let cache_file = read_history_file(&cache_path);
+        let config_file = config_path.as_deref().and_then(read_history_file);
+        let scopes = cache_file
+            .as_ref()
+            .map(|file| file.scopes.clone())
+            .or_else(|| config_file.as_ref().map(|file| file.scopes.clone()))
+            .unwrap_or_default();
+        let ignored_commands = config_file
+            .as_ref()
+            .map(|file| file.ignored_commands.clone())
             .unwrap_or_default();
         let mut history = Self {
             cache_path,
             config_path,
             scopes,
+            ignored_commands,
         };
         normalize_scopes(&mut history.scopes);
+        normalize_ignored_commands(&mut history.ignored_commands);
+        remove_ignored_records(&mut history.scopes, &history.ignored_commands);
         history
     }
 
     pub fn top(&self, scope: &str) -> Vec<CommandRecord> {
         let mut records = self.scopes.get(scope).cloned().unwrap_or_default();
+        records.retain(|record| !self.is_ignored(scope, &record.command));
         sort_records(&mut records);
         records.truncate(DISPLAY_LIMIT);
         records
     }
 
     pub fn total(&self, scope: &str) -> usize {
-        self.scopes.get(scope).map_or(0, Vec::len)
+        self.scopes.get(scope).map_or(0, |records| {
+            records
+                .iter()
+                .filter(|record| !self.is_ignored(scope, &record.command))
+                .count()
+        })
     }
 
     pub fn record(&mut self, scope: &str, command: &str) -> bool {
         let Some(command) = normalize_command(command) else {
             return false;
         };
+        if self.is_ignored(scope, &command) {
+            return false;
+        }
         let records = self.scopes.entry(scope.to_string()).or_default();
         let now = unix_timestamp();
         if let Some(record) = records.iter_mut().find(|record| record.command == command) {
@@ -106,10 +130,48 @@ impl CommandHistory {
         true
     }
 
+    pub fn ignore(&mut self, scope: &str, command: &str) -> bool {
+        let Some(command) = normalize_command(command) else {
+            return false;
+        };
+        let added = {
+            let ignored = self.ignored_commands.entry(scope.to_string()).or_default();
+            if ignored.iter().any(|ignored| ignored == &command) {
+                false
+            } else {
+                ignored.push(command.clone());
+                true
+            }
+        };
+        let removed = if let Some(records) = self.scopes.get_mut(scope) {
+            let before = records.len();
+            records.retain(|record| record.command != command);
+            before != records.len()
+        } else {
+            false
+        };
+        if self.scopes.get(scope).is_some_and(Vec::is_empty) {
+            self.scopes.remove(scope);
+        }
+        if added || removed {
+            self.persist();
+        }
+        added || removed
+    }
+
+    fn is_ignored(&self, scope: &str, command: &str) -> bool {
+        self.ignored_commands
+            .get(scope)
+            .is_some_and(|commands| commands.iter().any(|ignored| ignored == command))
+    }
+
     pub fn edit(&mut self, scope: &str, original: &str, replacement: &str) -> bool {
         let Some(replacement) = normalize_command(replacement) else {
             return self.remove(scope, original);
         };
+        if self.is_ignored(scope, &replacement) {
+            return self.remove(scope, original);
+        }
         let Some(records) = self.scopes.get_mut(scope) else {
             return false;
         };
@@ -160,6 +222,7 @@ impl CommandHistory {
         let cache_file = HistoryFile {
             version: history_file_version(),
             scopes: self.scopes.clone(),
+            ignored_commands: BTreeMap::new(),
         };
         if let Err(error) = write_history_file(&self.cache_path, &cache_file) {
             log::warn!("failed to persist command history: {error}");
@@ -168,6 +231,7 @@ impl CommandHistory {
             return;
         };
         let mut config_scopes = self.scopes.clone();
+        remove_ignored_records(&mut config_scopes, &self.ignored_commands);
         for records in config_scopes.values_mut() {
             sort_records(records);
             records.truncate(DISPLAY_LIMIT);
@@ -175,6 +239,7 @@ impl CommandHistory {
         let config_file = HistoryFile {
             version: history_file_version(),
             scopes: config_scopes,
+            ignored_commands: self.ignored_commands.clone(),
         };
         if let Err(error) = write_history_file(config_path, &config_file) {
             log::warn!("failed to persist quick command configuration: {error}");
@@ -182,10 +247,10 @@ impl CommandHistory {
     }
 }
 
-fn read_scopes(path: &Path) -> Option<BTreeMap<String, Vec<CommandRecord>>> {
+fn read_history_file(path: &Path) -> Option<HistoryFile> {
     match fs::read_to_string(path) {
         Ok(contents) => match toml::from_str::<HistoryFile>(&contents) {
-            Ok(file) => Some(file.scopes),
+            Ok(file) => Some(file),
             Err(error) => {
                 log::warn!("failed to parse command history: {error}");
                 None
@@ -199,11 +264,46 @@ fn read_scopes(path: &Path) -> Option<BTreeMap<String, Vec<CommandRecord>>> {
     }
 }
 
+#[cfg(test)]
+fn read_scopes(path: &Path) -> Option<BTreeMap<String, Vec<CommandRecord>>> {
+    read_history_file(path).map(|file| file.scopes)
+}
+
 fn normalize_scopes(scopes: &mut BTreeMap<String, Vec<CommandRecord>>) {
     for records in scopes.values_mut() {
         records.retain(|record| normalize_command(&record.command).is_some());
         sort_records(records);
         records.truncate(MAX_HISTORY_ENTRIES);
+    }
+    scopes.retain(|_, records| !records.is_empty());
+}
+
+fn normalize_ignored_commands(ignored: &mut BTreeMap<String, Vec<String>>) {
+    for commands in ignored.values_mut() {
+        let mut normalized = commands
+            .drain(..)
+            .filter_map(|command| normalize_command(&command))
+            .collect::<Vec<_>>();
+        normalized.sort();
+        normalized.dedup();
+        *commands = normalized;
+    }
+    ignored.retain(|_, commands| !commands.is_empty());
+}
+
+fn remove_ignored_records(
+    scopes: &mut BTreeMap<String, Vec<CommandRecord>>,
+    ignored: &BTreeMap<String, Vec<String>>,
+) {
+    for (scope, records) in scopes.iter_mut() {
+        let Some(ignored_commands) = ignored.get(scope) else {
+            continue;
+        };
+        records.retain(|record| {
+            !ignored_commands
+                .iter()
+                .any(|ignored| ignored == &record.command)
+        });
     }
     scopes.retain(|_, records| !records.is_empty());
 }
@@ -292,12 +392,11 @@ pub enum BackgroundTaskStatus {
 #[derive(Clone, Debug)]
 pub struct BackgroundTask {
     pub id: u64,
+    pub owner: String,
     pub scope: String,
     pub command: String,
     pub cwd: PathBuf,
     pub status: BackgroundTaskStatus,
-    pub output: String,
-    pub exit_code: Option<i32>,
 }
 
 #[derive(Debug)]
@@ -345,8 +444,9 @@ impl BackgroundTaskManager {
         scope: String,
         cwd: PathBuf,
         command: String,
+        owner: String,
     ) -> (u64, Receiver<BackgroundTaskEvent>) {
-        let id = self.insert_task(scope, cwd.clone(), command.clone());
+        let id = self.insert_task(scope, cwd.clone(), command.clone(), owner);
         let control = Arc::new(BackgroundControl {
             stop_requested: AtomicBool::new(false),
             pid: AtomicU32::new(0),
@@ -360,23 +460,28 @@ impl BackgroundTaskManager {
     /// Reserve a task id and display entry for a command executed by another
     /// process, such as an SSH channel. Its completion event is applied by the
     /// owner of that process.
-    pub fn start_remote(&mut self, scope: String, cwd: PathBuf, command: String) -> u64 {
-        self.insert_task(scope, cwd, command)
+    pub fn start_remote(
+        &mut self,
+        scope: String,
+        cwd: PathBuf,
+        command: String,
+        owner: String,
+    ) -> u64 {
+        self.insert_task(scope, cwd, command, owner)
     }
 
-    fn insert_task(&mut self, scope: String, cwd: PathBuf, command: String) -> u64 {
+    fn insert_task(&mut self, scope: String, cwd: PathBuf, command: String, owner: String) -> u64 {
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
         self.tasks.insert(
             id,
             BackgroundTask {
                 id,
+                owner,
                 scope,
                 command,
                 cwd,
                 status: BackgroundTaskStatus::Running,
-                output: String::new(),
-                exit_code: None,
             },
         );
         id
@@ -394,12 +499,17 @@ impl BackgroundTaskManager {
     }
 
     pub fn apply_event(&mut self, event: BackgroundTaskEvent) {
-        if let Some(task) = self.tasks.get_mut(&event.id) {
-            task.status = event.status;
-            task.output = event.output;
-            task.exit_code = event.exit_code;
-        }
-        self.controls.remove(&event.id);
+        // Completed tasks leave the panel immediately; consume the result
+        // payload without retaining it in the task list.
+        let BackgroundTaskEvent {
+            id,
+            status: _,
+            output,
+            exit_code,
+        } = event;
+        drop((output, exit_code));
+        self.controls.remove(&id);
+        self.tasks.remove(&id);
     }
 
     pub fn running_count(&self) -> usize {
@@ -430,6 +540,20 @@ impl BackgroundTaskManager {
             .filter(|task| {
                 task.scope == scope
                     && task.command == command
+                    && matches!(
+                        task.status,
+                        BackgroundTaskStatus::Running | BackgroundTaskStatus::Stopping
+                    )
+            })
+            .map(|task| task.id)
+            .collect()
+    }
+
+    pub fn active_for_owner(&self, owner: &str) -> Vec<u64> {
+        self.tasks
+            .values()
+            .filter(|task| {
+                task.owner == owner
                     && matches!(
                         task.status,
                         BackgroundTaskStatus::Running | BackgroundTaskStatus::Stopping
@@ -683,6 +807,59 @@ mod tests {
     }
 
     #[test]
+    fn ignored_commands_are_scoped_filtered_and_persisted() {
+        let cache_path = std::env::temp_dir().join(format!(
+            "crossh-command-history-ignore-cache-{}.toml",
+            std::process::id()
+        ));
+        let config_path = std::env::temp_dir().join(format!(
+            "crossh-command-history-ignore-config-{}.toml",
+            std::process::id()
+        ));
+        let scope = "local:/tmp/project";
+        let other_scope = "local:/tmp/other";
+        let mut history = CommandHistory::from_paths(cache_path.clone(), Some(config_path.clone()));
+        history.record(scope, "ls");
+        history.record(scope, "git status");
+
+        assert!(history.ignore(scope, "ls"));
+        assert_eq!(history.total(scope), 1);
+        assert_eq!(history.top(scope)[0].command, "git status");
+        assert!(!history.record(scope, "ls"));
+        history.record(scope, "git diff");
+        assert!(history.edit(scope, "git diff", "ls"));
+        assert_eq!(history.total(scope), 1);
+        assert!(history.record(other_scope, "ls"));
+
+        let mut restored =
+            CommandHistory::from_paths(cache_path.clone(), Some(config_path.clone()));
+        assert_eq!(restored.total(scope), 1);
+        assert_eq!(restored.top(scope)[0].command, "git status");
+        assert!(!restored.record(scope, "ls"));
+        assert!(
+            restored
+                .top(other_scope)
+                .iter()
+                .any(|record| record.command == "ls")
+        );
+        assert!(
+            read_history_file(&cache_path)
+                .unwrap()
+                .ignored_commands
+                .is_empty()
+        );
+        let ignored = read_history_file(&config_path)
+            .unwrap()
+            .ignored_commands
+            .remove(scope)
+            .unwrap();
+        assert_eq!(ignored, vec!["ls"]);
+
+        let _ = fs::remove_file(cache_path);
+        let _ = fs::remove_file(config_path);
+    }
+
+    #[test]
     fn scope_keys_keep_directory_identity() {
         assert_eq!(local_scope(Path::new("/tmp/project")), "local:/tmp/project");
     }
@@ -702,12 +879,15 @@ mod tests {
     #[test]
     fn remote_background_manager_tracks_completion() {
         let mut manager = BackgroundTaskManager::default();
+        let owner = "remote-terminal:1";
         let id = manager.start_remote(
             "remote:example.com:22:/srv/app".into(),
             PathBuf::from("/srv/app"),
             "deploy".into(),
+            owner.into(),
         );
         assert_eq!(manager.running_count(), 1);
+        assert_eq!(manager.active_for_owner(owner), vec![id]);
         assert_eq!(
             manager
                 .tasks_for_scope("remote:example.com:22:/srv/app")
@@ -715,14 +895,51 @@ mod tests {
             1
         );
 
+        manager.mark_stopping(id);
+        assert_eq!(manager.tasks[&id].status, BackgroundTaskStatus::Stopping);
         manager.apply_event(BackgroundTaskEvent {
             id,
-            status: BackgroundTaskStatus::Succeeded,
-            output: "ok".into(),
-            exit_code: Some(0),
+            status: BackgroundTaskStatus::Terminated,
+            output: "terminated".into(),
+            exit_code: None,
         });
         assert_eq!(manager.running_count(), 0);
-        assert_eq!(manager.tasks[&id].output, "ok");
+        assert!(
+            manager
+                .tasks_for_scope("remote:example.com:22:/srv/app")
+                .is_empty()
+        );
+        assert!(!manager.tasks.contains_key(&id));
+        assert!(manager.active_for_owner(owner).is_empty());
+    }
+
+    #[test]
+    fn background_manager_keeps_terminal_owners_isolated() {
+        let mut manager = BackgroundTaskManager::default();
+        let first = manager.start_remote(
+            "local:/tmp/project".into(),
+            PathBuf::from("/tmp/project"),
+            "make".into(),
+            "local-session:1".into(),
+        );
+        let second = manager.start_remote(
+            "local:/tmp/project".into(),
+            PathBuf::from("/tmp/project"),
+            "make".into(),
+            "local-session:2".into(),
+        );
+
+        assert_eq!(manager.active_for_owner("local-session:1"), vec![first]);
+        assert_eq!(manager.active_for_owner("local-session:2"), vec![second]);
+
+        manager.apply_event(BackgroundTaskEvent {
+            id: first,
+            status: BackgroundTaskStatus::Terminated,
+            output: String::new(),
+            exit_code: None,
+        });
+        assert!(manager.active_for_owner("local-session:1").is_empty());
+        assert_eq!(manager.active_for_owner("local-session:2"), vec![second]);
     }
 
     #[cfg(unix)]
@@ -731,7 +948,12 @@ mod tests {
         let cwd = std::env::current_dir().expect("test cwd");
         let scope = local_scope(&cwd);
         let mut manager = BackgroundTaskManager::default();
-        let (id, events) = manager.start(scope.clone(), cwd, "printf crossh-output".into());
+        let (id, events) = manager.start(
+            scope.clone(),
+            cwd,
+            "printf crossh-output".into(),
+            "local-session:1".into(),
+        );
 
         let event = events.recv_blocking().expect("background task event");
         assert_eq!(event.id, id);
@@ -739,9 +961,7 @@ mod tests {
         assert_eq!(event.output, "crossh-output");
 
         manager.apply_event(event);
-        let task = manager.tasks.get(&id).expect("background task");
-        assert_eq!(task.scope, scope);
-        assert_eq!(task.status, BackgroundTaskStatus::Succeeded);
-        assert_eq!(task.output, "crossh-output");
+        assert!(manager.tasks_for_scope(&scope).is_empty());
+        assert!(!manager.tasks.contains_key(&id));
     }
 }
