@@ -268,9 +268,6 @@ pub struct AppShell {
     /// 当前打开的右键上下文菜单（None = 未打开）。
     pub(crate) context_menu: Option<ContextMenuState<ShellMenuAction>>,
     pub(crate) settings: AppSettings,
-    pub(crate) settings_open: bool,
-    pub(crate) settings_section: crate::features::settings::SettingsSection,
-    pub(crate) settings_scroll: gpui::ScrollHandle,
     /// 侧栏宽度与拖动状态；只影响布局，不改变导航状态。
     pub(crate) sidebar_width: Rc<Cell<f32>>,
     pub(crate) sidebar_dragging: Rc<Cell<bool>>,
@@ -337,9 +334,6 @@ impl AppShell {
             language_menu_open: false,
             context_menu: None,
             settings,
-            settings_open: false,
-            settings_section: crate::features::settings::SettingsSection::General,
-            settings_scroll: gpui::ScrollHandle::new(),
             sidebar_width: Rc::new(Cell::new(theme::SIDEBAR_WIDTH)),
             sidebar_dragging: Rc::new(Cell::new(false)),
             sidebar_scroll: gpui::ScrollHandle::new(),
@@ -402,7 +396,6 @@ impl AppShell {
     /// 空认证候选也允许继续：Connection 会在认证失败前向 UI 请求密码，
     /// 这样密码登录主机不会被侧栏提前拦截。
     fn open_terminal_target(&mut self, target: String, cx: &mut Context<Self>) {
-        self.settings_open = false;
         let resolved = self.connections.resolve(&target);
         let methods = self.connections.auth_methods(&resolved);
         let host_key = ConnectionManager::pool_key(&resolved);
@@ -445,7 +438,6 @@ impl AppShell {
     }
 
     pub(crate) fn open_sftp(&mut self, idx: usize, cx: &mut Context<Self>) {
-        self.settings_open = false;
         let entry = match self.connections.entries().get(idx) {
             Some(e) => e.clone(),
             None => return,
@@ -469,7 +461,6 @@ impl AppShell {
     }
 
     pub(crate) fn open_forward(&mut self, idx: usize, cx: &mut Context<Self>) {
-        self.settings_open = false;
         let entry = match self.connections.entries().get(idx) {
             Some(e) => e.clone(),
             None => return,
@@ -499,7 +490,6 @@ impl AppShell {
         cwd: PathBuf,
         cx: &mut Context<Self>,
     ) {
-        self.settings_open = false;
         let project_dir = normalize_local_cwd(project_dir);
         let cwd = normalize_local_cwd(cwd);
         self.remember_local_dir(&project_dir, cx);
@@ -585,7 +575,6 @@ impl AppShell {
         session_id: LocalSessionId,
         cx: &mut Context<Self>,
     ) {
-        self.settings_open = false;
         let cwd = self
             .workspace
             .sessions
@@ -672,7 +661,6 @@ impl AppShell {
         if idx >= self.workspace.sessions.remote_tabs.len() {
             return;
         }
-        self.settings_open = false;
         self.workspace.active_view = Some(ActiveView::RemoteTab(idx));
         self.refocus_active_terminal(cx);
         cx.notify();
@@ -1418,7 +1406,6 @@ impl AppShell {
 
     pub(crate) fn toggle_language_menu(&mut self, cx: &mut Context<Self>) {
         self.language_menu_open = !self.language_menu_open;
-        self.settings_open = false;
         cx.notify();
     }
 
@@ -1576,24 +1563,8 @@ impl AppShell {
     }
 
     pub(crate) fn toggle_settings(&mut self, cx: &mut Context<Self>) {
-        self.settings_open = !self.settings_open;
         self.language_menu_open = false;
-        cx.notify();
-    }
-
-    pub(crate) fn close_settings(&mut self, cx: &mut Context<Self>) {
-        self.settings_open = false;
-        cx.notify();
-    }
-
-    pub(crate) fn select_settings_section(
-        &mut self,
-        section: crate::features::settings::SettingsSection,
-        cx: &mut Context<Self>,
-    ) {
-        self.settings_section = section;
-        self.settings_scroll
-            .set_offset(gpui::Point::new(px(0.), px(0.)));
+        crate::features::settings::toggle_settings(cx.weak_entity(), cx);
         cx.notify();
     }
 

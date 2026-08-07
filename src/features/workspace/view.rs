@@ -16,7 +16,6 @@ use crate::features::commands::{
 };
 use crate::features::forwarding::ForwardPane;
 use crate::features::projects::GitStatus;
-use crate::features::settings::render_settings_page;
 use crate::features::sftp::SftpPane;
 use crate::features::terminal::{ConnState, TerminalView};
 use crate::features::workspace::shell::AppShell;
@@ -69,12 +68,8 @@ pub struct LocalDir {
     pub active_session: Option<LocalSessionId>,
 }
 
-/// 主区：设置页或标签条 + 内容区。
+/// 主区：标签条 + 内容区。
 pub fn render_main(shell: &mut AppShell, cx: &mut Context<AppShell>) -> AnyElement {
-    if shell.settings_open {
-        return render_settings_page(shell, cx);
-    }
-
     let mut pane = div()
         .flex_1()
         .min_h_0()

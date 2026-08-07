@@ -12,6 +12,7 @@ use gpui::{
 };
 
 use crate::features::connections::HostEntry;
+use crate::features::settings::is_settings_window_open;
 use crate::features::terminal::ConnState;
 use crate::features::workspace::shell::AppShell;
 use crate::features::workspace::view::{ActiveView, LocalDir};
@@ -363,6 +364,8 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
             }
         });
 
+    let is_open = is_settings_window_open(cx);
+
     let titlebar = div()
         .relative()
         .h(px(theme::TITLEBAR_HEIGHT))
@@ -415,17 +418,6 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
                 .justify_center()
                 .rounded(px(theme::RADIUS_SM))
                 .cursor_pointer()
-                .text_color(if shell.settings_open {
-                    theme::accent()
-                } else {
-                    theme::muted_text()
-                })
-                .bg(if shell.settings_open {
-                    theme::accent_soft()
-                } else {
-                    theme::sidebar()
-                })
-                .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
                 .tooltip(|_window, cx| {
                     cx.new(|_| LocalPathTooltip {
                         path: SharedString::from(i18n::text("tooltip.settings")),
@@ -434,7 +426,7 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
                 })
                 .child(
                     icons::icon(icons::IconName::Settings, 14.)
-                        .text_color(if shell.settings_open {
+                        .text_color(if is_open {
                             theme::accent()
                         } else {
                             theme::muted_text()

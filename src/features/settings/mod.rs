@@ -1,5 +1,5 @@
 //! User settings feature.
 
-pub(crate) mod view;
+pub(crate) mod window;
 
-pub(crate) use view::{SettingsSection, render_settings_page};
+pub(crate) use window::{is_settings_window_open, toggle_settings};
