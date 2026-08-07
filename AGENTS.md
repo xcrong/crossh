@@ -8,6 +8,13 @@
 - When a Lucide icon is renamed, update the local `IconName` mapping and asset loader together. The current `CircleX` mapping intentionally follows Lucide's canonical `circle-x.svg` filename.
 - Keep the pinned release and third-party attribution in sync when updating the icon set. See `THIRD_PARTY_NOTICES.md`.
 
+## Zed / GPUI Dependency Source
+
+- This project depends on the `gpui` and `gpui_platform` crates directly from the Zed git repository (see `Cargo.toml` for the pinned revision).
+- The checked-out source lives under `~/.cargo/git/checkouts/zed-<hash>/<rev>/` (e.g. `crates/gpui/src/`, `crates/gpui_platform/src/`). The `<hash>` is Cargo's stable path hash and `<rev>` is the git revision from `Cargo.toml`.
+- Do NOT hardcode the revision: it changes whenever the Zed dependency is updated. Always resolve the current revision by reading the `rev` key in `Cargo.toml`, then locate the matching subdirectory under `~/.cargo/git/checkouts/zed-*/`.
+- The full git database is also cached at `~/.cargo/git/db/zed-<hash>/`.
+
 ## Sandbox-Aware Command Execution
 
 - The workspace sandbox may permit source changes while denying writes to `.git` and external network access.
