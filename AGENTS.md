@@ -15,6 +15,15 @@
 - Do NOT hardcode the revision: it changes whenever the Zed dependency is updated. Always resolve the current revision by reading the `rev` key in `Cargo.toml`, then locate the matching subdirectory under `~/.cargo/git/checkouts/zed-*/`.
 - The full git database is also cached at `~/.cargo/git/db/zed-<hash>/`.
 
+## Engineering Rules (derived from Zed's architecture)
+
+- **Logic must not depend on UI.** Pure-logic modules (`shared/terminal/`, SSH sessions, protocols, engines) must contain zero `gpui` imports. GPUI views depend on logic; logic never depends on views. To verify, treat any `gpui` import in a logic module as a layering violation.
+- **Keep the app entry point thin.** `main.rs` is assembly only: window setup, keybindings, boot. Utilities (logging, trimming, panic hooks) live in `infrastructure/`, not in `main.rs`.
+- **Split vertical features, then split logic and view inside each.** A feature owns its state, its settings, and its UI together. Within a feature, separate the pure logic from the `gpui` view layers (e.g. `engine.rs` + `render.rs` + `view.rs`, mirroring Zed's `terminal` vs `terminal_view` crates).
+- **Each feature ships its own settings.** Do not centralize all settings in one place; settings for a feature live next to that feature (mirrors Zed's per-crate `*_settings.rs`).
+- **Keep files small and focused.** When a view file outgrows ~1–2k lines, split rendering, input handling, and state into separate modules rather than growing one file.
+- **Depend on abstractions, not concrete panes.** A workspace/container should consume traits or common interfaces (mirrors Zed's `item.rs` / `pane.rs`), not `match` over an enum of concrete view types.
+
 ## Sandbox-Aware Command Execution
 
 - The workspace sandbox may permit source changes while denying writes to `.git` and external network access.
