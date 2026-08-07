@@ -13,7 +13,7 @@ use gpui::{
     Point, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
-use crate::shared::ui::theme;
+use crate::shared::ui::{icons, theme};
 
 /// 菜单固定宽度；定位钳制时按此估算。
 pub const CONTEXT_MENU_WIDTH: f32 = 216.0;
@@ -43,6 +43,8 @@ pub enum ShellMenuAction {
     OpenLocalTerminal(PathBuf),
     /// 切换到远程标签。
     SelectRemoteTab(usize),
+    /// Toggle the optional local line editor for a remote terminal tab.
+    ToggleLowLatencyShellInput(usize),
     /// 关闭远程标签。
     CloseRemoteTab(usize),
     /// 关闭除指定索引外的远程标签。
@@ -118,6 +120,11 @@ pub struct MenuItem<A> {
 #[derive(Clone)]
 pub enum MenuEntry<A> {
     Item(MenuItem<A>),
+    /// A menu item with a persistent on/off check mark.
+    CheckedItem {
+        item: MenuItem<A>,
+        checked: bool,
+    },
     Separator,
 }
 
@@ -135,7 +142,7 @@ pub fn estimate_menu_height<A>(entries: &[MenuEntry<A>]) -> f32 {
         + entries
             .iter()
             .map(|entry| match entry {
-                MenuEntry::Item(_) => ITEM_HEIGHT,
+                MenuEntry::Item(_) | MenuEntry::CheckedItem { .. } => ITEM_HEIGHT,
                 MenuEntry::Separator => SEPARATOR_HEIGHT,
             })
             .sum::<f32>()
@@ -208,65 +215,80 @@ pub fn render_context_menu<A: Clone + 'static, T: 'static>(
         .shadow_md();
 
     for entry in &state.entries {
-        match entry {
+        let (item, checked, checkable) = match entry {
             MenuEntry::Separator => {
                 menu = menu.child(div().h(px(1.)).mx_2().my_1().bg(theme::border()));
+                continue;
             }
-            MenuEntry::Item(item) => {
-                let id = item.id.clone();
-                let action = item.action.clone();
-                let label = item.label.clone();
-                let hint = item.shortcut_hint.clone();
-                let disabled = item.disabled;
-                let danger = item.danger;
-                let mut row = div()
-                    .id(SharedString::from(format!("ctx-item-{id}")))
-                    .h(px(ITEM_HEIGHT))
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .rounded(px(theme::RADIUS_SM))
-                    .text_xs()
-                    .text_color(if danger {
-                        theme::danger()
-                    } else if disabled {
+            MenuEntry::Item(item) => (item, false, false),
+            MenuEntry::CheckedItem { item, checked } => (item, *checked, true),
+        };
+
+        let id = item.id.clone();
+        let action = item.action.clone();
+        let label = item.label.clone();
+        let hint = item.shortcut_hint.clone();
+        let disabled = item.disabled;
+        let danger = item.danger;
+        let mut row = div()
+            .id(SharedString::from(format!("ctx-item-{id}")))
+            .h(px(ITEM_HEIGHT))
+            .px_2()
+            .flex()
+            .items_center()
+            .gap_2()
+            .rounded(px(theme::RADIUS_SM))
+            .text_xs()
+            .text_color(if danger {
+                theme::danger()
+            } else if disabled {
+                theme::faint_text()
+            } else {
+                theme::text()
+            });
+        if disabled {
+            row = row.cursor_default();
+        } else {
+            row = row
+                .cursor_pointer()
+                .hover(|s| s.bg(theme::surface()))
+                .on_click({
+                    let on_action = on_action.clone();
+                    cx.listener(move |this, _ev, window, cx| {
+                        on_action(this, action.clone(), window, cx);
+                    })
+                });
+        }
+        if checkable {
+            if checked {
+                row = row.child(
+                    icons::icon(icons::IconName::Check, 13.).text_color(if disabled {
                         theme::faint_text()
                     } else {
-                        theme::text()
-                    });
-                if disabled {
-                    row = row.cursor_default();
-                } else {
-                    row = row
-                        .cursor_pointer()
-                        .hover(|s| s.bg(theme::surface()))
-                        .on_click({
-                            let on_action = on_action.clone();
-                            cx.listener(move |this, _ev, window, cx| {
-                                on_action(this, action.clone(), window, cx);
-                            })
-                        });
-                }
-                row = row.child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .child(SharedString::from(label)),
+                        theme::accent()
+                    }),
                 );
-                if let Some(hint) = hint {
-                    row = row.child(
-                        div()
-                            .flex_shrink_0()
-                            .text_xs()
-                            .text_color(theme::faint_text())
-                            .child(SharedString::from(hint)),
-                    );
-                }
-                menu = menu.child(row);
+            } else {
+                row = row.child(div().w(px(13.)).h(px(13.)));
             }
         }
+        row = row.child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .child(SharedString::from(label)),
+        );
+        if let Some(hint) = hint {
+            row = row.child(
+                div()
+                    .flex_shrink_0()
+                    .text_xs()
+                    .text_color(theme::faint_text())
+                    .child(SharedString::from(hint)),
+            );
+        }
+        menu = menu.child(row);
     }
 
     div()

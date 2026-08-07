@@ -1062,21 +1062,45 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                 } else {
                     container = container.hover(|style| style.bg(theme::raised()));
                 }
+                let (has_terminal, low_latency_enabled, low_latency_available) = match &tab.pane {
+                    Pane::Terminal(terminal) => {
+                        let terminal = terminal.read(cx);
+                        (
+                            true,
+                            terminal.low_latency_shell_input_enabled(),
+                            terminal.low_latency_shell_input_available(),
+                        )
+                    }
+                    Pane::Sftp(_) | Pane::Forward(_) => (false, false, false),
+                };
                 let container = container
                     .id(("remote-tab-container", idx))
                     .on_mouse_down(MouseButton::Right, {
                         let target = tab.target.clone();
                         let single = shell.workspace.sessions.remote_tabs.len() == 1;
                         cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
-                            let entries = vec![
-                                MenuEntry::Item(MenuItem {
-                                    id: "switch".into(),
-                                    label: i18n::text("context_menu.switch"),
-                                    shortcut_hint: None,
-                                    disabled: is_active,
-                                    danger: false,
-                                    action: ShellMenuAction::SelectRemoteTab(idx),
-                                }),
+                            let mut entries = vec![MenuEntry::Item(MenuItem {
+                                id: "switch".into(),
+                                label: i18n::text("context_menu.switch"),
+                                shortcut_hint: None,
+                                disabled: is_active,
+                                danger: false,
+                                action: ShellMenuAction::SelectRemoteTab(idx),
+                            })];
+                            if has_terminal {
+                                entries.push(MenuEntry::CheckedItem {
+                                    item: MenuItem {
+                                        id: "low-latency-shell-input".into(),
+                                        label: i18n::text("context_menu.low_latency_shell_input"),
+                                        shortcut_hint: None,
+                                        disabled: !low_latency_available,
+                                        danger: false,
+                                        action: ShellMenuAction::ToggleLowLatencyShellInput(idx),
+                                    },
+                                    checked: low_latency_enabled,
+                                });
+                            }
+                            entries.extend([
                                 MenuEntry::Item(MenuItem {
                                     id: "close".into(),
                                     label: i18n::text("context_menu.close"),
@@ -1110,7 +1134,7 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                                     danger: false,
                                     action: ShellMenuAction::CopyText(target.clone()),
                                 }),
-                            ];
+                            ]);
                             this.open_context_menu(ev.position, entries, cx);
                         })
                     })

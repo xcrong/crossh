@@ -1462,6 +1462,9 @@ impl AppShell {
                 self.open_local_session(cwd.clone(), cwd, cx)
             }
             ShellMenuAction::SelectRemoteTab(idx) => self.switch_remote_tab(idx, cx),
+            ShellMenuAction::ToggleLowLatencyShellInput(idx) => {
+                self.toggle_low_latency_shell_input(idx, cx)
+            }
             ShellMenuAction::CloseRemoteTab(idx) => self.close_remote_tab(idx, cx),
             ShellMenuAction::CloseOtherRemoteTabs(idx) => self.close_other_remote_tabs(idx, cx),
             ShellMenuAction::CloseAllRemoteTabs => self.close_all_remote_tabs(cx),
@@ -1493,6 +1496,24 @@ impl AppShell {
             ShellMenuAction::StopBackgroundTask(id) => self.stop_background_task(id, cx),
         }
         self.close_context_menu(cx);
+    }
+
+    fn toggle_low_latency_shell_input(&mut self, idx: usize, cx: &mut Context<Self>) {
+        let terminal = self
+            .workspace
+            .sessions
+            .remote_tabs
+            .get(idx)
+            .and_then(|tab| match &tab.pane {
+                Pane::Terminal(terminal) => Some(terminal.clone()),
+                Pane::Sftp(_) | Pane::Forward(_) => None,
+            });
+        if let Some(terminal) = terminal {
+            terminal.update(cx, |terminal, _cx| {
+                terminal.toggle_low_latency_shell_input();
+            });
+            cx.notify();
+        }
     }
 
     /// 关闭除 `keep` 外的全部远程标签。

@@ -52,7 +52,7 @@ use crate::shared::ui::context_menu::{
 use crate::shared::ui::theme;
 
 use super::events::{ConnState, TerminalEvent};
-use super::input::{flush_pending_commands, queue_input_nonblocking};
+use super::input::{ShellInputBuffer, flush_pending_commands, queue_input_nonblocking};
 
 /// 终端字体大小（像素）。
 const FONT_SIZE: f32 = 14.0;
@@ -486,6 +486,9 @@ pub struct TerminalView {
     selecting: bool,
     /// macOS/GPUI 输入法的临时合成文本。它不能直接写入 PTY，只有提交后的文本才发送。
     ime_marked_text: String,
+    /// Optional local shell line editor used to hide high-latency remote echo.
+    low_latency_shell_input: bool,
+    shell_input_buffer: ShellInputBuffer,
     remote_mouse_button: Option<u8>,
     /// 累积滚动偏移（trackpad 累加用）。
     scroll_acc: f32,
@@ -618,6 +621,8 @@ impl TerminalView {
             sel_end: None,
             selecting: false,
             ime_marked_text: String::new(),
+            low_latency_shell_input: false,
+            shell_input_buffer: ShellInputBuffer::default(),
             remote_mouse_button: None,
             scroll_acc: 0.,
             cursor_blink_on: true,
@@ -800,6 +805,8 @@ impl TerminalView {
                 let was_connected = self.state == ConnState::Connected;
                 self.state = ConnState::Closed;
                 self.command_running = false;
+                self.shell_input_buffer.clear();
+                self.ime_marked_text.clear();
                 if was_connected {
                     cx.emit(TerminalEvent::Closed);
                 }
@@ -833,6 +840,8 @@ impl TerminalView {
                     match shell_event {
                         ShellEvent::PromptStart => {
                             self.command_running = false;
+                            self.shell_input_buffer.clear();
+                            self.ime_marked_text.clear();
                             cx.emit(TerminalEvent::PromptReached);
                         }
                         ShellEvent::PromptEnd => {}
@@ -2195,6 +2204,24 @@ impl TerminalView {
         self.is_local
     }
 
+    pub(crate) fn low_latency_shell_input_enabled(&self) -> bool {
+        self.low_latency_shell_input
+    }
+
+    /// The menu stays available once the remote shell has advertised shell
+    /// integration; the input buffer itself only becomes active at a prompt.
+    pub(crate) fn low_latency_shell_input_available(&self) -> bool {
+        !self.is_local && self.state == ConnState::Connected && self.shell_activity_available
+    }
+
+    pub(crate) fn toggle_low_latency_shell_input(&mut self) {
+        if self.low_latency_shell_input {
+            self.flush_shell_input_buffer();
+            self.ime_marked_text.clear();
+        }
+        self.low_latency_shell_input = !self.low_latency_shell_input;
+    }
+
     pub(crate) fn is_command_running(&self) -> bool {
         self.state == ConnState::Connected
             && (self.command_running || self.term.mode().contains(TermMode::ALT_SCREEN))
@@ -2204,6 +2231,149 @@ impl TerminalView {
     fn send_input(&mut self, bytes: Vec<u8>) {
         log::trace!("pty write: {}", debug_bytes(&bytes));
         self.queue_input(InputCmd::Write(bytes));
+    }
+
+    fn shell_input_active(&self) -> bool {
+        self.low_latency_shell_input
+            && !self.is_local
+            && self.state == ConnState::Connected
+            && self.shell_activity_available
+            && !self.command_running
+            && !self.term.mode().contains(TermMode::ALT_SCREEN)
+    }
+
+    fn flush_shell_input_buffer(&mut self) {
+        let text = self.shell_input_buffer.take();
+        if !text.is_empty() {
+            self.send_input(text.into_bytes());
+        }
+    }
+
+    fn submit_shell_input(&mut self, enter: Vec<u8>) {
+        let text = self.shell_input_buffer.take();
+        let mut bytes = text.into_bytes();
+        bytes.extend(enter);
+        self.ime_marked_text.clear();
+        if !bytes.is_empty() {
+            self.send_input(bytes);
+        }
+    }
+
+    /// Send the pending local text together with a key that needs the remote
+    /// shell's own line editor, then return to transparent terminal input.
+    fn bypass_shell_input(&mut self, bytes: Vec<u8>) {
+        let text = self.shell_input_buffer.take();
+        let mut combined = text.into_bytes();
+        combined.extend(bytes);
+        self.ime_marked_text.clear();
+        self.low_latency_shell_input = false;
+        if !combined.is_empty() {
+            self.send_input(combined);
+        }
+    }
+
+    fn insert_shell_input_text(&mut self, text: &str) {
+        if text.is_empty() || text.chars().any(char::is_control) {
+            return;
+        }
+        self.ime_marked_text.clear();
+        self.shell_input_buffer.insert(text);
+    }
+
+    fn handle_shell_input_key(&mut self, ks: &gpui::Keystroke, event_type: u8) -> bool {
+        if !self.shell_input_active() {
+            return false;
+        }
+
+        let key = ks.key.as_str();
+        let modifiers = &ks.modifiers;
+        let text_modifiers = !modifiers.alt && !modifiers.control && !modifiers.platform;
+        let editing_modifiers = text_modifiers && !modifiers.shift;
+
+        if is_low_latency_shell_passthrough_key(ks)
+            && let Some(bytes) = encode_keystroke_with_options(
+                ks,
+                *self.term.mode(),
+                event_type,
+                self.modify_other_keys,
+            )
+        {
+            self.ime_marked_text.clear();
+            self.send_input(bytes);
+            return true;
+        }
+
+        if matches!(key, "enter" | "return")
+            && editing_modifiers
+            && let Some(bytes) = encode_keystroke_with_options(
+                ks,
+                *self.term.mode(),
+                event_type,
+                self.modify_other_keys,
+            )
+        {
+            self.submit_shell_input(bytes);
+            self.command_running = true;
+            return true;
+        }
+
+        if editing_modifiers {
+            match key {
+                "back" | "backspace" => {
+                    self.shell_input_buffer.backspace();
+                    self.ime_marked_text.clear();
+                    return true;
+                }
+                "delete" => {
+                    self.shell_input_buffer.delete();
+                    self.ime_marked_text.clear();
+                    return true;
+                }
+                "left" => {
+                    self.shell_input_buffer.move_left();
+                    self.ime_marked_text.clear();
+                    return true;
+                }
+                "right" => {
+                    self.shell_input_buffer.move_right();
+                    self.ime_marked_text.clear();
+                    return true;
+                }
+                "home" => {
+                    self.shell_input_buffer.move_home();
+                    self.ime_marked_text.clear();
+                    return true;
+                }
+                "end" => {
+                    self.shell_input_buffer.move_end();
+                    self.ime_marked_text.clear();
+                    return true;
+                }
+                "space" => {
+                    self.insert_shell_input_text(" ");
+                    return true;
+                }
+                _ => {}
+            }
+        }
+
+        if text_modifiers
+            && let Some(text) = ks.key_char.as_deref()
+            && !text.is_empty()
+            && text.chars().all(|ch| !ch.is_control())
+        {
+            self.insert_shell_input_text(text);
+            return true;
+        }
+
+        if let Some(bytes) =
+            encode_keystroke_with_options(ks, *self.term.mode(), event_type, self.modify_other_keys)
+        {
+            self.bypass_shell_input(bytes);
+            return true;
+        }
+
+        false
     }
 
     /// The standalone UI drives `vte::Processor` directly instead of using
@@ -2259,6 +2429,11 @@ impl TerminalView {
         let command = command.trim();
         if command.is_empty() {
             return;
+        }
+        self.shell_input_buffer.clear();
+        self.ime_marked_text.clear();
+        if self.shell_activity_available {
+            self.command_running = true;
         }
         self.send_input(format!("{command}\r").into_bytes());
         self.request_focus();
@@ -2342,8 +2517,17 @@ impl TerminalView {
                 _ => {}
             }
         }
-        let mode = *self.term.mode();
         let event_type = if ev.is_held { 2 } else { 1 };
+        if self.handle_shell_input_key(ks, event_type) {
+            cx.notify();
+            // Keep the existing Escape propagation behavior so AppShell can
+            // dismiss any surrounding menu after the remote byte is sent.
+            if ks.key != "escape" {
+                cx.stop_propagation();
+            }
+            return;
+        }
+        let mode = *self.term.mode();
         match encode_keystroke_with_options(ks, mode, event_type, self.modify_other_keys) {
             Some(bytes) => {
                 if self.shell_activity_available && matches!(ks.key.as_str(), "enter" | "return") {
@@ -2374,6 +2558,12 @@ impl TerminalView {
                 && !ks.modifiers.control
                 && matches!(ks.key.as_str(), "c" | "v"))
         {
+            return;
+        }
+        // Printable keys handled by the local shell editor must not produce
+        // a second byte when a remote application has enabled key-release
+        // reporting.
+        if self.shell_input_active() && !is_low_latency_shell_passthrough_key(ks) {
             return;
         }
         let mode = *self.term.mode();
@@ -2678,6 +2868,17 @@ impl TerminalView {
                 }
             })
         }) {
+            if self.shell_input_active() {
+                if !text.chars().any(|ch| ch == '\n' || ch == '\r') {
+                    self.insert_shell_input_text(&text);
+                    return;
+                }
+                // Multi-line paste has shell-specific semantics. Let the
+                // remote line editor handle it instead of guessing locally.
+                self.flush_shell_input_buffer();
+                self.ime_marked_text.clear();
+                self.low_latency_shell_input = false;
+            }
             let bytes = if self.term.mode().contains(TermMode::BRACKETED_PASTE) {
                 let mut bytes = b"\x1b[200~".to_vec();
                 bytes.extend_from_slice(text.as_bytes());
@@ -2812,7 +3013,11 @@ impl TerminalView {
     }
 
     /// 当前终端光标在可视 viewport 中的位置。
-    fn ime_cursor_bounds(&self, _element_bounds: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
+    fn ime_cursor_bounds(
+        &self,
+        _element_bounds: Bounds<Pixels>,
+        window: &Window,
+    ) -> Option<Bounds<Pixels>> {
         if self.cell_w.as_f32() <= 0.0 || self.line_h.as_f32() <= 0.0 {
             return None;
         }
@@ -2853,9 +3058,31 @@ impl TerminalView {
             (col, 1)
         };
 
+        let mut origin_x = self.content_origin.x + px(visual_col as f32 * self.cell_w.as_f32());
+        if self.shell_input_active() {
+            let prefix = &self.shell_input_buffer.text()[..self.shell_input_buffer.cursor()];
+            if !prefix.is_empty() {
+                let text_run = TextRun {
+                    len: prefix.len(),
+                    font: self.font.clone(),
+                    color: fg_of(&self.term),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let shaped = window.text_system().shape_line(
+                    SharedString::from(prefix.to_owned()),
+                    px(self.font_size),
+                    &[text_run],
+                    None,
+                );
+                origin_x += shaped.width();
+            }
+        }
+
         Some(Bounds {
             origin: Point::new(
-                self.content_origin.x + px(visual_col as f32 * self.cell_w.as_f32()),
+                origin_x,
                 self.content_origin.y + px(row as f32 * self.line_h.as_f32()),
             ),
             size: gpui::size(px(width_cells as f32 * self.cell_w.as_f32()), self.line_h),
@@ -3037,9 +3264,17 @@ impl EntityInputHandler for TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.ime_marked_text.clear();
-        if !text.is_empty() {
-            self.send_input(text.as_bytes().to_vec());
+        if self.shell_input_active() && !text.chars().any(char::is_control) {
+            self.insert_shell_input_text(text);
+        } else {
+            if self.shell_input_active() {
+                self.flush_shell_input_buffer();
+                self.low_latency_shell_input = false;
+            }
+            self.ime_marked_text.clear();
+            if !text.is_empty() {
+                self.send_input(text.as_bytes().to_vec());
+            }
         }
         window.invalidate_character_coordinates();
         cx.notify();
@@ -3063,10 +3298,10 @@ impl EntityInputHandler for TerminalView {
         &mut self,
         _range: Range<usize>,
         element_bounds: Bounds<Pixels>,
-        _window: &mut Window,
+        window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        self.ime_cursor_bounds(element_bounds)
+        self.ime_cursor_bounds(element_bounds, window)
     }
 
     fn character_index_for_point(
@@ -3242,7 +3477,7 @@ impl Render for TerminalView {
                 // paint：先快照可见单元格（避免持有对 cx 的不可变借用），
                 // 再用 &mut App 绘制。
                 if let Some(t) = weak2.upgrade() {
-                    let (snapshot, ime_marked_text, images, progress) = {
+                    let (snapshot, ime_marked_text, shell_input, images, progress) = {
                         let this = t.read(cx);
                         let sel = this.sel_start.zip(this.sel_end);
                         let cursor_style = this.term.cursor_style();
@@ -3254,9 +3489,19 @@ impl Render for TerminalView {
                         } else {
                             vec![None; this.term.screen_lines()]
                         };
+                        let shell_input = this.shell_input_active().then(|| ShellInputRender {
+                            text: this.shell_input_buffer.text().to_owned(),
+                            cursor: this.shell_input_buffer.cursor(),
+                            ime_marked_text: this.ime_marked_text.clone(),
+                        });
                         (
                             snapshot_visible(&this.term, sel, this.cols, show_cur, &timestamps),
-                            this.ime_marked_text.clone(),
+                            if shell_input.is_some() {
+                                String::new()
+                            } else {
+                                this.ime_marked_text.clone()
+                            },
+                            shell_input,
                             this.images.clone(),
                             this.progress,
                         )
@@ -3270,6 +3515,7 @@ impl Render for TerminalView {
                         &PaintContext {
                             snapshot: &snapshot,
                             ime_marked_text: &ime_marked_text,
+                            shell_input: shell_input.as_ref(),
                             canvas_bounds: bounds,
                             bounds: terminal_bounds_for(bounds, show_timestamps),
                             cell_w,
@@ -4565,6 +4811,7 @@ fn snapshot_visible(
 struct PaintContext<'a> {
     snapshot: &'a Snapshot,
     ime_marked_text: &'a str,
+    shell_input: Option<&'a ShellInputRender>,
     canvas_bounds: Bounds<Pixels>,
     bounds: Bounds<Pixels>,
     cell_w: Pixels,
@@ -4576,6 +4823,13 @@ struct PaintContext<'a> {
     default_bg: Hsla,
     images: &'a [TerminalImage],
     progress: Option<TerminalProgress>,
+}
+
+#[derive(Clone)]
+struct ShellInputRender {
+    text: String,
+    cursor: usize,
+    ime_marked_text: String,
 }
 
 /// 根据快照绘制。
@@ -4902,9 +5156,132 @@ fn terminal_image_origins(
     }
 }
 
+fn paint_shell_input(
+    ctx: &PaintContext,
+    input: &ShellInputRender,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some((col, row)) = ctx.snapshot.cursor else {
+        return;
+    };
+
+    let text = &input.text;
+    let cursor = input.cursor.min(text.len());
+    let before = &text[..cursor];
+    let after = &text[cursor..];
+    let mut display = String::with_capacity(text.len() + input.ime_marked_text.len());
+    display.push_str(before);
+    display.push_str(&input.ime_marked_text);
+    display.push_str(after);
+
+    let regular_run = TextRun {
+        len: 0,
+        font: ctx.font.clone(),
+        color: ctx.default_fg,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let ime_run = TextRun {
+        len: input.ime_marked_text.len(),
+        font: ctx.font.clone(),
+        color: ctx.default_fg,
+        background_color: None,
+        underline: Some(UnderlineStyle {
+            thickness: px(1.0),
+            color: Some(ctx.default_fg),
+            wavy: false,
+        }),
+        strikethrough: None,
+    };
+    let runs = if input.ime_marked_text.is_empty() {
+        vec![TextRun {
+            len: display.len(),
+            ..regular_run.clone()
+        }]
+    } else {
+        vec![
+            TextRun {
+                len: before.len(),
+                ..regular_run.clone()
+            },
+            ime_run,
+            TextRun {
+                len: after.len(),
+                ..regular_run
+            },
+        ]
+    };
+    let shaped = window.text_system().shape_line(
+        SharedString::from(display),
+        px(ctx.font_size),
+        &runs,
+        None,
+    );
+    let origin = Point::new(
+        ctx.bounds.origin.x + px(col as f32 * ctx.cell_w.as_f32()),
+        ctx.bounds.origin.y + px(row as f32 * ctx.line_h.as_f32()),
+    );
+    let width = shaped.width().max(ctx.cell_w);
+    window.paint_quad(quad(
+        Bounds {
+            origin,
+            size: gpui::size(width, ctx.line_h),
+        },
+        Corners::default(),
+        ctx.default_bg,
+        Edges::default(),
+        hsla(0., 0., 0., 0.),
+        gpui::BorderStyle::default(),
+    ));
+    if (!input.text.is_empty() || !input.ime_marked_text.is_empty())
+        && let Err(error) = shaped.paint(origin, ctx.line_h, TextAlign::Left, None, window, cx)
+    {
+        log::warn!("paint shell input failed: {error}");
+    }
+
+    if ctx.snapshot.cursor_visible {
+        let cursor_prefix = format!("{before}{}", input.ime_marked_text);
+        let cursor_run = TextRun {
+            len: cursor_prefix.len(),
+            font: ctx.font.clone(),
+            color: ctx.default_fg,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let cursor_width = if cursor_prefix.is_empty() {
+            px(0.)
+        } else {
+            window
+                .text_system()
+                .shape_line(
+                    SharedString::from(cursor_prefix),
+                    px(ctx.font_size),
+                    &[cursor_run],
+                    None,
+                )
+                .width()
+        };
+        window.paint_quad(quad(
+            Bounds {
+                origin: Point::new(origin.x + cursor_width, origin.y),
+                size: gpui::size(px(1.5).min(ctx.cell_w), ctx.line_h),
+            },
+            Corners::default(),
+            ctx.default_fg,
+            Edges::default(),
+            hsla(0., 0., 0., 0.),
+            gpui::BorderStyle::default(),
+        ));
+    }
+}
+
 fn paint_snapshot(ctx: &PaintContext, window: &mut Window, cx: &mut App) {
     let snapshot = ctx.snapshot;
     let ime_marked_text = ctx.ime_marked_text;
+    let shell_input = ctx.shell_input;
     let bounds = ctx.bounds;
     let cell_w = ctx.cell_w;
     let line_h = ctx.line_h;
@@ -5069,8 +5446,13 @@ fn paint_snapshot(ctx: &PaintContext, window: &mut Window, cx: &mut App) {
     paint_terminal_images(ctx, window, cx, false, false);
     paint_terminal_progress(ctx, window);
 
+    if let Some(shell_input) = shell_input {
+        paint_shell_input(ctx, shell_input, window, cx);
+    }
+
     // 光标形状由 DECSCUSR/OSC 50 控制；blink 已在快照阶段按终端状态处理。
-    if snapshot.cursor_visible
+    if shell_input.is_none()
+        && snapshot.cursor_visible
         && ime_marked_text.is_empty()
         && let Some((col, row)) = snapshot.cursor
         && snapshot
@@ -5194,7 +5576,8 @@ fn paint_snapshot(ctx: &PaintContext, window: &mut Window, cx: &mut App) {
 
     // 合成阶段的拼音由输入法暂存，不能提前写入 PTY；在光标处绘制出来，
     // 让用户能看到当前正在组合的文本，提交后才由 replace_text_in_range 发送。
-    if !ime_marked_text.is_empty()
+    if shell_input.is_none()
+        && !ime_marked_text.is_empty()
         && let Some((col, row)) = snapshot.cursor
     {
         let origin = Point::new(
@@ -6458,6 +6841,10 @@ fn is_shell_shortcut(ks: &gpui::Keystroke) -> bool {
         ks.key.as_str(),
         "w" | "t" | "tab" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
     )
+}
+
+fn is_low_latency_shell_passthrough_key(ks: &gpui::Keystroke) -> bool {
+    ks.modifiers.control && !ks.modifiers.alt && !ks.modifiers.platform && ks.key == "l"
 }
 
 /// 计算带修饰键时的 CSI 修饰码（shift=1, alt=2, control=4, meta=8，再 +1）。
