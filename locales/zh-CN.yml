@@ -86,6 +86,17 @@ project:
 
 git:
   clean: 干净
+  title: Git
+  staged_changes: 已暂存更改
+  changes: 更改
+  staged: 已暂存
+  working: 工作区
+  refresh: 刷新
+  no_changes: 没有更改
+  no_selection: 选择一个文件以查看差异
+  no_diff: 无文本更改
+  binary: 二进制文件
+  loading: 加载中…
 
 connection:
   connecting_with_separator: "连接中 · "

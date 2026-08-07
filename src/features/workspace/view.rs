@@ -23,7 +23,7 @@ use crate::infrastructure::ssh::Connection;
 use crate::shared::i18n;
 use crate::shared::terminal::remote_pane_title;
 use crate::shared::ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
-use crate::shared::ui::widgets::{ime_input_canvas, text_caret};
+use crate::shared::ui::widgets::{LocalPathTooltip, ime_input_canvas, text_caret};
 use crate::shared::ui::{icons, theme};
 
 /// 一个标签内承载的面板。
@@ -168,12 +168,12 @@ pub fn render_main(shell: &mut AppShell, cx: &mut Context<AppShell>) -> AnyEleme
     if let Some(ActiveView::LocalSession(session_id)) = shell.workspace.active_view
         && let Some(session) = shell.workspace.sessions.local_sessions.get(&session_id)
     {
-        pane = pane.child(render_terminal_status_bar(session));
+        pane = pane.child(render_terminal_status_bar(session, cx));
     }
     pane.into_any_element()
 }
 
-fn render_terminal_status_bar(session: &LocalSession) -> AnyElement {
+fn render_terminal_status_bar(session: &LocalSession, cx: &mut Context<AppShell>) -> AnyElement {
     let cwd = session.cwd.to_string_lossy().to_string();
     let mut bar = div()
         .h(px(25.))
@@ -191,17 +191,33 @@ fn render_terminal_status_bar(session: &LocalSession) -> AnyElement {
         .child(div().min_w_0().truncate().child(SharedString::from(cwd)));
 
     if let Some(status) = &session.git_status {
+        let click_cwd = session.cwd.clone();
         let mut git = div()
+            .id("status-git")
             .flex_none()
             .flex()
             .items_center()
             .gap_2()
+            .px(px(6.))
+            .py(px(2.))
+            .rounded(px(theme::RADIUS_SM))
+            .cursor_pointer()
+            .hover(|s| s.bg(theme::raised()))
+            .tooltip(|_window, cx| {
+                cx.new(|_| LocalPathTooltip {
+                    path: SharedString::from(crate::shared::i18n::text("git.title")),
+                })
+                .into()
+            })
             .child(icons::icon(icons::IconName::GitBranch, 13.).text_color(theme::accent()))
             .child(
                 div()
                     .text_color(theme::text())
                     .child(SharedString::from(status.branch.clone())),
-            );
+            )
+            .on_click(cx.listener(move |_this, _ev, _window, cx| {
+                crate::features::git::open_git_window(click_cwd.clone(), cx);
+            }));
 
         if status.ahead > 0 {
             git = git.child(status_badge(format!("↑{}", status.ahead), theme::info()));

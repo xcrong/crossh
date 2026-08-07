@@ -70,6 +70,22 @@ pub(crate) fn danger() -> Rgba {
     rgb(0xf07d7d)
 }
 
+pub(crate) fn diff_add_bg() -> Rgba {
+    rgb(0x1c3327)
+}
+
+pub(crate) fn diff_add_fg() -> Rgba {
+    rgb(0x8fe3b0)
+}
+
+pub(crate) fn diff_del_bg() -> Rgba {
+    rgb(0x3a2222)
+}
+
+pub(crate) fn diff_del_fg() -> Rgba {
+    rgb(0xf2a2a2)
+}
+
 pub(crate) fn scrim() -> Hsla {
     hsla(0.0, 0.0, 0.0, 0.62)
 }

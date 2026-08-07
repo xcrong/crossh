@@ -86,6 +86,17 @@ project:
 
 git:
   clean: Clean
+  title: Git
+  staged_changes: Staged Changes
+  changes: Changes
+  staged: Staged
+  working: Working Tree
+  refresh: Refresh
+  no_changes: No changes
+  no_selection: Select a file to see its diff
+  no_diff: No text changes
+  binary: Binary file
+  loading: Loading…
 
 connection:
   connecting_with_separator: "Connecting · "
