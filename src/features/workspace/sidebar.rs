@@ -1,4 +1,4 @@
-//! 侧栏：主机搜索框、Local/Active/Bank 分组列表、语言菜单、宽度拖拽。
+//! 侧栏：主机搜索框、Local/Active/Bank 分组列表、宽度拖拽。
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -16,7 +16,7 @@ use crate::features::settings::is_settings_window_open;
 use crate::features::terminal::ConnState;
 use crate::features::workspace::shell::AppShell;
 use crate::features::workspace::view::{ActiveView, LocalDir};
-use crate::shared::i18n::{self, LanguagePreference};
+use crate::shared::i18n::{self};
 use crate::shared::ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crate::shared::ui::widgets::{LocalPathTooltip, ime_input_canvas, text_caret};
 use crate::shared::ui::{icons, theme};
@@ -26,7 +26,7 @@ fn host_entry_matches(entry: &HostEntry, query: &str) -> bool {
         || entry.detail.to_ascii_lowercase().contains(query)
 }
 
-/// 侧栏整体布局：标题栏（含语言切换/设置）+ 搜索框 + 分组列表 + 宽度拖拽。
+/// 侧栏整体布局：标题栏（含设置）+ 搜索框 + 分组列表 + 宽度拖拽。
 pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShell>) -> AnyElement {
     let query = shell.host_query.trim().to_ascii_lowercase();
     let search_focus = shell.host_focus.clone();
@@ -385,31 +385,6 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
         .child(div().flex_1())
         .child(
             div()
-                .id("language-toggle")
-                .h(px(24.))
-                .px_2()
-                .flex()
-                .items_center()
-                .gap_1()
-                .rounded(px(theme::RADIUS_SM))
-                .cursor_pointer()
-                .text_xs()
-                .text_color(theme::muted_text())
-                .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
-                .child(SharedString::from(i18n::language_short_label(
-                    shell.language_preference.resolve(),
-                )))
-                .child(
-                    icons::icon(icons::IconName::ChevronDown, 11.)
-                        .text_color(theme::muted_text())
-                        .hover(|s| s.text_color(theme::text())),
-                )
-                .on_click(cx.listener(|this, _ev, _window, cx| {
-                    this.toggle_language_menu(cx);
-                })),
-        )
-        .child(
-            div()
                 .id("settings-toggle")
                 .w(px(24.))
                 .h(px(24.))
@@ -436,14 +411,8 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
                 .on_click(cx.listener(|this, _ev, _window, cx| {
                     this.toggle_settings(cx);
                 })),
-        )
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme::faint_text())
-                .child(SharedString::from(format!("{visible_count}"))),
         );
-    let mut sidebar_root = div()
+    let sidebar_root = div()
         .relative()
         .flex_shrink_0()
         .w(px(width))
@@ -475,60 +444,7 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
                 ),
         )
         .child(resize_handle);
-    if shell.language_menu_open {
-        sidebar_root = sidebar_root.child(render_language_menu(shell, cx));
-    }
     sidebar_root.into_any_element()
-}
-
-fn render_language_menu(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
-    let current = shell.language_preference;
-    let mut menu = div()
-        .id("language-menu")
-        .absolute()
-        .top(px(theme::TITLEBAR_HEIGHT - 2.))
-        .right(px(8.))
-        .w(px(168.))
-        .p_1()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .bg(theme::raised())
-        .border_1()
-        .border_color(theme::border_strong())
-        .rounded(px(theme::RADIUS_SM))
-        .shadow_md();
-
-    for preference in LanguagePreference::ALL {
-        let selected = preference == current;
-        let option_id = format!("language-option-{:?}", preference);
-        let option = div()
-            .id(option_id)
-            .h(px(28.))
-            .px_2()
-            .flex()
-            .items_center()
-            .rounded(px(theme::RADIUS_SM))
-            .cursor_pointer()
-            .text_xs()
-            .text_color(if selected {
-                theme::accent()
-            } else {
-                theme::text()
-            })
-            .bg(if selected {
-                theme::accent_soft()
-            } else {
-                theme::raised()
-            })
-            .hover(|s| s.bg(theme::surface()).text_color(theme::text()))
-            .child(SharedString::from(i18n::preference_label(preference)))
-            .on_click(cx.listener(move |this, _ev, _window, cx| {
-                this.set_language(preference, cx);
-            }));
-        menu = menu.child(option);
-    }
-    menu.into_any_element()
 }
 
 fn local_dir_name(path: &Path) -> String {

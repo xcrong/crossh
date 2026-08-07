@@ -195,13 +195,6 @@ pub fn preference_label(preference: LanguagePreference) -> String {
     })
 }
 
-pub fn language_short_label(locale: Locale) -> &'static str {
-    match locale {
-        Locale::English => "EN",
-        Locale::SimplifiedChinese => "中",
-    }
-}
-
 fn load_settings() -> AppSettings {
     let Some(path) = settings_path() else {
         return AppSettings::default();

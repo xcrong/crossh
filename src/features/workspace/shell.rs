@@ -264,7 +264,6 @@ pub struct AppShell {
     last_had_prompt: bool,
     /// 当前语言偏好；实际 locale 由 i18n 全局状态维护。
     pub(crate) language_preference: LanguagePreference,
-    pub(crate) language_menu_open: bool,
     /// 当前打开的右键上下文菜单（None = 未打开）。
     pub(crate) context_menu: Option<ContextMenuState<ShellMenuAction>>,
     pub(crate) settings: AppSettings,
@@ -331,7 +330,6 @@ impl AppShell {
             modal_focus: cx.focus_handle(),
             last_had_prompt: false,
             language_preference,
-            language_menu_open: false,
             context_menu: None,
             settings,
             sidebar_width: Rc::new(Cell::new(theme::SIDEBAR_WIDTH)),
@@ -1404,11 +1402,6 @@ impl AppShell {
         cx.notify();
     }
 
-    pub(crate) fn toggle_language_menu(&mut self, cx: &mut Context<Self>) {
-        self.language_menu_open = !self.language_menu_open;
-        cx.notify();
-    }
-
     /// 打开右键上下文菜单（替换已有菜单）。
     pub(crate) fn open_context_menu(
         &mut self,
@@ -1417,7 +1410,6 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         self.context_menu = Some(ContextMenuState { position, entries });
-        self.language_menu_open = false;
         cx.notify();
     }
 
@@ -1563,7 +1555,6 @@ impl AppShell {
     }
 
     pub(crate) fn toggle_settings(&mut self, cx: &mut Context<Self>) {
-        self.language_menu_open = false;
         crate::features::settings::toggle_settings(cx.weak_entity(), cx);
         cx.notify();
     }
@@ -1608,14 +1599,12 @@ impl AppShell {
 
     pub(crate) fn set_language(&mut self, preference: LanguagePreference, cx: &mut Context<Self>) {
         if self.language_preference == preference {
-            self.language_menu_open = false;
             cx.notify();
             return;
         }
         let mut settings = self.settings.clone();
         settings.language = preference;
         self.apply_settings(settings, cx);
-        self.language_menu_open = false;
         cx.notify();
     }
 
