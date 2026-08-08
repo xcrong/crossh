@@ -572,6 +572,7 @@ impl super::TerminalView {
         };
         let steps = delta.unsigned_abs().clamp(1, 8) as usize;
 
+        cx.stop_propagation();
         match wheel_route(mode, ev.modifiers.shift) {
             WheelRoute::MouseReport => {
                 let dir = if delta > 0 { 64 } else { 65 };
