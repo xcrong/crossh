@@ -375,6 +375,18 @@ fn encodes_control_and_printable_keys() {
 }
 
 #[test]
+fn paste_matches_zed_terminal_newline_and_escape_rules() {
+    assert_eq!(
+        terminal_paste_bytes("one\r\ntwo\nthree", TermMode::NONE),
+        b"one\rtwo\rthree"
+    );
+    assert_eq!(
+        terminal_paste_bytes("a\x1b[b", TermMode::BRACKETED_PASTE),
+        b"\x1b[200~a[b\x1b[201~"
+    );
+}
+
+#[test]
 fn kitty_raw_images_are_normalized_to_png() {
     let rgba = kitty_raw_to_png(&[255, 0, 0, 255], 1, 1, 4).expect("RGBA PNG");
     assert_eq!(terminal_image_format(&rgba), Some(gpui::ImageFormat::Png));

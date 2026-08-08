@@ -4,8 +4,8 @@
 
 Crossh is distributed under the GNU General Public License, version 3 or
 later (`GPL-3.0-or-later`). Interactive terminals use Zed's `assets`,
-`terminal`, `terminal_view`, `task`, settings, and theme infrastructure
-directly. The
+`terminal`, `task`, settings, and theme infrastructure directly. Crossh's
+terminal view is a local renderer and interaction layer built on that core. The
 Zed sources are pinned in `Cargo.toml`; Crossh adds its workspace, SSH
 configuration, SFTP, forwarding, and command-management layers around them.
 
@@ -43,14 +43,15 @@ Feather MIT notice documented in Lucide's official `LICENSE` file.
 - **gpui / gpui_platform** — UI toolkit and platform integration, direct git
   dependencies from the Zed project at the pinned revision in `Cargo.toml`.
   APACHE-2.0 / GPL-3.0-or-later (source: zed-industries/zed).
-- **terminal / terminal_view** — Zed's terminal emulator, PTY integration,
-  input, selection, scrolling, and IME view at the same pinned revision.
+- **terminal** — Zed's terminal emulator and PTY integration at the same pinned
+  revision. Crossh's terminal view provides the renderer and product-specific
+  input, selection, scrolling, IME, and timestamp layers.
   GPL-3.0-or-later.
 - **assets** — Zed's embedded resource source, including the bundled Lilex
   and IBM Plex fonts loaded by Crossh's GPUI text system. GPL-3.0-or-later.
-- **settings / task / theme / theme_settings / release_channel / collections /
-  util** — Zed infrastructure used to initialize the official terminal,
-  apply terminal settings, create shell processes, and integrate its theme.
+- **settings / task / theme / theme_settings / release_channel / util** — Zed
+  infrastructure used to initialize the terminal core, apply terminal settings,
+  create shell processes, and integrate its theme.
   Licensing follows the Zed source at the pinned revision in `Cargo.toml`.
 - **russh / russh-sftp** — SSH client and SFTP protocol. MIT.
 - **alacritty_terminal / vte** — retained for protocol and test compatibility

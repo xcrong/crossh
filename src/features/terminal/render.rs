@@ -390,6 +390,10 @@ pub(crate) struct TerminalTimestampState {
 }
 
 impl TerminalTimestampState {
+    pub(crate) fn clear(&mut self) {
+        *self = Self::default();
+    }
+
     #[cfg(test)]
     pub(crate) fn observe(&mut self, term: &Term<NoopListener>, timestamp: String) {
         let grid = term.grid();
@@ -563,6 +567,30 @@ impl TerminalTimestampState {
             .map(|row| self.lines.get(row).cloned().flatten())
             .collect()
     }
+}
+
+/// Convert Zed core's terminal-relative selection into the viewport-relative
+/// coordinates consumed by Crossh's renderer. Zed can select the entire
+/// scrollback, so endpoints outside the current viewport are clamped to its
+/// first/last visible cell.
+pub(crate) fn selection_for_content(
+    content: &zed_terminal::Content,
+) -> Option<((usize, usize), (usize, usize))> {
+    let rows = content.terminal_bounds.num_lines();
+    let cols = content.terminal_bounds.num_columns();
+    let selection = content.selection?;
+    if rows == 0 || cols == 0 {
+        return None;
+    }
+
+    let to_viewport = |point: zed_terminal::Point| {
+        let row = i64::from(point.line) + content.display_offset as i64;
+        let row = row.clamp(0, rows.saturating_sub(1) as i64) as usize;
+        let col = point.column.min(cols.saturating_sub(1));
+        (col, row)
+    };
+
+    Some((to_viewport(selection.start), to_viewport(selection.end)))
 }
 
 fn content_row_signatures(content: &zed_terminal::Content) -> Vec<RowSignature> {

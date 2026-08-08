@@ -7,7 +7,7 @@
 
 - **读取 `~/.ssh/config`（只读）**：别名列表、`Include`/通配/`Match`、`ProxyJump`、`Local/Remote/DynamicForward`、`IdentityFile`/`IdentitiesOnly` 均可解析。
 - **会话池复用**：SFTP、端口转发和后台远程命令按主机共享已认证的 russh 连接；交互式终端由 Zed 的 PTY/事件循环独立管理。
-- **交互式终端**：Zed `terminal` + `terminal_view` 负责 PTY、终端模拟、输入、滚动、文本选择、鼠标协议、IME 和 URL 跳转；本地 shell 与交互式 SSH 都走同一套视图。
+- **交互式终端**：Zed `terminal` 负责 PTY、终端模拟和滚动核心；Crossh 的本地 terminal view 叠加输入、文本选择、鼠标协议、IME、URL 跳转和时间戳 gutter；本地 shell 与交互式 SSH 都走同一套视图。
 - **反应式认证**：未知主机密钥弹指纹确认（可写 `known_hosts`）；加密私钥口令、密码按需弹出，凭据不回写日志。
 - **SFTP**：远程浏览、上传/下载、目录递归、进度条、覆盖确认。
 - **端口转发**：`-L` / `-R` / `-D`(SOCKS5)，config 驱动，UI 启停。
@@ -78,7 +78,7 @@ src/
 
 依赖方向保持单向：`infrastructure` 和 `shared/terminal` 不依赖 GPUI；feature 的 GPUI 适配层依赖基础设施；`workspace` 通过 `WorkspacePane` trait 消费终端、SFTP 和转发面板。可重复执行的分层检查位于 `scripts/check-architecture.sh`。
 
-技术栈：Zed `gpui`、`terminal`、`terminal_view`、`task`（UI、PTY、终端模拟和交互）；`russh`（SFTP、端口转发和后台 SSH 命令）；`tokio`（2 worker 常驻）。`alacritty_terminal` / `vte` 仅保留给协议和测试兼容层，不再负责生产交互终端的 PTY 或渲染。
+技术栈：Zed `gpui`、`terminal`、`task`（UI、PTY、终端模拟和 shell 进程）；Crossh 自有 terminal view（交互绘制和附加逻辑）；`russh`（SFTP、端口转发和后台 SSH 命令）；`tokio`（2 worker 常驻）。`alacritty_terminal` / `vte` 仅保留给协议和测试兼容层，不再负责生产交互终端的 PTY 或渲染。
 
 ## 路线图
 
@@ -93,4 +93,4 @@ src/
 
 ## 许可证与致谢
 
-GPL-3.0-or-later。交互式终端直接使用 Zed 的 `terminal`、`terminal_view` 及其设置、任务和主题基础设施，因此 Crossh 采用 GPL-3.0-or-later；具体依赖和许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。UI 图标为 [Lucide](https://lucide.dev/) 1.27.0 官方 SVG；应用图标为自绘。
+GPL-3.0-or-later。交互式终端使用 Zed 的 `terminal` 及其设置、任务和主题基础设施，并在 Crossh 自有 view 中叠加产品逻辑，因此 Crossh 采用 GPL-3.0-or-later；具体依赖和许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。UI 图标为 [Lucide](https://lucide.dev/) 1.27.0 官方 SVG；应用图标为自绘。

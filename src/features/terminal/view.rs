@@ -1,8 +1,8 @@
-//! 终端视图：Crossh workspace 对 Zed 官方 terminal/terminal_view 的适配器。
+//! Crossh terminal view built on Zed's terminal core.
 //!
 //! Local and remote processes are created by Zed's terminal PTY/event loop;
-//! Crossh adds workspace integration and product-specific metadata around the
-//! official Zed terminal view.
+//! Crossh owns the renderer and adds workspace integration and product-specific
+//! metadata around that core.
 use std::cell::Cell as StdCell;
 use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
@@ -23,16 +23,15 @@ use alacritty_terminal::term::{Config, Term};
 use async_channel::{Receiver, Sender};
 use chrono::Local;
 use gpui::{
-    App, AppContext, Bounds, Context, Entity, EntityInputHandler, EventEmitter, FocusHandle,
-    Focusable, Font, FontWeight, InputHandler, InteractiveElement, IntoElement, KeyDownEvent,
-    KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
-    Point, Render, ScrollDelta, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, SystemNotificationAction, SystemNotificationResponse, Task, TextRun, TouchPhase,
+    App, AppContext, Bounds, Context, Entity, EntityInputHandler, EventEmitter, FocusHandle, Font,
+    InputHandler, InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
+    ScrollDelta, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, Subscription,
+    SystemNotificationAction, SystemNotificationResponse, Task, TextRun, TouchPhase,
     UTF16Selection, Window, canvas, div, hsla, px,
 };
 use settings::Settings as _;
 use terminal as zed_terminal;
-use terminal_view as zed_terminal_view;
 #[cfg(test)]
 use vte::ansi::{Processor, Rgb};
 
@@ -120,6 +119,8 @@ fn default_local_shell_name() -> String {
     }
 }
 
+/// Use the same font source as Zed's terminal view while keeping rendering in
+/// Crossh. This preserves terminal-specific fallback and ligature settings.
 fn zed_terminal_font(cx: &App) -> Font {
     let mut font = theme_settings::ThemeSettings::get_global(cx)
         .buffer_font
@@ -578,16 +579,12 @@ fn notification_state_for_tag(
 
 pub struct TerminalView {
     zed_terminal: Entity<zed_terminal::Terminal>,
-    /// Official Zed view used by terminals backed by `TerminalBuilder`.
-    /// The legacy fields below remain only for protocol/parser compatibility;
-    /// production terminals render through this official view.
-    official_view: Option<Entity<zed_terminal_view::TerminalView>>,
     pending_zed_builder: Option<zed_terminal::TerminalBuilder>,
     zed_builder_error: Option<String>,
     _zed_builder_task: Option<Task<()>>,
+    _input_relay: Option<Task<()>>,
+    zed_terminal_ready: bool,
     _zed_terminal_subscription: Option<Subscription>,
-    _official_view_subscription: Option<Subscription>,
-    official_focus_pending: bool,
     terminal_content: zed_terminal::Content,
     terminal_total_lines: usize,
     pending_terminal_output: Vec<u8>,
@@ -650,6 +647,10 @@ pub struct TerminalView {
     notification_state_order: VecDeque<String>,
     kitty_notification_expiry: HashMap<String, Task<()>>,
     notification_serial: u64,
+    /// Zed core selection is applied during `Terminal::sync`.
+    core_selection_pending: bool,
+    /// Keep a local clear request until the real PTY-backed terminal is attached.
+    clear_pending: bool,
     _blink_task: Option<Task<()>>,
     /// 最近一帧检测到的 URL（用于点击跳转）。
     detected_urls: Vec<(usize, usize, usize, String)>,
@@ -670,6 +671,72 @@ pub struct TerminalView {
     last_progress: Instant,
     /// 诊断：累计处理的 SessionEvent 数。
     events_processed: u64,
+}
+
+impl TerminalView {
+    fn attach_zed_terminal(
+        &mut self,
+        terminal: Entity<zed_terminal::Terminal>,
+        cx: &mut Context<Self>,
+    ) {
+        let subscription = cx.subscribe(&terminal, |this, terminal, event, cx| {
+            let title = terminal.read(cx).title(false);
+            if this.title.as_deref() != Some(title.as_str()) {
+                this.title = Some(title);
+                cx.emit(TerminalEvent::TitleChanged);
+            }
+            let cwd = terminal
+                .read(cx)
+                .working_directory()
+                .map(|path| path.to_string_lossy().into_owned());
+            if let Some(cwd) = cwd
+                && this.cwd.as_deref() != Some(cwd.as_str())
+            {
+                this.cwd = Some(cwd);
+                cx.emit(TerminalEvent::CwdChanged);
+            }
+
+            match event {
+                zed_terminal::Event::CloseTerminal => {
+                    if this.state != ConnState::Closed {
+                        this.state = ConnState::Closed;
+                        cx.emit(TerminalEvent::Closed);
+                    }
+                }
+                zed_terminal::Event::Bell => cx.emit(TerminalEvent::Notification),
+                zed_terminal::Event::TitleChanged | zed_terminal::Event::BreadcrumbsChanged => {
+                    cx.emit(TerminalEvent::TitleChanged)
+                }
+                zed_terminal::Event::Wakeup => {
+                    if !this
+                        .terminal_content
+                        .mode
+                        .contains(zed_terminal::Modes::ALT_SCREEN)
+                    {
+                        this.pending_timestamp = Some(format_timestamp(Local::now()));
+                    }
+                }
+                zed_terminal::Event::BlinkChanged(_)
+                | zed_terminal::Event::SelectionsChanged
+                | zed_terminal::Event::NewNavigationTarget(_)
+                | zed_terminal::Event::Open(_) => {}
+            }
+            cx.notify();
+        });
+
+        self.title = Some(terminal.read(cx).title(false));
+        self.zed_terminal = terminal;
+        self._zed_terminal_subscription = Some(subscription);
+        self._zed_builder_task = None;
+        self.zed_terminal_ready = true;
+        self.focused_once = false;
+        self.state = ConnState::Connected;
+        self.zed_builder_error = None;
+        if self.clear_pending {
+            self.zed_terminal.update(cx, |terminal, _| terminal.clear());
+            self.clear_pending = false;
+        }
+    }
 }
 
 pub(crate) struct TerminalWorkspacePane(pub(crate) Entity<TerminalView>);
@@ -859,144 +926,17 @@ impl EntityInputHandler for TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.official_view.is_none()
-            && let Some(builder) = self.pending_zed_builder.take()
-        {
-            let terminal = cx.new(|terminal_cx| builder.subscribe(terminal_cx));
-            let subscription = cx.subscribe(&terminal, |this, terminal, event, cx| {
-                let title = terminal.read(cx).title(false);
-                if this.title.as_deref() != Some(title.as_str()) {
-                    this.title = Some(title);
-                    cx.emit(TerminalEvent::TitleChanged);
-                }
-                let cwd = terminal
-                    .read(cx)
-                    .working_directory()
-                    .map(|path| path.to_string_lossy().into_owned());
-                if let Some(cwd) = cwd
-                    && this.cwd.as_deref() != Some(cwd.as_str())
-                {
-                    this.cwd = Some(cwd);
-                    cx.emit(TerminalEvent::CwdChanged);
-                }
-
-                match event {
-                    zed_terminal::Event::CloseTerminal => {
-                        this.state = ConnState::Closed;
-                        cx.emit(TerminalEvent::Closed);
-                    }
-                    zed_terminal::Event::Bell => cx.emit(TerminalEvent::Notification),
-                    zed_terminal::Event::TitleChanged | zed_terminal::Event::BreadcrumbsChanged => {
-                        cx.emit(TerminalEvent::TitleChanged)
-                    }
-                    zed_terminal::Event::Wakeup => {
-                        this.pending_timestamp = Some(format_timestamp(Local::now()));
-                    }
-                    zed_terminal::Event::BlinkChanged(_)
-                    | zed_terminal::Event::SelectionsChanged
-                    | zed_terminal::Event::NewNavigationTarget(_)
-                    | zed_terminal::Event::Open(_) => {}
-                }
-                cx.notify();
-            });
-            let official_view = cx.new(|view_cx| {
-                zed_terminal_view::TerminalView::new(
-                    terminal.clone(),
-                    gpui::WeakEntity::new_invalid(),
-                    None,
-                    gpui::WeakEntity::new_invalid(),
-                    window,
-                    view_cx,
-                )
-            });
-            official_view.update(cx, |view, view_cx| {
-                view.set_show_workspace_actions(false, view_cx);
-            });
-            let official_view_subscription = cx.observe(&official_view, |_, _, cx| {
-                cx.notify();
-            });
-            self.title = Some(terminal.read(cx).title(false));
-            self.zed_terminal = terminal;
-            self._zed_terminal_subscription = Some(subscription);
-            self._official_view_subscription = Some(official_view_subscription);
-            self.official_view = Some(official_view);
-            self.state = ConnState::Connected;
-            self.zed_builder_error = None;
-        }
-
-        if let Some(official_view) = self.official_view.clone() {
-            self.zed_terminal.update(cx, |terminal, terminal_cx| {
-                terminal.sync(window, terminal_cx);
-            });
-            let content = self.zed_terminal.read(cx).last_content().clone();
-            self.terminal_content = content.clone();
-            self.terminal_total_lines = self.zed_terminal.read(cx).total_lines();
-            if let Some(timestamp) = self.pending_timestamp.take()
-                && !content.mode.contains(zed_terminal::Modes::ALT_SCREEN)
-            {
-                self.line_timestamps.observe_content(&content, timestamp);
-            } else if self.line_timestamps.signatures.is_empty()
-                && !content.cells.is_empty()
-                && !content.mode.contains(zed_terminal::Modes::ALT_SCREEN)
-            {
-                self.line_timestamps
-                    .observe_content(&content, format_timestamp(Local::now()));
+        if let Some(builder) = self.pending_zed_builder.take() {
+            if self.state == ConnState::Closed {
+                // A close request can arrive while the PTY builder is still
+                // running. Do not let its completion resurrect the terminal.
+                self._zed_builder_task = None;
+                self.zed_builder_error = None;
+                drop(builder);
+            } else {
+                let terminal = cx.new(|terminal_cx| builder.subscribe(terminal_cx));
+                self.attach_zed_terminal(terminal, cx);
             }
-
-            if self.official_focus_pending {
-                official_view.read(cx).focus_handle(cx).focus(window, cx);
-                self.official_focus_pending = false;
-            }
-
-            let terminal_element = div()
-                .flex_1()
-                .min_w_0()
-                .min_h_0()
-                .h_full()
-                .child(official_view);
-            if !self.show_timestamps {
-                return terminal_element.into_any_element();
-            }
-
-            let timestamps = self.line_timestamps.visible_content(&content);
-            let line_h = content.terminal_bounds.line_height;
-            let content_origin_y = content.terminal_bounds.bounds.origin.y;
-            let font = zed_terminal_font(cx);
-            let font_size = self.font_size;
-            let default_fg = fg_of_content(&content);
-            let default_bg = bg_of_content(&content);
-            let timestamp_gutter = div()
-                .id("terminal-timestamp-gutter")
-                .w(px(TIMESTAMP_GUTTER_WIDTH))
-                .h_full()
-                .flex_none()
-                .child(
-                    canvas(
-                        |bounds, _window, _cx| bounds,
-                        move |bounds, _prepaint, window, cx| {
-                            TimestampGutterOverlay {
-                                canvas_bounds: bounds,
-                                content_origin_y,
-                                timestamps: &timestamps,
-                                line_h,
-                                font_size,
-                                font: &font,
-                                default_fg,
-                                default_bg,
-                            }
-                            .paint(window, cx);
-                        },
-                    )
-                    .size_full(),
-                );
-            return div()
-                .id("terminal-with-timestamp-gutter")
-                .size_full()
-                .flex()
-                .flex_row()
-                .child(timestamp_gutter)
-                .child(terminal_element)
-                .into_any_element();
         }
 
         if self._zed_builder_task.is_some() {
@@ -1015,9 +955,28 @@ impl Render for TerminalView {
         let zed_terminal = self.zed_terminal.read(cx);
         self.terminal_content = zed_terminal.last_content().clone();
         self.terminal_total_lines = zed_terminal.total_lines();
-        if let Some(timestamp) = self.pending_timestamp.take() {
+        if self.core_selection_pending && self.terminal_content.selection.is_some() {
+            self.sel_start = None;
+            self.sel_end = None;
+            self.core_selection_pending = false;
+        }
+        if let Some(timestamp) = self.pending_timestamp.take()
+            && !self
+                .terminal_content
+                .mode
+                .contains(zed_terminal::Modes::ALT_SCREEN)
+        {
             self.line_timestamps
                 .observe_content(&self.terminal_content, timestamp);
+        } else if self.line_timestamps.signatures.is_empty()
+            && !self.terminal_content.cells.is_empty()
+            && !self
+                .terminal_content
+                .mode
+                .contains(zed_terminal::Modes::ALT_SCREEN)
+        {
+            self.line_timestamps
+                .observe_content(&self.terminal_content, format_timestamp(Local::now()));
         }
 
         // 诊断：如果 render 帧间隔异常大，说明主线程之前卡住了很久。
@@ -1036,14 +995,14 @@ impl Render for TerminalView {
             let focus = self.focus.clone();
             self._focus_in = Some(cx.on_focus_in(&focus, window, |this, _window, cx| {
                 this.focused = true;
-                this.send_focus_event(true);
+                this.send_focus_event(true, cx);
                 cx.notify();
             }));
             let focus = self.focus.clone();
             self._focus_out = Some(
                 cx.on_focus_out(&focus, window, |this, _event, _window, cx| {
                     this.focused = false;
-                    this.send_focus_event(false);
+                    this.send_focus_event(false, cx);
                     cx.notify();
                 }),
             );
@@ -1177,7 +1136,10 @@ impl Render for TerminalView {
                 if let Some(t) = weak2.upgrade() {
                     let (snapshot, ime_marked_text, shell_input, images, progress) = {
                         let this = t.read(cx);
-                        let sel = this.sel_start.zip(this.sel_end);
+                        let sel = this
+                            .sel_start
+                            .zip(this.sel_end)
+                            .or_else(|| selection_for_content(&this.terminal_content));
                         let show_cur = this
                             .terminal_content
                             .mode

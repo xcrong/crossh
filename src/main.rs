@@ -1,7 +1,7 @@
 //! crossh —— 基于 gpui 的轻量 SSH 客户端。
 //!
 //! 常驻开发工具：复用 `~/.ssh/config`（只读），提供基于 Zed 官方 PTY
-//! 和 terminal_view 的交互式终端。
+//! 和 Crossh 本地 renderer 的交互式终端。
 //! SFTP 与端口转发为后续阶段（见 .kilo/plans）。
 
 mod app;
@@ -13,7 +13,6 @@ use assets::Assets as ZedAssets;
 use gpui::{App, KeyBinding, actions};
 use release_channel as zed_release_channel;
 use settings as zed_settings;
-use terminal_view as zed_terminal_view;
 use theme::LoadThemes;
 use theme_settings as zed_theme_settings;
 
@@ -40,15 +39,14 @@ fn main() {
     app.run(move |cx: &mut App| {
         cx.set_app_identity("io.crossh.app", "Crossh");
         cx.init_colors();
-        // Initialize the same settings/theme globals consumed by Zed's
-        // terminal and terminal_view crates. Crossh's product settings remain
-        // separate and are layered on top in features::settings.
+        // Initialize the settings/theme globals consumed by Zed's terminal
+        // core. Crossh's product settings remain separate and are layered on
+        // top in features::settings.
         let app_version =
             zed_release_channel::AppVersion::load(env!("CARGO_PKG_VERSION"), None, None);
         zed_release_channel::init(app_version, cx);
         zed_settings::init(cx);
         zed_theme_settings::init(LoadThemes::JustBase, cx);
-        zed_terminal_view::init(cx);
         ZedAssets
             .load_fonts(cx)
             .expect("Zed embedded fonts should load");

@@ -1,9 +1,7 @@
 //! Terminal entity lifecycle, session state, and event handling.
 
-use std::path::PathBuf;
-
-use collections::HashMap as ZedHashMap;
 use settings::Settings as _;
+use std::path::PathBuf;
 use task::Shell;
 
 use super::*;
@@ -20,7 +18,7 @@ struct TerminalBridge {
 
 impl super::TerminalView {
     /// Keep Crossh's product settings as the thin layer over Zed's terminal
-    /// settings, so the official view and builder observe the same values.
+    /// settings, so the core terminal and local renderer observe the same values.
     pub fn apply_zed_settings(settings: &TerminalSettings, cx: &mut App) {
         let mut zed_settings =
             zed_terminal::terminal_settings::TerminalSettings::get_global(cx).clone();
@@ -39,9 +37,8 @@ impl super::TerminalView {
     /// command, so their rendering and input path is identical to local ones.
     ///
     /// The builder is asynchronous because PTY creation and shell setup run
-    /// off the UI thread. The official Zed view is attached lazily from
-    /// `Render`, where GPUI provides the active window required by its focus
-    /// and IME integration.
+    /// off the UI thread. The real terminal entity is attached lazily from
+    /// `Render`, after the builder has finished creating the PTY.
     pub fn from_zed_shell(
         working_directory: Option<PathBuf>,
         initial_cwd: Option<String>,
@@ -50,7 +47,7 @@ impl super::TerminalView {
         settings: TerminalSettings,
         cx: &mut App,
     ) -> Entity<Self> {
-        let (input_tx, _input_rx) = async_channel::unbounded::<InputCmd>();
+        let (input_tx, input_rx) = async_channel::unbounded::<InputCmd>();
         let (_event_tx, event_rx) = async_channel::unbounded::<SessionEvent>();
         let entity = Self::from_bridge_with_cwd(
             TerminalBridge {
@@ -69,7 +66,7 @@ impl super::TerminalView {
             working_directory,
             None,
             shell,
-            ZedHashMap::default(),
+            HashMap::default(),
             zed_terminal::terminal_settings::CursorShape::Block,
             zed_terminal::terminal_settings::AlternateScroll::On,
             Some(settings.scrollback),
@@ -83,12 +80,46 @@ impl super::TerminalView {
             util::paths::PathStyle::local(),
         );
 
+        let relay_weak = entity.downgrade();
+        let input_relay = cx.spawn(async move |cx| {
+            while let Ok(command) = input_rx.recv().await {
+                let applied = relay_weak.update(cx, |this, cx| {
+                    match command {
+                        InputCmd::Write(bytes) => {
+                            if this.zed_terminal_ready {
+                                this.zed_terminal
+                                    .update(cx, |terminal, _| terminal.input(bytes));
+                            } else {
+                                this.pending_input.push_back(InputCmd::Write(bytes));
+                            }
+                        }
+                        // `maybe_resize` applies the pixel-aware bounds directly
+                        // to the Zed terminal. Keep this command for the legacy
+                        // queue contract, but do not resize a second time here.
+                        InputCmd::Resize { .. } => {}
+                        InputCmd::Close => {
+                            let should_emit = !matches!(this.state, ConnState::Closed);
+                            this.state = ConnState::Closed;
+                            this.command_running = false;
+                            if should_emit {
+                                cx.emit(TerminalEvent::Closed);
+                            }
+                        }
+                    }
+                    cx.notify();
+                });
+                if applied.is_err() {
+                    break;
+                }
+            }
+        });
+        entity.update(cx, |this, _| this._input_relay = Some(input_relay));
+
         let weak = entity.downgrade();
         let load_task = cx.spawn(async move |cx| match builder.await {
             Ok(builder) => {
                 let _ = weak.update(cx, |this, cx| {
                     this.pending_zed_builder = Some(builder);
-                    this.official_focus_pending = true;
                     cx.notify();
                 });
             }
@@ -117,13 +148,7 @@ impl super::TerminalView {
         } = bridge;
         let settings = settings.normalized();
         let (window_size, protocol_responses) = terminal_queues_for_bridge(cols, rows);
-        let font = Font {
-            family: "Menlo".into(),
-            weight: FontWeight::NORMAL,
-            style: gpui::FontStyle::Normal,
-            features: Default::default(),
-            fallbacks: None,
-        };
+        let font = super::zed_terminal_font(cx);
 
         let zed_builder = zed_terminal::TerminalBuilder::new_display_only_with_bounds(
             zed_terminal::terminal_settings::CursorShape::Block,
@@ -140,13 +165,12 @@ impl super::TerminalView {
             let terminal_content = zed_terminal.read(cx).last_content().clone();
             Self {
                 zed_terminal,
-                official_view: None,
                 pending_zed_builder: None,
                 zed_builder_error: None,
                 _zed_builder_task: None,
+                _input_relay: None,
+                zed_terminal_ready: false,
                 _zed_terminal_subscription: None,
-                _official_view_subscription: None,
-                official_focus_pending: false,
                 terminal_content,
                 terminal_total_lines: rows,
                 pending_terminal_output: Vec::new(),
@@ -198,6 +222,8 @@ impl super::TerminalView {
                 notification_state_order: VecDeque::new(),
                 kitty_notification_expiry: HashMap::new(),
                 notification_serial: 0,
+                core_selection_pending: false,
+                clear_pending: false,
                 _blink_task: None,
                 detected_urls: Vec::new(),
                 line_timestamps: TerminalTimestampState::default(),
@@ -286,12 +312,7 @@ impl super::TerminalView {
     }
 
     /// Ask the PTY/SSH channel to close cleanly before its entity is dropped.
-    pub(crate) fn request_close(&mut self, cx: &mut Context<Self>) {
-        if self.official_view.is_some() {
-            self.state = ConnState::Closed;
-            cx.emit(TerminalEvent::Closed);
-            return;
-        }
+    pub(crate) fn request_close(&mut self, _cx: &mut Context<Self>) {
         self.drain_protocol_responses();
         self.queue_input(InputCmd::Close);
         self.flush_pending_input();

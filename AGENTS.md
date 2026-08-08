@@ -25,6 +25,11 @@
 - **Depend on abstractions, not concrete panes.** A workspace/container should consume traits or common interfaces (mirrors Zed's `item.rs` / `pane.rs`), not `match` over an enum of concrete view types.
 - **No backward-compatibility bloat.** This project evolves fast and has no historical baggage — do not write redundant shims, deprecated paths, or compatibility code "just in case" older APIs are still used. Keep every layer behind the current, intended contract only.
 
+## Build Cache Discipline
+
+- Use the project's default `target/` directory for Cargo builds, tests, checks, and releases. Do not set `CARGO_TARGET_DIR` or create an independent compiler cache unless the user explicitly requests it.
+- If the default target is locked by another Cargo process, wait for it or report the condition; do not switch to a separate target as a workaround.
+
 ## Sandbox-Aware Command Execution
 
 - The workspace sandbox may permit source changes while denying writes to `.git` and external network access.

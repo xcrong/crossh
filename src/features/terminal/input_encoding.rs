@@ -924,6 +924,34 @@ pub(crate) fn is_clear_screen_shortcut(ks: &gpui::Keystroke) -> bool {
         && ks.key == "l"
 }
 
+pub(crate) fn is_terminal_clear_shortcut(ks: &gpui::Keystroke) -> bool {
+    is_clear_screen_shortcut(ks)
+        || (ks.modifiers.platform
+            && !ks.modifiers.shift
+            && !ks.modifiers.alt
+            && !ks.modifiers.control
+            && ks.key == "k")
+        || (ks.modifiers.control
+            && ks.modifiers.shift
+            && !ks.modifiers.alt
+            && !ks.modifiers.platform
+            && ks.key == "l")
+}
+
+/// Fallback for paste requests that arrive before the PTY-backed Zed terminal
+/// has been attached. The attached path delegates to `Terminal::paste`.
+pub(crate) fn terminal_paste_bytes(text: &str, mode: TermMode) -> Vec<u8> {
+    if mode.contains(TermMode::BRACKETED_PASTE) {
+        let mut bytes = b"\x1b[200~".to_vec();
+        let normalized = text.replace('\x1b', "");
+        bytes.extend_from_slice(normalized.as_bytes());
+        bytes.extend_from_slice(b"\x1b[201~");
+        bytes
+    } else {
+        text.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
+    }
+}
+
 fn is_clear_screen_control(ks: &gpui::Keystroke) -> bool {
     ks.modifiers.control
         && !ks.modifiers.shift

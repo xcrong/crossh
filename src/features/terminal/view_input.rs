@@ -1,10 +1,16 @@
 //! Terminal input handling, selection, menus, and IME bridge.
 
+use settings::Settings as _;
+
 use super::*;
 
 impl super::TerminalView {
     pub(super) fn send_input(&mut self, bytes: Vec<u8>) {
         log::trace!("pty write: {}", debug_bytes(&bytes));
+        // Zed's `Terminal::input` clears its selection. Keep the Crossh-owned
+        // mouse selection in the same state when input goes through the relay.
+        self.sel_start = None;
+        self.sel_end = None;
         self.queue_input(InputCmd::Write(bytes));
     }
 
@@ -170,26 +176,92 @@ impl super::TerminalView {
         flush_pending_commands(&self.input_tx, &mut self.pending_input);
     }
 
+    /// Clear only the terminal display. This mirrors Zed's `terminal::Clear`
+    /// action and deliberately does not send Ctrl-L to the shell.
+    pub(super) fn clear_terminal(&mut self, cx: &mut Context<Self>) {
+        self.sel_start = None;
+        self.sel_end = None;
+        self.core_selection_pending = false;
+        self.pending_timestamp = None;
+        self.line_timestamps.clear();
+        if self.zed_terminal_ready {
+            self.zed_terminal.update(cx, |terminal, _| terminal.clear());
+        } else {
+            self.clear_pending = true;
+        }
+        cx.notify();
+    }
+
+    /// Keep the keyboard bindings that Zed's terminal view exposes without
+    /// importing its action or keymap crates into Crossh.
+    pub(super) fn handle_scroll_shortcut(
+        &mut self,
+        ks: &gpui::Keystroke,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.zed_terminal_ready
+            || self
+                .terminal_content
+                .mode
+                .contains(zed_terminal::Modes::ALT_SCREEN)
+        {
+            return false;
+        }
+
+        let key = ks.key.as_str();
+        let shift = ks.modifiers.shift
+            && !ks.modifiers.alt
+            && !ks.modifiers.control
+            && !ks.modifiers.platform;
+        let command = ks.modifiers.platform
+            && !ks.modifiers.shift
+            && !ks.modifiers.alt
+            && !ks.modifiers.control;
+        let action = if shift {
+            match key {
+                "up" => Some(0),
+                "down" => Some(1),
+                "pageup" => Some(2),
+                "pagedown" => Some(3),
+                "home" => Some(4),
+                "end" => Some(5),
+                _ => None,
+            }
+        } else if command {
+            match key {
+                "up" => Some(2),
+                "down" => Some(3),
+                "home" => Some(4),
+                "end" => Some(5),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let Some(action) = action else { return false };
+        self.zed_terminal.update(cx, |terminal, _| match action {
+            0 => terminal.scroll_line_up(),
+            1 => terminal.scroll_line_down(),
+            2 => terminal.scroll_page_up(),
+            3 => terminal.scroll_page_down(),
+            4 => terminal.scroll_to_top(),
+            5 => terminal.scroll_to_bottom(),
+            _ => unreachable!(),
+        });
+        cx.notify();
+        true
+    }
+
     /// 请求在下次 render 时自动聚焦终端（用于打开/切回 tab）。
     pub fn request_focus(&mut self) {
-        if self.official_view.is_some() {
-            self.official_focus_pending = true;
-            return;
-        }
         self.focused_once = false;
     }
 
     /// Execute a command in this terminal's current interactive shell.
-    pub fn run_command(&mut self, command: &str, cx: &mut Context<Self>) {
+    pub fn run_command(&mut self, command: &str, _cx: &mut Context<Self>) {
         let command = command.trim();
         if command.is_empty() {
-            return;
-        }
-        if self.official_view.is_some() {
-            self.zed_terminal.update(cx, |terminal, _| {
-                terminal.input(format!("{command}\r").into_bytes());
-            });
-            self.official_focus_pending = true;
             return;
         }
         self.shell_input_buffer.clear();
@@ -260,6 +332,15 @@ impl super::TerminalView {
         if is_shell_shortcut(ks) {
             return;
         }
+        if is_terminal_clear_shortcut(ks) {
+            self.clear_terminal(cx);
+            cx.stop_propagation();
+            return;
+        }
+        if self.handle_scroll_shortcut(ks, cx) {
+            cx.stop_propagation();
+            return;
+        }
         // Cmd+C / Cmd+V / Cmd+A
         if ks.modifiers.platform && !ks.modifiers.alt && !ks.modifiers.control {
             match ks.key.as_str() {
@@ -274,8 +355,7 @@ impl super::TerminalView {
                     return;
                 }
                 "a" => {
-                    self.select_all();
-                    cx.notify();
+                    self.select_all(cx);
                     cx.stop_propagation();
                     return;
                 }
@@ -329,7 +409,7 @@ impl super::TerminalView {
     ) {
         let ks = &ev.keystroke;
         if is_shell_shortcut(ks)
-            || is_clear_screen_shortcut(ks)
+            || is_terminal_clear_shortcut(ks)
             || (ks.modifiers.platform
                 && !ks.modifiers.alt
                 && !ks.modifiers.control
@@ -356,16 +436,17 @@ impl super::TerminalView {
         }
     }
 
-    pub(super) fn send_focus_event(&mut self, focused: bool) {
-        if self.state == ConnState::Connected
-            && self.terminal_mode().contains(TermMode::FOCUS_IN_OUT)
-        {
-            self.send_input(if focused {
-                b"\x1b[I".to_vec()
-            } else {
-                b"\x1b[O".to_vec()
-            });
+    pub(super) fn send_focus_event(&mut self, focused: bool, cx: &mut Context<Self>) {
+        if self.state != ConnState::Connected || !self.zed_terminal_ready {
+            return;
         }
+        self.zed_terminal.update(cx, |terminal, _| {
+            if focused {
+                terminal.focus_in();
+            } else {
+                terminal.focus_out();
+            }
+        });
     }
 
     pub(super) fn handle_mouse_down(
@@ -555,6 +636,18 @@ impl super::TerminalView {
         if self.context_menu.is_some() {
             return;
         }
+        if !self.urxvt_mouse {
+            self.zed_terminal.update(cx, |terminal, terminal_cx| {
+                let multiplier =
+                    zed_terminal::terminal_settings::TerminalSettings::get_global(terminal_cx)
+                        .scroll_multiplier
+                        .max(0.01);
+                terminal.scroll_wheel(ev, multiplier);
+            });
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         let mode = self.terminal_mode();
         let Some(delta) = wheel_lines_for_phase(
             ev.touch_phase,
@@ -631,6 +724,19 @@ impl super::TerminalView {
 
     /// Cmd+C：将选中的文本复制到剪贴板。
     pub(super) fn copy_selection(&mut self, cx: &mut Context<Self>) {
+        if (self.core_selection_pending
+            || (self.sel_start.zip(self.sel_end).is_none()
+                && self.terminal_content.selection.is_some()))
+            && self.zed_terminal_ready
+        {
+            self.zed_terminal
+                .update(cx, |terminal, _| terminal.copy(None));
+            self.sel_start = None;
+            self.sel_end = None;
+            self.core_selection_pending = false;
+            cx.notify();
+            return;
+        }
         let Some((sx, sy)) = self.sel_start else {
             return;
         };
@@ -652,11 +758,11 @@ impl super::TerminalView {
     }
 
     /// Cmd+V：从剪贴板读取文本并发送到 PTY。
-    pub(super) fn paste_clipboard(&mut self, _cx: &mut Context<Self>) {
+    pub(super) fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
         if self.state != ConnState::Connected {
             return;
         }
-        let item = _cx.read_from_clipboard();
+        let item = cx.read_from_clipboard();
         if let Some(text) = item.and_then(|it| {
             it.entries.into_iter().find_map(|e| {
                 if let gpui::ClipboardEntry::String(s) = e {
@@ -677,25 +783,32 @@ impl super::TerminalView {
                 self.ime_marked_text.clear();
                 self.low_latency_shell_input = false;
             }
-            let bytes = if self.terminal_mode().contains(TermMode::BRACKETED_PASTE) {
-                let mut bytes = b"\x1b[200~".to_vec();
-                bytes.extend_from_slice(text.as_bytes());
-                bytes.extend_from_slice(b"\x1b[201~");
-                bytes
+            self.sel_start = None;
+            self.sel_end = None;
+            if self.zed_terminal_ready {
+                self.zed_terminal
+                    .update(cx, |terminal, _| terminal.paste(&text));
             } else {
-                text.into_bytes()
-            };
-            self.send_input(bytes);
+                self.send_input(terminal_paste_bytes(&text, self.terminal_mode()));
+            }
         }
     }
 
-    /// 全选当前视口（配合 Cmd+A / 右键菜单）。
-    pub(super) fn select_all(&mut self) {
+    /// Select the full terminal buffer, including scrollback, like Zed's
+    /// `Terminal::select_all`. The viewport selection is kept until the core
+    /// selection event is synchronized so the highlight appears immediately.
+    pub(super) fn select_all(&mut self, cx: &mut Context<Self>) {
         if self.cols == 0 || self.rows == 0 {
             return;
         }
         self.sel_start = Some((0, 0));
         self.sel_end = Some((self.cols.saturating_sub(1), self.rows.saturating_sub(1)));
+        if self.zed_terminal_ready {
+            self.zed_terminal
+                .update(cx, |terminal, _| terminal.select_all());
+            self.core_selection_pending = true;
+        }
+        cx.notify();
     }
 
     /// 右键打开上下文菜单；外部点击监听在 canvas 的 paint 阶段注册。
@@ -705,7 +818,9 @@ impl super::TerminalView {
         url: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        let has_selection = self.sel_start.zip(self.sel_end).is_some();
+        let has_selection = self.sel_start.zip(self.sel_end).is_some()
+            || self.core_selection_pending
+            || self.terminal_content.selection.is_some();
         let connected = self.state == ConnState::Connected;
         let mut entries = vec![
             MenuEntry::Item(MenuItem {
@@ -762,7 +877,7 @@ impl super::TerminalView {
         match action {
             TerminalMenuAction::Copy => self.copy_selection(cx),
             TerminalMenuAction::Paste => self.paste_clipboard(cx),
-            TerminalMenuAction::SelectAll => self.select_all(),
+            TerminalMenuAction::SelectAll => self.select_all(cx),
             TerminalMenuAction::OpenUrl(url) => {
                 log::info!("opening URL: {url}");
                 cx.open_url(&url);
