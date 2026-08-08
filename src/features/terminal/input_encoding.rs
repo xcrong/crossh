@@ -164,16 +164,12 @@ pub(crate) fn debug_bytes(b: &[u8]) -> String {
     out
 }
 
-/// 把 gpui Keystroke 编码成发给 PTY 的字节序列（xterm 风格）。
-#[allow(dead_code)]
-pub fn encode_keystroke(ks: &gpui::Keystroke) -> Option<Vec<u8>> {
-    encode_keystroke_with_mode(ks, TermMode::NONE)
-}
-
+#[cfg(test)]
 pub(crate) fn encode_keystroke_with_mode(ks: &gpui::Keystroke, mode: TermMode) -> Option<Vec<u8>> {
     encode_keystroke_with_event(ks, mode, 1)
 }
 
+#[cfg(test)]
 pub(crate) fn encode_keystroke_with_event(
     ks: &gpui::Keystroke,
     mode: TermMode,

@@ -22,17 +22,6 @@ pub enum AuthChoice {
     Password { user: String, password: String },
 }
 
-impl AuthChoice {
-    #[allow(dead_code)]
-    pub fn user(&self) -> &str {
-        match self {
-            AuthChoice::Agent { user } => user,
-            AuthChoice::Key { user, .. } => user,
-            AuthChoice::Password { user, .. } => user,
-        }
-    }
-}
-
 /// 从 HostConfig 推导认证方式候选列表（依次尝试，首个成功即用）。
 ///
 /// 复刻 OpenSSH 默认行为：
@@ -94,17 +83,4 @@ fn whoami() -> String {
     std::env::var("USER")
         .or_else(|_| std::env::var("LOGNAME"))
         .unwrap_or_else(|_| "root".to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// `default_auth_for` 的纯函数行为已在 config 模块覆盖；此处仅保留类型可见性占位。
-    /// 端到端连接验证见 `super::super::connection::tests::connect_real_host`。
-    #[test]
-    fn auth_choice_user() {
-        let a = AuthChoice::Agent { user: "u".into() };
-        assert_eq!(a.user(), "u");
-    }
 }

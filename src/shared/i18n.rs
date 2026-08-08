@@ -1,4 +1,7 @@
 //! Application locale state and translation helpers.
+//!
+//! `Global` is GPUI application-state storage rather than view coupling; a complete UI-dependency
+//! break would require the settings feature to own and inject this state.
 
 use gpui::{BorrowAppContext, Global};
 use serde::{Deserialize, Serialize};

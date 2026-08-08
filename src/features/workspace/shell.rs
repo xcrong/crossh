@@ -10,17 +10,15 @@
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext, Bounds, ClipboardEntry, Context, Entity, EntityId, EntityInputHandler,
-    FocusHandle, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, PathPromptOptions,
-    Pixels, Point, PromptButton, PromptLevel, Render, ScrollHandle, Styled,
-    SystemNotificationResponse, Task, TitlebarOptions, UTF16Selection, Window, WindowBounds,
+    App, AppContext, ClipboardEntry, Context, Entity, EntityId, FocusHandle, InteractiveElement,
+    IntoElement, KeyDownEvent, ParentElement, PathPromptOptions, Pixels, Point, Render,
+    ScrollHandle, Styled, SystemNotificationResponse, Task, TitlebarOptions, Window, WindowBounds,
     WindowOptions, div, px, size,
 };
 
@@ -54,22 +52,20 @@ use crate::shared::ui::context_menu::{
     ContextMenuState, MenuEntry, ShellMenuAction, render_context_menu,
 };
 use crate::shared::ui::theme;
-use crate::shared::ui::widgets::{
-    byte_index_for_utf16, ime_caret_bounds, printable_char, replace_utf16_range, utf16_len,
-    utf16_offset_for_byte, utf16_slice,
-};
+use crate::shared::ui::widgets::printable_char;
 
 use super::command_editor::QuickCommandEditor;
 #[cfg(test)]
 use super::command_editor::{next_char_boundary, previous_char_boundary, selection_bounds};
 
-const GIT_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+#[path = "quit.rs"]
+mod quit;
+#[path = "shell_input.rs"]
+mod shell_input;
+#[path = "tabs.rs"]
+mod tabs;
 
-#[derive(Clone, Copy)]
-enum ExitIntent {
-    QuitApp,
-    CloseWindow,
-}
+const GIT_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 struct ActiveCommandContext {
     scope: String,
@@ -90,44 +86,6 @@ fn remote_background_owner(terminal_id: EntityId) -> String {
 
 fn remote_tab_background_owner(tab: &Tab) -> Option<String> {
     tab.pane.terminal_entity_id().map(remote_background_owner)
-}
-
-#[derive(Default)]
-struct QuitRiskSummary {
-    running_commands: usize,
-    sftp_writes: usize,
-    unsaved_editors: usize,
-    active_forwards: usize,
-}
-
-impl QuitRiskSummary {
-    fn needs_confirmation(&self) -> bool {
-        self.running_commands > 0
-            || self.sftp_writes > 0
-            || self.unsaved_editors > 0
-            || self.active_forwards > 0
-    }
-
-    fn detail(&self) -> String {
-        let mut lines = vec![i18n::text("quit.warning")];
-        if self.running_commands > 0 {
-            lines.push(rust_i18n::t!("quit.commands", count = self.running_commands).to_string());
-        }
-        if self.sftp_writes > 0 {
-            lines.push(rust_i18n::t!("quit.transfers", count = self.sftp_writes).to_string());
-        }
-        if self.unsaved_editors > 0 {
-            lines.push(
-                rust_i18n::t!("quit.unsaved_editors", count = self.unsaved_editors).to_string(),
-            );
-        }
-        if self.active_forwards > 0 {
-            lines.push(rust_i18n::t!("quit.forwards", count = self.active_forwards).to_string());
-        }
-        lines.push(String::new());
-        lines.push(i18n::text("quit.cleanup"));
-        lines.join("\n")
-    }
 }
 
 pub struct AppShell {
@@ -288,59 +246,6 @@ impl AppShell {
                 }),
             host_key,
         )
-    }
-
-    /// 按别名或 `user@host[:port]` 打开一个终端标签。
-    ///
-    /// 空认证候选也允许继续：Connection 会在认证失败前向 UI 请求密码，
-    /// 这样密码登录主机不会被侧栏提前拦截。
-    fn open_terminal_target(&mut self, target: String, cx: &mut Context<Self>) {
-        let resolved = self.connections.resolve(&target);
-        let methods = self.connections.auth_methods(&resolved);
-        let host_key = ConnectionManager::pool_key(&resolved);
-
-        // 复用或新建连接，开一个终端 channel。
-        let conn = self.connections.acquire(resolved, methods, cx);
-        let (input_tx, event_rx) = conn.read(cx).open_terminal(100, 30);
-        let terminal = TerminalView::from_bridge(
-            input_tx,
-            event_rx,
-            100,
-            30,
-            self.terminal_settings.clone(),
-            cx,
-        );
-        let event_host_key = host_key.clone();
-        let subscription = cx.subscribe(&terminal, move |this, terminal, event, cx| match event {
-            TerminalEvent::Closed => {
-                this.close_remote_terminal(terminal.entity_id(), cx);
-            }
-            TerminalEvent::TitleChanged | TerminalEvent::Notification => cx.notify(),
-            TerminalEvent::CommandStarted { command, cwd } => {
-                if !terminal.read(cx).is_local()
-                    && let Some(cwd) = cwd.as_deref()
-                {
-                    this.record_command(remote_scope(&event_host_key, cwd), command.clone(), cx);
-                }
-            }
-            TerminalEvent::CwdChanged => cx.notify(),
-            TerminalEvent::PromptReached => {}
-        });
-        self.workspace
-            .sessions
-            .terminal_subscriptions
-            .push(subscription);
-        self.workspace.sessions.remote_tabs.push(Tab {
-            target,
-            host_key,
-            connection: conn,
-            pane: crate::features::terminal::view::workspace_pane(terminal),
-        });
-        self.workspace.active_view = Some(ActiveView::RemoteTab(
-            self.workspace.sessions.remote_tabs.len() - 1,
-        ));
-        self.status = None;
-        cx.notify();
     }
 
     pub(crate) fn open_sftp(&mut self, idx: usize, cx: &mut Context<Self>) {
@@ -555,72 +460,6 @@ impl AppShell {
         cx.notify();
     }
 
-    fn switch_tab(&mut self, idx: usize, cx: &mut Context<Self>) {
-        match self.workspace.active_view {
-            Some(ActiveView::RemoteTab(_)) => self.switch_remote_tab(idx, cx),
-            Some(ActiveView::LocalSession(session_id)) => {
-                let next_session = self
-                    .local_dir_for_session(session_id)
-                    .and_then(|dir| dir.sessions.get(idx).copied());
-                if let Some(next_session) = next_session {
-                    self.select_local_session(next_session, cx);
-                }
-            }
-            None => {}
-        }
-    }
-
-    pub(crate) fn switch_remote_tab(&mut self, idx: usize, cx: &mut Context<Self>) {
-        if idx >= self.workspace.sessions.remote_tabs.len() {
-            return;
-        }
-        self.workspace.active_view = Some(ActiveView::RemoteTab(idx));
-        self.refocus_active_terminal(cx);
-        cx.notify();
-    }
-
-    pub(crate) fn close_remote_tab(&mut self, idx: usize, cx: &mut Context<Self>) {
-        if idx >= self.workspace.sessions.remote_tabs.len() {
-            return;
-        }
-        if let Some(owner) = remote_tab_background_owner(&self.workspace.sessions.remote_tabs[idx])
-        {
-            self.stop_background_tasks_for_owner(&owner, cx);
-        }
-        self.workspace.sessions.remote_tabs.remove(idx);
-        // 移除 Tab → Entity<TerminalView> 释放 → input_tx 断 → relay 结束 →
-        // Connection channel 计数减；归 0 则连接自行 disconnect。
-        self.workspace.active_view = match self.workspace.active_view {
-            Some(ActiveView::RemoteTab(a)) if a == idx => {
-                if self.workspace.sessions.remote_tabs.is_empty() {
-                    self.first_local_view()
-                } else if a >= self.workspace.sessions.remote_tabs.len() {
-                    Some(ActiveView::RemoteTab(
-                        self.workspace.sessions.remote_tabs.len() - 1,
-                    ))
-                } else {
-                    Some(ActiveView::RemoteTab(a))
-                }
-            }
-            Some(ActiveView::RemoteTab(a)) if a > idx => Some(ActiveView::RemoteTab(a - 1)),
-            other => other,
-        };
-        cx.notify();
-    }
-
-    fn close_remote_terminal(&mut self, terminal_id: EntityId, cx: &mut Context<Self>) {
-        let Some(idx) = self
-            .workspace
-            .sessions
-            .remote_tabs
-            .iter()
-            .position(|tab| tab.pane.terminal_entity_id() == Some(terminal_id))
-        else {
-            return;
-        };
-        self.close_remote_tab(idx, cx);
-    }
-
     fn handle_system_notification_response(
         &mut self,
         response: SystemNotificationResponse,
@@ -654,65 +493,6 @@ impl AppShell {
             return true;
         }
         false
-    }
-
-    fn close_active_tab(&mut self, cx: &mut Context<Self>) {
-        match self.workspace.active_view {
-            Some(ActiveView::RemoteTab(idx)) => self.close_remote_tab(idx, cx),
-            Some(ActiveView::LocalSession(session_id)) => self.close_local_session(session_id, cx),
-            None => {}
-        }
-    }
-
-    fn cycle_tab(&mut self, direction: isize, cx: &mut Context<Self>) {
-        match self.workspace.active_view {
-            Some(ActiveView::RemoteTab(current)) => {
-                let len = self.workspace.sessions.remote_tabs.len();
-                if len == 0 {
-                    return;
-                }
-                let next = (current as isize + direction).rem_euclid(len as isize) as usize;
-                self.switch_remote_tab(next, cx);
-            }
-            Some(ActiveView::LocalSession(session_id)) => {
-                let Some(dir) = self.local_dir_for_session(session_id) else {
-                    return;
-                };
-                let Some(current) = dir.sessions.iter().position(|id| *id == session_id) else {
-                    return;
-                };
-                let next =
-                    (current as isize + direction).rem_euclid(dir.sessions.len() as isize) as usize;
-                if let Some(next_session) = dir.sessions.get(next).copied() {
-                    self.select_local_session(next_session, cx);
-                }
-            }
-            None => {}
-        }
-    }
-
-    /// 从当前标签复制一个终端标签；没有活动标签时把焦点放到快速连接框。
-    pub(crate) fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.workspace.active_view {
-            Some(ActiveView::LocalSession(session_id)) => {
-                let project_dir = self.local_session_project_dir(session_id);
-                let cwd = self.local_session_cwd(session_id, cx);
-                self.open_local_session(project_dir, cwd, cx);
-                return;
-            }
-            Some(ActiveView::RemoteTab(idx)) => {
-                if let Some(tab) = self.workspace.sessions.remote_tabs.get(idx) {
-                    let target = tab.target.clone();
-                    self.open_terminal_target(target, cx);
-                    return;
-                }
-            }
-            None => {}
-        }
-        self.host_query.clear();
-        self.host_ime_marked_text.clear();
-        self.host_focus.focus(window, cx);
-        cx.notify();
     }
 
     fn record_command(&mut self, scope: String, command: String, cx: &mut Context<Self>) {
@@ -1132,134 +912,6 @@ impl AppShell {
         }
     }
 
-    fn handle_quit(&mut self, _: &crate::Quit, window: &mut Window, cx: &mut Context<Self>) {
-        self.request_exit(ExitIntent::QuitApp, window, cx);
-    }
-
-    fn should_close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if self.shutdown_in_progress {
-            return true;
-        }
-        if !self.quit_risks(cx).needs_confirmation() {
-            self.begin_shutdown(cx);
-            return true;
-        }
-        self.request_exit(ExitIntent::CloseWindow, window, cx);
-        false
-    }
-
-    fn request_exit(&mut self, intent: ExitIntent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.shutdown_in_progress || self.quit_confirmation_open {
-            return;
-        }
-
-        let risks = self.quit_risks(cx);
-        if !risks.needs_confirmation() {
-            self.begin_shutdown(cx);
-            match intent {
-                ExitIntent::QuitApp => cx.quit(),
-                ExitIntent::CloseWindow => window.remove_window(),
-            }
-            return;
-        }
-
-        self.quit_confirmation_open = true;
-        let answers = [
-            PromptButton::ok(i18n::text("quit.confirm")),
-            PromptButton::cancel(i18n::text("quit.cancel")),
-        ];
-        let answer = window.prompt(
-            PromptLevel::Warning,
-            &i18n::text("quit.title"),
-            Some(&risks.detail()),
-            &answers,
-            cx,
-        );
-        cx.spawn_in(window, async move |this, cx| {
-            let confirmed = answer.await == Ok(0);
-            let _ = this.update(cx, |this, cx| {
-                this.quit_confirmation_open = false;
-                if confirmed {
-                    this.begin_shutdown(cx);
-                }
-            });
-            if !confirmed {
-                return;
-            }
-
-            cx.background_executor()
-                .timer(Duration::from_millis(400))
-                .await;
-            let _ = cx.update(|window, cx| match intent {
-                ExitIntent::QuitApp => cx.quit(),
-                ExitIntent::CloseWindow => window.remove_window(),
-            });
-        })
-        .detach();
-    }
-
-    fn quit_risks(&self, cx: &Context<Self>) -> QuitRiskSummary {
-        let mut risks = QuitRiskSummary {
-            running_commands: self.background_tasks.running_count(),
-            ..QuitRiskSummary::default()
-        };
-        for session in self.workspace.sessions.local_sessions.values() {
-            if session.terminal.read(cx).is_command_running() {
-                risks.running_commands += 1;
-            }
-        }
-        for tab in &self.workspace.sessions.remote_tabs {
-            if tab.pane.is_command_running(cx) {
-                risks.running_commands += 1;
-            }
-            let pane_risk = tab.pane.risk(cx);
-            risks.sftp_writes += pane_risk.sftp_writes;
-            risks.unsaved_editors += pane_risk.unsaved_editors;
-            risks.active_forwards += pane_risk.active_forwards;
-        }
-        risks
-    }
-
-    fn begin_shutdown(&mut self, cx: &mut Context<Self>) {
-        if self.shutdown_in_progress {
-            return;
-        }
-        self.shutdown_in_progress = true;
-        self.status = Some(i18n::text("quit.closing"));
-        let running_background = self
-            .background_tasks
-            .tasks
-            .values()
-            .filter(|task| {
-                matches!(
-                    task.status,
-                    crate::features::commands::BackgroundTaskStatus::Running
-                        | crate::features::commands::BackgroundTaskStatus::Stopping
-                )
-            })
-            .map(|task| task.id)
-            .collect::<Vec<_>>();
-        for id in running_background {
-            self.stop_background_task(id, cx);
-        }
-
-        let terminals = self
-            .workspace
-            .sessions
-            .local_sessions
-            .values()
-            .map(|session| session.terminal.clone())
-            .collect::<Vec<_>>();
-
-        for tab in &self.workspace.sessions.remote_tabs {
-            tab.pane.request_close(cx);
-        }
-        for terminal in terminals {
-            terminal.update(cx, |terminal, _cx| terminal.request_close());
-        }
-        cx.notify();
-    }
-
     fn handle_shell_key_down(
         &mut self,
         ev: &KeyDownEvent,
@@ -1399,65 +1051,6 @@ impl AppShell {
             pane.toggle_low_latency(cx);
             cx.notify();
         }
-    }
-
-    /// 关闭除 `keep` 外的全部远程标签。
-    fn close_other_remote_tabs(&mut self, keep: usize, cx: &mut Context<Self>) {
-        if keep >= self.workspace.sessions.remote_tabs.len() {
-            return;
-        }
-        let owners = self
-            .workspace
-            .sessions
-            .remote_tabs
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| *index != keep)
-            .filter_map(|(_, tab)| remote_tab_background_owner(tab))
-            .collect::<Vec<_>>();
-        for owner in owners {
-            self.stop_background_tasks_for_owner(&owner, cx);
-        }
-        self.workspace.sessions.remote_tabs =
-            vec![self.workspace.sessions.remote_tabs.swap_remove(keep)];
-        self.workspace.active_view = Some(ActiveView::RemoteTab(0));
-        cx.notify();
-    }
-
-    fn close_all_remote_tabs(&mut self, cx: &mut Context<Self>) {
-        if self.workspace.sessions.remote_tabs.is_empty() {
-            return;
-        }
-        let owners = self
-            .workspace
-            .sessions
-            .remote_tabs
-            .iter()
-            .filter_map(remote_tab_background_owner)
-            .collect::<Vec<_>>();
-        for owner in owners {
-            self.stop_background_tasks_for_owner(&owner, cx);
-        }
-        self.workspace.sessions.remote_tabs.clear();
-        self.workspace.active_view = self.first_local_view();
-        cx.notify();
-    }
-
-    /// 关闭同一目录下的其他本地会话（保留 `keep`）。
-    fn close_other_local_sessions(&mut self, keep: LocalSessionId, cx: &mut Context<Self>) {
-        let Some(others) = self.local_dir_for_session(keep).map(|dir| {
-            dir.sessions
-                .iter()
-                .copied()
-                .filter(|id| *id != keep)
-                .collect::<Vec<_>>()
-        }) else {
-            return;
-        };
-        for session_id in others {
-            self.close_local_session(session_id, cx);
-        }
-        self.select_local_session(keep, cx);
     }
 
     pub(crate) fn toggle_settings(&mut self, cx: &mut Context<Self>) {
@@ -1732,14 +1325,6 @@ impl AppShell {
             .find_map(|(_, dir)| dir.sessions.contains(&session_id).then_some(dir))
     }
 
-    fn first_local_view(&self) -> Option<ActiveView> {
-        self.workspace
-            .sessions
-            .local_dirs
-            .values()
-            .find_map(|dir| dir.active_session.map(ActiveView::LocalSession))
-    }
-
     fn local_session_cwd(&self, session_id: LocalSessionId, cx: &Context<Self>) -> PathBuf {
         self.workspace
             .sessions
@@ -1778,25 +1363,6 @@ impl AppShell {
     /// 当前有待处理弹窗的连接（若有）。
     fn pending_connection(&self, cx: &Context<Self>) -> Option<Entity<Connection>> {
         self.connections.pending_prompt_connection(cx)
-    }
-
-    /// 把焦点交还给当前活动终端 tab（切换 tab / 关闭模态后调用）。
-    fn refocus_active_terminal(&self, cx: &mut Context<Self>) {
-        match self.workspace.active_view {
-            Some(ActiveView::RemoteTab(idx)) => {
-                if let Some(tab) = self.workspace.sessions.remote_tabs.get(idx) {
-                    tab.pane.request_focus(cx);
-                }
-            }
-            Some(ActiveView::LocalSession(session_id)) => {
-                if let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) {
-                    session
-                        .terminal
-                        .update(cx, |terminal, _| terminal.request_focus());
-                }
-            }
-            None => {}
-        }
     }
 
     /// 回填凭据（None = 取消）。
@@ -1844,280 +1410,6 @@ impl AppShell {
                 kind: *kind,
                 prompt: prompt.clone(),
             },
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum AppShellInputField {
-    HostSearch,
-    Credential,
-    QuickCommand,
-}
-
-impl AppShell {
-    fn active_input_field(&self, window: &Window) -> Option<AppShellInputField> {
-        if self.modal_focus.is_focused(window) {
-            Some(AppShellInputField::Credential)
-        } else if self
-            .quick_command_editor
-            .as_ref()
-            .is_some_and(|editor| editor.focus.is_focused(window))
-        {
-            Some(AppShellInputField::QuickCommand)
-        } else if self.host_focus.is_focused(window) {
-            Some(AppShellInputField::HostSearch)
-        } else {
-            None
-        }
-    }
-}
-
-impl EntityInputHandler for AppShell {
-    fn text_for_range(
-        &mut self,
-        range: Range<usize>,
-        _adjusted_range: &mut Option<Range<usize>>,
-        window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<String> {
-        let text = match self.active_input_field(window)? {
-            AppShellInputField::HostSearch => &self.host_query,
-            AppShellInputField::Credential => &self.prompt_input,
-            AppShellInputField::QuickCommand => &self.quick_command_editor.as_ref()?.value,
-        };
-        Some(utf16_slice(text, range))
-    }
-
-    fn selected_text_range(
-        &mut self,
-        _ignore_disabled_input: bool,
-        window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<UTF16Selection> {
-        match self.active_input_field(window)? {
-            AppShellInputField::HostSearch => {
-                let position = utf16_len(&self.host_query);
-                Some(UTF16Selection {
-                    range: position..position,
-                    reversed: false,
-                })
-            }
-            AppShellInputField::Credential => {
-                let position = utf16_len(&self.prompt_input);
-                Some(UTF16Selection {
-                    range: position..position,
-                    reversed: false,
-                })
-            }
-            AppShellInputField::QuickCommand => {
-                let editor = self.quick_command_editor.as_ref()?;
-                let (start, end) = editor.selection().unwrap_or((editor.cursor, editor.cursor));
-                Some(UTF16Selection {
-                    range: utf16_offset_for_byte(&editor.value, start)
-                        ..utf16_offset_for_byte(&editor.value, end),
-                    reversed: editor.anchor.is_some_and(|anchor| anchor > editor.cursor),
-                })
-            }
-        }
-    }
-
-    fn marked_text_range(
-        &self,
-        window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<Range<usize>> {
-        match self.active_input_field(window)? {
-            AppShellInputField::HostSearch => (!self.host_ime_marked_text.is_empty()).then(|| {
-                let start = utf16_len(&self.host_query);
-                start..start + utf16_len(&self.host_ime_marked_text)
-            }),
-            AppShellInputField::Credential => {
-                (!self.prompt_ime_marked_text.is_empty()).then(|| {
-                    let start = utf16_len(&self.prompt_input);
-                    start..start + utf16_len(&self.prompt_ime_marked_text)
-                })
-            }
-            AppShellInputField::QuickCommand => {
-                let editor = self.quick_command_editor.as_ref()?;
-                let (start, _) = editor.ime_replacement?;
-                (!editor.ime_marked_text.is_empty()).then(|| {
-                    let start = utf16_offset_for_byte(&editor.value, start);
-                    start..start + utf16_len(&editor.ime_marked_text)
-                })
-            }
-        }
-    }
-
-    fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.active_input_field(window) {
-            Some(AppShellInputField::HostSearch) => self.host_ime_marked_text.clear(),
-            Some(AppShellInputField::Credential) => self.prompt_ime_marked_text.clear(),
-            Some(AppShellInputField::QuickCommand) => {
-                if let Some(editor) = &mut self.quick_command_editor {
-                    if let Some((start, end)) = editor.ime_replacement.take() {
-                        editor.cursor = end;
-                        editor.anchor = (start != end).then_some(start);
-                    }
-                    editor.ime_marked_text.clear();
-                }
-            }
-            None => {}
-        }
-        window.invalidate_character_coordinates();
-        cx.notify();
-    }
-
-    fn replace_text_in_range(
-        &mut self,
-        replacement_range: Option<Range<usize>>,
-        text: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match self.active_input_field(window) {
-            Some(AppShellInputField::HostSearch) => {
-                let position = utf16_len(&self.host_query);
-                replace_utf16_range(
-                    &mut self.host_query,
-                    replacement_range.unwrap_or(position..position),
-                    text,
-                );
-                self.host_ime_marked_text.clear();
-            }
-            Some(AppShellInputField::Credential) => {
-                let position = utf16_len(&self.prompt_input);
-                replace_utf16_range(
-                    &mut self.prompt_input,
-                    replacement_range.unwrap_or(position..position),
-                    text,
-                );
-                self.prompt_ime_marked_text.clear();
-            }
-            Some(AppShellInputField::QuickCommand) => {
-                if let Some(editor) = &mut self.quick_command_editor {
-                    let (start, end) = if let Some(range) = editor.ime_replacement.take() {
-                        range
-                    } else if let Some(range) = replacement_range {
-                        (
-                            byte_index_for_utf16(&editor.value, range.start),
-                            byte_index_for_utf16(&editor.value, range.end),
-                        )
-                    } else {
-                        editor.selection().unwrap_or((editor.cursor, editor.cursor))
-                    };
-                    editor.value.replace_range(start..end, text);
-                    editor.cursor = start + text.len();
-                    editor.anchor = None;
-                    editor.ime_marked_text.clear();
-                }
-            }
-            None => return,
-        }
-        window.invalidate_character_coordinates();
-        cx.notify();
-    }
-
-    fn replace_and_mark_text_in_range(
-        &mut self,
-        _range: Option<Range<usize>>,
-        new_text: &str,
-        _new_selected_range: Option<Range<usize>>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match self.active_input_field(window) {
-            Some(AppShellInputField::HostSearch) => {
-                self.host_ime_marked_text.clear();
-                self.host_ime_marked_text.push_str(new_text);
-            }
-            Some(AppShellInputField::Credential) => {
-                self.prompt_ime_marked_text.clear();
-                self.prompt_ime_marked_text.push_str(new_text);
-            }
-            Some(AppShellInputField::QuickCommand) => {
-                if let Some(editor) = &mut self.quick_command_editor {
-                    if editor.ime_replacement.is_none() {
-                        let replacement =
-                            editor.selection().unwrap_or((editor.cursor, editor.cursor));
-                        editor.ime_replacement = Some(replacement);
-                        editor.cursor = replacement.0;
-                        editor.anchor = None;
-                    }
-                    editor.ime_marked_text.clear();
-                    editor.ime_marked_text.push_str(new_text);
-                }
-            }
-            None => return,
-        }
-        window.invalidate_character_coordinates();
-        cx.notify();
-    }
-
-    fn bounds_for_range(
-        &mut self,
-        range: Range<usize>,
-        element_bounds: Bounds<Pixels>,
-        window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<Bounds<Pixels>> {
-        match self.active_input_field(window)? {
-            AppShellInputField::HostSearch => {
-                let cursor = byte_index_for_utf16(&self.host_query, range.start);
-                Some(ime_caret_bounds(
-                    window,
-                    element_bounds,
-                    &self.host_query[..cursor],
-                    px(12.),
-                    px(30.),
-                    px(0.),
-                ))
-            }
-            AppShellInputField::Credential => {
-                let cursor = byte_index_for_utf16(&self.prompt_input, range.start);
-                let bullet_count = self.prompt_input[..cursor].chars().count();
-                let text_before = "•".repeat(bullet_count);
-                Some(ime_caret_bounds(
-                    window,
-                    element_bounds,
-                    &text_before,
-                    px(14.),
-                    px(12.),
-                    px(0.),
-                ))
-            }
-            AppShellInputField::QuickCommand => {
-                let editor = self.quick_command_editor.as_ref()?;
-                let cursor = byte_index_for_utf16(&editor.value, range.start);
-                Some(ime_caret_bounds(
-                    window,
-                    element_bounds,
-                    &editor.value[..cursor],
-                    px(14.),
-                    px(12.),
-                    editor.scroll.offset().x,
-                ))
-            }
-        }
-    }
-
-    fn character_index_for_point(
-        &mut self,
-        _point: Point<Pixels>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<usize> {
-        None
-    }
-
-    fn text_length_utf16(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> Option<usize> {
-        match self.active_input_field(window)? {
-            AppShellInputField::HostSearch => Some(utf16_len(&self.host_query)),
-            AppShellInputField::Credential => Some(utf16_len(&self.prompt_input)),
-            AppShellInputField::QuickCommand => self
-                .quick_command_editor
-                .as_ref()
-                .map(|editor| utf16_len(&editor.value)),
         }
     }
 }
@@ -2263,35 +1555,9 @@ pub fn open_main_window(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ConnState, QuitRiskSummary, find_remote_terminal_index, is_reusable_connection_state,
-        next_char_boundary, previous_char_boundary, selection_bounds,
+        ConnState, find_remote_terminal_index, is_reusable_connection_state, next_char_boundary,
+        previous_char_boundary, selection_bounds,
     };
-
-    #[test]
-    fn quit_confirmation_is_only_required_for_material_activity() {
-        assert!(!QuitRiskSummary::default().needs_confirmation());
-
-        for risks in [
-            QuitRiskSummary {
-                running_commands: 1,
-                ..Default::default()
-            },
-            QuitRiskSummary {
-                sftp_writes: 1,
-                ..Default::default()
-            },
-            QuitRiskSummary {
-                unsaved_editors: 1,
-                ..Default::default()
-            },
-            QuitRiskSummary {
-                active_forwards: 1,
-                ..Default::default()
-            },
-        ] {
-            assert!(risks.needs_confirmation());
-        }
-    }
 
     #[test]
     fn sidebar_host_reuse_only_accepts_live_connection_states() {

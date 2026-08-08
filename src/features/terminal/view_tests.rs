@@ -223,29 +223,32 @@ fn timestamp_tracker_preserves_rows_after_resize_reflow() {
 
 #[test]
 fn encodes_navigation_keys_for_terminal_modes() {
-    assert_eq!(encode_keystroke(&keystroke("up")), Some(b"\x1b[A".to_vec()));
+    assert_eq!(
+        encode_keystroke_with_mode(&keystroke("up"), TermMode::NONE),
+        Some(b"\x1b[A".to_vec())
+    );
     assert_eq!(
         encode_keystroke_with_mode(&keystroke("up"), TermMode::APP_CURSOR),
         Some(b"\x1bOA".to_vec())
     );
     assert_eq!(
-        encode_keystroke(&keystroke("shift-left")),
+        encode_keystroke_with_mode(&keystroke("shift-left"), TermMode::NONE),
         Some(b"\x1b[1;2D".to_vec())
     );
     assert_eq!(
-        encode_keystroke(&keystroke("ctrl-right")),
+        encode_keystroke_with_mode(&keystroke("ctrl-right"), TermMode::NONE),
         Some(b"\x1b[1;5C".to_vec())
     );
     assert_eq!(
-        encode_keystroke(&keystroke("shift-tab")),
+        encode_keystroke_with_mode(&keystroke("shift-tab"), TermMode::NONE),
         Some(b"\x1b[Z".to_vec())
     );
     assert_eq!(
-        encode_keystroke(&keystroke("f12")),
+        encode_keystroke_with_mode(&keystroke("f12"), TermMode::NONE),
         Some(b"\x1b[24~".to_vec())
     );
     assert_eq!(
-        encode_keystroke(&keystroke("ctrl-f12")),
+        encode_keystroke_with_mode(&keystroke("ctrl-f12"), TermMode::NONE),
         Some(b"\x1b[24;5~".to_vec())
     );
 }
@@ -319,26 +322,50 @@ fn alternate_scroll_follows_application_cursor_mode() {
 
 #[test]
 fn encodes_control_and_printable_keys() {
-    assert_eq!(encode_keystroke(&keystroke("a")), Some(b"a".to_vec()));
-    assert_eq!(encode_keystroke(&keystroke("1")), Some(b"1".to_vec()));
-    assert_eq!(encode_keystroke(&keystroke("-")), Some(b"-".to_vec()));
     assert_eq!(
-        encode_keystroke(&keystroke("é")),
+        encode_keystroke_with_mode(&keystroke("a"), TermMode::NONE),
+        Some(b"a".to_vec())
+    );
+    assert_eq!(
+        encode_keystroke_with_mode(&keystroke("1"), TermMode::NONE),
+        Some(b"1".to_vec())
+    );
+    assert_eq!(
+        encode_keystroke_with_mode(&keystroke("-"), TermMode::NONE),
+        Some(b"-".to_vec())
+    );
+    assert_eq!(
+        encode_keystroke_with_mode(&keystroke("é"), TermMode::NONE),
         Some("é".as_bytes().to_vec())
     );
     assert_eq!(
         encode_keystroke_with_mode(&keystroke("a"), TermMode::DISAMBIGUATE_ESC_CODES),
         Some(b"a".to_vec())
     );
-    assert_eq!(encode_keystroke(&keystroke("space")), Some(b" ".to_vec()));
-    assert_eq!(encode_keystroke(&keystroke("ctrl-c")), Some(vec![3]));
-    assert_eq!(encode_keystroke(&keystroke("ctrl-@")), Some(vec![0]));
     assert_eq!(
-        encode_keystroke(&keystroke("alt-x")),
+        encode_keystroke_with_mode(&keystroke("space"), TermMode::NONE),
+        Some(b" ".to_vec())
+    );
+    assert_eq!(
+        encode_keystroke_with_mode(&keystroke("ctrl-c"), TermMode::NONE),
+        Some(vec![3])
+    );
+    assert_eq!(
+        encode_keystroke_with_mode(&keystroke("ctrl-@"), TermMode::NONE),
+        Some(vec![0])
+    );
+    assert_eq!(
+        encode_keystroke_with_mode(&keystroke("alt-x"), TermMode::NONE),
         Some(b"\x1bx".to_vec())
     );
-    assert_eq!(encode_keystroke(&keystroke("shift-a")), Some(b"A".to_vec()));
-    assert_eq!(encode_keystroke(&keystroke("shift-1")), Some(b"!".to_vec()));
+    assert_eq!(
+        encode_keystroke_with_mode(&keystroke("shift-a"), TermMode::NONE),
+        Some(b"A".to_vec())
+    );
+    assert_eq!(
+        encode_keystroke_with_mode(&keystroke("shift-1"), TermMode::NONE),
+        Some(b"!".to_vec())
+    );
 }
 
 #[test]
