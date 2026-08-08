@@ -12,7 +12,8 @@
 - **SFTP**：远程浏览、上传/下载、目录递归、进度条、覆盖确认。
 - **端口转发**：`-L` / `-R` / `-D`(SOCKS5)，config 驱动，UI 启停。
 - **本地终端**：项目目录视图（OSC 7 追踪当前 `cwd`，更新状态栏和 Git 状态；会话归属不随 `cd` 改变）、多会话标签。
-- **设置**：语言（zh/en）、终端字号、时间戳 gutter、滚动回退行数，持久化到 `~/.config/crossh/`。
+- **设置**：语言（zh/en）、终端字号、时间戳 gutter、滚动回退行数、启动时检查更新，持久化到 `~/.config/crossh/`。
+- **远程更新**：设置页从 HTTPS release manifest 检查版本，按平台下载并校验 SHA-256，再交给随应用分发的独立 updater 完成替换和重启。
 - 常驻友好：日志裁剪（`/tmp/crossh/run.log`）、panic 现场保留、空闲内存 ~70MB。
 
 ## 构建与运行
@@ -31,7 +32,9 @@ scripts/package.sh x86_64-apple-darwin   # 指定架构（交叉编译）
 open dist/crossh.app
 ```
 
-三平台发布产物由 [.github/workflows/release.yml](.github/workflows/release.yml) 构建：macOS `.app` zip（aarch64/x86_64）、Linux `tar.gz` + AppImage（x86_64/aarch64）、Windows zip（x86_64）。
+三平台发布产物由 [.github/workflows/release.yml](.github/workflows/release.yml) 构建：macOS `.app` zip（aarch64/x86_64）、Linux `tar.gz` + AppImage（x86_64/aarch64）、Windows zip（x86_64）。每个 release 同时生成 `stable.json`，由 [scripts/generate-update-manifest.sh](scripts/generate-update-manifest.sh) 根据实际产物的大小和 SHA-256 自动生成。更新设计、平台替换策略和后续 Ed25519 签名计划见 [docs/remote-update-plan.md](docs/remote-update-plan.md)。
+
+当前版本的 macOS 包使用 ad-hoc 签名，不依赖 Developer ID，也不承诺绕过 Gatekeeper 或提供公证；远程更新只负责验证 HTTPS、目标平台、版本、文件大小和 SHA-256。
 
 ## 快捷键
 

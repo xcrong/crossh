@@ -33,13 +33,14 @@ if [ -n "$TARGET" ]; then
 fi
 
 echo "==> cargo build --release${TARGET:+ --target $TARGET}"
-cargo build "${CARGO_ARGS[@]}"
+cargo build "${CARGO_ARGS[@]}" --bin crossh --bin crossh-updater
 
 echo "==> assembling $APP_DIR"
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS" "$RESOURCES"
 
 cp "$BIN_DIR/$APP_NAME" "$MACOS/$APP_NAME"
+cp "$BIN_DIR/crossh-updater" "$MACOS/crossh-updater"
 cp assets/appicon/AppIcon.icns "$RESOURCES/AppIcon.icns"
 
 cat > "$CONTENTS/Info.plist" <<PLIST

@@ -5,12 +5,14 @@
 //! 这样终端重放、i18n 全局同步、最近目录同步等副作用都仍由主窗口统一处理。
 
 use gpui::{
-    AnyElement, App, AppContext, Bounds, ClickEvent, Context, FontWeight, InteractiveElement,
-    IntoElement, ParentElement, Render, SharedString, Size, StatefulInteractiveElement, Styled,
-    TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions, div, px,
+    AnyElement, App, AppContext, Bounds, ClickEvent, Context, Entity, FontWeight,
+    InteractiveElement, IntoElement, ParentElement, Render, SharedString, Size,
+    StatefulInteractiveElement, Styled, TitlebarOptions, WeakEntity, Window, WindowBounds,
+    WindowOptions, div, px,
 };
 
 use crate::features::settings::{self, SettingsSnapshot};
+use crate::features::updates::{UpdateController, UpdateStatus};
 use crate::features::workspace::AppShell;
 use crate::shared::i18n::{self, LanguagePreference};
 use crate::shared::ui::widgets::LocalPathTooltip;
@@ -20,6 +22,7 @@ use crate::shared::ui::{icons, theme};
 pub enum SettingsSection {
     General,
     Terminal,
+    Updates,
 }
 
 /// 设置窗口的根视图。窗口关闭即释放。
@@ -28,14 +31,20 @@ pub struct SettingsWindow {
     shell: WeakEntity<AppShell>,
     section: SettingsSection,
     scroll: gpui::ScrollHandle,
+    updates: Entity<UpdateController>,
 }
 
 impl SettingsWindow {
-    fn new(shell: WeakEntity<AppShell>) -> Self {
+    fn new(shell: WeakEntity<AppShell>, cx: &mut Context<Self>) -> Self {
+        let updates = shell
+            .upgrade()
+            .map(|shell| shell.read(cx).updates.clone())
+            .unwrap_or_else(|| cx.new(|_| UpdateController::new(settings::load().updates)));
         Self {
             shell,
             section: SettingsSection::General,
             scroll: gpui::ScrollHandle::new(),
+            updates,
         }
     }
 
@@ -46,6 +55,7 @@ impl SettingsWindow {
                 SettingsSnapshot {
                     language: shell.language_preference,
                     terminal: shell.terminal_settings.clone(),
+                    updates: shell.update_settings.clone(),
                     workspace: shell.workspace_settings.clone(),
                 }
             }
@@ -335,12 +345,173 @@ impl SettingsWindow {
             ))
             .into_any_element()
     }
+
+    fn render_updates_settings(
+        &mut self,
+        settings: &SettingsSnapshot,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.updates.update(cx, |updates, _cx| {
+            updates.set_settings(settings.updates.clone())
+        });
+        let status = self
+            .updates
+            .read_with(cx, |updates, _app| updates.status().clone());
+
+        let mut startup_toggle = div()
+            .id("settings-updates-startup-toggle")
+            .w(px(42.))
+            .h(px(24.))
+            .p_1()
+            .flex()
+            .items_center()
+            .rounded_full()
+            .cursor_pointer()
+            .bg(if settings.updates.check_on_startup {
+                theme::accent()
+            } else {
+                theme::border_strong()
+            });
+        startup_toggle = if settings.updates.check_on_startup {
+            startup_toggle.justify_end()
+        } else {
+            startup_toggle.justify_start()
+        };
+        startup_toggle = startup_toggle.child(
+            div()
+                .w(px(18.))
+                .h(px(18.))
+                .rounded_full()
+                .bg(theme::canvas()),
+        );
+        startup_toggle = startup_toggle.on_click(cx.listener(|this, _ev, _window, cx| {
+            let enabled = !this.shell_settings(cx).updates.check_on_startup;
+            this.write_to_shell(cx, |shell, cx| {
+                shell.set_update_check_on_startup(enabled, cx)
+            });
+        }));
+
+        let (status_text, status_color) = update_status_presentation(&status);
+        let status_control = div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(
+                div()
+                    .max_w(px(300.))
+                    .text_xs()
+                    .text_color(status_color)
+                    .child(SharedString::from(status_text)),
+            )
+            .child(settings_icon_button(
+                "settings-updates-check",
+                icons::IconName::RefreshCw,
+                i18n::text("settings.updates_check_now"),
+                cx.listener(|this, _ev, _window, cx| {
+                    this.updates.update(cx, |updates, cx| updates.check(cx));
+                }),
+            ));
+
+        let mut content = div()
+            .id("settings-updates")
+            .max_w(px(760.))
+            .flex()
+            .flex_col()
+            .child(settings_heading("settings.updates"))
+            .child(settings_row(
+                i18n::text("settings.updates_check_on_startup"),
+                i18n::text("settings.updates_check_on_startup_description"),
+                startup_toggle.into_any_element(),
+            ))
+            .child(settings_row(
+                i18n::text("settings.updates_status"),
+                i18n::text("settings.updates_status_description"),
+                status_control.into_any_element(),
+            ));
+
+        match status {
+            UpdateStatus::Available(candidate) => {
+                let version = candidate.version.to_string();
+                let download = settings_icon_button(
+                    "settings-updates-download",
+                    icons::IconName::Download,
+                    i18n::text("settings.updates_download"),
+                    cx.listener(|this, _ev, _window, cx| {
+                        this.updates.update(cx, |updates, cx| updates.download(cx));
+                    }),
+                );
+                let mut actions = div().flex().items_center().gap_1().child(download);
+                if let Some(release_url) = candidate.release_url.clone() {
+                    actions = actions.child(settings_icon_button(
+                        "settings-updates-release",
+                        icons::IconName::Link,
+                        i18n::text("settings.updates_release"),
+                        move |_ev, _window, cx| cx.open_url(&release_url),
+                    ));
+                }
+                content = content.child(settings_row(
+                    rust_i18n::t!("settings.updates_available", version = version).to_string(),
+                    if candidate.notes.is_empty() {
+                        i18n::text("settings.updates_available_description")
+                    } else {
+                        candidate.notes
+                    },
+                    actions.into_any_element(),
+                ));
+            }
+            UpdateStatus::Downloading(candidate) => {
+                content = content.child(settings_row(
+                    rust_i18n::t!(
+                        "settings.updates_downloading",
+                        version = candidate.version.to_string()
+                    )
+                    .to_string(),
+                    i18n::text("settings.updates_downloading_description"),
+                    div().into_any_element(),
+                ));
+            }
+            UpdateStatus::Ready { candidate, package } => {
+                let package_text = package.display().to_string();
+                let install = settings_icon_button(
+                    "settings-updates-install",
+                    icons::IconName::RefreshCw,
+                    i18n::text("settings.updates_install"),
+                    cx.listener(|this, _ev, _window, cx| this.install_update(cx)),
+                );
+                content = content.child(settings_row(
+                    rust_i18n::t!(
+                        "settings.updates_ready",
+                        version = candidate.version.to_string()
+                    )
+                    .to_string(),
+                    package_text,
+                    install,
+                ));
+            }
+            _ => {}
+        }
+
+        content.into_any_element()
+    }
+
+    fn install_update(&mut self, cx: &mut Context<Self>) {
+        match self.updates.update(cx, |updates, _cx| updates.install()) {
+            Ok(()) => self.write_to_shell(cx, |shell, cx| shell.quit_for_update(cx)),
+            Err(error) => {
+                self.updates
+                    .update(cx, |updates, _cx| updates.set_failed(error));
+                cx.notify();
+            }
+        }
+    }
 }
 
 impl Render for SettingsWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let section = self.section;
         let settings = self.shell_settings(cx);
+        self.updates
+            .update(cx, |updates, cx| updates.start_startup_check(cx));
 
         let general = nav_button(
             "settings-section-general",
@@ -360,10 +531,20 @@ impl Render for SettingsWindow {
                 this.select_section(SettingsSection::Terminal, cx);
             }),
         );
+        let updates = nav_button(
+            "settings-section-updates",
+            icons::IconName::RefreshCw,
+            i18n::text("settings.updates"),
+            section == SettingsSection::Updates,
+            cx.listener(|this, _ev, _window, cx| {
+                this.select_section(SettingsSection::Updates, cx);
+            }),
+        );
 
         let content = match section {
             SettingsSection::General => self.render_general_settings(&settings, cx),
             SettingsSection::Terminal => self.render_terminal_settings(&settings, cx),
+            SettingsSection::Updates => self.render_updates_settings(&settings, cx),
         };
 
         div()
@@ -388,7 +569,8 @@ impl Render for SettingsWindow {
                             .border_r_1()
                             .border_color(theme::border())
                             .child(general)
-                            .child(terminal),
+                            .child(terminal)
+                            .child(updates),
                     )
                     .child(
                         div()
@@ -522,6 +704,45 @@ fn settings_icon_button(
         .into_any_element()
 }
 
+fn update_status_presentation(status: &UpdateStatus) -> (String, gpui::Rgba) {
+    match status {
+        UpdateStatus::Idle => (
+            i18n::text("settings.updates_not_checked"),
+            theme::muted_text(),
+        ),
+        UpdateStatus::Checking => (i18n::text("settings.updates_checking"), theme::info()),
+        UpdateStatus::UpToDate => (i18n::text("settings.updates_up_to_date"), theme::accent()),
+        UpdateStatus::Available(candidate) => (
+            rust_i18n::t!(
+                "settings.updates_available_short",
+                version = candidate.version.to_string()
+            )
+            .to_string(),
+            theme::info(),
+        ),
+        UpdateStatus::Downloading(candidate) => (
+            rust_i18n::t!(
+                "settings.updates_downloading_short",
+                version = candidate.version.to_string()
+            )
+            .to_string(),
+            theme::warning(),
+        ),
+        UpdateStatus::Ready { candidate, .. } => (
+            rust_i18n::t!(
+                "settings.updates_ready_short",
+                version = candidate.version.to_string()
+            )
+            .to_string(),
+            theme::accent(),
+        ),
+        UpdateStatus::Failed(error) => (
+            rust_i18n::t!("settings.updates_failed", error = error).to_string(),
+            theme::danger(),
+        ),
+    }
+}
+
 /// 设置窗口当前是否打开（供侧栏按钮高亮）。
 pub fn is_settings_window_open(cx: &App) -> bool {
     cx.windows()
@@ -584,7 +805,7 @@ pub fn open_settings_window(shell: WeakEntity<AppShell>, cx: &mut App) {
                     let _ = notify_shell.update(cx, |_shell, cx| cx.notify());
                     true
                 });
-                cx.new(|_| SettingsWindow::new(shell))
+                cx.new(|cx| SettingsWindow::new(shell, cx))
             },
         )
         .ok();

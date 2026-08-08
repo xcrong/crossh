@@ -7,13 +7,19 @@ edition = "2024"
 base64 = "0.22"
 chrono = "0.4.45"
 flate2 = "1"
+hex = "0.4"
 icy_sixel = "0.5"
 png = "0.17"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3", features = ["font-kit"] }
 libc = "0.2"
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-native-roots"] }
 russh = "0.62"
 russh-sftp = "2.3"
+semver = "1"
+serde_json = "1"
+sha2 = "0.10"
+tar = "0.4"
 alacritty_terminal = "0.26"
 sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
 vte = { version = "0.15", features = ["std", "ansi"] }
@@ -28,6 +34,11 @@ rust-i18n = "4"
 serde = { version = "1", features = ["derive"] }
 sys-locale = "0.3"
 toml = "0.8"
+url = "2"
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 pretty_assertions = "1"
+
+[profile.dev.package."*"]
+opt-level = 1

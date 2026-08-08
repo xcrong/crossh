@@ -26,6 +26,27 @@ settings:
   recent_dirs_description: Remember opened local folders so they can be reopened after quitting.
   dirs: "%{value} dirs"
   recent_dirs_clear: Clear recent history
+  updates: Updates
+  updates_check_on_startup: Check for updates on startup
+  updates_check_on_startup_description: Check the release manifest when the application starts.
+  updates_status: Update status
+  updates_status_description: Releases are downloaded over HTTPS and verified with SHA-256 before installation.
+  updates_check_now: Check for updates now
+  updates_not_checked: Not checked yet
+  updates_checking: Checking for updates...
+  updates_up_to_date: You are up to date
+  updates_available: "Update available: %{version}"
+  updates_available_short: "Available: %{version}"
+  updates_available_description: A newer Crossh release is ready to download.
+  updates_download: Download update
+  updates_release: Open release page
+  updates_downloading: Downloading %{version}
+  updates_downloading_short: Downloading %{version}
+  updates_downloading_description: The package will be verified before it becomes installable.
+  updates_ready: Ready to install %{version}
+  updates_ready_short: "Ready: %{version}"
+  updates_install: Restart and install update
+  updates_failed: "Update failed: %{error}"
 
 sidebar:
   active: ACTIVE

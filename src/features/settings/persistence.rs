@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::features::terminal::settings::TerminalSettings;
+use crate::features::updates::UpdateSettings;
 use crate::features::workspace::settings::WorkspaceSettings;
 use crate::shared::i18n::LanguagePreference;
 
@@ -15,6 +16,7 @@ const SETTINGS_FILE_NAME: &str = "settings.toml";
 pub(crate) struct SettingsSnapshot {
     pub(crate) language: LanguagePreference,
     pub(crate) terminal: TerminalSettings,
+    pub(crate) updates: UpdateSettings,
     pub(crate) workspace: WorkspaceSettings,
 }
 
@@ -24,8 +26,14 @@ struct SettingsFile {
     language: LanguagePreference,
     #[serde(flatten)]
     terminal: TerminalSettings,
+    #[serde(default = "default_updates_check_on_startup")]
+    updates_check_on_startup: bool,
     #[serde(flatten)]
     workspace: WorkspaceSettings,
+}
+
+fn default_updates_check_on_startup() -> bool {
+    UpdateSettings::default().check_on_startup
 }
 
 impl From<SettingsFile> for SettingsSnapshot {
@@ -33,6 +41,9 @@ impl From<SettingsFile> for SettingsSnapshot {
         Self {
             language: file.language,
             terminal: file.terminal.normalized(),
+            updates: UpdateSettings {
+                check_on_startup: file.updates_check_on_startup,
+            },
             workspace: file.workspace.normalized(),
         }
     }
@@ -43,6 +54,7 @@ impl From<&SettingsSnapshot> for SettingsFile {
         Self {
             language: snapshot.language,
             terminal: snapshot.terminal.clone().normalized(),
+            updates_check_on_startup: snapshot.updates.check_on_startup,
             workspace: snapshot.workspace.clone().normalized(),
         }
     }
@@ -104,6 +116,7 @@ mod tests {
                 scrollback: 5000,
                 ..TerminalSettings::default()
             },
+            updates: UpdateSettings::default(),
             workspace: WorkspaceSettings {
                 recent_dirs: vec![PathBuf::from("/a"), PathBuf::from("/b")],
                 recent_dirs_max: 2,
@@ -122,6 +135,11 @@ mod tests {
                 .lines()
                 .any(|line| line == "recent_local_dirs_max = 2")
         );
+        assert!(
+            encoded
+                .lines()
+                .any(|line| line == "updates_check_on_startup = true")
+        );
 
         let decoded: SettingsSnapshot = toml::from_str::<SettingsFile>(&encoded)
             .expect("settings should deserialize")
@@ -136,6 +154,7 @@ mod tests {
             .into();
         assert_eq!(snapshot.language, LanguagePreference::English);
         assert_eq!(snapshot.terminal, TerminalSettings::default());
+        assert_eq!(snapshot.updates, UpdateSettings::default());
         assert_eq!(snapshot.workspace, WorkspaceSettings::default());
     }
 

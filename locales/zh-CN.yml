@@ -26,6 +26,27 @@ settings:
   recent_dirs_description: 记住打开过的本地目录，退出后仍可在侧栏 Local 重新打开。
   dirs: "%{value} 个目录"
   recent_dirs_clear: 清空最近记录
+  updates: 更新
+  updates_check_on_startup: 启动时检查更新
+  updates_check_on_startup_description: 应用启动后检查发布清单。
+  updates_status: 更新状态
+  updates_status_description: 更新通过 HTTPS 下载，并在安装前校验 SHA-256。
+  updates_check_now: 立即检查更新
+  updates_not_checked: 尚未检查
+  updates_checking: 正在检查更新…
+  updates_up_to_date: 已是最新版本
+  updates_available: 可更新至 %{version}
+  updates_available_short: 可更新：%{version}
+  updates_available_description: 有新的 Crossh 版本可以下载。
+  updates_download: 下载更新
+  updates_release: 打开发布页面
+  updates_downloading: 正在下载 %{version}
+  updates_downloading_short: 下载中：%{version}
+  updates_downloading_description: 下载完成并校验后才可以安装。
+  updates_ready: 已准备安装 %{version}
+  updates_ready_short: 已就绪：%{version}
+  updates_install: 重启并安装更新
+  updates_failed: 更新失败：%{error}
 
 sidebar:
   active: 活跃

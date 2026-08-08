@@ -8,4 +8,5 @@ pub(crate) mod projects;
 pub(crate) mod settings;
 pub(crate) mod sftp;
 pub(crate) mod terminal;
+pub(crate) mod updates;
 pub(crate) mod workspace;

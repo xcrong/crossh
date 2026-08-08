@@ -38,6 +38,7 @@ use crate::features::terminal::settings::{
     MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK, TerminalSettings,
 };
 use crate::features::terminal::{ConnState, TerminalEvent, TerminalView};
+use crate::features::updates::{UpdateController, UpdateSettings};
 use crate::features::workspace::registry::WorkspaceState;
 use crate::features::workspace::settings::WorkspaceSettings;
 use crate::features::workspace::sidebar::render_sidebar;
@@ -155,6 +156,8 @@ pub struct AppShell {
     /// 当前打开的右键上下文菜单（None = 未打开）。
     pub(crate) context_menu: Option<ContextMenuState<ShellMenuAction>>,
     pub(crate) terminal_settings: TerminalSettings,
+    pub(crate) update_settings: UpdateSettings,
+    pub(crate) updates: Entity<UpdateController>,
     pub(crate) workspace_settings: WorkspaceSettings,
     /// 侧栏宽度与拖动状态；只影响布局，不改变导航状态。
     pub(crate) sidebar_width: Rc<Cell<f32>>,
@@ -189,7 +192,9 @@ impl AppShell {
         let snapshot = settings::load();
         let language_preference = snapshot.language;
         let terminal_settings = snapshot.terminal;
+        let update_settings = snapshot.updates;
         let workspace_settings = snapshot.workspace;
+        let updates = cx.new(|_| UpdateController::new(update_settings.clone()));
         // 启动时把最近的本地目录记录恢复到侧栏 Local 分组（无活动会话，点击即重开）。
         let mut local_dirs = BTreeMap::new();
         for cwd in &workspace_settings.recent_dirs {
@@ -205,7 +210,7 @@ impl AppShell {
             }
         }
 
-        cx.new(|cx| Self {
+        let shell = cx.new(|cx| Self {
             connections: ConnectionManager::new(config),
             workspace: WorkspaceState::new(local_dirs),
             status: None,
@@ -223,6 +228,8 @@ impl AppShell {
             language_preference,
             context_menu: None,
             terminal_settings,
+            update_settings,
+            updates: updates.clone(),
             workspace_settings,
             sidebar_width: Rc::new(Cell::new(theme::SIDEBAR_WIDTH)),
             sidebar_dragging: Rc::new(Cell::new(false)),
@@ -238,7 +245,9 @@ impl AppShell {
             _git_status_refresh_task: None,
             quit_confirmation_open: false,
             shutdown_in_progress: false,
-        })
+        });
+        updates.update(cx, |updates, cx| updates.start_startup_check(cx));
+        shell
     }
 
     pub(crate) fn open_host(&mut self, idx: usize, cx: &mut Context<Self>) {
@@ -1482,6 +1491,15 @@ impl AppShell {
         self.apply_terminal_settings(terminal, cx);
     }
 
+    pub(crate) fn set_update_check_on_startup(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.update_settings.check_on_startup == enabled {
+            return;
+        }
+        self.update_settings.check_on_startup = enabled;
+        self.persist_settings();
+        cx.notify();
+    }
+
     pub(crate) fn adjust_font_size(&mut self, delta: f32, cx: &mut Context<Self>) {
         let mut terminal = self.terminal_settings.clone();
         terminal.font_size = (terminal.font_size + delta)
@@ -1688,11 +1706,22 @@ impl AppShell {
         let snapshot = SettingsSnapshot {
             language: self.language_preference,
             terminal: self.terminal_settings.clone(),
+            updates: self.update_settings.clone(),
             workspace: self.workspace_settings.clone(),
         };
         if let Err(error) = settings::save(&snapshot) {
             log::warn!("failed to save settings: {error}");
         }
+    }
+
+    /// Finish the normal shutdown sequence after a verified update has been
+    /// handed to the standalone updater.
+    pub(crate) fn quit_for_update(&mut self, cx: &mut Context<Self>) {
+        if self.shutdown_in_progress {
+            return;
+        }
+        self.begin_shutdown(cx);
+        cx.quit();
     }
 
     pub(crate) fn local_dir_for_session(&self, session_id: LocalSessionId) -> Option<&LocalDir> {
