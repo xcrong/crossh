@@ -362,7 +362,14 @@ fn render_quick_commands(
                 .child(SharedString::from(cwd)),
         );
 
-    let mut list = div().flex_1().min_h_0().flex().flex_col().gap_1().p_2();
+    let mut list = div()
+        .id("quick-commands-list")
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .p_2();
     list.style().overflow.y = Some(gpui::Overflow::Scroll);
     if records.is_empty() {
         list = list.child(
@@ -383,6 +390,7 @@ fn render_quick_commands(
     }
 
     let mut task_section = div()
+        .id("quick-commands-tasks")
         .flex_shrink_0()
         .max_h(px(180.))
         .border_t_1()
