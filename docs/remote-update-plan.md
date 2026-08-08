@@ -4,7 +4,7 @@
 
 Crossh 客户端通过 GitHub Releases 检查新版本、下载对应平台产物，并在用户确认后由独立 updater 完成替换。主进程不覆盖正在运行的自身文件。
 
-macOS 暂时没有 Developer ID，因此继续使用现有 ad-hoc 签名包。更新流程不依赖 Developer ID 或 Sparkle；后续获得证书后，可以在不改变清单协议的情况下增加原生签名校验。
+macOS 暂时没有 Developer ID，因此当前发布未签名 `.app`。更新流程不依赖 Developer ID 或 Sparkle；后续获得证书后，可以在不改变清单协议的情况下增加原生签名校验。
 
 ## 已实施的第一阶段
 
@@ -57,7 +57,7 @@ https://github.com/xcrong/crossh/releases/latest/download/stable.json
 
 ### macOS
 
-updater 找到当前 `.app` 根目录，复制新 bundle 到同一目录下的临时目录，替换旧 bundle，然后使用 `open` 重新启动。当前包可以是 ad-hoc 签名；用户首次下载仍可能需要在系统安全提示中手动允许。
+updater 找到当前 `.app` 根目录，复制新 bundle 到同一目录下的临时目录，替换旧 bundle，然后使用 `open` 重新启动。当前包未签名，用户首次下载仍可能需要在系统安全提示中手动允许。
 
 ### Linux
 

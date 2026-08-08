@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 打包 crossh.app（macOS）：release 构建 → 组装 .app bundle → ad-hoc 签名 → zip。
+# 打包 crossh.app（macOS）：release 构建 → 组装未签名 .app bundle → zip。
 #
 # 用法:  scripts/package.sh [target] [version]
 #         target: aarch64-apple-darwin（默认，arm64 宿主机本机）| x86_64-apple-darwin
@@ -78,8 +78,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "==> ad-hoc signing (runs locally, no Apple developer account needed)"
-codesign --force --deep --sign - "$APP_DIR"
+echo "==> skipping Apple code signing (Developer ID is not configured)"
 
 echo "==> zipping"
 ZIP="$DIST/$APP_NAME-$VERSION-$ARCH-macos.zip"

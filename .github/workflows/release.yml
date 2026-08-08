@@ -1,7 +1,7 @@
 name: Release
 
 # 打 tag（v*）时自动构建并发布三平台、多架构产物：
-#   macOS:  aarch64 / x86_64 .app zip（ad-hoc 签名；暂不需要 Developer ID）
+#   macOS:  aarch64 / x86_64 未签名 .app zip（暂不需要 Developer ID）
 #   Linux:  x86_64 / aarch64 tar.gz + AppImage
 #   Windows: x86_64 zip（aarch64 实验性，编译失败不阻塞发布）
 # 本地等价命令:  scripts/package.sh / package-linux.sh / package-windows.ps1

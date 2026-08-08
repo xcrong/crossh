@@ -24,7 +24,7 @@ cargo run            # 开发模式（日志同时 tee 到 stderr）
 cargo run --release  # 发布模式
 ```
 
-打包为 `.app`（含 ad-hoc 签名，无需开发者账号）：
+打包为未签名 `.app`（当前没有 Developer ID）：
 
 ```bash
 scripts/package.sh          # 本机架构，输出 dist/crossh.app 与 dist/crossh-<version>-<arch>-macos.zip
@@ -34,7 +34,7 @@ open dist/crossh.app
 
 三平台发布产物由 [.github/workflows/release.yml](.github/workflows/release.yml) 构建：macOS `.app` zip（aarch64/x86_64）、Linux `tar.gz` + AppImage（x86_64/aarch64）、Windows zip（x86_64）。每个 release 同时生成 `stable.json`，由 [scripts/generate-update-manifest.sh](scripts/generate-update-manifest.sh) 根据实际产物的大小和 SHA-256 自动生成。更新设计、平台替换策略和后续 Ed25519 签名计划见 [docs/remote-update-plan.md](docs/remote-update-plan.md)。
 
-当前版本的 macOS 包使用 ad-hoc 签名，不依赖 Developer ID，也不承诺绕过 Gatekeeper 或提供公证；远程更新只负责验证 HTTPS、目标平台、版本、文件大小和 SHA-256。
+当前版本的 macOS 包不做 Apple 签名，不承诺绕过 Gatekeeper 或提供公证；远程更新只负责验证 HTTPS、目标平台、版本、文件大小和 SHA-256。
 
 ## 快捷键
 
