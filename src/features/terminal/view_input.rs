@@ -70,7 +70,7 @@ impl super::TerminalView {
                 ks,
                 self.terminal_mode(),
                 event_type,
-                self.modify_other_keys,
+                self.keyboard_protocol.modify_other_keys(),
             )
         {
             self.ime_marked_text.clear();
@@ -84,7 +84,7 @@ impl super::TerminalView {
                 ks,
                 self.terminal_mode(),
                 event_type,
-                self.modify_other_keys,
+                self.keyboard_protocol.modify_other_keys(),
             )
         {
             self.submit_shell_input(bytes);
@@ -145,7 +145,7 @@ impl super::TerminalView {
             ks,
             self.terminal_mode(),
             event_type,
-            self.modify_other_keys,
+            self.keyboard_protocol.modify_other_keys(),
         ) {
             self.bypass_shell_input(bytes);
             return true;
@@ -279,7 +279,12 @@ impl super::TerminalView {
             return;
         }
         let mode = self.terminal_mode();
-        match encode_keystroke_with_options(ks, mode, event_type, self.modify_other_keys) {
+        match encode_keystroke_with_options(
+            ks,
+            mode,
+            event_type,
+            self.keyboard_protocol.modify_other_keys(),
+        ) {
             Some(bytes) => {
                 if self.shell_activity_available && matches!(ks.key.as_str(), "enter" | "return") {
                     self.command_running = true;

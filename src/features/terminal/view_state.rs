@@ -136,9 +136,7 @@ impl super::TerminalView {
                 scroll_acc: 0.,
                 cursor_blink_on: true,
                 urxvt_mouse: false,
-                modify_other_keys: 0,
-                kitty_keyboard_mode: 0,
-                kitty_keyboard_stack: Vec::new(),
+                keyboard_protocol: KeyboardProtocolState::default(),
                 focused: true,
                 notifications_enabled: settings.notifications_enabled,
                 progress: None,
@@ -366,23 +364,19 @@ impl super::TerminalView {
                         log::warn!("ignoring oversized OSC 52 clipboard response");
                     }
                 }
-                ProtocolEvent::KeyboardModeSet { bits, behavior } => match behavior {
-                    2 => self.kitty_keyboard_mode |= bits,
-                    3 => self.kitty_keyboard_mode &= !bits,
-                    _ => self.kitty_keyboard_mode = bits,
-                },
+                ProtocolEvent::KeyboardModeSet { bits, behavior } => {
+                    self.keyboard_protocol.kitty_set(bits, behavior)
+                }
                 ProtocolEvent::KeyboardModePush { bits } => {
-                    self.kitty_keyboard_stack.push(self.kitty_keyboard_mode);
-                    self.kitty_keyboard_mode = bits;
+                    self.keyboard_protocol.kitty_push(bits);
                 }
                 ProtocolEvent::KeyboardModePop(count) => {
-                    for _ in 0..count {
-                        self.kitty_keyboard_mode =
-                            self.kitty_keyboard_stack.pop().unwrap_or_default();
-                    }
+                    self.keyboard_protocol.kitty_pop(count);
                 }
                 ProtocolEvent::KeyboardModeQuery => {
-                    self.send_input(format!("\x1b[?{}u", self.kitty_keyboard_mode).into_bytes());
+                    self.send_input(
+                        format!("\x1b[?{}u", self.keyboard_protocol.kitty_flags()).into_bytes(),
+                    );
                 }
                 ProtocolEvent::PrimaryDeviceAttributesQuery => {
                     self.send_input(b"\x1b[?6c".to_vec());
@@ -473,7 +467,9 @@ impl super::TerminalView {
                 ProtocolEvent::Decrqss(query) => self.respond_decrqss(&query),
                 ProtocolEvent::XtGetTcap(query) => self.respond_xtgettcap(&query),
                 ProtocolEvent::UrxvtMouse(enabled) => self.urxvt_mouse = enabled,
-                ProtocolEvent::ModifyOtherKeys(level) => self.modify_other_keys = level,
+                ProtocolEvent::ModifyOtherKeys(level) => {
+                    self.keyboard_protocol.set_modify_other_keys(level)
+                }
                 ProtocolEvent::ModifyOtherKeysQuery => self.respond_modify_other_keys_query(),
                 ProtocolEvent::WindowSizeQuery => self.respond_window_size_query(),
                 ProtocolEvent::TextAreaSizeQuery => self.respond_text_area_size_query(),
@@ -494,18 +490,29 @@ impl super::TerminalView {
                     self.kitty_image_data.clear();
                     self.kitty_image_numbers.clear();
                     self.kitty_active_image_id = None;
-                    self.modify_other_keys = 0;
-                    self.kitty_keyboard_mode = 0;
-                    self.kitty_keyboard_stack.clear();
+                    self.reset_crossh_keyboard_state();
                 }
-                ProtocolEvent::ClearImages | ProtocolEvent::ScreenBufferSwitch(_) => {
+                ProtocolEvent::SoftReset => self.reset_crossh_keyboard_state(),
+                ProtocolEvent::ClearImages => {
                     self.images.clear();
                     self.kitty_image_data.clear();
                     self.kitty_image_numbers.clear();
                     self.kitty_active_image_id = None;
                 }
+                ProtocolEvent::ScreenBufferSwitch(alternate) => {
+                    self.images.clear();
+                    self.kitty_image_data.clear();
+                    self.kitty_image_numbers.clear();
+                    self.kitty_active_image_id = None;
+                    self.keyboard_protocol.switch_screen(alternate);
+                }
             }
         }
+    }
+
+    fn reset_crossh_keyboard_state(&mut self) {
+        self.keyboard_protocol.reset();
+        self.urxvt_mouse = false;
     }
 
     pub(super) fn process_kitty_notification(
@@ -1639,7 +1646,9 @@ impl super::TerminalView {
     }
 
     pub(super) fn respond_modify_other_keys_query(&mut self) {
-        self.send_input(format!("\x1b[>4;{}m", self.modify_other_keys).into_bytes());
+        self.send_input(
+            format!("\x1b[>4;{}m", self.keyboard_protocol.modify_other_keys()).into_bytes(),
+        );
     }
 
     pub(super) fn respond_cell_size_query(&mut self) {

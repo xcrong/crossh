@@ -6,6 +6,7 @@
 use base64::Engine;
 
 const MAX_STRING_BYTES: usize = 8 * 1024 * 1024;
+const MAX_CSI_BYTES: usize = 4096;
 const MAX_NOTIFICATION_TEXT_BYTES: usize = 8 * 1024;
 const MAX_IMAGE_BYTES: usize = 6 * 1024 * 1024;
 
@@ -88,6 +89,8 @@ pub enum ProtocolEvent {
     Passthrough(Vec<u8>),
     /// The terminal reset sequence (`RIS`) clears screen-attached graphics.
     Reset,
+    /// DEC soft reset (`DECSTR`) resets Crossh-owned protocol modes.
+    SoftReset,
     /// Erase operations that, by terminal graphics convention, clear visible
     /// image placements as well as the corresponding screen contents.
     ClearImages,
@@ -142,9 +145,19 @@ enum State {
     #[default]
     Ground,
     Escape,
-    Csi(Vec<u8>),
+    EscapeIntermediate {
+        bytes: Vec<u8>,
+        overflowed: bool,
+    },
+    Csi(CsiState),
     String(StringState),
     StringEscape(StringState),
+}
+
+#[derive(Default)]
+struct CsiState {
+    bytes: Vec<u8>,
+    overflowed: bool,
 }
 
 struct StringState {
@@ -191,15 +204,14 @@ impl TerminalProtocolParser {
                 0x90 if !utf8_continuation => {
                     self.state = State::String(new_string(StringKind::Dcs))
                 }
-                0x9b if !utf8_continuation => self.state = State::Csi(Vec::new()),
+                0x9b if !utf8_continuation => self.state = State::Csi(CsiState::default()),
                 0x9d if !utf8_continuation => {
                     self.state = State::String(new_string(StringKind::Osc))
                 }
-                0x9e | 0x9f if !utf8_continuation => {
-                    self.state = State::String(new_string(if byte == 0x9f {
-                        StringKind::Apc
-                    } else {
-                        StringKind::Ignore
+                0x98 | 0x9e | 0x9f if !utf8_continuation => {
+                    self.state = State::String(new_string(match byte {
+                        0x9f => StringKind::Apc,
+                        _ => StringKind::Ignore,
                     }))
                 }
                 _ => {}
@@ -209,24 +221,67 @@ impl TerminalProtocolParser {
                 b'P' => self.state = State::String(new_string(StringKind::Dcs)),
                 b'_' => self.state = State::String(new_string(StringKind::Apc)),
                 b'X' | b'^' => self.state = State::String(new_string(StringKind::Ignore)),
-                b'[' => self.state = State::Csi(Vec::new()),
+                b'[' => self.state = State::Csi(CsiState::default()),
                 b'c' => events.push(ProtocolEvent::Reset),
                 0x1b => self.state = State::Escape,
+                0x18 | 0x1a => {}
+                0x07 => events.push(ProtocolEvent::Bell),
+                0x20..=0x2f => {
+                    self.state = State::EscapeIntermediate {
+                        bytes: vec![byte],
+                        overflowed: false,
+                    }
+                }
                 _ => {}
             },
-            State::Csi(mut payload) => {
+            State::EscapeIntermediate {
+                mut bytes,
+                mut overflowed,
+            } => {
                 if byte == 0x18 || byte == 0x1a || (byte == 0x9c && !utf8_continuation) {
                     return;
                 }
-                if (0x40..=0x7e).contains(&byte) {
-                    events.extend(parse_csi(&payload, byte));
-                } else if byte == 0x1b {
+                if byte == 0x1b {
                     self.state = State::Escape;
-                } else if payload.len() < MAX_STRING_BYTES {
-                    payload.push(byte);
-                    self.state = State::Csi(payload);
+                } else if byte == 0x07 {
+                    events.push(ProtocolEvent::Bell);
+                    self.state = State::EscapeIntermediate { bytes, overflowed };
+                } else if (0x20..=0x2f).contains(&byte) {
+                    if bytes.len() < 16 {
+                        bytes.push(byte);
+                    } else {
+                        overflowed = true;
+                    }
+                    self.state = State::EscapeIntermediate { bytes, overflowed };
+                } else if (0x30..=0x7e).contains(&byte) {
+                    // Unknown ESC sequences are deliberately consumed and
+                    // ignored. Known state transitions are handled above.
+                }
+            }
+            State::Csi(mut csi) => {
+                if byte == 0x18 || byte == 0x1a || (byte == 0x9c && !utf8_continuation) {
+                    return;
+                }
+                if byte == 0x1b {
+                    self.state = State::Escape;
+                } else if byte == 0x07 {
+                    events.push(ProtocolEvent::Bell);
+                    self.state = State::Csi(csi);
+                } else if (0x40..=0x7e).contains(&byte) {
+                    if !csi.overflowed {
+                        events.extend(parse_csi(&csi.bytes, byte));
+                    }
+                } else if (0x20..=0x3f).contains(&byte) {
+                    if csi.bytes.len() < MAX_CSI_BYTES {
+                        csi.bytes.push(byte);
+                    } else {
+                        csi.overflowed = true;
+                    }
+                    self.state = State::Csi(csi);
                 } else {
-                    self.state = State::Csi(payload);
+                    // Other C0 controls execute without terminating CSI. The
+                    // observer does not need to model their screen effects.
+                    self.state = State::Csi(csi);
                 }
             }
             State::String(mut string) => {
@@ -239,6 +294,14 @@ impl TerminalProtocolParser {
                     self.state = State::StringEscape(string);
                 } else if byte == 0x07 && matches!(string.kind, StringKind::Osc) {
                     events.extend(finish_string(string));
+                } else if byte <= 0x1f || byte == 0x7f {
+                    // C0 controls execute while an ordinary string is open;
+                    // tmux DCS passthrough is the exception because its
+                    // nested payload must be decoded byte-for-byte.
+                    if matches!(string.kind, StringKind::Dcs) {
+                        append_byte(&mut string, byte);
+                    }
+                    self.state = State::String(string);
                 } else {
                     append_byte(&mut string, byte);
                     self.state = State::String(string);
@@ -247,9 +310,10 @@ impl TerminalProtocolParser {
             State::StringEscape(mut string) => {
                 if byte == b'\\' || (byte == 0x9c && !utf8_continuation) {
                     events.extend(finish_string(string));
+                } else if byte == 0x18 || byte == 0x1a {
                 } else if byte == 0x1b {
                     append_byte(&mut string, 0x1b);
-                    self.state = State::String(string);
+                    self.state = State::StringEscape(string);
                 } else {
                     append_byte(&mut string, 0x1b);
                     self.state = State::String(string);
@@ -637,78 +701,194 @@ fn parse_apc(payload: &[u8]) -> Vec<ProtocolEvent> {
     })]
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CsiParams {
+    private: Option<u8>,
+    params: Vec<CsiParameter>,
+    intermediates: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CsiParameter {
+    subparameters: Vec<Option<u32>>,
+}
+
+fn parse_csi_params(payload: &[u8]) -> Option<CsiParams> {
+    let private = payload
+        .first()
+        .copied()
+        .filter(|byte| matches!(*byte, b'?' | b'>' | b'<' | b'='));
+    let parameter_start = usize::from(private.is_some());
+    let parameter_end = payload[parameter_start..]
+        .iter()
+        .position(|byte| !(0x30..=0x3f).contains(byte))
+        .map(|index| parameter_start + index)
+        .unwrap_or(payload.len());
+    let intermediate_end = payload[parameter_end..]
+        .iter()
+        .position(|byte| !(0x20..=0x2f).contains(byte))
+        .map(|index| parameter_end + index)
+        .unwrap_or(payload.len());
+    if intermediate_end != payload.len() {
+        return None;
+    }
+
+    let parameter_bytes = &payload[parameter_start..parameter_end];
+    let params = if parameter_bytes.is_empty() {
+        Vec::new()
+    } else {
+        parameter_bytes
+            .split(|byte| *byte == b';')
+            .map(|parameter| {
+                let subparameters = parameter
+                    .split(|byte| *byte == b':')
+                    .map(|subparameter| {
+                        if subparameter.is_empty() {
+                            Some(None)
+                        } else {
+                            Some(Some(parse_u32(subparameter)?))
+                        }
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                Some(CsiParameter { subparameters })
+            })
+            .collect::<Option<Vec<_>>>()?
+    };
+
+    Some(CsiParams {
+        private,
+        params,
+        intermediates: payload[parameter_end..].to_vec(),
+    })
+}
+
+fn simple_csi_values(params: &CsiParams) -> Option<Vec<Option<u32>>> {
+    params
+        .params
+        .iter()
+        .map(|parameter| (parameter.subparameters.len() == 1).then_some(parameter.subparameters[0]))
+        .collect()
+}
+
 fn parse_csi(payload: &[u8], final_byte: u8) -> Vec<ProtocolEvent> {
-    if matches!(final_byte, b'h' | b'l') && matches!(payload, b"?47" | b"?1047" | b"?1049") {
+    let Some(params) = parse_csi_params(payload) else {
+        return Vec::new();
+    };
+    let Some(values) = simple_csi_values(&params) else {
+        return Vec::new();
+    };
+    let no_intermediates = params.intermediates.is_empty();
+
+    if final_byte == b'p'
+        && params.private.is_none()
+        && params.params.is_empty()
+        && params.intermediates == *b"!"
+    {
+        return vec![ProtocolEvent::SoftReset];
+    }
+
+    if matches!(final_byte, b'h' | b'l')
+        && params.private == Some(b'?')
+        && no_intermediates
+        && values.len() == 1
+        && matches!(values[0], Some(47 | 1047 | 1049))
+    {
         return vec![ProtocolEvent::ScreenBufferSwitch(final_byte == b'h')];
     }
-    if final_byte == b'J' && matches!(payload, b"2" | b"3") {
+
+    if final_byte == b'J'
+        && params.private.is_none()
+        && no_intermediates
+        && values.len() == 1
+        && matches!(values[0], Some(2 | 3))
+    {
         return vec![ProtocolEvent::ClearImages];
     }
-    if final_byte == b't' {
-        return match payload {
-            b"14" => vec![ProtocolEvent::WindowSizeQuery],
-            b"16" => vec![ProtocolEvent::CellSizeQuery],
-            b"18" | b"19" => vec![ProtocolEvent::TextAreaSizeQuery],
+
+    if final_byte == b't' && params.private.is_none() && no_intermediates {
+        return match values.as_slice() {
+            [Some(14)] => vec![ProtocolEvent::WindowSizeQuery],
+            [Some(16)] => vec![ProtocolEvent::CellSizeQuery],
+            [Some(18 | 19)] => vec![ProtocolEvent::TextAreaSizeQuery],
             _ => Vec::new(),
         };
     }
-    if final_byte == b'u' {
-        if payload == b"?" {
-            return vec![ProtocolEvent::KeyboardModeQuery];
-        }
-        if let Some(value) = payload.strip_prefix(b"<") {
-            let count = parse_u16(value).unwrap_or(1);
-            return vec![ProtocolEvent::KeyboardModePop(count)];
-        }
-        if let Some(value) = payload.strip_prefix(b">") {
-            return vec![ProtocolEvent::KeyboardModePush {
-                bits: parse_u8(value).unwrap_or_default(),
-            }];
-        }
-        if let Some(value) = payload.strip_prefix(b"=") {
-            let mut fields = value.split(|byte| *byte == b';');
-            let bits = fields.next().and_then(parse_u8).unwrap_or_default();
-            let behavior = fields.next().and_then(parse_u8).unwrap_or(1);
-            return vec![ProtocolEvent::KeyboardModeSet { bits, behavior }];
+
+    if final_byte == b'u' && no_intermediates {
+        match params.private {
+            Some(b'?') if values.is_empty() => {
+                return vec![ProtocolEvent::KeyboardModeQuery];
+            }
+            Some(b'<') if values.len() <= 1 => {
+                let count = values
+                    .first()
+                    .copied()
+                    .flatten()
+                    .and_then(|value| u16::try_from(value).ok())
+                    .unwrap_or(1);
+                return vec![ProtocolEvent::KeyboardModePop(count)];
+            }
+            Some(b'>') if values.len() <= 1 => {
+                let bits = values
+                    .first()
+                    .copied()
+                    .flatten()
+                    .and_then(|value| u8::try_from(value).ok())
+                    .unwrap_or_default();
+                return vec![ProtocolEvent::KeyboardModePush { bits }];
+            }
+            Some(b'=') if (1..=2).contains(&values.len()) => {
+                let Some(bits) = values[0].and_then(|value| u8::try_from(value).ok()) else {
+                    return Vec::new();
+                };
+                let behavior = values.get(1).copied().flatten().unwrap_or(1);
+                let Some(behavior) = u8::try_from(behavior).ok() else {
+                    return Vec::new();
+                };
+                return vec![ProtocolEvent::KeyboardModeSet { bits, behavior }];
+            }
+            _ => {}
         }
     }
-    if final_byte == b'c' {
-        return match payload {
-            b"" => vec![ProtocolEvent::PrimaryDeviceAttributesQuery],
-            b">" => vec![ProtocolEvent::SecondaryDeviceAttributesQuery],
+
+    if final_byte == b'c' && no_intermediates {
+        match (params.private, values.as_slice()) {
+            (None, []) | (None, [Some(0)]) => {
+                return vec![ProtocolEvent::PrimaryDeviceAttributesQuery];
+            }
+            (Some(b'>'), []) | (Some(b'>'), [Some(0)]) => {
+                return vec![ProtocolEvent::SecondaryDeviceAttributesQuery];
+            }
+            _ => {}
+        }
+    }
+
+    if final_byte == b'n' && params.private.is_none() && no_intermediates {
+        return match values.as_slice() {
+            [Some(5)] => vec![ProtocolEvent::DeviceStatusQuery],
+            [Some(6)] => vec![ProtocolEvent::CursorPositionQuery],
             _ => Vec::new(),
         };
     }
-    if final_byte == b'n' {
-        return match payload {
-            b"5" => vec![ProtocolEvent::DeviceStatusQuery],
-            b"6" => vec![ProtocolEvent::CursorPositionQuery],
-            _ => Vec::new(),
-        };
-    }
-    if final_byte == b'm' {
-        if payload == b"?4" {
+
+    if final_byte == b'm' && no_intermediates {
+        if params.private == Some(b'?') && values.as_slice() == [Some(4)] {
             return vec![ProtocolEvent::ModifyOtherKeysQuery];
         }
-        if matches!(payload, b">0" | b">0;0") {
-            return vec![ProtocolEvent::ModifyOtherKeys(0)];
-        }
-        // Vim exits modifyOtherKeys with the empty level form `CSI > 4 ; m`.
-        // Treat it like the explicit level-zero variants so the next Ctrl-L
-        // is not encoded as a literal modifyOtherKeys sequence.
-        if matches!(payload, b">4" | b">4;") {
-            return vec![ProtocolEvent::ModifyOtherKeys(0)];
-        }
-        if let Some(level) = payload
-            .strip_prefix(b">4;")
-            .and_then(|value| std::str::from_utf8(value).ok())
-            .and_then(|value| value.parse::<u8>().ok())
-            .filter(|level| *level <= 3)
-        {
-            return vec![ProtocolEvent::ModifyOtherKeys(level)];
+        if params.private == Some(b'>') {
+            match values.as_slice() {
+                [Some(0)] | [Some(0), None | Some(0)] | [Some(4)] | [Some(4), None] => {
+                    return vec![ProtocolEvent::ModifyOtherKeys(0)];
+                }
+                [Some(4), Some(level @ 0..=3)] => {
+                    return vec![ProtocolEvent::ModifyOtherKeys(*level as u8)];
+                }
+                _ => {}
+            }
         }
     }
-    if payload == b"?1015" {
+
+    if params.private == Some(b'?') && no_intermediates && values.as_slice() == [Some(1015)] {
         return match final_byte {
             b'h' => vec![ProtocolEvent::UrxvtMouse(true)],
             b'l' => vec![ProtocolEvent::UrxvtMouse(false)],
@@ -718,11 +898,7 @@ fn parse_csi(payload: &[u8], final_byte: u8) -> Vec<ProtocolEvent> {
     Vec::new()
 }
 
-fn parse_u8(value: &[u8]) -> Option<u8> {
-    std::str::from_utf8(value).ok()?.parse().ok()
-}
-
-fn parse_u16(value: &[u8]) -> Option<u16> {
+fn parse_u32(value: &[u8]) -> Option<u32> {
     std::str::from_utf8(value).ok()?.parse().ok()
 }
 
@@ -1130,6 +1306,124 @@ mod tests {
     }
 
     #[test]
+    fn real_vim_fixture_resets_modify_other_keys() {
+        let bytes = decode_hex_fixture(include_str!(
+            "../../../tests/fixtures/terminal/vim_modify_other_keys.hex"
+        ));
+        let mut parser = TerminalProtocolParser::default();
+        let events = bytes
+            .chunks(1)
+            .flat_map(|chunk| parser.feed(chunk))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            events,
+            vec![
+                ProtocolEvent::ModifyOtherKeys(2),
+                ProtocolEvent::ModifyOtherKeys(0),
+            ]
+        );
+    }
+
+    #[test]
+    fn real_tmux_fixture_tracks_alternate_screen() {
+        let bytes = decode_hex_fixture(include_str!(
+            "../../../tests/fixtures/terminal/tmux_pty.hex"
+        ));
+        let mut parser = TerminalProtocolParser::default();
+        let events = parser.feed(&bytes);
+        assert_eq!(
+            events,
+            vec![
+                ProtocolEvent::ScreenBufferSwitch(true),
+                ProtocolEvent::ScreenBufferSwitch(false),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_structured_csi_defaults_and_soft_reset() {
+        let mut parser = TerminalProtocolParser::default();
+        assert_eq!(
+            parser.feed(b"\x1b[0c\x1b[>0c\x1b[!p\x1b[?1049h\x1b[?1049l"),
+            vec![
+                ProtocolEvent::PrimaryDeviceAttributesQuery,
+                ProtocolEvent::SecondaryDeviceAttributesQuery,
+                ProtocolEvent::SoftReset,
+                ProtocolEvent::ScreenBufferSwitch(true),
+                ProtocolEvent::ScreenBufferSwitch(false),
+            ]
+        );
+        assert!(parser.feed(b"\x1b[>4:1m\x1b[>4;1;2m").is_empty());
+        assert_eq!(
+            parser.feed(b"\x1b[=9;2u\x1b[>7u\x1b[<u"),
+            vec![
+                ProtocolEvent::KeyboardModeSet {
+                    bits: 9,
+                    behavior: 2,
+                },
+                ProtocolEvent::KeyboardModePush { bits: 7 },
+                ProtocolEvent::KeyboardModePop(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn controls_cancel_sequences_without_leaking_payload() {
+        let mut parser = TerminalProtocolParser::default();
+        assert_eq!(
+            parser.feed(b"\x1b]9;discard\x18\x1b]9;keep\x07"),
+            vec![ProtocolEvent::Notification {
+                title: String::new(),
+                body: "keep".into(),
+            }]
+        );
+
+        let mut csi_parser = TerminalProtocolParser::default();
+        assert_eq!(
+            csi_parser.feed(b"\x1b[?10\x0749h"),
+            vec![ProtocolEvent::Bell, ProtocolEvent::ScreenBufferSwitch(true),]
+        );
+
+        let mut string_parser = TerminalProtocolParser::default();
+        assert!(
+            string_parser
+                .feed(b"\x98ignored\x9c\x1bXignored\x1b\\")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn oversized_sequences_are_dropped_and_parser_recovers() {
+        let mut parser = TerminalProtocolParser::default();
+        let mut csi = Vec::with_capacity(MAX_CSI_BYTES + 2);
+        csi.extend_from_slice(b"\x1b[");
+        csi.extend(std::iter::repeat_n(b'0', MAX_CSI_BYTES + 1));
+        csi.push(b'c');
+        assert!(parser.feed(&csi).is_empty());
+        assert_eq!(
+            parser.feed(b"\x1b[?4m"),
+            vec![ProtocolEvent::ModifyOtherKeysQuery]
+        );
+    }
+
+    #[test]
+    fn arbitrary_bytes_do_not_stick_the_parser_after_cancellation() {
+        let mut parser = TerminalProtocolParser::default();
+        let mut value = 0x9e37_79b9u32;
+        for _ in 0..4096 {
+            value ^= value << 13;
+            value ^= value >> 17;
+            value ^= value << 5;
+            parser.feed(&value.to_le_bytes());
+        }
+        parser.feed(b"\x18\x1a");
+        assert_eq!(
+            parser.feed(b"\x1b[?4m"),
+            vec![ProtocolEvent::ModifyOtherKeysQuery]
+        );
+    }
+
+    #[test]
     fn parses_terminal_size_queries() {
         let mut parser = TerminalProtocolParser::default();
         assert!(parser.feed(b"\x1b[1").is_empty());
@@ -1142,6 +1436,20 @@ mod tests {
                 ProtocolEvent::TextAreaSizeQuery,
             ]
         );
+    }
+
+    fn decode_hex_fixture(fixture: &str) -> Vec<u8> {
+        fixture
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .flat_map(|line| {
+                assert!(line.len() % 2 == 0);
+                (0..line.len()).step_by(2).map(move |index| {
+                    u8::from_str_radix(&line[index..index + 2], 16).expect("hex fixture")
+                })
+            })
+            .collect()
     }
 
     #[test]

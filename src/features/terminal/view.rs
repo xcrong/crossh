@@ -52,10 +52,10 @@ use vte::ansi::{Color, NamedColor};
 
 use crate::shared::i18n;
 use crate::shared::terminal::{
-    ImageDimension, ImagePayload, InputCmd, KittyGraphicsPayload, NotificationOccasion,
-    ProtocolEvent, SessionEvent, ShellEvent, TerminalProcessInfo, TerminalProtocolParser,
-    local_terminal_tab_title, local_terminal_title, remote_terminal_title, strip_shell_host_prefix,
-    truncate_path_title,
+    ImageDimension, ImagePayload, InputCmd, KeyboardProtocolState, KittyGraphicsPayload,
+    NotificationOccasion, ProtocolEvent, SessionEvent, ShellEvent, TerminalProcessInfo,
+    TerminalProtocolParser, local_terminal_tab_title, local_terminal_title, remote_terminal_title,
+    strip_shell_host_prefix, truncate_path_title,
 };
 use crate::shared::ui::context_menu::{
     CONTEXT_MENU_WIDTH, ContextMenuState, MenuEntry, MenuItem, TerminalMenuAction,
@@ -256,7 +256,7 @@ impl TerminalView {
     pub(crate) fn terminal_mode(&self) -> TermMode {
         let mut mode = alacritty_mode(&self.terminal_content);
         mode.insert(TermMode::from_bits_retain(
-            (self.kitty_keyboard_mode as u32) << 18,
+            (self.keyboard_protocol.kitty_flags() as u32) << 18,
         ));
         mode
     }
@@ -607,12 +607,8 @@ pub struct TerminalView {
     cursor_blink_on: bool,
     /// xterm's legacy CSI 1015 mouse mode is not modeled by alacritty yet.
     urxvt_mouse: bool,
-    /// xterm modifyOtherKeys level (0 means the legacy encoding is active).
-    modify_other_keys: u8,
-    /// Kitty keyboard protocol state is not part of Zed's public `Modes` API,
-    /// so Crossh tracks the small keyboard-mode side channel separately.
-    kitty_keyboard_mode: u8,
-    kitty_keyboard_stack: Vec<u8>,
+    /// Crossh-owned keyboard protocol state not exposed by Zed's public Modes.
+    keyboard_protocol: KeyboardProtocolState,
     /// GPUI focus state, used to avoid raising a notification for the active terminal.
     focused: bool,
     notifications_enabled: bool,

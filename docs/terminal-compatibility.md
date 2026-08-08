@@ -1,5 +1,9 @@
 # Terminal compatibility
 
+The standards boundary and current claim are tracked in
+[`xterm-compatibility-profile.md`](xterm-compatibility-profile.md). This
+document describes the existing replay and manual smoke workflows.
+
 This project keeps protocol coverage deterministic and treats full-screen
 terminal applications as a separate interactive check. The local and SSH
 relays both feed the same terminal emulator, so the checks should be run on
@@ -19,8 +23,10 @@ reviewable list of hand-written ASCII hexadecimal bytes, not a captured user
 session. It contains no host names, paths, credentials, or environment data.
 The tests cover alternate-screen isolation, resize/reflow, styles, OSC 8,
 OSC 52 policy, focus/bracketed-paste, mouse modes, Kitty keyboard mode, side
-channel protocols, and one-byte input replay. Keep the fixture deterministic;
-update the assertions in `src/terminal_replay.rs` in the same change when
+channel protocols, and one-byte input replay. Real-program minimized samples
+live in `tests/fixtures/terminal/`; the Vim and tmux samples there contain
+control bytes only, with screen text and environment data removed. Keep all
+fixtures deterministic and update the assertions in the same change when
 adding a protocol case.
 
 The Windows runner also executes the real ConPTY relay:
@@ -47,11 +53,12 @@ polling-backoff state machine. Run the ConPTY command on a Windows runner.
 
 ## Implemented protocol surface
 
-`alacritty_terminal` owns the standards-based VT/xterm emulator path: ANSI/CSI
-cursor and screen control, SGR colors and styles, alternate screen, resize and
-reflow, bracketed paste, focus reporting, OSC 8 hyperlinks, OSC 52 clipboard
-policy, terminal titles, color queries, device-status replies, and Kitty
-keyboard modes.
+The pinned Zed `terminal` crate owns the standards-based VT/xterm emulator
+path. It delegates to its pinned `alacritty_terminal` and `vte` dependencies
+for ANSI/CSI cursor and screen control, SGR colors and styles, alternate
+screen, resize and reflow, bracketed paste, focus reporting, OSC 8 hyperlinks,
+terminal titles, color queries, device-status replies, and standard mouse
+modes. Crossh does not duplicate that screen state.
 
 Crossh's side-channel parser adds the protocol pieces that need UI or relay
 policy around that grid:

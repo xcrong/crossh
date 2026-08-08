@@ -1,10 +1,12 @@
 //! Terminal contracts shared by local/SSH backends and the terminal feature.
 
+pub(crate) mod keyboard;
 pub(crate) mod protocol;
 pub(crate) mod session;
 pub(crate) mod shell;
 pub(crate) mod title;
 
+pub(crate) use keyboard::KeyboardProtocolState;
 pub(crate) use protocol::{
     ImageDimension, ImagePayload, KittyGraphicsPayload, NotificationOccasion, ProtocolEvent,
     ShellEvent, TerminalProtocolParser,
