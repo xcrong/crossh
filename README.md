@@ -6,13 +6,13 @@
 ## 特性
 
 - **读取 `~/.ssh/config`（只读）**：别名列表、`Include`/通配/`Match`、`ProxyJump`、`Local/Remote/DynamicForward`、`IdentityFile`/`IdentitiesOnly` 均可解析。
-- **会话池复用**：同主机共享一条已认证连接，多标签/SFTP/转发不重复认证；全部标签关闭后自动断开。
-- **交互式终端**：russh + Zed `terminal` core，256 色/真彩、宽字符、鼠标协议、IME 输入法、文本选择、URL 点击跳转。
+- **会话池复用**：SFTP、端口转发和后台远程命令按主机共享已认证的 russh 连接；交互式终端由 Zed 的 PTY/事件循环独立管理。
+- **交互式终端**：Zed `terminal` + `terminal_view` 负责 PTY、终端模拟、输入、滚动、文本选择、鼠标协议、IME 和 URL 跳转；本地 shell 与交互式 SSH 都走同一套视图。
 - **反应式认证**：未知主机密钥弹指纹确认（可写 `known_hosts`）；加密私钥口令、密码按需弹出，凭据不回写日志。
 - **SFTP**：远程浏览、上传/下载、目录递归、进度条、覆盖确认。
 - **端口转发**：`-L` / `-R` / `-D`(SOCKS5)，config 驱动，UI 启停。
-- **本地终端**：项目目录视图（OSC 7 追踪当前 `cwd`，更新状态栏和 Git 状态；会话归属不随 `cd` 改变）、多会话标签。
-- **设置**：语言（zh/en）、终端字号、时间戳 gutter、滚动回退行数、启动时检查更新，持久化到 `~/.config/crossh/`。
+- **本地终端**：Zed `TerminalBuilder` 创建本地 PTY；Crossh 叠加项目目录、当前 `cwd`、Git 状态和多会话标签。
+- **设置**：语言（zh/en）、Zed 终端字号、滚动回退行数、启动时检查更新，持久化到 `~/.config/crossh/`。
 - **远程更新**：设置页从 HTTPS release manifest 检查版本，按平台下载并校验 SHA-256，再交给随应用分发的独立 updater 完成替换和重启。
 - 常驻友好：日志裁剪（`/tmp/crossh/run.log`）、panic 现场保留、空闲内存 ~70MB。
 
@@ -65,7 +65,7 @@ src/
       proxyjump.rs           单层 ProxyJump
   features/
     connections/             GPUI 连接实体、连接管理与认证提示
-    terminal/                终端状态、输入编码、图片协议与渲染
+    terminal/                Zed 终端适配、Crossh 状态和工作区事件
     sftp/                    SFTP 面板、远程编辑器与路径逻辑
     forwarding/              端口转发面板
     workspace/               外壳、侧栏、标签和 Pane 抽象
@@ -78,7 +78,7 @@ src/
 
 依赖方向保持单向：`infrastructure` 和 `shared/terminal` 不依赖 GPUI；feature 的 GPUI 适配层依赖基础设施；`workspace` 通过 `WorkspacePane` trait 消费终端、SFTP 和转发面板。可重复执行的分层检查位于 `scripts/check-architecture.sh`。
 
-技术栈：`gpui`（UI，钉 Zed git rev）、Zed `terminal`（终端模拟）、`russh`（SSH）、`alacritty_terminal`（本地 PTY/ConPTY）、`tokio`（2 worker 常驻）。
+技术栈：Zed `gpui`、`terminal`、`terminal_view`、`task`（UI、PTY、终端模拟和交互）；`russh`（SFTP、端口转发和后台 SSH 命令）；`tokio`（2 worker 常驻）。`alacritty_terminal` / `vte` 仅保留给协议和测试兼容层，不再负责生产交互终端的 PTY 或渲染。
 
 ## 路线图
 
@@ -93,4 +93,4 @@ src/
 
 ## 许可证与致谢
 
-GPL-3.0-or-later。终端核心使用 Zed 的 GPL-3.0-or-later 许可实现；UI 图标为 [Lucide](https://lucide.dev/) 1.27.0 官方 SVG（见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)）；应用图标为自绘。gpui 来自 Zed 开源项目。
+GPL-3.0-or-later。交互式终端直接使用 Zed 的 `terminal`、`terminal_view` 及其设置、任务和主题基础设施，因此 Crossh 采用 GPL-3.0-or-later；具体依赖和许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。UI 图标为 [Lucide](https://lucide.dev/) 1.27.0 官方 SVG；应用图标为自绘。

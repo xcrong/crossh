@@ -35,7 +35,7 @@ use crate::features::sftp::SftpPane;
 use crate::features::terminal::settings::{
     MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK, TerminalSettings,
 };
-use crate::features::terminal::{ConnState, TerminalEvent, TerminalView};
+use crate::features::terminal::{TerminalEvent, TerminalView};
 use crate::features::updates::{UpdateController, UpdateSettings};
 use crate::features::workspace::registry::WorkspaceState;
 use crate::features::workspace::settings::WorkspaceSettings;
@@ -44,8 +44,7 @@ use crate::features::workspace::view::{
     ActiveView, LocalDir, LocalSession, LocalSessionId, Tab, rebuild_local_dirs, render_main,
     render_quick_command_editor,
 };
-use crate::infrastructure::config::SshConfig;
-use crate::infrastructure::local;
+use crate::infrastructure::config::{HostConfig, SshConfig};
 use crate::infrastructure::ssh::{HostKeyDecision, RemoteCommandStatus};
 use crate::shared::i18n::{self, LanguagePreference};
 use crate::shared::ui::context_menu::{
@@ -72,6 +71,7 @@ struct ActiveCommandContext {
     cwd: String,
     owner: String,
     connection: Option<Entity<Connection>>,
+    remote_target: Option<String>,
     remote_tab: Option<usize>,
     local_session: Option<LocalSessionId>,
 }
@@ -150,6 +150,7 @@ impl AppShell {
         let snapshot = settings::load();
         let language_preference = snapshot.language;
         let terminal_settings = snapshot.terminal;
+        TerminalView::apply_zed_settings(&terminal_settings, cx);
         let update_settings = snapshot.updates;
         let workspace_settings = snapshot.workspace;
         let updates = cx.new(|_| UpdateController::new(update_settings.clone()));
@@ -217,7 +218,7 @@ impl AppShell {
         // The sidebar is navigation. Reuse the existing terminal for a live
         // connection instead of opening another channel when returning from a
         // local session.
-        if let Some(tab_idx) = self.remote_terminal_to_switch(&entry.key, cx) {
+        if let Some(tab_idx) = self.remote_terminal_to_switch(&entry.key) {
             self.switch_remote_tab(tab_idx, cx);
             return;
         }
@@ -225,12 +226,7 @@ impl AppShell {
         self.open_terminal_target(entry.alias, cx);
     }
 
-    fn remote_terminal_to_switch(&self, host_key: &str, cx: &Context<Self>) -> Option<usize> {
-        let state = self.connections.state_for_key(host_key, cx);
-        if !is_reusable_connection_state(&state) {
-            return None;
-        }
-
+    fn remote_terminal_to_switch(&self, host_key: &str) -> Option<usize> {
         find_remote_terminal_index(
             self.workspace
                 .sessions
@@ -262,7 +258,7 @@ impl AppShell {
         self.workspace.sessions.remote_tabs.push(Tab {
             target: entry.alias.clone(),
             host_key,
-            connection: conn.clone(),
+            connection: Some(conn.clone()),
             pane: crate::features::sftp::view::workspace_pane(pane),
         });
         self.workspace.active_view = Some(ActiveView::RemoteTab(
@@ -284,7 +280,7 @@ impl AppShell {
         self.workspace.sessions.remote_tabs.push(Tab {
             target: entry.alias.clone(),
             host_key,
-            connection: conn,
+            connection: Some(conn),
             pane: crate::features::forwarding::view::workspace_pane(pane),
         });
         self.workspace.active_view = Some(ActiveView::RemoteTab(
@@ -293,7 +289,7 @@ impl AppShell {
         cx.notify();
     }
 
-    /// 在项目目录 view 中打开一个独立的本地 PTY session。
+    /// 在项目目录 view 中打开一个独立的 Zed terminal session。
     /// `project_dir` 决定侧栏归属，`cwd` 只决定 shell 的初始工作目录。
     pub(crate) fn open_local_session(
         &mut self,
@@ -305,20 +301,12 @@ impl AppShell {
         let cwd = normalize_local_cwd(cwd);
         self.remember_local_dir(&project_dir, cx);
         let cwd_text = cwd.to_string_lossy().to_string();
-        let (input_tx, event_rx) = local::open_terminal(cwd.clone(), 100, 30);
-        let terminal = TerminalView::from_local_bridge(
-            input_tx,
-            event_rx,
-            100,
-            30,
-            cwd_text.clone(),
-            self.terminal_settings.clone(),
-            cx,
-        );
+        let terminal =
+            TerminalView::from_local_zed(cwd.clone(), self.terminal_settings.clone(), cx);
         let session_id = self.workspace.sessions.allocate_local_session_id();
         log::info!("local session {session_id} opened for {}", cwd_text);
-        // shell 内 `cd` 会经 OSC 7 上报新目录；订阅后更新 cwd 和 Git 状态，
-        // 但不会改变 session 的项目归属。
+        // Zed's local PTY process tracking reports the current cwd; keep it
+        // separate from the session's project ownership when `cd` changes.
         let subscription = cx.subscribe(&terminal, |this, terminal, event, cx| match event {
             TerminalEvent::Closed => {
                 let session_id = this.workspace.sessions.local_sessions.iter().find_map(
@@ -518,6 +506,7 @@ impl AppShell {
                     cwd: cwd.to_string_lossy().to_string(),
                     owner: local_background_owner(session_id),
                     connection: None,
+                    remote_target: None,
                     remote_tab: None,
                     local_session: Some(session_id),
                 })
@@ -531,7 +520,8 @@ impl AppShell {
                     scope: remote_scope(&tab.host_key, &cwd),
                     cwd,
                     owner,
-                    connection: Some(tab.connection.clone()),
+                    connection: tab.connection.clone(),
+                    remote_target: Some(tab.target.clone()),
                     remote_tab: Some(index),
                     local_session: None,
                 })
@@ -556,6 +546,11 @@ impl AppShell {
             let owner = context.owner.clone();
             if let Some(connection) = context.connection {
                 self.start_remote_background(connection, owner, scope, context.cwd, command, cx);
+            } else if let Some(target) = context.remote_target {
+                let resolved = self.connections.resolve(&target);
+                let methods = self.connections.auth_methods(&resolved);
+                let connection = self.connections.acquire(resolved, methods, cx);
+                self.start_remote_background(connection, owner, scope, context.cwd, command, cx);
             } else {
                 let cwd = normalize_local_cwd(PathBuf::from(context.cwd));
                 let (id, event_rx) = self.background_tasks.start(scope, cwd, command, owner);
@@ -579,9 +574,9 @@ impl AppShell {
             } else if let Some(session_id) = context.local_session
                 && let Some(session) = self.workspace.sessions.local_sessions.get(&session_id)
             {
-                session
-                    .terminal
-                    .update(cx, |terminal, _cx| terminal.run_command(&command));
+                session.terminal.update(cx, |terminal, terminal_cx| {
+                    terminal.run_command(&command, terminal_cx)
+                });
             }
         }
         cx.notify();
@@ -1122,6 +1117,8 @@ impl AppShell {
             return;
         }
 
+        TerminalView::apply_zed_settings(&settings, cx);
+
         for tab in &self.workspace.sessions.remote_tabs {
             tab.pane.apply_terminal_settings(settings.clone(), cx);
         }
@@ -1494,13 +1491,6 @@ fn host_entry_matches(entry: &HostEntry, query: &str) -> bool {
         || entry.detail.to_ascii_lowercase().contains(query)
 }
 
-fn is_reusable_connection_state(state: &Option<ConnState>) -> bool {
-    matches!(
-        state,
-        Some(ConnState::Connecting) | Some(ConnState::Connected)
-    )
-}
-
 fn find_remote_terminal_index<'a>(
     tabs: impl DoubleEndedIterator<Item = (usize, &'a str, bool)>,
     host_key: &str,
@@ -1555,20 +1545,8 @@ pub fn open_main_window(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ConnState, find_remote_terminal_index, is_reusable_connection_state, next_char_boundary,
-        previous_char_boundary, selection_bounds,
+        find_remote_terminal_index, next_char_boundary, previous_char_boundary, selection_bounds,
     };
-
-    #[test]
-    fn sidebar_host_reuse_only_accepts_live_connection_states() {
-        assert!(is_reusable_connection_state(&Some(ConnState::Connecting)));
-        assert!(is_reusable_connection_state(&Some(ConnState::Connected)));
-        assert!(!is_reusable_connection_state(&None));
-        assert!(!is_reusable_connection_state(&Some(ConnState::Closed)));
-        assert!(!is_reusable_connection_state(&Some(ConnState::Error(
-            "connection failed".into(),
-        ))));
-    }
 
     #[test]
     fn sidebar_host_reuse_selects_latest_matching_terminal() {

@@ -20,6 +20,7 @@ pub(crate) struct TerminalProcessInfo {
 }
 
 /// Event emitted by a local or remote terminal backend.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) enum SessionEvent {
     /// TCP/KEX/auth or local PTY setup completed.

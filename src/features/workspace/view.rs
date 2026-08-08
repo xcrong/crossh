@@ -29,7 +29,9 @@ pub struct Tab {
     /// 重新打开终端时使用的原始目标（别名或 user@host:port）。
     pub target: String,
     pub host_key: String,
-    pub connection: Entity<Connection>,
+    /// SFTP/forward tabs keep the russh connection. Zed-backed terminal tabs
+    /// use Zed's PTY/SSH process directly and leave this empty.
+    pub connection: Option<Entity<Connection>>,
     pub pane: Box<dyn WorkspacePane>,
 }
 

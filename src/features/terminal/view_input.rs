@@ -172,13 +172,24 @@ impl super::TerminalView {
 
     /// 请求在下次 render 时自动聚焦终端（用于打开/切回 tab）。
     pub fn request_focus(&mut self) {
+        if self.official_view.is_some() {
+            self.official_focus_pending = true;
+            return;
+        }
         self.focused_once = false;
     }
 
     /// Execute a command in this terminal's current interactive shell.
-    pub fn run_command(&mut self, command: &str) {
+    pub fn run_command(&mut self, command: &str, cx: &mut Context<Self>) {
         let command = command.trim();
         if command.is_empty() {
+            return;
+        }
+        if self.official_view.is_some() {
+            self.zed_terminal.update(cx, |terminal, _| {
+                terminal.input(format!("{command}\r").into_bytes());
+            });
+            self.official_focus_pending = true;
             return;
         }
         self.shell_input_buffer.clear();

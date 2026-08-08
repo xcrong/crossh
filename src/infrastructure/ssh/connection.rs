@@ -12,11 +12,14 @@ use async_channel::{Receiver, Sender};
 use russh::client::{self, Handle};
 use russh::keys;
 use russh::keys::ssh_key::PrivateKey;
-use russh::{ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect, Sig};
+use russh::{ChannelMsg, Disconnect, Sig};
+#[cfg(test)]
+use russh::{ChannelReadHalf, ChannelWriteHalf};
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::sync::oneshot;
 
 use crate::infrastructure::config::HostConfig;
+#[cfg(test)]
 use crate::shared::terminal::{
     InputCmd, RemoteShell, SessionEvent, remote_shell_from_path, remote_shell_setup_script,
 };
@@ -53,6 +56,7 @@ pub enum CredentialKind {
 pub enum ConnCmd {
     /// 开一个终端 channel。`input_rx`/`event_tx` 由调用方创建并移交，
     /// 后台在其上驱动 relay；调用方保留对应的 `input_tx`/`event_rx`。
+    #[cfg(test)]
     OpenTerminal {
         cols: u16,
         rows: u16,
@@ -185,27 +189,6 @@ impl ConnectionHandle {
         )
     }
 
-    /// Request a terminal channel and return its bridge.
-    pub fn open_terminal(
-        &self,
-        cols: u16,
-        rows: u16,
-    ) -> (Sender<InputCmd>, Receiver<SessionEvent>) {
-        // Mouse motion and complex TUIs can produce many small writes per
-        // frame; keep enough capacity to absorb short bursts.
-        let (input_tx, input_rx) = async_channel::bounded::<InputCmd>(1024);
-        // High-refresh TUIs produce many small output chunks; a larger queue
-        // absorbs bursts without applying short-lived backpressure to SSH.
-        let (event_tx, event_rx) = async_channel::bounded::<SessionEvent>(256);
-        let _ = self.cmd_tx.try_send(ConnCmd::OpenTerminal {
-            cols,
-            rows,
-            input_rx,
-            event_tx,
-        });
-        (input_tx, event_rx)
-    }
-
     pub fn open_command(
         &mut self,
         command: String,
@@ -324,7 +307,13 @@ async fn run_connection(
                 }
             }
             cmd = cmd_rx.recv() => match cmd {
-                Ok(ConnCmd::OpenTerminal { cols, rows, input_rx, event_tx: term_tx }) => {
+                #[cfg(test)]
+                Ok(ConnCmd::OpenTerminal {
+                    cols,
+                    rows,
+                    input_rx,
+                    event_tx: term_tx,
+                }) => {
                     let term_tx_err = term_tx.clone();
                     match open_terminal_channel(&handle, cols, rows, input_rx, term_tx, ended_tx.clone()).await {
                         Ok(()) => {
@@ -647,6 +636,7 @@ async fn open_sftp_session(
 }
 
 /// 开一个终端 channel：PTY + shell，然后派发独立 relay 任务。
+#[cfg(test)]
 async fn open_terminal_channel(
     handle: &Handle<ClientHandler>,
     cols: u16,
@@ -698,6 +688,7 @@ async fn open_terminal_channel(
     Ok(())
 }
 
+#[cfg(test)]
 async fn detect_remote_shell(handle: &Handle<ClientHandler>) -> Option<RemoteShell> {
     let channel = handle.channel_open_session().await.ok()?;
     channel.exec(true, "printf '%s' \"$SHELL\"").await.ok()?;
@@ -719,6 +710,7 @@ async fn detect_remote_shell(handle: &Handle<ClientHandler>) -> Option<RemoteShe
     remote_shell_from_path(shell_path.trim())
 }
 
+#[cfg(test)]
 fn remote_shell_bootstrap_command(shell: RemoteShell) -> String {
     let setup = remote_shell_setup_script(shell);
     match shell {
@@ -838,6 +830,7 @@ fn shell_quote_remote(value: &str) -> String {
 }
 
 /// 终端 channel relay：读循环转发字节，写循环消费输入。
+#[cfg(test)]
 async fn relay_terminal(
     mut read_half: ChannelReadHalf,
     write_half: ChannelWriteHalf<client::Msg>,
@@ -881,6 +874,7 @@ async fn relay_terminal(
 }
 
 /// 输入驱动：InputCmd → write_half。
+#[cfg(test)]
 async fn drive_input(
     input_rx: Receiver<InputCmd>,
     write_half: ChannelWriteHalf<client::Msg>,

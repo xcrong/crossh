@@ -11,7 +11,6 @@ use crate::infrastructure::ssh::{
     HostKeyDecision, RemoteCommandEvent,
 };
 use crate::infrastructure::ssh::{SftpCmd, SftpEvent};
-use crate::shared::terminal::{InputCmd, SessionEvent};
 
 /// A UI-owned connection entity. All network work lives in `ConnectionHandle`.
 pub(crate) struct Connection {
@@ -103,17 +102,6 @@ impl Connection {
                 });
             }
         }
-    }
-
-    pub(crate) fn open_terminal(
-        &self,
-        cols: u16,
-        rows: u16,
-    ) -> (
-        async_channel::Sender<InputCmd>,
-        async_channel::Receiver<SessionEvent>,
-    ) {
-        self.handle.open_terminal(cols, rows)
     }
 
     pub(crate) fn open_command(

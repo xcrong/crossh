@@ -1,5 +1,11 @@
 //! Terminal entity lifecycle, session state, and event handling.
 
+use std::path::PathBuf;
+
+use collections::HashMap as ZedHashMap;
+use settings::Settings as _;
+use task::Shell;
+
 use super::*;
 
 struct TerminalBridge {
@@ -13,55 +19,90 @@ struct TerminalBridge {
 }
 
 impl super::TerminalView {
-    /// 用一个已有的终端桥接（来自 `Connection::open_terminal`）创建视图。
-    ///
-    /// 连接本身由调用方（AppShell）经 `Connection` 管理；本视图只负责：
-    ///  - 主线程 drain `event_rx` 喂 Zed terminal core；
-    ///  - 键盘/resize 经 `input_tx` 送回。
-    pub fn from_bridge(
-        input_tx: Sender<InputCmd>,
-        event_rx: Receiver<SessionEvent>,
-        cols: usize,
-        rows: usize,
-        settings: TerminalSettings,
-        cx: &mut App,
-    ) -> Entity<Self> {
-        Self::from_bridge_with_cwd(
-            TerminalBridge {
-                input_tx,
-                event_rx,
-                cols,
-                rows,
-                initial_cwd: None,
-                is_local: false,
-                settings,
-            },
-            cx,
-        )
+    /// Keep Crossh's product settings as the thin layer over Zed's terminal
+    /// settings, so the official view and builder observe the same values.
+    pub fn apply_zed_settings(settings: &TerminalSettings, cx: &mut App) {
+        let mut zed_settings =
+            zed_terminal::terminal_settings::TerminalSettings::get_global(cx).clone();
+        zed_settings.font_size = Some(px(settings.font_size));
+        zed_settings.max_scroll_history_lines = Some(settings.scrollback);
+        zed_terminal::terminal_settings::TerminalSettings::override_global(zed_settings, cx);
     }
 
-    /// 创建一个本地 PTY 终端。除工作目录事件外，其渲染和交互路径与 SSH 终端一致。
-    pub fn from_local_bridge(
-        input_tx: Sender<InputCmd>,
-        event_rx: Receiver<SessionEvent>,
-        cols: usize,
-        rows: usize,
-        cwd: String,
+    /// Creates a local terminal using Zed's real PTY/event-loop implementation.
+    pub fn from_local_zed(cwd: PathBuf, settings: TerminalSettings, cx: &mut App) -> Entity<Self> {
+        Self::from_zed_shell(Some(cwd), None, Shell::System, false, settings, cx)
+    }
+
+    /// Creates a terminal whose process and PTY are owned by Zed's terminal
+    /// infrastructure. Remote terminals use this with an interactive SSH
+    /// command, so their rendering and input path is identical to local ones.
+    ///
+    /// The builder is asynchronous because PTY creation and shell setup run
+    /// off the UI thread. The official Zed view is attached lazily from
+    /// `Render`, where GPUI provides the active window required by its focus
+    /// and IME integration.
+    pub fn from_zed_shell(
+        working_directory: Option<PathBuf>,
+        initial_cwd: Option<String>,
+        shell: Shell,
+        is_remote_terminal: bool,
         settings: TerminalSettings,
         cx: &mut App,
     ) -> Entity<Self> {
-        Self::from_bridge_with_cwd(
+        let (input_tx, _input_rx) = async_channel::unbounded::<InputCmd>();
+        let (_event_tx, event_rx) = async_channel::unbounded::<SessionEvent>();
+        let entity = Self::from_bridge_with_cwd(
             TerminalBridge {
                 input_tx,
                 event_rx,
-                cols,
-                rows,
-                initial_cwd: Some(cwd),
-                is_local: true,
-                settings,
+                cols: 100,
+                rows: 30,
+                initial_cwd,
+                is_local: !is_remote_terminal,
+                settings: settings.clone(),
             },
             cx,
-        )
+        );
+
+        let builder = zed_terminal::TerminalBuilder::new(
+            working_directory,
+            None,
+            shell,
+            ZedHashMap::default(),
+            zed_terminal::terminal_settings::CursorShape::Block,
+            zed_terminal::terminal_settings::AlternateScroll::On,
+            Some(settings.scrollback),
+            Vec::new(),
+            0,
+            is_remote_terminal,
+            0,
+            None,
+            cx,
+            Vec::new(),
+            util::paths::PathStyle::local(),
+        );
+
+        let weak = entity.downgrade();
+        let load_task = cx.spawn(async move |cx| match builder.await {
+            Ok(builder) => {
+                let _ = weak.update(cx, |this, cx| {
+                    this.pending_zed_builder = Some(builder);
+                    this.official_focus_pending = true;
+                    cx.notify();
+                });
+            }
+            Err(error) => {
+                let message = error.to_string();
+                let _ = weak.update(cx, |this, cx| {
+                    this.zed_builder_error = Some(message.clone());
+                    this.state = ConnState::Error(message);
+                    cx.notify();
+                });
+            }
+        });
+        entity.update(cx, |this, _| this._zed_builder_task = Some(load_task));
+        entity
     }
 
     fn from_bridge_with_cwd(bridge: TerminalBridge, cx: &mut App) -> Entity<Self> {
@@ -99,6 +140,13 @@ impl super::TerminalView {
             let terminal_content = zed_terminal.read(cx).last_content().clone();
             Self {
                 zed_terminal,
+                official_view: None,
+                pending_zed_builder: None,
+                zed_builder_error: None,
+                _zed_builder_task: None,
+                _zed_terminal_subscription: None,
+                _official_view_subscription: None,
+                official_focus_pending: false,
                 terminal_content,
                 terminal_total_lines: rows,
                 pending_terminal_output: Vec::new(),
@@ -238,7 +286,12 @@ impl super::TerminalView {
     }
 
     /// Ask the PTY/SSH channel to close cleanly before its entity is dropped.
-    pub(crate) fn request_close(&mut self) {
+    pub(crate) fn request_close(&mut self, cx: &mut Context<Self>) {
+        if self.official_view.is_some() {
+            self.state = ConnState::Closed;
+            cx.emit(TerminalEvent::Closed);
+            return;
+        }
         self.drain_protocol_responses();
         self.queue_input(InputCmd::Close);
         self.flush_pending_input();

@@ -1,8 +1,10 @@
 use std::borrow::Cow;
 
+use assets::Assets as ZedAssets;
 use gpui::{AssetSource, Result, SharedString};
 
-/// Embedded UI assets keep the native app self-contained after packaging.
+/// Crossh assets take precedence, with Zed's embedded assets available as the
+/// fallback for fonts and other resources consumed by reused Zed components.
 pub(crate) struct UiAssetSource;
 
 impl AssetSource for UiAssetSource {
@@ -36,12 +38,12 @@ impl AssetSource for UiAssetSource {
             "icons/circle-x.svg" => include_bytes!("../../../assets/icons/circle-x.svg"),
             "icons/x.svg" => include_bytes!("../../../assets/icons/x.svg"),
             "icons/minus.svg" => include_bytes!("../../../assets/icons/minus.svg"),
-            _ => return Ok(None),
+            _ => return ZedAssets.load(path),
         };
         Ok(Some(Cow::Borrowed(bytes)))
     }
 
-    fn list(&self, _path: &str) -> Result<Vec<SharedString>> {
-        Ok(Vec::new())
+    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
+        ZedAssets.list(path)
     }
 }

@@ -1,25 +1,22 @@
 //! AppShell terminal tab and session navigation.
 
+use task::Shell;
+
 use super::*;
 
 impl AppShell {
     /// 按别名或 `user@host[:port]` 打开一个终端标签。
     ///
-    /// 空认证候选也允许继续：Connection 会在认证失败前向 UI 请求密码，
-    /// 这样密码登录主机不会被侧栏提前拦截。
+    /// Zed owns the interactive SSH process and keeps authentication prompts
+    /// inside the same terminal, just like its native terminal workflow.
     pub(super) fn open_terminal_target(&mut self, target: String, cx: &mut Context<Self>) {
         let resolved = self.connections.resolve(&target);
-        let methods = self.connections.auth_methods(&resolved);
         let host_key = ConnectionManager::pool_key(&resolved);
-
-        // 复用或新建连接，开一个终端 channel。
-        let conn = self.connections.acquire(resolved, methods, cx);
-        let (input_tx, event_rx) = conn.read(cx).open_terminal(100, 30);
-        let terminal = TerminalView::from_bridge(
-            input_tx,
-            event_rx,
-            100,
-            30,
+        let terminal = TerminalView::from_zed_shell(
+            None,
+            Some("~".to_string()),
+            zed_ssh_shell(&target, &resolved),
+            true,
             self.terminal_settings.clone(),
             cx,
         );
@@ -46,7 +43,7 @@ impl AppShell {
         self.workspace.sessions.remote_tabs.push(Tab {
             target,
             host_key,
-            connection: conn,
+            connection: None,
             pane: crate::features::terminal::view::workspace_pane(terminal),
         });
         self.workspace.active_view = Some(ActiveView::RemoteTab(
@@ -269,5 +266,34 @@ impl AppShell {
             }
             None => {}
         }
+    }
+}
+
+fn zed_ssh_shell(target: &str, host: &HostConfig) -> Shell {
+    let direct_target = target.contains('@')
+        || target
+            .rsplit_once(':')
+            .is_some_and(|(_, port)| port.parse::<u16>().is_ok());
+    let destination = if direct_target {
+        host.effective_host().to_string()
+    } else {
+        target.to_string()
+    };
+
+    let mut args = vec!["-tt".to_string()];
+    if direct_target {
+        if let Some(user) = &host.user {
+            args.extend(["-l".to_string(), user.clone()]);
+        }
+        if let Some(port) = host.port {
+            args.extend(["-p".to_string(), port.to_string()]);
+        }
+    }
+    args.push(destination);
+
+    Shell::WithArguments {
+        program: "ssh".to_string(),
+        args,
+        title_override: Some(format!("{} - Crossh", target)),
     }
 }

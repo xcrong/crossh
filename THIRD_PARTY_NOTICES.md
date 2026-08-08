@@ -3,8 +3,11 @@
 ## Crossh license
 
 Crossh is distributed under the GNU General Public License, version 3 or
-later (`GPL-3.0-or-later`). The terminal implementation is based on Zed's
-`terminal` crate, which is GPL-3.0-or-later.
+later (`GPL-3.0-or-later`). Interactive terminals use Zed's `assets`,
+`terminal`, `terminal_view`, `task`, settings, and theme infrastructure
+directly. The
+Zed sources are pinned in `Cargo.toml`; Crossh adds its workspace, SSH
+configuration, SFTP, forwarding, and command-management layers around them.
 
 ## Lucide
 
@@ -37,15 +40,22 @@ Feather MIT notice documented in Lucide's official `LICENSE` file.
 
 ## Core dependencies
 
-- **gpui** — UI toolkit, vendored from the Zed project at a pinned commit
-  (see `Cargo.toml`). APACHE-2.0 / GPL-3.0-or-later (source: zed-industries/zed).
-- **terminal** — terminal emulator and terminal input/selection engine from
-  the Zed project at the same pinned commit. GPL-3.0-or-later.
-- **theme** — Zed's base theme registry used by the terminal core at the same
-  pinned commit. GPL-3.0-or-later.
+- **gpui / gpui_platform** — UI toolkit and platform integration, direct git
+  dependencies from the Zed project at the pinned revision in `Cargo.toml`.
+  APACHE-2.0 / GPL-3.0-or-later (source: zed-industries/zed).
+- **terminal / terminal_view** — Zed's terminal emulator, PTY integration,
+  input, selection, scrolling, and IME view at the same pinned revision.
+  GPL-3.0-or-later.
+- **assets** — Zed's embedded resource source, including the bundled Lilex
+  and IBM Plex fonts loaded by Crossh's GPUI text system. GPL-3.0-or-later.
+- **settings / task / theme / theme_settings / release_channel / collections /
+  util** — Zed infrastructure used to initialize the official terminal,
+  apply terminal settings, create shell processes, and integrate its theme.
+  Licensing follows the Zed source at the pinned revision in `Cargo.toml`.
 - **russh / russh-sftp** — SSH client and SFTP protocol. MIT.
-- **alacritty_terminal / vte** — terminal emulator core and escape sequence
-  parsing. Apache-2.0 / MIT.
+- **alacritty_terminal / vte** — retained for protocol and test compatibility
+  utilities; they do not create or render production interactive terminals.
+  Apache-2.0 / MIT.
 
 ## Application icon
 

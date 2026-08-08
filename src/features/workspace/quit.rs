@@ -181,7 +181,9 @@ impl AppShell {
             tab.pane.request_close(cx);
         }
         for terminal in terminals {
-            terminal.update(cx, |terminal, _cx| terminal.request_close());
+            terminal.update(cx, |terminal, terminal_cx| {
+                terminal.request_close(terminal_cx)
+            });
         }
         cx.notify();
     }
