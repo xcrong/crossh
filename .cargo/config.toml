@@ -1,0 +1,9 @@
+# Remove unreachable Mach-O sections from both shipped macOS binaries.
+# Keep this target-specific so Linux and Windows builds retain their native
+# linker behavior.
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-dead_strip"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-dead_strip"]
