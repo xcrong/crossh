@@ -3,18 +3,28 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
+#[cfg(test)]
 use alacritty_terminal::grid::Dimensions;
+#[cfg(test)]
 use alacritty_terminal::index::{Column, Line};
+#[cfg(test)]
 use alacritty_terminal::term::cell::Cell;
+#[cfg(test)]
 use alacritty_terminal::term::cell::Flags as CellFlags;
+#[cfg(test)]
 use alacritty_terminal::term::{Term, TermMode};
 use chrono::Local;
 use gpui::*;
-use vte::ansi::{Color, CursorShape, NamedColor, Rgb};
+use terminal as zed_terminal;
+#[cfg(test)]
+use vte::ansi::Color;
+use vte::ansi::{CursorShape, NamedColor, Rgb};
 
+#[cfg(test)]
+use super::view::NoopListener;
 use super::view::{
-    KITTY_PLACEHOLDER_CHAR, KittyPlaceholder, KittyPlaceholderState, NoopListener,
-    TIMESTAMP_GUTTER_GAP, TIMESTAMP_GUTTER_WIDTH,
+    KITTY_PLACEHOLDER_CHAR, KittyPlaceholder, KittyPlaceholderState, TIMESTAMP_GUTTER_GAP,
+    TIMESTAMP_GUTTER_WIDTH,
 };
 use crate::shared::ui::theme;
 
@@ -93,6 +103,7 @@ pub(crate) struct EffectiveCellStyle {
 /// applied after both colors have been looked up in the current palette. This
 /// also gives hidden text, dim text, and underline colors one consistent
 /// place to resolve their interactions.
+#[cfg(test)]
 pub(crate) fn effective_cell_style(
     cell: &Cell,
     colors: &alacritty_terminal::term::color::Colors,
@@ -142,6 +153,60 @@ pub(crate) fn effective_cell_style(
     }
 }
 
+fn zed_color_to_hsla(color: &zed_terminal::Color) -> Hsla {
+    match color {
+        zed_terminal::Color::Spec(zed_terminal::Rgb { r, g, b }) => rgb_to_hsla(Rgb {
+            r: *r,
+            g: *g,
+            b: *b,
+        }),
+        zed_terminal::Color::Named(name) => default_palette(name),
+        zed_terminal::Color::Indexed(index) => default_palette_indexed(*index as usize),
+    }
+}
+
+fn brighten_zed_color(color: zed_terminal::Color) -> zed_terminal::Color {
+    match color {
+        zed_terminal::Color::Named(name) => zed_terminal::Color::Named(name.to_bright()),
+        other => other,
+    }
+}
+
+fn effective_zed_cell_style(cell: &zed_terminal::Cell) -> EffectiveCellStyle {
+    let mut foreground = cell.foreground();
+    if cell.is_bold() && !cell.is_dim() {
+        foreground = brighten_zed_color(foreground);
+    }
+
+    let mut fg = zed_color_to_hsla(&foreground);
+    let mut bg = zed_color_to_hsla(&cell.background());
+    if cell.is_inverse() {
+        std::mem::swap(&mut fg, &mut bg);
+    }
+    if cell.is_dim() {
+        fg = dimen(fg);
+    }
+
+    let underline = if cell.has_undercurl() {
+        UnderlineKind::Wavy
+    } else if cell.has_underline() {
+        UnderlineKind::Solid
+    } else {
+        UnderlineKind::None
+    };
+
+    EffectiveCellStyle {
+        fg,
+        bg,
+        bold: cell.is_bold(),
+        italic: cell.is_italic(),
+        underline,
+        underline_color: fg,
+        strikeout: cell.has_strikeout(),
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn brighten_color(color: Color) -> Color {
     match color {
         Color::Named(name) => Color::Named(name.to_bright()),
@@ -308,12 +373,13 @@ pub(crate) struct RowSignature {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg(test)]
 pub(crate) struct LogicalTimestampLine {
     pub(crate) text: String,
     pub(crate) timestamp: Option<String>,
 }
 
-/// 保存终端主屏幕的行时间戳。它和 alacritty 网格分开，避免任何 UI 元数据
+/// 保存终端主屏幕的行时间戳。它和 Zed terminal 的内容网格分开，避免任何 UI 元数据
 /// 进入 PTY，也避免 ANSI 控制序列被误显示成终端内容。
 #[derive(Default)]
 pub(crate) struct TerminalTimestampState {
@@ -324,6 +390,7 @@ pub(crate) struct TerminalTimestampState {
 }
 
 impl TerminalTimestampState {
+    #[cfg(test)]
     pub(crate) fn observe(&mut self, term: &Term<NoopListener>, timestamp: String) {
         let grid = term.grid();
         let signatures = terminal_row_signatures(term);
@@ -390,6 +457,7 @@ impl TerminalTimestampState {
         self.screen_lines = screen_lines;
     }
 
+    #[cfg(test)]
     pub(crate) fn sync_to_term(&mut self, term: &Term<NoopListener>) {
         let signatures = terminal_row_signatures(term);
         let old_signatures = std::mem::take(&mut self.signatures);
@@ -402,6 +470,7 @@ impl TerminalTimestampState {
         self.screen_lines = term.grid().screen_lines();
     }
 
+    #[cfg(test)]
     pub(crate) fn visible(&self, term: &Term<NoopListener>) -> Vec<Option<String>> {
         let grid = term.grid();
         let rows = grid.screen_lines();
@@ -428,8 +497,115 @@ impl TerminalTimestampState {
             })
             .collect()
     }
+
+    pub(crate) fn observe_content(&mut self, content: &zed_terminal::Content, timestamp: String) {
+        let signatures = content_row_signatures(content);
+        let rows = signatures.len();
+        let shape_changed = self.columns != 0
+            && (self.columns != content.terminal_bounds.num_columns() || self.screen_lines != rows);
+        let old_signatures = std::mem::take(&mut self.signatures);
+        let old_lines = std::mem::take(&mut self.lines);
+        let mut next_lines = vec![None; rows];
+        let mut mapping = vec![None; rows];
+
+        if !shape_changed && old_signatures.len() == rows {
+            if let Some(shift) = detect_scroll_shift(&old_signatures, &signatures) {
+                for (new_index, mapped_old_index) in mapping.iter_mut().enumerate() {
+                    let old_index = new_index + shift;
+                    if old_index < old_signatures.len() {
+                        *mapped_old_index = Some(old_index);
+                    }
+                }
+            } else {
+                for (new_index, old_index) in mapping.iter_mut().enumerate() {
+                    *old_index = Some(new_index);
+                }
+            }
+        }
+
+        for (new_index, signature) in signatures.iter().enumerate() {
+            let Some(old_index) = mapping[new_index] else {
+                if signature.has_content {
+                    next_lines[new_index] = Some(timestamp.clone());
+                }
+                continue;
+            };
+            if old_signatures.get(old_index) == Some(signature) {
+                next_lines[new_index] = old_lines.get(old_index).cloned().flatten();
+            } else if signature.has_content {
+                next_lines[new_index] = Some(timestamp.clone());
+            }
+        }
+
+        let cursor_index = content
+            .cursor
+            .point
+            .line
+            .saturating_add(content.display_offset as i32);
+        if let Ok(cursor_index) = usize::try_from(cursor_index)
+            && cursor_index < next_lines.len()
+        {
+            next_lines[cursor_index] = Some(timestamp);
+        }
+
+        self.lines = next_lines;
+        self.signatures = signatures;
+        self.columns = content.terminal_bounds.num_columns();
+        self.screen_lines = rows;
+    }
+
+    pub(crate) fn visible_content(&self, content: &zed_terminal::Content) -> Vec<Option<String>> {
+        let rows = content.terminal_bounds.num_lines();
+        if content.mode.contains(zed_terminal::Modes::ALT_SCREEN) {
+            return vec![None; rows];
+        }
+        (0..rows)
+            .map(|row| self.lines.get(row).cloned().flatten())
+            .collect()
+    }
 }
 
+fn content_row_signatures(content: &zed_terminal::Content) -> Vec<RowSignature> {
+    let rows = content.terminal_bounds.num_lines();
+    (0..rows)
+        .map(|viewport_row| {
+            let line = -(content.display_offset as i32) + viewport_row as i32;
+            let mut hasher = DefaultHasher::new();
+            let mut text = String::new();
+            for indexed in content.cells.iter().filter(|cell| cell.point.line == line) {
+                let cell = &indexed.cell;
+                cell.character().hash(&mut hasher);
+                cell.is_inverse().hash(&mut hasher);
+                cell.is_bold().hash(&mut hasher);
+                cell.is_italic().hash(&mut hasher);
+                if !cell.is_wide_char_spacer() {
+                    text.push(if cell.character() == '\0' {
+                        ' '
+                    } else {
+                        cell.character()
+                    });
+                    if let Some(zerowidth) = cell.zerowidth() {
+                        for &character in zerowidth {
+                            character.hash(&mut hasher);
+                            text.push(character);
+                        }
+                    }
+                }
+            }
+            while text.ends_with(' ') {
+                text.pop();
+            }
+            RowSignature {
+                hash: hasher.finish(),
+                has_content: text.chars().any(|character| character != ' '),
+                text,
+                wraps_to_next: false,
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
 pub(crate) fn terminal_row_signatures(term: &Term<NoopListener>) -> Vec<RowSignature> {
     let grid = term.grid();
     let history = grid.history_size();
@@ -478,6 +654,7 @@ pub(crate) fn terminal_row_signatures(term: &Term<NoopListener>) -> Vec<RowSigna
     signatures
 }
 
+#[cfg(test)]
 pub(crate) fn logical_timestamp_lines(
     signatures: &[RowSignature],
     timestamps: &[Option<String>],
@@ -512,6 +689,7 @@ pub(crate) fn logical_timestamp_lines(
     logical_lines
 }
 
+#[cfg(test)]
 pub(crate) fn remap_timestamps_after_resize(
     old_signatures: &[RowSignature],
     old_timestamps: &[Option<String>],
@@ -1014,6 +1192,7 @@ pub(crate) fn kitty_placeholder_diacritic_value(character: char) -> Option<usize
         .position(|candidate| *candidate == character)
 }
 
+#[cfg(test)]
 pub(crate) fn kitty_placeholder_color_value(color: &Color) -> Option<u32> {
     match color {
         Color::Indexed(value) => Some(*value as u32),
@@ -1022,6 +1201,7 @@ pub(crate) fn kitty_placeholder_color_value(color: &Color) -> Option<u32> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn decode_kitty_placeholder(
     cell: &Cell,
     zero_width: &str,
@@ -1101,7 +1281,83 @@ pub(crate) fn decode_kitty_placeholder(
     ))
 }
 
+fn decode_zed_kitty_placeholder(
+    cell: &zed_terminal::Cell,
+    zero_width: &str,
+    viewport_row: usize,
+    viewport_column: usize,
+    previous: Option<KittyPlaceholderState>,
+) -> Option<(KittyPlaceholder, KittyPlaceholderState)> {
+    if cell.character() != KITTY_PLACEHOLDER_CHAR {
+        return None;
+    }
+    let foreground = match cell.foreground() {
+        zed_terminal::Color::Indexed(value) => value as u32,
+        zed_terminal::Color::Spec(zed_terminal::Rgb { r, g, b }) => {
+            (r as u32) << 16 | (g as u32) << 8 | b as u32
+        }
+        zed_terminal::Color::Named(_) => return None,
+    };
+    let marks = zero_width
+        .chars()
+        .filter_map(kitty_placeholder_diacritic_value)
+        .take(3)
+        .collect::<Vec<_>>();
+    let previous = previous.filter(|previous| previous.foreground == foreground);
+    let (row, column, image_id_high) = match marks.as_slice() {
+        [] => {
+            let previous = previous?;
+            (
+                previous.row,
+                previous.column.checked_add(1)?,
+                previous.image_id_high,
+            )
+        }
+        [row] => {
+            let column = previous
+                .filter(|previous| previous.row == *row)
+                .and_then(|previous| previous.column.checked_add(1))
+                .unwrap_or(0);
+            let image_id_high = previous
+                .filter(|previous| previous.row == *row)
+                .map(|previous| previous.image_id_high)
+                .unwrap_or(0);
+            (*row, column, image_id_high)
+        }
+        [row, column] => {
+            let image_id_high = previous
+                .filter(|previous| {
+                    previous.row == *row && previous.column.checked_add(1) == Some(*column)
+                })
+                .map(|previous| previous.image_id_high)
+                .unwrap_or(0);
+            (*row, *column, image_id_high)
+        }
+        [row, column, image_id_high] => (*row, *column, u8::try_from(*image_id_high).ok()?),
+        _ => unreachable!(),
+    };
+    let state = KittyPlaceholderState {
+        foreground,
+        underline: None,
+        row,
+        column,
+        image_id_high,
+    };
+    Some((
+        KittyPlaceholder {
+            image_id: (foreground & 0x00ff_ffff) | (u32::from(image_id_high) << 24),
+            placement_id: None,
+            row,
+            column,
+            viewport_row,
+            viewport_column,
+        },
+        state,
+    ))
+}
+
 /// 把 Term 可见区快照成 owned 数据。
+#[cfg(test)]
 pub(crate) fn snapshot_visible(
     term: &Term<NoopListener>,
     selection: Option<((usize, usize), (usize, usize))>,
@@ -1225,10 +1481,174 @@ pub(crate) fn snapshot_visible(
     }
 }
 
+/// Snapshot the viewport exposed by Zed's terminal core. `Content.cells` uses
+/// terminal-relative line coordinates, so adding `display_offset` maps cells
+/// directly onto the current viewport rows.
+pub(crate) fn snapshot_visible_content(
+    content: &zed_terminal::Content,
+    selection: Option<((usize, usize), (usize, usize))>,
+    cursor_visible: bool,
+    timestamps: &[Option<String>],
+    history_len: usize,
+) -> Snapshot {
+    let cols = content.terminal_bounds.num_columns();
+    let rows = content.terminal_bounds.num_lines();
+    let default_fg = fg_of_content(content);
+    let default_bg = bg_of_content(content);
+    let mut out_rows = vec![vec![default_render_cell(default_fg, default_bg); cols]; rows];
+    let mut previous_placeholders = vec![None; rows];
+    let mut kitty_placeholders = Vec::new();
+
+    for indexed in &content.cells {
+        let Some(viewport_row) = indexed
+            .point
+            .line
+            .checked_add(content.display_offset as i32)
+            .and_then(|line| usize::try_from(line).ok())
+            .filter(|row| *row < rows)
+        else {
+            continue;
+        };
+        let column = indexed.point.column;
+        if column >= cols {
+            continue;
+        }
+        let cell = &indexed.cell;
+        let style = effective_zed_cell_style(cell);
+        let mut zero_width = String::new();
+        if let Some(chars) = cell.zerowidth() {
+            zero_width.extend(chars.iter().copied());
+        }
+        let kitty_placeholder = decode_zed_kitty_placeholder(
+            cell,
+            &zero_width,
+            viewport_row,
+            column,
+            previous_placeholders[viewport_row],
+        )
+        .map(|(placeholder, state)| {
+            kitty_placeholders.push(placeholder);
+            previous_placeholders[viewport_row] = Some(state);
+            true
+        })
+        .unwrap_or_else(|| {
+            previous_placeholders[viewport_row] = None;
+            false
+        });
+        let wide = content.cells.iter().any(|next| {
+            next.point.line == indexed.point.line
+                && next.point.column == column.saturating_add(1)
+                && next.is_wide_char_spacer()
+        });
+        out_rows[viewport_row][column] = RenderCell {
+            ch: if cell.character() == '\0' {
+                ' '
+            } else {
+                cell.character()
+            },
+            fg: style.fg,
+            bg: style.bg,
+            bold: style.bold,
+            italic: style.italic,
+            underline: style.underline,
+            underline_color: style.underline_color,
+            strikeout: style.strikeout,
+            spacer: cell.is_wide_char_spacer(),
+            wide,
+            zero_width,
+            kitty_placeholder,
+            is_url: false,
+            hyperlink: cell.hyperlink().map(|link| link.uri().to_owned()),
+        };
+    }
+
+    let cursor = cursor_viewport_position(
+        content.cursor.point.line,
+        content.cursor.point.column,
+        content.display_offset,
+        rows,
+        cols,
+    );
+    let mut urls = Vec::new();
+    for (row, out_row) in out_rows.iter_mut().enumerate().take(rows) {
+        let mut col = 0;
+        while col < out_row.len() {
+            let Some(url) = out_row[col].hyperlink.clone() else {
+                col += 1;
+                continue;
+            };
+            let start = col;
+            while col < out_row.len() && out_row[col].hyperlink.as_deref() == Some(url.as_str()) {
+                out_row[col].is_url = true;
+                col += 1;
+            }
+            urls.push((row, start, col, url));
+        }
+        urls.extend(detect_plain_urls(out_row, row));
+    }
+
+    Snapshot {
+        rows: out_rows,
+        cursor,
+        selection,
+        cols,
+        display_offset: content.display_offset,
+        history_len,
+        cursor_visible,
+        cursor_shape: zed_cursor_shape(content.cursor.shape),
+        urls,
+        timestamps: timestamps.to_vec(),
+        kitty_placeholders,
+    }
+}
+
+fn default_render_cell(fg: Hsla, bg: Hsla) -> RenderCell {
+    RenderCell {
+        ch: ' ',
+        fg,
+        bg,
+        bold: false,
+        italic: false,
+        underline: UnderlineKind::None,
+        underline_color: fg,
+        strikeout: false,
+        spacer: false,
+        wide: false,
+        zero_width: String::new(),
+        kitty_placeholder: false,
+        is_url: false,
+        hyperlink: None,
+    }
+}
+
+fn zed_cursor_shape(shape: zed_terminal::CursorShape) -> CursorShape {
+    match shape {
+        zed_terminal::CursorShape::Block => CursorShape::Block,
+        zed_terminal::CursorShape::Underline => CursorShape::Underline,
+        zed_terminal::CursorShape::Bar => CursorShape::Beam,
+        zed_terminal::CursorShape::HollowBlock => CursorShape::HollowBlock,
+        zed_terminal::CursorShape::Hidden => CursorShape::Hidden,
+    }
+}
+
+pub(crate) fn bg_of_content(_content: &zed_terminal::Content) -> Hsla {
+    zed_color_to_hsla(&zed_terminal::Color::Named(
+        zed_terminal::NamedColor::Background,
+    ))
+}
+
+pub(crate) fn fg_of_content(_content: &zed_terminal::Content) -> Hsla {
+    zed_color_to_hsla(&zed_terminal::Color::Named(
+        zed_terminal::NamedColor::Foreground,
+    ))
+}
+
+#[cfg(test)]
 pub(crate) fn bg_of(term: &Term<NoopListener>) -> Hsla {
     color_to_hsla(&Color::Named(NamedColor::Background), term.colors())
         .unwrap_or_else(|| default_palette(&NamedColor::Background))
 }
+#[cfg(test)]
 pub(crate) fn fg_of(term: &Term<NoopListener>) -> Hsla {
     color_to_hsla(&Color::Named(NamedColor::Foreground), term.colors())
         .unwrap_or_else(|| default_palette(&NamedColor::Foreground))
@@ -1248,6 +1668,7 @@ pub(crate) fn append_bounded_notification_text(target: &mut String, value: &str)
     target.push_str(&value[..end]);
 }
 
+#[cfg(test)]
 pub(crate) fn color_to_hsla(
     color: &Color,
     colors: &alacritty_terminal::term::color::Colors,
@@ -1359,26 +1780,6 @@ pub(crate) fn default_palette_indexed_rgb(i: usize) -> Rgb {
             b: v.min(255) as u8,
         }
     }
-}
-
-pub(crate) fn default_palette_rgb_index(index: usize) -> Option<Rgb> {
-    let named = match index {
-        256 => NamedColor::Foreground,
-        257 => NamedColor::Background,
-        258 => NamedColor::Cursor,
-        259 => NamedColor::DimBlack,
-        260 => NamedColor::DimRed,
-        261 => NamedColor::DimGreen,
-        262 => NamedColor::DimYellow,
-        263 => NamedColor::DimBlue,
-        264 => NamedColor::DimMagenta,
-        265 => NamedColor::DimCyan,
-        266 => NamedColor::DimWhite,
-        267 => NamedColor::BrightForeground,
-        268 => NamedColor::DimForeground,
-        _ => return (index < 256).then(|| default_palette_indexed_rgb(index)),
-    };
-    Some(default_palette_rgb(&named))
 }
 
 pub(crate) fn dimen(c: Hsla) -> Hsla {

@@ -1,6 +1,7 @@
 //! Incremental terminal-side protocol handling that is intentionally kept
-//! separate from the screen parser. Alacritty owns the terminal grid; this
-//! parser observes OSC strings and unwraps the passthrough form used by tmux.
+//! separate from the screen parser. Zed's terminal core owns the terminal
+//! grid; this parser observes side-channel protocols and unwraps the
+//! passthrough form used by tmux.
 
 use base64::Engine;
 
@@ -10,6 +11,23 @@ const MAX_IMAGE_BYTES: usize = 6 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProtocolEvent {
+    Title(String),
+    Bell,
+    ClipboardStore(String),
+    ClipboardQuery(u8),
+    KeyboardModeSet {
+        bits: u8,
+        behavior: u8,
+    },
+    KeyboardModePush {
+        bits: u8,
+    },
+    KeyboardModePop(u16),
+    KeyboardModeQuery,
+    PrimaryDeviceAttributesQuery,
+    SecondaryDeviceAttributesQuery,
+    DeviceStatusQuery,
+    CursorPositionQuery,
     Cwd(String),
     /// The command about to be executed, emitted by Crossh's local shell hook.
     Command(String),
@@ -168,6 +186,7 @@ impl TerminalProtocolParser {
         let state = std::mem::replace(&mut self.state, State::Ground);
         match state {
             State::Ground => match byte {
+                0x07 => events.push(ProtocolEvent::Bell),
                 0x1b => self.state = State::Escape,
                 0x90 if !utf8_continuation => {
                     self.state = State::String(new_string(StringKind::Dcs))
@@ -277,6 +296,15 @@ fn parse_osc(payload: &[u8]) -> Vec<ProtocolEvent> {
     let value = &payload[separator + 1..];
 
     match command {
+        b"0" | b"2" => {
+            let title = String::from_utf8_lossy(value);
+            if title.is_empty() {
+                vec![ProtocolEvent::Title(String::new())]
+            } else {
+                vec![ProtocolEvent::Title(title.into_owned())]
+            }
+        }
+        b"52" => parse_osc52(value),
         b"7" => {
             let value = String::from_utf8_lossy(value);
             cwd_from_osc7(&value)
@@ -295,6 +323,33 @@ fn parse_osc(payload: &[u8]) -> Vec<ProtocolEvent> {
         b"1337" => parse_osc1337(value),
         _ => Vec::new(),
     }
+}
+
+fn parse_osc52(value: &[u8]) -> Vec<ProtocolEvent> {
+    let Some(separator) = value.iter().position(|byte| *byte == b';') else {
+        return Vec::new();
+    };
+    let selector = &value[..separator];
+    if !matches!(selector, b"c" | b"p" | b"s" | b"0") {
+        return Vec::new();
+    }
+    let encoded = &value[separator + 1..];
+    if encoded == b"?" {
+        return vec![ProtocolEvent::ClipboardQuery(selector[0])];
+    }
+    let Ok(decoded) = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(encoded))
+    else {
+        return Vec::new();
+    };
+    if decoded.len() > 1024 * 1024 {
+        return Vec::new();
+    }
+    let Ok(text) = String::from_utf8(decoded) else {
+        return Vec::new();
+    };
+    vec![ProtocolEvent::ClipboardStore(text)]
 }
 
 fn parse_osc1337(value: &[u8]) -> Vec<ProtocolEvent> {
@@ -597,6 +652,40 @@ fn parse_csi(payload: &[u8], final_byte: u8) -> Vec<ProtocolEvent> {
             _ => Vec::new(),
         };
     }
+    if final_byte == b'u' {
+        if payload == b"?" {
+            return vec![ProtocolEvent::KeyboardModeQuery];
+        }
+        if let Some(value) = payload.strip_prefix(b"<") {
+            let count = parse_u16(value).unwrap_or(1);
+            return vec![ProtocolEvent::KeyboardModePop(count)];
+        }
+        if let Some(value) = payload.strip_prefix(b">") {
+            return vec![ProtocolEvent::KeyboardModePush {
+                bits: parse_u8(value).unwrap_or_default(),
+            }];
+        }
+        if let Some(value) = payload.strip_prefix(b"=") {
+            let mut fields = value.split(|byte| *byte == b';');
+            let bits = fields.next().and_then(parse_u8).unwrap_or_default();
+            let behavior = fields.next().and_then(parse_u8).unwrap_or(1);
+            return vec![ProtocolEvent::KeyboardModeSet { bits, behavior }];
+        }
+    }
+    if final_byte == b'c' {
+        return match payload {
+            b"" => vec![ProtocolEvent::PrimaryDeviceAttributesQuery],
+            b">" => vec![ProtocolEvent::SecondaryDeviceAttributesQuery],
+            _ => Vec::new(),
+        };
+    }
+    if final_byte == b'n' {
+        return match payload {
+            b"5" => vec![ProtocolEvent::DeviceStatusQuery],
+            b"6" => vec![ProtocolEvent::CursorPositionQuery],
+            _ => Vec::new(),
+        };
+    }
     if final_byte == b'm' {
         if payload == b"?4" {
             return vec![ProtocolEvent::ModifyOtherKeysQuery];
@@ -604,7 +693,10 @@ fn parse_csi(payload: &[u8], final_byte: u8) -> Vec<ProtocolEvent> {
         if matches!(payload, b">0" | b">0;0") {
             return vec![ProtocolEvent::ModifyOtherKeys(0)];
         }
-        if payload == b">4" {
+        // Vim exits modifyOtherKeys with the empty level form `CSI > 4 ; m`.
+        // Treat it like the explicit level-zero variants so the next Ctrl-L
+        // is not encoded as a literal modifyOtherKeys sequence.
+        if matches!(payload, b">4" | b">4;") {
             return vec![ProtocolEvent::ModifyOtherKeys(0)];
         }
         if let Some(level) = payload
@@ -624,6 +716,14 @@ fn parse_csi(payload: &[u8], final_byte: u8) -> Vec<ProtocolEvent> {
         };
     }
     Vec::new()
+}
+
+fn parse_u8(value: &[u8]) -> Option<u8> {
+    std::str::from_utf8(value).ok()?.parse().ok()
+}
+
+fn parse_u16(value: &[u8]) -> Option<u16> {
+    std::str::from_utf8(value).ok()?.parse().ok()
 }
 
 fn parse_iterm_image(value: &[u8]) -> Vec<ProtocolEvent> {
@@ -779,6 +879,18 @@ mod tests {
         assert_eq!(
             parser.feed(b"%20project\x07"),
             vec![ProtocolEvent::Cwd("/Users/me project".into())]
+        );
+    }
+
+    #[test]
+    fn parses_osc52_clipboard_writes_and_queries() {
+        let mut parser = TerminalProtocolParser::default();
+        assert_eq!(
+            parser.feed(b"\x1b]52;c;SGVsbG8=\x07\x1b]52;p;?\x1b\\"),
+            vec![
+                ProtocolEvent::ClipboardStore("Hello".into()),
+                ProtocolEvent::ClipboardQuery(b'p'),
+            ]
         );
     }
 
@@ -1003,6 +1115,15 @@ mod tests {
             vec![
                 ProtocolEvent::ModifyOtherKeys(0),
                 ProtocolEvent::ModifyOtherKeys(0),
+                ProtocolEvent::ModifyOtherKeys(0),
+            ]
+        );
+
+        let mut vim_parser = TerminalProtocolParser::default();
+        assert_eq!(
+            vim_parser.feed(b"\x1b[>4;2m\x1b[>4;m"),
+            vec![
+                ProtocolEvent::ModifyOtherKeys(2),
                 ProtocolEvent::ModifyOtherKeys(0),
             ]
         );

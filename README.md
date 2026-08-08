@@ -7,7 +7,7 @@
 
 - **读取 `~/.ssh/config`（只读）**：别名列表、`Include`/通配/`Match`、`ProxyJump`、`Local/Remote/DynamicForward`、`IdentityFile`/`IdentitiesOnly` 均可解析。
 - **会话池复用**：同主机共享一条已认证连接，多标签/SFTP/转发不重复认证；全部标签关闭后自动断开。
-- **交互式终端**：russh + alacritty_terminal + vte，256 色/真彩、宽字符、鼠标协议、IME 输入法、文本选择、URL 点击跳转。
+- **交互式终端**：russh + Zed `terminal` core，256 色/真彩、宽字符、鼠标协议、IME 输入法、文本选择、URL 点击跳转。
 - **反应式认证**：未知主机密钥弹指纹确认（可写 `known_hosts`）；加密私钥口令、密码按需弹出，凭据不回写日志。
 - **SFTP**：远程浏览、上传/下载、目录递归、进度条、覆盖确认。
 - **端口转发**：`-L` / `-R` / `-D`(SOCKS5)，config 驱动，UI 启停。
@@ -78,7 +78,7 @@ src/
 
 依赖方向保持单向：`infrastructure` 和 `shared/terminal` 不依赖 GPUI；feature 的 GPUI 适配层依赖基础设施；`workspace` 通过 `WorkspacePane` trait 消费终端、SFTP 和转发面板。可重复执行的分层检查位于 `scripts/check-architecture.sh`。
 
-技术栈：`gpui`（UI，钉 zed git rev）、`russh`（SSH）、`alacritty_terminal` + `vte`（终端模拟）、`tokio`（2 worker 常驻）。
+技术栈：`gpui`（UI，钉 Zed git rev）、Zed `terminal`（终端模拟）、`russh`（SSH）、`alacritty_terminal`（本地 PTY/ConPTY）、`tokio`（2 worker 常驻）。
 
 ## 路线图
 
@@ -93,4 +93,4 @@ src/
 
 ## 许可证与致谢
 
-MIT。UI 图标为 [Lucide](https://lucide.dev/) 1.27.0 官方 SVG（见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)）；应用图标为自绘。gpui 来自 Zed 开源项目。
+GPL-3.0-or-later。终端核心使用 Zed 的 GPL-3.0-or-later 许可实现；UI 图标为 [Lucide](https://lucide.dev/) 1.27.0 官方 SVG（见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)）；应用图标为自绘。gpui 来自 Zed 开源项目。

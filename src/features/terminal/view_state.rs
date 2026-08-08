@@ -16,7 +16,7 @@ impl super::TerminalView {
     /// 用一个已有的终端桥接（来自 `Connection::open_terminal`）创建视图。
     ///
     /// 连接本身由调用方（AppShell）经 `Connection` 管理；本视图只负责：
-    ///  - 主线程 drain `event_rx` 喂 alacritty `Term`；
+    ///  - 主线程 drain `event_rx` 喂 Zed terminal core；
     ///  - 键盘/resize 经 `input_tx` 送回。
     pub fn from_bridge(
         input_tx: Sender<InputCmd>,
@@ -75,15 +75,7 @@ impl super::TerminalView {
             settings,
         } = bridge;
         let settings = settings.normalized();
-        let config = Config {
-            scrolling_history: settings.scrollback,
-            kitty_keyboard: true,
-            osc52: osc52_mode(is_local),
-            ..Default::default()
-        };
-        let size = TermSize { cols, rows };
-        let (listener, window_size, side_effects, protocol_responses) =
-            NoopListener::for_bridge(cols, rows);
+        let (window_size, protocol_responses) = terminal_queues_for_bridge(cols, rows);
         let font = Font {
             family: "Menlo".into(),
             weight: FontWeight::NORMAL,
@@ -92,69 +84,86 @@ impl super::TerminalView {
             fallbacks: None,
         };
 
-        let entity = cx.new(|cx| Self {
-            term: Term::new(config, &size, listener),
-            parser: Processor::new(),
-            input_tx: input_tx.clone(),
-            pending_input: VecDeque::new(),
-            state: ConnState::Connecting,
-            command_running: false,
-            shell_activity_available: false,
-            protocol_parser: TerminalProtocolParser::default(),
-            cwd: initial_cwd,
-            focus: cx.focus_handle(),
-            cell_w: px(0.),
-            line_h: px(settings.font_size * 1.3),
-            cols,
-            rows,
-            content_origin: Point::new(px(0.), px(0.)),
-            window_size,
-            side_effects,
-            protocol_responses,
-            is_local,
-            font,
-            font_size: settings.font_size,
-            scrollback: settings.scrollback,
-            show_timestamps: settings.show_timestamps,
-            _drain: None,
-            focused_once: false,
-            _focus_in: None,
-            _focus_out: None,
-            sel_start: None,
-            sel_end: None,
-            selecting: false,
-            ime_marked_text: String::new(),
-            low_latency_shell_input: false,
-            shell_input_buffer: ShellInputBuffer::default(),
-            remote_mouse_button: None,
-            scroll_acc: 0.,
-            cursor_blink_on: true,
-            urxvt_mouse: false,
-            modify_other_keys: 0,
-            focused: true,
-            notifications_enabled: settings.notifications_enabled,
-            progress: None,
-            images: Vec::new(),
-            kitty_image_data: HashMap::new(),
-            kitty_image_numbers: HashMap::new(),
-            next_kitty_image_id: 1,
-            kitty_active_image_id: None,
-            kitty_notifications: HashMap::new(),
-            notification_states: HashMap::new(),
-            notification_state_order: VecDeque::new(),
-            kitty_notification_expiry: HashMap::new(),
-            notification_serial: 0,
-            _sync_timeout_task: None,
-            _blink_task: None,
-            detected_urls: Vec::new(),
-            line_timestamps: TerminalTimestampState::default(),
-            title: None,
-            process_info: None,
-            local_shell: is_local.then(default_local_shell_name),
-            context_menu: None,
-            anchor_bounds: Rc::new(StdCell::new(None)),
-            last_progress: Instant::now(),
-            events_processed: 0,
+        let zed_builder = zed_terminal::TerminalBuilder::new_display_only_with_bounds(
+            zed_terminal::terminal_settings::CursorShape::Block,
+            zed_terminal::terminal_settings::AlternateScroll::On,
+            Some(settings.scrollback),
+            0,
+            cx.background_executor(),
+            util::paths::PathStyle::local(),
+            terminal_bounds_for_grid(cols, rows, px(8.), px(settings.font_size * 1.3)),
+        );
+
+        let entity = cx.new(|cx| {
+            let zed_terminal = cx.new(|terminal_cx| zed_builder.subscribe(terminal_cx));
+            let terminal_content = zed_terminal.read(cx).last_content().clone();
+            Self {
+                zed_terminal,
+                terminal_content,
+                terminal_total_lines: rows,
+                pending_terminal_output: Vec::new(),
+                input_tx: input_tx.clone(),
+                pending_input: VecDeque::new(),
+                state: ConnState::Connecting,
+                command_running: false,
+                shell_activity_available: false,
+                protocol_parser: TerminalProtocolParser::default(),
+                cwd: initial_cwd,
+                focus: cx.focus_handle(),
+                cell_w: px(0.),
+                line_h: px(settings.font_size * 1.3),
+                cols,
+                rows,
+                content_origin: Point::new(px(0.), px(0.)),
+                window_size,
+                protocol_responses,
+                is_local,
+                font,
+                font_size: settings.font_size,
+                scrollback: settings.scrollback,
+                show_timestamps: settings.show_timestamps,
+                _drain: None,
+                focused_once: false,
+                _focus_in: None,
+                _focus_out: None,
+                sel_start: None,
+                sel_end: None,
+                selecting: false,
+                ime_marked_text: String::new(),
+                low_latency_shell_input: false,
+                shell_input_buffer: ShellInputBuffer::default(),
+                remote_mouse_button: None,
+                scroll_acc: 0.,
+                cursor_blink_on: true,
+                urxvt_mouse: false,
+                modify_other_keys: 0,
+                kitty_keyboard_mode: 0,
+                kitty_keyboard_stack: Vec::new(),
+                focused: true,
+                notifications_enabled: settings.notifications_enabled,
+                progress: None,
+                images: Vec::new(),
+                kitty_image_data: HashMap::new(),
+                kitty_image_numbers: HashMap::new(),
+                next_kitty_image_id: 1,
+                kitty_active_image_id: None,
+                kitty_notifications: HashMap::new(),
+                notification_states: HashMap::new(),
+                notification_state_order: VecDeque::new(),
+                kitty_notification_expiry: HashMap::new(),
+                notification_serial: 0,
+                _blink_task: None,
+                detected_urls: Vec::new(),
+                line_timestamps: TerminalTimestampState::default(),
+                pending_timestamp: None,
+                title: None,
+                process_info: None,
+                local_shell: is_local.then(default_local_shell_name),
+                context_menu: None,
+                anchor_bounds: Rc::new(StdCell::new(None)),
+                last_progress: Instant::now(),
+                events_processed: 0,
+            }
         });
 
         // drain：在主线程上从 event_rx 取事件喂给 Term。
@@ -220,12 +229,9 @@ impl super::TerminalView {
 
         if self.scrollback != settings.scrollback {
             self.scrollback = settings.scrollback;
-            self.term.set_options(Config {
-                scrolling_history: self.scrollback,
-                kitty_keyboard: true,
-                osc52: osc52_mode(self.is_local),
-                ..Default::default()
-            });
+            // Zed's display-only terminal fixes its scrollback capacity when
+            // the emulator is built. The new value applies to newly opened
+            // terminals; rebuilding here would discard the current screen.
         }
 
         self.show_timestamps = settings.show_timestamps;
@@ -250,6 +256,7 @@ impl super::TerminalView {
         for event in events {
             self.apply_session_event(event, cx);
         }
+        self.flush_pending_terminal_output(cx);
         self.drain_protocol_responses();
         self.flush_pending_input();
         self.last_progress = Instant::now();
@@ -274,19 +281,17 @@ impl super::TerminalView {
                 log::trace!("pty output ({}B): {}", bytes.len(), debug_bytes(&bytes));
                 // alternate screen 是 Codex/vim/top 等 TUI 的绘制缓冲区；只保留
                 // 普通 shell 网格的时间戳，避免全屏重绘产生大量错误行。
-                let was_alt_screen = self.term.mode().contains(TermMode::ALT_SCREEN);
+                let was_alt_screen =
+                    alacritty_mode(&self.terminal_content).contains(TermMode::ALT_SCREEN);
                 let timestamp = (!was_alt_screen).then(|| format_timestamp(Local::now()));
-                self.parser.advance(&mut self.term, &bytes);
+                self.zed_terminal.update(cx, |terminal, terminal_cx| {
+                    terminal.write_output(&bytes, terminal_cx);
+                });
                 let protocol_events = self.protocol_parser.feed(&bytes);
                 self.process_protocol_events(protocol_events, cx, 0);
-                self.schedule_sync_timeout(cx);
-                self.drain_terminal_side_effects(cx);
                 self.drain_protocol_responses();
-                if !self.term.mode().contains(TermMode::ALT_SCREEN) {
-                    self.line_timestamps.observe(
-                        &self.term,
-                        timestamp.unwrap_or_else(|| format_timestamp(Local::now())),
-                    );
+                if let Some(timestamp) = timestamp {
+                    self.pending_timestamp = Some(timestamp);
                 }
             }
             SessionEvent::Cwd(cwd) => {
@@ -328,6 +333,71 @@ impl super::TerminalView {
     ) {
         for event in events {
             match event {
+                ProtocolEvent::Title(title) => {
+                    self.title = Some(title);
+                    cx.emit(TerminalEvent::TitleChanged);
+                }
+                ProtocolEvent::Bell => {
+                    self.notify_user(
+                        self.title.clone().unwrap_or_default(),
+                        "Terminal bell".to_string(),
+                        false,
+                        cx,
+                    );
+                }
+                ProtocolEvent::ClipboardStore(text) => {
+                    if osc52_text_within_limit(&text) {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                    } else {
+                        log::warn!("ignoring oversized OSC 52 clipboard write");
+                    }
+                }
+                ProtocolEvent::ClipboardQuery(selector) => {
+                    if !osc52_load_allowed(self.is_local) {
+                        log::debug!("ignoring OSC 52 clipboard read from remote terminal");
+                        continue;
+                    }
+                    let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+                        continue;
+                    };
+                    if let Some(response) = format_osc52_response_for_selector(selector, &text) {
+                        self.send_input(response);
+                    } else {
+                        log::warn!("ignoring oversized OSC 52 clipboard response");
+                    }
+                }
+                ProtocolEvent::KeyboardModeSet { bits, behavior } => match behavior {
+                    2 => self.kitty_keyboard_mode |= bits,
+                    3 => self.kitty_keyboard_mode &= !bits,
+                    _ => self.kitty_keyboard_mode = bits,
+                },
+                ProtocolEvent::KeyboardModePush { bits } => {
+                    self.kitty_keyboard_stack.push(self.kitty_keyboard_mode);
+                    self.kitty_keyboard_mode = bits;
+                }
+                ProtocolEvent::KeyboardModePop(count) => {
+                    for _ in 0..count {
+                        self.kitty_keyboard_mode =
+                            self.kitty_keyboard_stack.pop().unwrap_or_default();
+                    }
+                }
+                ProtocolEvent::KeyboardModeQuery => {
+                    self.send_input(format!("\x1b[?{}u", self.kitty_keyboard_mode).into_bytes());
+                }
+                ProtocolEvent::PrimaryDeviceAttributesQuery => {
+                    self.send_input(b"\x1b[?6c".to_vec());
+                }
+                ProtocolEvent::SecondaryDeviceAttributesQuery => {
+                    self.send_input(b"\x1b[>0;1;1c".to_vec());
+                }
+                ProtocolEvent::DeviceStatusQuery => {
+                    self.send_input(b"\x1b[0n".to_vec());
+                }
+                ProtocolEvent::CursorPositionQuery => {
+                    let row = self.terminal_content.cursor.point.line.max(0) + 1;
+                    let column = self.terminal_content.cursor.point.column + 1;
+                    self.send_input(format!("\x1b[{};{}R", row, column).into_bytes());
+                }
                 ProtocolEvent::Cwd(cwd) => {
                     if self.cwd.as_deref() != Some(cwd.as_str()) {
                         self.cwd = Some(cwd);
@@ -415,7 +485,9 @@ impl super::TerminalView {
                     }
                     let nested_events = self.protocol_parser.feed(&bytes);
                     self.process_protocol_events(nested_events, cx, passthrough_depth + 1);
-                    self.parser.advance(&mut self.term, &bytes);
+                    self.zed_terminal.update(cx, |terminal, terminal_cx| {
+                        terminal.write_output(&bytes, terminal_cx);
+                    });
                 }
                 ProtocolEvent::Reset => {
                     self.images.clear();
@@ -423,6 +495,8 @@ impl super::TerminalView {
                     self.kitty_image_numbers.clear();
                     self.kitty_active_image_id = None;
                     self.modify_other_keys = 0;
+                    self.kitty_keyboard_mode = 0;
+                    self.kitty_keyboard_stack.clear();
                 }
                 ProtocolEvent::ClearImages | ProtocolEvent::ScreenBufferSwitch(_) => {
                     self.images.clear();
@@ -766,14 +840,15 @@ impl super::TerminalView {
             log::debug!("ignoring terminal image outside renderer limits");
             return false;
         }
-        let grid = self.term.grid();
-        let origin_line = grid.history_size() as i64 + grid.cursor.point.line.0 as i64;
+        let origin_line = self.terminal_total_lines as i64
+            - self.terminal_content.terminal_bounds.num_lines() as i64
+            + self.terminal_content.cursor.point.line as i64;
         let image = TerminalImage {
             image: Arc::new(gpui::Image::from_bytes(format, payload.data)),
             kitty_id,
             placement_id,
             origin_line,
-            origin_col: grid.cursor.point.column.0,
+            origin_col: self.terminal_content.cursor.point.column,
             width: payload.width,
             height: payload.height,
             preserve_aspect_ratio: payload.preserve_aspect_ratio,
@@ -824,8 +899,18 @@ impl super::TerminalView {
             sequence.extend_from_slice(format!("\x1b[{width}C").as_bytes());
         }
         if !sequence.is_empty() {
-            self.parser.advance(&mut self.term, &sequence);
+            self.pending_terminal_output.extend_from_slice(&sequence);
         }
+    }
+
+    fn flush_pending_terminal_output(&mut self, cx: &mut Context<Self>) {
+        if self.pending_terminal_output.is_empty() {
+            return;
+        }
+        let output = std::mem::take(&mut self.pending_terminal_output);
+        self.zed_terminal.update(cx, |terminal, terminal_cx| {
+            terminal.write_output(&output, terminal_cx);
+        });
     }
 
     pub(super) fn process_sixel(&mut self, data: Vec<u8>) {
@@ -1014,9 +1099,12 @@ impl super::TerminalView {
             let placement_id =
                 kitty_parameter(&payload.control, "p").and_then(|value| value.parse::<u32>().ok());
             let deletion = kitty_parameter(&payload.control, "d").unwrap_or("a");
-            let history_size = self.term.grid().history_size() as i64;
-            let cursor_line = history_size + self.term.grid().cursor.point.line.0 as i64;
-            let cursor_column = self.term.grid().cursor.point.column.0;
+            let history_size = self
+                .terminal_total_lines
+                .saturating_sub(self.terminal_content.terminal_bounds.num_lines())
+                as i64;
+            let cursor_line = history_size + self.terminal_content.cursor.point.line as i64;
+            let cursor_column = self.terminal_content.cursor.point.column;
             let contains_cell = |image: &TerminalImage, line: i64, column: usize| {
                 let width = image_dimension_cells(image.width).unwrap_or(1);
                 let height = image_dimension_cells(image.height).unwrap_or(1);
@@ -1501,19 +1589,18 @@ impl super::TerminalView {
         let value = match query {
             b"m" => Some("0m".to_string()),
             b" q" => {
-                let style = self.term.cursor_style();
-                let style_id = match (style.shape, style.blinking) {
-                    (CursorShape::Block, true) => 1,
-                    (CursorShape::Block, false) => 2,
-                    (CursorShape::Underline, true) => 3,
-                    (CursorShape::Underline, false) => 4,
-                    (CursorShape::Beam, true) => 5,
-                    (CursorShape::Beam, false) => 6,
-                    (CursorShape::HollowBlock, _) | (CursorShape::Hidden, _) => 2,
+                let style_id = match self.terminal_content.cursor.shape {
+                    zed_terminal::CursorShape::Block => 1,
+                    zed_terminal::CursorShape::Underline => 3,
+                    zed_terminal::CursorShape::Bar => 5,
+                    zed_terminal::CursorShape::HollowBlock | zed_terminal::CursorShape::Hidden => 2,
                 };
                 Some(format!("{style_id} q"))
             }
-            b"r" => Some(format!("1;{}r", self.term.screen_lines())),
+            b"r" => Some(format!(
+                "1;{}r",
+                self.terminal_content.terminal_bounds.num_lines()
+            )),
             b"\"p" => Some("64;1\"p".to_string()),
             _ => None,
         };
@@ -1604,75 +1691,6 @@ impl super::TerminalView {
         self.send_input(format!("\x1b[8;{};{}t", size.num_lines, size.num_cols).into_bytes());
     }
 
-    pub(super) fn drain_terminal_side_effects(&mut self, cx: &mut Context<Self>) {
-        let effects = self
-            .side_effects
-            .lock()
-            .map(|mut queue| queue.drain(..).collect::<Vec<_>>())
-            .unwrap_or_default();
-
-        for effect in effects {
-            match effect {
-                TerminalSideEffect::Bell => {
-                    self.notify_user(
-                        self.title.clone().unwrap_or_default(),
-                        "Terminal bell".to_string(),
-                        false,
-                        cx,
-                    );
-                }
-                TerminalSideEffect::Title(title) => {
-                    self.title = Some(title);
-                    cx.emit(TerminalEvent::TitleChanged);
-                }
-                TerminalSideEffect::ResetTitle => {
-                    self.title = None;
-                    cx.emit(TerminalEvent::TitleChanged);
-                }
-                TerminalSideEffect::ClipboardStore(clipboard, text) => {
-                    if !osc52_text_within_limit(&text) {
-                        log::warn!(
-                            "ignoring oversized OSC 52 clipboard write ({} bytes)",
-                            text.len()
-                        );
-                        continue;
-                    }
-                    let item = gpui::ClipboardItem::new_string(text);
-                    // GPUI exposes the platform clipboard consistently across
-                    // desktop targets; Selection is treated as the same store
-                    // when a primary-selection API is unavailable.
-                    let _ = clipboard;
-                    cx.write_to_clipboard(item);
-                }
-                TerminalSideEffect::ClipboardLoad(_clipboard, formatter) => {
-                    if !osc52_load_allowed(self.is_local) {
-                        log::debug!("ignoring OSC 52 clipboard read from remote terminal");
-                        continue;
-                    }
-                    let item = cx.read_from_clipboard();
-                    if let Some(text) = item.and_then(|item| item.text()) {
-                        if let Some(response) = format_osc52_response(&formatter, &text) {
-                            self.send_input(response);
-                        } else {
-                            log::warn!(
-                                "ignoring oversized OSC 52 clipboard response ({} bytes)",
-                                text.len()
-                            );
-                        }
-                    }
-                }
-                TerminalSideEffect::ColorRequest(index, formatter) => {
-                    if index < alacritty_terminal::term::color::COUNT
-                        && let Some(color) =
-                            self.term.colors()[index].or_else(|| default_palette_rgb_index(index))
-                    {
-                        self.send_input(formatter(color).into_bytes());
-                    }
-                }
-            }
-        }
-    }
-
     /// Move parser-generated protocol replies into the same ordered queue used
     /// for keyboard input. Locking is bounded to a short drain operation and
     /// never awaits the channel consumer.
@@ -1739,6 +1757,7 @@ impl super::TerminalView {
 
     pub(crate) fn is_command_running(&self) -> bool {
         self.state == ConnState::Connected
-            && (self.command_running || self.term.mode().contains(TermMode::ALT_SCREEN))
+            && (self.command_running
+                || alacritty_mode(&self.terminal_content).contains(TermMode::ALT_SCREEN))
     }
 }

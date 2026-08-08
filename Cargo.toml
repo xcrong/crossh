@@ -2,6 +2,7 @@
 name = "crossh"
 version = "0.9.0"
 edition = "2024"
+license = "GPL-3.0-or-later"
 
 [dependencies]
 base64 = "0.22"
@@ -12,6 +13,9 @@ icy_sixel = "0.5"
 png = "0.17"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3", features = ["font-kit"] }
+terminal = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
+theme = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
+util = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
 libc = "0.2"
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-native-roots"] }
 russh = "0.62"
@@ -42,3 +46,7 @@ pretty_assertions = "1"
 
 [profile.dev.package."*"]
 opt-level = 1
+
+[patch.crates-io]
+async-process = { git = "https://github.com/zed-industries/async-process", rev = "0b6d6713570af61806e1e5cb40e0f757cb93fd9d" }
+async-task = { git = "https://github.com/smol-rs/async-task", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }

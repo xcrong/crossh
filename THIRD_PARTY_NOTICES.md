@@ -1,5 +1,11 @@
 # Third-Party Notices
 
+## Crossh license
+
+Crossh is distributed under the GNU General Public License, version 3 or
+later (`GPL-3.0-or-later`). The terminal implementation is based on Zed's
+`terminal` crate, which is GPL-3.0-or-later.
+
 ## Lucide
 
 Crossh embeds SVG icons downloaded from the official Lucide release `1.27.0`:
@@ -33,6 +39,10 @@ Feather MIT notice documented in Lucide's official `LICENSE` file.
 
 - **gpui** — UI toolkit, vendored from the Zed project at a pinned commit
   (see `Cargo.toml`). APACHE-2.0 / GPL-3.0-or-later (source: zed-industries/zed).
+- **terminal** — terminal emulator and terminal input/selection engine from
+  the Zed project at the same pinned commit. GPL-3.0-or-later.
+- **theme** — Zed's base theme registry used by the terminal core at the same
+  pinned commit. GPL-3.0-or-later.
 - **russh / russh-sftp** — SSH client and SFTP protocol. MIT.
 - **alacritty_terminal / vte** — terminal emulator core and escape sequence
   parsing. Apache-2.0 / MIT.

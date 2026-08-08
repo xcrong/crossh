@@ -14,7 +14,7 @@ impl super::TerminalView {
             && self.state == ConnState::Connected
             && self.shell_activity_available
             && !self.command_running
-            && !self.term.mode().contains(TermMode::ALT_SCREEN)
+            && !self.terminal_mode().contains(TermMode::ALT_SCREEN)
     }
 
     pub(super) fn flush_shell_input_buffer(&mut self) {
@@ -68,7 +68,7 @@ impl super::TerminalView {
         if is_low_latency_shell_passthrough_key(ks)
             && let Some(bytes) = encode_keystroke_with_options(
                 ks,
-                *self.term.mode(),
+                self.terminal_mode(),
                 event_type,
                 self.modify_other_keys,
             )
@@ -82,7 +82,7 @@ impl super::TerminalView {
             && editing_modifiers
             && let Some(bytes) = encode_keystroke_with_options(
                 ks,
-                *self.term.mode(),
+                self.terminal_mode(),
                 event_type,
                 self.modify_other_keys,
             )
@@ -141,9 +141,12 @@ impl super::TerminalView {
             return true;
         }
 
-        if let Some(bytes) =
-            encode_keystroke_with_options(ks, *self.term.mode(), event_type, self.modify_other_keys)
-        {
+        if let Some(bytes) = encode_keystroke_with_options(
+            ks,
+            self.terminal_mode(),
+            event_type,
+            self.modify_other_keys,
+        ) {
             self.bypass_shell_input(bytes);
             return true;
         }
@@ -151,39 +154,9 @@ impl super::TerminalView {
         false
     }
 
-    /// The standalone UI drives `vte::Processor` directly instead of using
-    /// Alacritty's PTY event loop, so it must enforce the synchronized-update
-    /// deadline itself. Otherwise an interrupted `?2026h` sequence can leave
-    /// the grid buffered indefinitely.
-    pub(super) fn finish_expired_sync_update(&mut self) {
-        let expired = self
-            .parser
-            .sync_timeout()
-            .sync_timeout()
-            .is_some_and(|deadline| deadline <= Instant::now());
-        if expired {
-            self.parser.stop_sync(&mut self.term);
-            self._sync_timeout_task = None;
-            self.drain_protocol_responses();
-            self.line_timestamps.sync_to_term(&self.term);
-        }
-    }
-
-    pub(super) fn schedule_sync_timeout(&mut self, cx: &mut Context<Self>) {
-        let Some(deadline) = self.parser.sync_timeout().sync_timeout() else {
-            self._sync_timeout_task = None;
-            return;
-        };
-        let delay = deadline.saturating_duration_since(Instant::now());
-        let task = cx.spawn(async move |weak, cx| {
-            cx.background_executor().timer(delay).await;
-            let _ = weak.update(cx, |this, cx| {
-                this.finish_expired_sync_update();
-                cx.notify();
-            });
-        });
-        self._sync_timeout_task = Some(task);
-    }
+    /// Zed's terminal core owns synchronized-update buffering and flushes it
+    /// from `Terminal::sync` before each Crossh render.
+    pub(super) fn finish_expired_sync_update(&mut self) {}
 
     /// 非阻塞地把输入命令送入 SSH relay；暂时满载时保留顺序，避免丢键。
     pub(super) fn queue_input(&mut self, command: InputCmd) {
@@ -215,7 +188,7 @@ impl super::TerminalView {
     }
 
     /// 根据当前尺寸调整远端 PTY 窗口。
-    pub(super) fn maybe_resize(&mut self, bounds: Size) {
+    pub(super) fn maybe_resize(&mut self, bounds: Size, cx: &mut Context<Self>) {
         // cell_w 由 render 阶段测量；若尚未测量则跳过（不应发生）。
         if self.cell_w.as_f32() <= 0.0 {
             return;
@@ -235,13 +208,11 @@ impl super::TerminalView {
             );
             self.cols = new_cols;
             self.rows = new_rows;
-            self.term.resize(TermSize {
-                cols: new_cols,
-                rows: new_rows,
+            let terminal_bounds =
+                terminal_bounds_for_grid(new_cols, new_rows, self.cell_w, self.line_h);
+            self.zed_terminal.update(cx, |terminal, _| {
+                terminal.set_size(terminal_bounds);
             });
-            if !self.term.mode().contains(TermMode::ALT_SCREEN) {
-                self.line_timestamps.sync_to_term(&self.term);
-            }
             if let Ok(mut size) = self.window_size.lock() {
                 size.num_cols = new_cols as u16;
                 size.num_lines = new_rows as u16;
@@ -307,7 +278,7 @@ impl super::TerminalView {
             }
             return;
         }
-        let mode = *self.term.mode();
+        let mode = self.terminal_mode();
         match encode_keystroke_with_options(ks, mode, event_type, self.modify_other_keys) {
             Some(bytes) => {
                 if self.shell_activity_available && matches!(ks.key.as_str(), "enter" | "return") {
@@ -338,6 +309,7 @@ impl super::TerminalView {
     ) {
         let ks = &ev.keystroke;
         if is_shell_shortcut(ks)
+            || is_clear_screen_shortcut(ks)
             || (ks.modifiers.platform
                 && !ks.modifiers.alt
                 && !ks.modifiers.control
@@ -351,7 +323,7 @@ impl super::TerminalView {
         if self.shell_input_active() && !is_low_latency_shell_passthrough_key(ks) {
             return;
         }
-        let mode = *self.term.mode();
+        let mode = self.terminal_mode();
         if !mode.contains(TermMode::REPORT_EVENT_TYPES) {
             return;
         }
@@ -365,7 +337,9 @@ impl super::TerminalView {
     }
 
     pub(super) fn send_focus_event(&mut self, focused: bool) {
-        if self.state == ConnState::Connected && self.term.mode().contains(TermMode::FOCUS_IN_OUT) {
+        if self.state == ConnState::Connected
+            && self.terminal_mode().contains(TermMode::FOCUS_IN_OUT)
+        {
             self.send_input(if focused {
                 b"\x1b[I".to_vec()
             } else {
@@ -402,7 +376,7 @@ impl super::TerminalView {
             return;
         }
 
-        let mode = *self.term.mode();
+        let mode = self.terminal_mode();
 
         // 右键：鼠模式开启时转发给远端应用，否则打开本地上下文菜单。
         if ev.button == MouseButton::Right {
@@ -478,7 +452,7 @@ impl super::TerminalView {
             cx.notify();
             return;
         }
-        let mode = *self.term.mode();
+        let mode = self.terminal_mode();
         if mode.intersects(TermMode::MOUSE_MODE)
             && let Some((col, row)) = self.pos_to_grid(ev.position)
             && let Some(button) = mouse_button_code(ev.button)
@@ -515,7 +489,7 @@ impl super::TerminalView {
         if self.state != ConnState::Connected {
             return;
         }
-        let mode = *self.term.mode();
+        let mode = self.terminal_mode();
         if self.selecting && ev.pressed_button == Some(MouseButton::Left) {
             if let Some((col, row)) = self.pos_to_grid(ev.position)
                 && self.sel_end != Some((col, row))
@@ -561,7 +535,7 @@ impl super::TerminalView {
         if self.context_menu.is_some() {
             return;
         }
-        let mode = *self.term.mode();
+        let mode = self.terminal_mode();
         let Some(delta) = wheel_lines_for_phase(
             ev.touch_phase,
             ev.delta,
@@ -603,7 +577,15 @@ impl super::TerminalView {
             }
             WheelRoute::LocalScrollback => {
                 let n = steps as i32 * delta.signum();
-                self.term.scroll_display(Scroll::Delta(n));
+                if n > 0 {
+                    self.zed_terminal.update(cx, |terminal, _| {
+                        terminal.scroll_up_by(n as usize);
+                    });
+                } else if n < 0 {
+                    self.zed_terminal.update(cx, |terminal, _| {
+                        terminal.scroll_down_by(n.unsigned_abs() as usize);
+                    });
+                }
                 cx.notify();
             }
         }
@@ -675,7 +657,7 @@ impl super::TerminalView {
                 self.ime_marked_text.clear();
                 self.low_latency_shell_input = false;
             }
-            let bytes = if self.term.mode().contains(TermMode::BRACKETED_PASTE) {
+            let bytes = if self.terminal_mode().contains(TermMode::BRACKETED_PASTE) {
                 let mut bytes = b"\x1b[200~".to_vec();
                 bytes.extend_from_slice(text.as_bytes());
                 bytes.extend_from_slice(b"\x1b[201~");
@@ -787,10 +769,8 @@ impl super::TerminalView {
         ex: usize,
         ey: usize,
     ) -> String {
-        let grid = self.term.grid();
-        let display_offset = grid.display_offset();
+        let display_offset = self.terminal_content.display_offset;
         let top_line = -(display_offset as i32);
-        let _rows = self.term.screen_lines();
 
         let (y0, y1) = if sy <= ey { (sy, ey) } else { (ey, sy) };
         let (x0, x1) = selection_column_bounds(sx, sy, ex, ey);
@@ -798,15 +778,20 @@ impl super::TerminalView {
         let mut out = String::new();
         for vy in y0..=y1 {
             let line_idx = top_line + vy as i32;
-            let line = &grid[Line(line_idx)];
             let start_col = if vy == y0 { x0 } else { 0 };
             let end_col = if vy == y1 {
                 x1.min(self.cols.saturating_sub(1))
             } else {
-                self.cols - 1
+                self.cols.saturating_sub(1)
             };
             for c in start_col..=end_col {
-                let ch = line[Column(c)].c;
+                let ch = self
+                    .terminal_content
+                    .cells
+                    .iter()
+                    .find(|cell| cell.point.line == line_idx && cell.point.column == c)
+                    .map(|cell| cell.character())
+                    .unwrap_or(' ');
                 if ch != '\0' {
                     out.push(ch);
                 }
@@ -828,41 +813,25 @@ impl super::TerminalView {
             return None;
         }
 
-        let grid = self.term.grid();
         let (col, row) = cursor_viewport_position(
-            grid.cursor.point.line.0,
-            grid.cursor.point.column.0,
-            grid.display_offset(),
-            self.term.screen_lines(),
-            self.term.columns(),
+            self.terminal_content.cursor.point.line,
+            self.terminal_content.cursor.point.column,
+            self.terminal_content.display_offset,
+            self.terminal_content.terminal_bounds.num_lines(),
+            self.terminal_content.terminal_bounds.num_columns(),
         )?;
 
-        let cursor_column = grid.cursor.point.column.0;
-        let line = &grid[grid.cursor.point.line];
-        let cursor_cell = &line[Column(cursor_column)];
-        let (visual_col, width_cells) = if cursor_cell.flags.contains(CellFlags::WIDE_CHAR) {
-            (col, 2)
-        } else if cursor_cell
-            .flags
-            .intersects(CellFlags::WIDE_CHAR_SPACER | CellFlags::LEADING_WIDE_CHAR_SPACER)
-            && cursor_column > 0
-            && line[Column(cursor_column - 1)]
-                .flags
-                .contains(CellFlags::WIDE_CHAR)
-        {
-            (col.saturating_sub(1), 2)
-        } else if cursor_cell
-            .flags
-            .intersects(CellFlags::WIDE_CHAR_SPACER | CellFlags::LEADING_WIDE_CHAR_SPACER)
-            && cursor_column + 1 < self.term.columns()
-            && line[Column(cursor_column + 1)]
-                .flags
-                .contains(CellFlags::WIDE_CHAR)
-        {
-            (col, 2)
-        } else {
-            (col, 1)
-        };
+        let cursor_column = self.terminal_content.cursor.point.column;
+        let cursor_cell = self.terminal_content.cells.iter().find(|cell| {
+            cell.point.line == self.terminal_content.cursor.point.line
+                && cell.point.column == cursor_column
+        });
+        let (visual_col, width_cells) =
+            if cursor_cell.is_some_and(|cell| cell.is_wide_char_spacer()) {
+                (col.saturating_sub(1), 2)
+            } else {
+                (col, 1)
+            };
 
         let mut origin_x = self.content_origin.x + px(visual_col as f32 * self.cell_w.as_f32());
         if self.shell_input_active() {
@@ -871,7 +840,7 @@ impl super::TerminalView {
                 let text_run = TextRun {
                     len: prefix.len(),
                     font: self.font.clone(),
-                    color: fg_of(&self.term),
+                    color: fg_of_content(&self.terminal_content),
                     background_color: None,
                     underline: None,
                     strikethrough: None,

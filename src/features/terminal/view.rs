@@ -1,11 +1,11 @@
-//! 终端视图：gpui Entity，持有 alacritty_terminal::Term，自研 Canvas 渲染器。
+//! 终端视图：gpui Entity，持有 Zed 的 terminal core，自研 Canvas 渲染器。
 //!
 //! 数据流：
 //!  - 远端 → russh 读循环 → SessionEvent::Output → 本 Entity 的 drain 任务
-//!    → `parser.advance(&mut term, bytes)` → cx.notify() 触发重绘。
+//!    → `terminal.write_output(bytes)` → cx.notify() 触发重绘。
 //!  - 键盘 → on_key_down → 编码为字节 → input_tx → russh 写循环。
 //!
-//! Term 只在 gpui 主线程被触碰（drain 与 paint 都在主线程）。
+//! Zed terminal core 只在 gpui 主线程被触碰（drain 与 paint 都在主线程）。
 use std::cell::Cell as StdCell;
 use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
@@ -13,12 +13,16 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use alacritty_terminal::event::{Event, EventListener, WindowSize};
-use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Line};
+use alacritty_terminal::event::WindowSize;
+#[cfg(test)]
+use alacritty_terminal::event::{Event, EventListener};
+#[cfg(test)]
 use alacritty_terminal::term::ClipboardType;
+use alacritty_terminal::term::TermMode;
+#[cfg(test)]
 use alacritty_terminal::term::cell::Flags as CellFlags;
-use alacritty_terminal::term::{Config, Term, TermMode};
+#[cfg(test)]
+use alacritty_terminal::term::{Config, Term};
 use async_channel::{Receiver, Sender};
 use chrono::Local;
 use gpui::{
@@ -29,7 +33,9 @@ use gpui::{
     Subscription, SystemNotificationAction, SystemNotificationResponse, Task, TextRun, TouchPhase,
     UTF16Selection, Window, canvas, div, hsla, px,
 };
-use vte::ansi::{CursorShape, Processor, Rgb};
+use terminal as zed_terminal;
+#[cfg(test)]
+use vte::ansi::{Processor, Rgb};
 
 #[cfg(test)]
 use alacritty_terminal::term::Osc52;
@@ -117,8 +123,9 @@ fn default_local_shell_name() -> String {
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
 
-/// Events emitted by the terminal parser that require a UI/platform action.
-/// They are buffered because `EventListener::send_event` has no GPUI context.
+/// Compatibility events used by the legacy terminal unit tests.
+#[cfg(test)]
+#[allow(dead_code)]
 enum TerminalSideEffect {
     Bell,
     Title(String),
@@ -182,18 +189,107 @@ fn alternate_scroll_sequence(mode: TermMode, key: u8) -> [u8; 3] {
     }
 }
 
+/// Translate the public mode subset exposed by Zed's terminal core into the
+/// mode type used by Crossh's input encoder.
+pub(crate) fn alacritty_mode(content: &zed_terminal::Content) -> TermMode {
+    let mut mode = TermMode::empty();
+    let zed_mode = content.mode;
+    let mappings = [
+        (zed_terminal::Modes::APP_CURSOR, TermMode::APP_CURSOR),
+        (zed_terminal::Modes::APP_KEYPAD, TermMode::APP_KEYPAD),
+        (zed_terminal::Modes::SHOW_CURSOR, TermMode::SHOW_CURSOR),
+        (zed_terminal::Modes::LINE_WRAP, TermMode::LINE_WRAP),
+        (zed_terminal::Modes::ORIGIN, TermMode::ORIGIN),
+        (zed_terminal::Modes::INSERT, TermMode::INSERT),
+        (
+            zed_terminal::Modes::LINE_FEED_NEW_LINE,
+            TermMode::LINE_FEED_NEW_LINE,
+        ),
+        (zed_terminal::Modes::FOCUS_IN_OUT, TermMode::FOCUS_IN_OUT),
+        (
+            zed_terminal::Modes::ALTERNATE_SCROLL,
+            TermMode::ALTERNATE_SCROLL,
+        ),
+        (
+            zed_terminal::Modes::BRACKETED_PASTE,
+            TermMode::BRACKETED_PASTE,
+        ),
+        (zed_terminal::Modes::SGR_MOUSE, TermMode::SGR_MOUSE),
+        (zed_terminal::Modes::UTF8_MOUSE, TermMode::UTF8_MOUSE),
+        (zed_terminal::Modes::ALT_SCREEN, TermMode::ALT_SCREEN),
+        (
+            zed_terminal::Modes::MOUSE_REPORT_CLICK,
+            TermMode::MOUSE_REPORT_CLICK,
+        ),
+        (zed_terminal::Modes::MOUSE_DRAG, TermMode::MOUSE_DRAG),
+        (zed_terminal::Modes::MOUSE_MOTION, TermMode::MOUSE_MOTION),
+        (zed_terminal::Modes::VI, TermMode::VI),
+    ];
+    for (zed_flag, alacritty_flag) in mappings {
+        if zed_mode.contains(zed_flag) {
+            mode.insert(alacritty_flag);
+        }
+    }
+    mode
+}
+
+pub(crate) fn terminal_bounds_for_grid(
+    cols: usize,
+    rows: usize,
+    cell_width: Pixels,
+    line_height: Pixels,
+) -> zed_terminal::TerminalBounds {
+    zed_terminal::TerminalBounds::new(
+        line_height.max(px(1.)),
+        cell_width.max(px(1.)),
+        Bounds {
+            origin: Point::default(),
+            size: gpui::size(
+                cell_width.max(px(1.)) * cols as f32,
+                line_height.max(px(1.)) * rows as f32,
+            ),
+        },
+    )
+}
+
+impl TerminalView {
+    pub(crate) fn terminal_mode(&self) -> TermMode {
+        let mut mode = alacritty_mode(&self.terminal_content);
+        mode.insert(TermMode::from_bits_retain(
+            (self.kitty_keyboard_mode as u32) << 18,
+        ));
+        mode
+    }
+}
+
 type WindowSizeHandle = Arc<Mutex<WindowSize>>;
+#[cfg(test)]
 type SideEffectQueue = Arc<Mutex<VecDeque<TerminalSideEffect>>>;
 use super::input_encoding::*;
 
-/// alacritty EventListener：把终端模拟器需要回写的响应送回远端 PTY。
+pub(crate) fn terminal_queues_for_bridge(
+    cols: usize,
+    rows: usize,
+) -> (WindowSizeHandle, ProtocolResponseQueue) {
+    let window_size = Arc::new(Mutex::new(WindowSize {
+        num_lines: rows as u16,
+        num_cols: cols as u16,
+        cell_width: 8,
+        cell_height: (FONT_SIZE * 1.3) as u16,
+    }));
+    (window_size, Arc::new(Mutex::new(VecDeque::new())))
+}
+
+/// Compatibility listener used by the legacy terminal unit tests.
 #[derive(Clone)]
+#[cfg(test)]
 pub(crate) struct NoopListener {
     window_size: WindowSizeHandle,
     side_effects: SideEffectQueue,
     protocol_responses: ProtocolResponseQueue,
 }
 
+#[cfg(test)]
 impl Default for NoopListener {
     fn default() -> Self {
         Self {
@@ -209,6 +305,7 @@ impl Default for NoopListener {
     }
 }
 
+#[cfg(test)]
 impl NoopListener {
     fn for_bridge(
         cols: usize,
@@ -219,14 +316,8 @@ impl NoopListener {
         SideEffectQueue,
         ProtocolResponseQueue,
     ) {
-        let window_size = Arc::new(Mutex::new(WindowSize {
-            num_lines: rows as u16,
-            num_cols: cols as u16,
-            cell_width: 8,
-            cell_height: (FONT_SIZE * 1.3) as u16,
-        }));
+        let (window_size, protocol_responses) = terminal_queues_for_bridge(cols, rows);
         let side_effects = Arc::new(Mutex::new(VecDeque::new()));
-        let protocol_responses = Arc::new(Mutex::new(VecDeque::new()));
         (
             Self {
                 window_size: window_size.clone(),
@@ -258,6 +349,7 @@ impl NoopListener {
     }
 }
 
+#[cfg(test)]
 impl EventListener for NoopListener {
     fn send_event(&self, event: Event) {
         match event {
@@ -295,11 +387,13 @@ impl EventListener for NoopListener {
     }
 }
 
-/// 终端尺寸（用于构造 Term）。
+/// 终端尺寸（用于测试旧的渲染辅助函数）。
+#[cfg(test)]
 struct TermSize {
     cols: usize,
     rows: usize,
 }
+#[cfg(test)]
 impl alacritty_terminal::grid::Dimensions for TermSize {
     fn total_lines(&self) -> usize {
         self.rows
@@ -466,8 +560,10 @@ fn notification_state_for_tag(
 }
 
 pub struct TerminalView {
-    term: Term<NoopListener>,
-    parser: Processor,
+    zed_terminal: Entity<zed_terminal::Terminal>,
+    terminal_content: zed_terminal::Content,
+    terminal_total_lines: usize,
+    pending_terminal_output: Vec<u8>,
     input_tx: Sender<InputCmd>,
     pending_input: VecDeque<InputCmd>,
     pub state: ConnState,
@@ -484,7 +580,6 @@ pub struct TerminalView {
     /// canvas 在窗口坐标中的原点，用于把 GPUI 鼠标位置转换到终端网格。
     content_origin: Point<Pixels>,
     window_size: Arc<Mutex<WindowSize>>,
-    side_effects: Arc<Mutex<VecDeque<TerminalSideEffect>>>,
     protocol_responses: ProtocolResponseQueue,
     /// Local PTYs retain OSC 52 paste; remote sessions deny clipboard reads.
     is_local: bool,
@@ -514,6 +609,10 @@ pub struct TerminalView {
     urxvt_mouse: bool,
     /// xterm modifyOtherKeys level (0 means the legacy encoding is active).
     modify_other_keys: u8,
+    /// Kitty keyboard protocol state is not part of Zed's public `Modes` API,
+    /// so Crossh tracks the small keyboard-mode side channel separately.
+    kitty_keyboard_mode: u8,
+    kitty_keyboard_stack: Vec<u8>,
     /// GPUI focus state, used to avoid raising a notification for the active terminal.
     focused: bool,
     notifications_enabled: bool,
@@ -528,12 +627,12 @@ pub struct TerminalView {
     notification_state_order: VecDeque<String>,
     kitty_notification_expiry: HashMap<String, Task<()>>,
     notification_serial: u64,
-    _sync_timeout_task: Option<Task<()>>,
     _blink_task: Option<Task<()>>,
     /// 最近一帧检测到的 URL（用于点击跳转）。
     detected_urls: Vec<(usize, usize, usize, String)>,
     /// 终端行的旁路时间戳；绝不写入 PTY 或 alacritty 的字符网格。
     line_timestamps: TerminalTimestampState,
+    pending_timestamp: Option<String>,
     /// 由 OSC 标题序列设置的窗口标题。
     title: Option<String>,
     /// 本地 PTY 前台进程快照，用于生成动态 tab 标题。
@@ -736,6 +835,16 @@ impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.finish_expired_sync_update();
         self.flush_pending_input();
+        self.zed_terminal.update(cx, |terminal, terminal_cx| {
+            terminal.sync(window, terminal_cx);
+        });
+        let zed_terminal = self.zed_terminal.read(cx);
+        self.terminal_content = zed_terminal.last_content().clone();
+        self.terminal_total_lines = zed_terminal.total_lines();
+        if let Some(timestamp) = self.pending_timestamp.take() {
+            self.line_timestamps
+                .observe_content(&self.terminal_content, timestamp);
+        }
 
         // 诊断：如果 render 帧间隔异常大，说明主线程之前卡住了很久。
         let now = Instant::now();
@@ -803,7 +912,7 @@ impl Render for TerminalView {
         }
 
         // 捕获绘制所需的克隆。
-        let bg = bg_of(&self.term);
+        let bg = bg_of_content(&self.terminal_content);
         let font = self.font.clone();
         let font_size = self.font_size;
         let show_timestamps = self.show_timestamps;
@@ -816,7 +925,7 @@ impl Render for TerminalView {
         let context_menu_anchor = self.anchor_bounds.clone();
         let input_entity = entity.clone();
         let input_focus = focus.clone();
-        let default_fg = fg_of(&self.term);
+        let default_fg = fg_of_content(&self.terminal_content);
 
         let canvas_el = canvas(
             move |bounds, _window, cx| {
@@ -826,10 +935,13 @@ impl Render for TerminalView {
                         this.anchor_bounds.set(Some(bounds));
                         let terminal_bounds = terminal_bounds_for(bounds, show_timestamps);
                         this.content_origin = terminal_bounds.origin;
-                        this.maybe_resize(Size {
-                            w: terminal_bounds.size.width.as_f32(),
-                            h: terminal_bounds.size.height.as_f32(),
-                        });
+                        this.maybe_resize(
+                            Size {
+                                w: terminal_bounds.size.width.as_f32(),
+                                h: terminal_bounds.size.height.as_f32(),
+                            },
+                            _cx,
+                        );
                     });
                 }
                 bounds
@@ -892,14 +1004,17 @@ impl Render for TerminalView {
                     let (snapshot, ime_marked_text, shell_input, images, progress) = {
                         let this = t.read(cx);
                         let sel = this.sel_start.zip(this.sel_end);
-                        let cursor_style = this.term.cursor_style();
-                        let show_cur = this.term.mode().contains(TermMode::SHOW_CURSOR)
-                            && cursor_style.shape != CursorShape::Hidden
-                            && (!cursor_style.blinking || this.cursor_blink_on);
+                        let show_cur = this
+                            .terminal_content
+                            .mode
+                            .contains(zed_terminal::Modes::SHOW_CURSOR)
+                            && this.terminal_content.cursor.shape
+                                != zed_terminal::CursorShape::Hidden
+                            && this.cursor_blink_on;
                         let timestamps = if this.show_timestamps {
-                            this.line_timestamps.visible(&this.term)
+                            this.line_timestamps.visible_content(&this.terminal_content)
                         } else {
-                            vec![None; this.term.screen_lines()]
+                            vec![None; this.terminal_content.terminal_bounds.num_lines()]
                         };
                         let shell_input = this.shell_input_active().then(|| ShellInputRender {
                             text: this.shell_input_buffer.text().to_owned(),
@@ -907,7 +1022,13 @@ impl Render for TerminalView {
                             ime_marked_text: this.ime_marked_text.clone(),
                         });
                         (
-                            snapshot_visible(&this.term, sel, this.cols, show_cur, &timestamps),
+                            snapshot_visible_content(
+                                &this.terminal_content,
+                                sel,
+                                show_cur,
+                                &timestamps,
+                                this.terminal_total_lines,
+                            ),
                             if shell_input.is_some() {
                                 String::new()
                             } else {

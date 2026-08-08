@@ -3,7 +3,10 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use alacritty_terminal::term::{Osc52, TermMode};
+#[cfg(test)]
+use alacritty_terminal::term::Osc52;
+use alacritty_terminal::term::TermMode;
+use base64::Engine;
 use gpui::{Modifiers, MouseButton};
 
 pub(crate) const MAX_OSC52_CLIPBOARD_BYTES: usize = 1024 * 1024;
@@ -90,6 +93,7 @@ pub(crate) fn osc52_text_within_limit(text: &str) -> bool {
     text.len() <= MAX_OSC52_CLIPBOARD_BYTES
 }
 
+#[cfg(test)]
 pub(crate) fn osc52_mode(is_local: bool) -> Osc52 {
     if is_local {
         Osc52::CopyPaste
@@ -118,6 +122,17 @@ pub(crate) fn format_osc52_response(
     }
     let response = formatter(text);
     (response.len() <= MAX_OSC52_RESPONSE_BYTES).then(|| response.into_bytes())
+}
+
+pub(crate) fn format_osc52_response_for_selector(selector: u8, text: &str) -> Option<Vec<u8>> {
+    let formatter: Arc<dyn Fn(&str) -> String + Sync + Send + 'static> = Arc::new(move |text| {
+        format!(
+            "\x1b]52;{};{}\x07",
+            selector as char,
+            base64::engine::general_purpose::STANDARD.encode(text)
+        )
+    });
+    format_osc52_response(&formatter, text)
 }
 
 pub(crate) fn decode_hex_bytes(value: &[u8]) -> Option<Vec<u8>> {
@@ -187,6 +202,13 @@ pub(crate) fn encode_keystroke_with_options(
     let m = &ks.modifiers;
     let key = ks.key.as_str();
     let has_modifiers = m.shift || m.alt || m.control || m.platform;
+
+    // macOS Terminal convention: Command-L clears the current terminal view.
+    // Handle it before Kitty and modifyOtherKeys so application modes cannot
+    // turn it into a CSI key sequence.
+    if is_clear_screen_shortcut(ks) {
+        return Some(vec![0x0c]);
+    }
 
     if let Some(bytes) = encode_kitty_keystroke(ks, mode, event_type) {
         return Some(bytes);
@@ -851,6 +873,15 @@ pub(crate) fn is_shell_shortcut(ks: &gpui::Keystroke) -> bool {
         ks.key.as_str(),
         "w" | "t" | "tab" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
     )
+}
+
+pub(crate) fn is_clear_screen_shortcut(ks: &gpui::Keystroke) -> bool {
+    cfg!(target_os = "macos")
+        && ks.modifiers.platform
+        && !ks.modifiers.shift
+        && !ks.modifiers.alt
+        && !ks.modifiers.control
+        && ks.key == "l"
 }
 
 pub(crate) fn is_low_latency_shell_passthrough_key(ks: &gpui::Keystroke) -> bool {

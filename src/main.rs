@@ -1,6 +1,6 @@
 //! crossh —— 基于 gpui 的轻量 SSH 客户端。
 //!
-//! 常驻开发工具：复用 `~/.ssh/config`（只读），提供交互式终端（russh + alacritty_terminal）。
+//! 常驻开发工具：复用 `~/.ssh/config`（只读），提供交互式终端（russh + Zed terminal core）。
 //! SFTP 与端口转发为后续阶段（见 .kilo/plans）。
 
 mod app;
@@ -9,6 +9,7 @@ mod infrastructure;
 mod shared;
 
 use gpui::{App, KeyBinding, actions};
+use theme as zed_theme;
 
 rust_i18n::i18n!("locales", fallback = "en");
 
@@ -33,6 +34,9 @@ fn main() {
     app.run(move |cx: &mut App| {
         cx.set_app_identity("io.crossh.app", "Crossh");
         cx.init_colors();
+        // Zed terminal reads the global theme for color queries emitted by apps
+        // such as Vim while processing their output.
+        zed_theme::init(zed_theme::LoadThemes::JustBase, cx);
         features::settings::init(cx);
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
         app::open_main_window(cx);

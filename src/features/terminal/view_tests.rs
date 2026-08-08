@@ -1,6 +1,7 @@
 //! Terminal view behavior tests.
 
 use super::*;
+use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
 use async_channel::TrySendError;
 
@@ -353,6 +354,11 @@ fn encodes_control_and_printable_keys() {
     assert_eq!(
         encode_keystroke_with_mode(&keystroke("ctrl-@"), TermMode::NONE),
         Some(vec![0])
+    );
+    #[cfg(target_os = "macos")]
+    assert_eq!(
+        encode_keystroke_with_mode(&keystroke("cmd-l"), TermMode::REPORT_ALL_KEYS_AS_ESC),
+        Some(vec![0x0c])
     );
     assert_eq!(
         encode_keystroke_with_mode(&keystroke("alt-x"), TermMode::NONE),
