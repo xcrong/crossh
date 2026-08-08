@@ -417,9 +417,14 @@ impl super::TerminalView {
                     self.process_protocol_events(nested_events, cx, passthrough_depth + 1);
                     self.parser.advance(&mut self.term, &bytes);
                 }
-                ProtocolEvent::Reset
-                | ProtocolEvent::ClearImages
-                | ProtocolEvent::ScreenBufferSwitch(_) => {
+                ProtocolEvent::Reset => {
+                    self.images.clear();
+                    self.kitty_image_data.clear();
+                    self.kitty_image_numbers.clear();
+                    self.kitty_active_image_id = None;
+                    self.modify_other_keys = 0;
+                }
+                ProtocolEvent::ClearImages | ProtocolEvent::ScreenBufferSwitch(_) => {
                     self.images.clear();
                     self.kitty_image_data.clear();
                     self.kitty_image_numbers.clear();

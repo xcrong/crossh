@@ -601,6 +601,9 @@ fn parse_csi(payload: &[u8], final_byte: u8) -> Vec<ProtocolEvent> {
         if payload == b"?4" {
             return vec![ProtocolEvent::ModifyOtherKeysQuery];
         }
+        if matches!(payload, b">0" | b">0;0") {
+            return vec![ProtocolEvent::ModifyOtherKeys(0)];
+        }
         if payload == b">4" {
             return vec![ProtocolEvent::ModifyOtherKeys(0)];
         }
@@ -994,6 +997,14 @@ mod tests {
         assert_eq!(
             parser.feed(b"\x1b[>4;3m"),
             vec![ProtocolEvent::ModifyOtherKeys(3)]
+        );
+        assert_eq!(
+            parser.feed(b"\x1b[>4;0m\x1b[>0m\x1b[>0;0m"),
+            vec![
+                ProtocolEvent::ModifyOtherKeys(0),
+                ProtocolEvent::ModifyOtherKeys(0),
+                ProtocolEvent::ModifyOtherKeys(0),
+            ]
         );
     }
 
