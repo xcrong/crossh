@@ -6,12 +6,15 @@
 use std::collections::HashSet;
 
 use gpui::{
-    App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, Styled, Task, Window, div, px,
+    AnyElement, App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement,
+    Render, SharedString, StatefulInteractiveElement, Styled, Task, Window, div, px,
 };
 
+use crate::features::connections::Connection;
+use crate::features::terminal::settings::TerminalSettings;
+use crate::features::workspace::pane::{PaneRisk, TerminalPaneInfo, WorkspacePane};
 use crate::infrastructure::config::ForwardSpec;
-use crate::infrastructure::ssh::{Connection, ForwardKind};
+use crate::infrastructure::ssh::ForwardKind;
 use crate::shared::i18n;
 use crate::shared::ui::{icons, theme};
 
@@ -23,6 +26,69 @@ pub struct ForwardPane {
     active: HashSet<(ForwardKind, ForwardSpec)>,
     messages: Vec<String>,
     _pending: Option<Task<()>>,
+}
+
+pub(crate) fn workspace_pane(entity: Entity<ForwardPane>) -> Box<dyn WorkspacePane> {
+    Box::new(ForwardWorkspacePane(entity))
+}
+
+struct ForwardWorkspacePane(Entity<ForwardPane>);
+
+impl WorkspacePane for ForwardWorkspacePane {
+    fn render(&self) -> AnyElement {
+        self.0.clone().into_any_element()
+    }
+
+    fn title(&self, _cx: &App) -> String {
+        crate::shared::terminal::remote_pane_title(&i18n::text("tab.forward"))
+    }
+
+    fn terminal_info(&self, _cx: &App) -> Option<TerminalPaneInfo> {
+        None
+    }
+
+    fn terminal_entity_id(&self) -> Option<gpui::EntityId> {
+        None
+    }
+
+    fn cwd(&self, _cx: &App) -> Option<String> {
+        None
+    }
+
+    fn is_command_running(&self, _cx: &App) -> bool {
+        false
+    }
+
+    fn toggle_low_latency(&self, _cx: &mut App) {}
+
+    fn run_command(&self, _command: &str, _cx: &mut App) {}
+
+    fn handle_system_notification_response(
+        &self,
+        _response: &gpui::SystemNotificationResponse,
+        _cx: &mut App,
+    ) -> Option<bool> {
+        None
+    }
+
+    fn request_focus(&self, _cx: &mut App) {}
+
+    fn request_close(&self, cx: &mut App) {
+        self.0.update(cx, |pane, cx| pane.stop_all(cx));
+    }
+
+    fn apply_terminal_settings(&self, _settings: TerminalSettings, _cx: &mut App) {}
+
+    fn notify_language(&self, cx: &mut App) {
+        self.0.update(cx, |_, cx| cx.notify());
+    }
+
+    fn risk(&self, cx: &App) -> PaneRisk {
+        PaneRisk {
+            active_forwards: self.0.read(cx).active_count(),
+            ..PaneRisk::default()
+        }
+    }
 }
 
 impl ForwardPane {

@@ -52,8 +52,8 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
     // 活跃目录优先，其余按「最近打开」顺序（未被记录的排在最后）。
     project_dirs.sort_by_key(|dir| {
         let recency = shell
-            .settings
-            .recent_local_dirs
+            .workspace_settings
+            .recent_dirs
             .iter()
             .position(|project_dir| project_dir == &dir.project_dir);
         (!dir.sessions.is_empty(), recency.unwrap_or(usize::MAX))

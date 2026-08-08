@@ -1,19 +1,21 @@
 //! Feature-level connection manager.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::{App, Entity};
 
 use crate::infrastructure::config::{HostConfig, SshConfig};
-use crate::infrastructure::ssh::{AuthChoice, Connection, ConnectionPool, ConnectionState};
+use crate::infrastructure::ssh::{AuthChoice, ConnectionState, connection_key};
 
+use super::entity::Connection;
 use super::host::{HostEntry, build_entries};
 
 /// Owns SSH configuration, navigation entries, and reusable connections.
 pub(crate) struct ConnectionManager {
     config: Arc<SshConfig>,
     entries: Vec<HostEntry>,
-    pool: ConnectionPool,
+    connections: HashMap<String, Entity<Connection>>,
 }
 
 impl ConnectionManager {
@@ -22,7 +24,7 @@ impl ConnectionManager {
         Self {
             config,
             entries,
-            pool: ConnectionPool::new(),
+            connections: HashMap::new(),
         }
     }
 
@@ -39,7 +41,7 @@ impl ConnectionManager {
     }
 
     pub(crate) fn pool_key(host: &HostConfig) -> String {
-        ConnectionPool::key_for(host)
+        connection_key(host)
     }
 
     pub(crate) fn acquire(
@@ -48,14 +50,29 @@ impl ConnectionManager {
         methods: Vec<AuthChoice>,
         cx: &mut App,
     ) -> Entity<Connection> {
-        self.pool.acquire(host, methods, self.config.clone(), cx)
+        let key = connection_key(&host);
+        if let Some(connection) = self.connections.get(&key) {
+            let state = connection.read(cx).state.clone();
+            if !matches!(state, ConnectionState::Closed | ConnectionState::Error(_)) {
+                return connection.clone();
+            }
+        }
+
+        let connection = Connection::open(host, methods, self.config.clone(), cx);
+        self.connections.insert(key, connection.clone());
+        connection
     }
 
     pub(crate) fn state_for_key(&self, key: &str, cx: &App) -> Option<ConnectionState> {
-        self.pool.state_for_key(key, cx)
+        self.connections
+            .get(key)
+            .map(|connection| connection.read(cx).state.clone())
     }
 
     pub(crate) fn pending_prompt_connection(&self, cx: &App) -> Option<Entity<Connection>> {
-        self.pool.pending_prompt_connection(cx)
+        self.connections
+            .values()
+            .find(|connection| connection.read(cx).pending_prompt.is_some())
+            .cloned()
     }
 }

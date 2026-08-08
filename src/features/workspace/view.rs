@@ -14,24 +14,15 @@ use gpui::{
 use crate::features::commands::{
     BackgroundTask, BackgroundTaskStatus, CommandRecord, local_scope, remote_scope,
 };
-use crate::features::forwarding::ForwardPane;
+use crate::features::connections::Connection;
 use crate::features::projects::GitStatus;
-use crate::features::sftp::SftpPane;
 use crate::features::terminal::{ConnState, TerminalView};
+use crate::features::workspace::pane::WorkspacePane;
 use crate::features::workspace::shell::AppShell;
-use crate::infrastructure::ssh::Connection;
 use crate::shared::i18n;
-use crate::shared::terminal::remote_pane_title;
 use crate::shared::ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crate::shared::ui::widgets::{LocalPathTooltip, ime_input_canvas, text_caret};
 use crate::shared::ui::{icons, theme};
-
-/// 一个标签内承载的面板。
-pub enum Pane {
-    Terminal(Entity<TerminalView>),
-    Sftp(Entity<SftpPane>),
-    Forward(Entity<ForwardPane>),
-}
 
 /// 一个远程终端/SFTP 标签。
 pub struct Tab {
@@ -39,7 +30,7 @@ pub struct Tab {
     pub target: String,
     pub host_key: String,
     pub connection: Entity<Connection>,
-    pub pane: Pane,
+    pub pane: Box<dyn WorkspacePane>,
 }
 
 pub type LocalSessionId = u64;
@@ -84,18 +75,12 @@ pub fn render_main(shell: &mut AppShell, cx: &mut Context<AppShell>) -> AnyEleme
     // 终端/SFTP 区。
     let mut content = div().flex_1().min_h_0().flex().relative();
     let active_pane = match shell.workspace.active_view {
-        Some(ActiveView::RemoteTab(idx)) => {
-            shell
-                .workspace
-                .sessions
-                .remote_tabs
-                .get(idx)
-                .map(|tab| match &tab.pane {
-                    Pane::Terminal(t) => t.clone().into_any_element(),
-                    Pane::Sftp(s) => s.clone().into_any_element(),
-                    Pane::Forward(f) => f.clone().into_any_element(),
-                })
-        }
+        Some(ActiveView::RemoteTab(idx)) => shell
+            .workspace
+            .sessions
+            .remote_tabs
+            .get(idx)
+            .map(|tab| tab.pane.render()),
         Some(ActiveView::LocalSession(session_id)) => shell
             .workspace
             .sessions
@@ -126,13 +111,10 @@ pub fn render_main(shell: &mut AppShell, cx: &mut Context<AppShell>) -> AnyEleme
                 .sessions
                 .remote_tabs
                 .get(idx)
-                .and_then(|tab| match &tab.pane {
-                    Pane::Terminal(terminal) => terminal
-                        .read(cx)
-                        .cwd
-                        .clone()
-                        .map(|cwd| (remote_scope(&tab.host_key, &cwd), cwd)),
-                    Pane::Sftp(_) | Pane::Forward(_) => None,
+                .and_then(|tab| {
+                    tab.pane
+                        .cwd(cx)
+                        .map(|cwd| (remote_scope(&tab.host_key, &cwd), cwd))
                 }),
             _ => None,
         };
@@ -1073,17 +1055,11 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                 } else {
                     container = container.hover(|style| style.bg(theme::raised()));
                 }
-                let (has_terminal, low_latency_enabled, low_latency_available) = match &tab.pane {
-                    Pane::Terminal(terminal) => {
-                        let terminal = terminal.read(cx);
-                        (
-                            true,
-                            terminal.low_latency_shell_input_enabled(),
-                            terminal.low_latency_shell_input_available(),
-                        )
-                    }
-                    Pane::Sftp(_) | Pane::Forward(_) => (false, false, false),
-                };
+                let (has_terminal, low_latency_enabled, low_latency_available) = tab
+                    .pane
+                    .terminal_info(cx)
+                    .map(|info| (true, info.low_latency_enabled, info.low_latency_available))
+                    .unwrap_or((false, false, false));
                 let container = container
                     .id(("remote-tab-container", idx))
                     .on_mouse_down(MouseButton::Right, {
@@ -1412,11 +1388,7 @@ fn tab_badge_color(state: &Option<ConnState>) -> gpui::Hsla {
 }
 
 fn tab_label(tab: &Tab, cx: &mut Context<AppShell>) -> String {
-    match &tab.pane {
-        Pane::Terminal(terminal) => terminal.read(cx).tab_title("Terminal"),
-        Pane::Sftp(_) => remote_pane_title(&i18n::text("tab.sftp")),
-        Pane::Forward(_) => remote_pane_title(&i18n::text("tab.forward")),
-    }
+    tab.pane.title(cx)
 }
 
 /// 把会话按项目归属目录重建目录视图：同一项目的会话合并，保留上一次的活动会话。

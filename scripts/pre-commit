@@ -9,6 +9,9 @@ set -eu
 
 cd "$(git rev-parse --show-toplevel)"
 
+echo "==> architecture checks"
+scripts/check-architecture.sh
+
 echo "==> cargo fmt --check"
 cargo fmt --check
 

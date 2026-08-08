@@ -16,6 +16,8 @@ use gpui::{
     px, rgb,
 };
 
+use crate::features::terminal::settings::TerminalSettings;
+use crate::features::workspace::pane::{PaneRisk, TerminalPaneInfo, WorkspacePane};
 use crate::infrastructure::ssh::{MAX_EDITOR_FILE_BYTES, RemoteEntry, SftpCmd, SftpEvent};
 use crate::shared::i18n;
 use crate::shared::ui::context_menu::{
@@ -28,6 +30,11 @@ use crate::shared::ui::widgets::{
 };
 use crate::shared::ui::{icons, theme};
 
+use super::logic::*;
+
+#[path = "view_input.rs"]
+mod view_input;
+
 /// 传输进度快照。
 #[derive(Clone, Debug, Default)]
 struct Progress {
@@ -35,37 +42,6 @@ struct Progress {
     transferred: u64,
     total: Option<u64>,
 }
-
-const SFTP_CHANNEL_UNAVAILABLE: &str = "sftp channel unavailable";
-
-fn sftp_channel_unavailable() -> String {
-    i18n::text("sftp.channel_unavailable")
-}
-
-const SUPPORTED_TEXT_EXTENSIONS: &[&str] = &[
-    "bash", "c", "cc", "conf", "config", "cpp", "css", "csv", "fish", "go", "h", "hh", "hpp",
-    "htm", "html", "ini", "java", "js", "json", "jsonl", "jsx", "kts", "kt", "log", "lua",
-    "markdown", "md", "php", "py", "rb", "rs", "sh", "sql", "swift", "toml", "ts", "tsx", "txt",
-    "xml", "yaml", "yml", "zsh",
-];
-
-const SUPPORTED_TEXT_FILENAMES: &[&str] = &[
-    ".editorconfig",
-    ".gitattributes",
-    ".gitignore",
-    "dockerfile",
-    "gemfile",
-    "hosts",
-    "license",
-    "makefile",
-    "passwd",
-    "profile",
-    "rakefile",
-    "readme",
-    "sshd_config",
-    "authorized_keys",
-    "known_hosts",
-];
 
 struct RemoteEditor {
     remote: String,
@@ -197,6 +173,69 @@ pub struct SftpPane {
     pending_path_input: Option<PendingPathInput>,
     /// 删除确认模态。
     confirm_delete: Option<ConfirmDelete>,
+}
+
+pub(crate) fn workspace_pane(entity: Entity<SftpPane>) -> Box<dyn WorkspacePane> {
+    Box::new(SftpWorkspacePane(entity))
+}
+
+struct SftpWorkspacePane(Entity<SftpPane>);
+
+impl WorkspacePane for SftpWorkspacePane {
+    fn render(&self) -> AnyElement {
+        self.0.clone().into_any_element()
+    }
+
+    fn title(&self, _cx: &App) -> String {
+        crate::shared::terminal::remote_pane_title(&i18n::text("tab.sftp"))
+    }
+
+    fn terminal_info(&self, _cx: &App) -> Option<TerminalPaneInfo> {
+        None
+    }
+
+    fn terminal_entity_id(&self) -> Option<gpui::EntityId> {
+        None
+    }
+
+    fn cwd(&self, _cx: &App) -> Option<String> {
+        None
+    }
+
+    fn is_command_running(&self, _cx: &App) -> bool {
+        false
+    }
+
+    fn toggle_low_latency(&self, _cx: &mut App) {}
+
+    fn run_command(&self, _command: &str, _cx: &mut App) {}
+
+    fn handle_system_notification_response(
+        &self,
+        _response: &gpui::SystemNotificationResponse,
+        _cx: &mut App,
+    ) -> Option<bool> {
+        None
+    }
+
+    fn request_focus(&self, _cx: &mut App) {}
+
+    fn request_close(&self, _cx: &mut App) {}
+
+    fn apply_terminal_settings(&self, _settings: TerminalSettings, _cx: &mut App) {}
+
+    fn notify_language(&self, cx: &mut App) {
+        self.0.update(cx, |_, cx| cx.notify());
+    }
+
+    fn risk(&self, cx: &App) -> PaneRisk {
+        let pane = self.0.read(cx);
+        PaneRisk {
+            sftp_writes: usize::from(pane.has_active_write()),
+            unsaved_editors: usize::from(pane.has_unsaved_changes()),
+            ..PaneRisk::default()
+        }
+    }
 }
 
 impl SftpPane {
@@ -1312,282 +1351,6 @@ fn printable_char(ks: &Keystroke) -> Option<char> {
     ks.key_char.as_ref().and_then(|s| s.chars().next())
 }
 
-fn is_supported_text_file(name: &str) -> bool {
-    let filename = std::path::Path::new(name)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or(name)
-        .to_ascii_lowercase();
-    if SUPPORTED_TEXT_FILENAMES.contains(&filename.as_str()) || filename.starts_with(".env") {
-        return true;
-    }
-    std::path::Path::new(&filename)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| SUPPORTED_TEXT_EXTENSIONS.contains(&extension))
-}
-
-fn previous_char_boundary(text: &str, cursor: usize) -> usize {
-    text[..cursor]
-        .char_indices()
-        .next_back()
-        .map(|(idx, _)| idx)
-        .unwrap_or(0)
-}
-
-fn next_char_boundary(text: &str, cursor: usize) -> usize {
-    text[cursor..]
-        .chars()
-        .next()
-        .map(|ch| cursor + ch.len_utf8())
-        .unwrap_or(cursor)
-}
-
-fn line_bounds(text: &str, cursor: usize) -> (usize, usize) {
-    let start = text[..cursor].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
-    let end = text[cursor..]
-        .find('\n')
-        .map(|idx| cursor + idx)
-        .unwrap_or(text.len());
-    (start, end)
-}
-
-/// ~/Downloads。
-fn downloads_dir() -> std::path::PathBuf {
-    std::env::var_os("HOME")
-        .map(|h| std::path::PathBuf::from(&h).join("Downloads"))
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-}
-
-/// 重名时追加 ` (1)`、` (2)`… 避免覆盖。
-fn unique_local_path(path: &std::path::Path) -> Option<std::path::PathBuf> {
-    if !path.exists() {
-        return Some(path.to_path_buf());
-    }
-    let stem = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let ext = path.extension().map(|s| s.to_string_lossy().to_string());
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    for i in 1..1000 {
-        let name = match &ext {
-            Some(e) => format!("{stem} ({i}).{e}"),
-            None => format!("{stem} ({i})"),
-        };
-        let candidate = parent.join(&name);
-        if !candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-fn try_send_command(tx: &Sender<SftpCmd>, command: SftpCmd) -> Result<(), &'static str> {
-    tx.try_send(command).map_err(|_| SFTP_CHANNEL_UNAVAILABLE)
-}
-
-#[derive(Clone, Copy)]
-enum SftpInputField {
-    Path,
-    Upload,
-}
-
-impl SftpPane {
-    fn active_input_field(&self, window: &Window) -> Option<SftpInputField> {
-        if self
-            .pending_path_input
-            .as_ref()
-            .is_some_and(|input| input.focus.is_focused(window))
-        {
-            Some(SftpInputField::Path)
-        } else if self.editor.is_none() && self.focus.is_focused(window) {
-            Some(SftpInputField::Upload)
-        } else {
-            None
-        }
-    }
-}
-
-impl EntityInputHandler for SftpPane {
-    fn text_for_range(
-        &mut self,
-        range: Range<usize>,
-        _adjusted_range: &mut Option<Range<usize>>,
-        window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<String> {
-        let text = match self.active_input_field(window)? {
-            SftpInputField::Path => &self.pending_path_input.as_ref()?.value,
-            SftpInputField::Upload => &self.upload_input,
-        };
-        Some(utf16_slice(text, range))
-    }
-
-    fn selected_text_range(
-        &mut self,
-        _ignore_disabled_input: bool,
-        window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<UTF16Selection> {
-        let text = match self.active_input_field(window)? {
-            SftpInputField::Path => &self.pending_path_input.as_ref()?.value,
-            SftpInputField::Upload => &self.upload_input,
-        };
-        let position = utf16_len(text);
-        Some(UTF16Selection {
-            range: position..position,
-            reversed: false,
-        })
-    }
-
-    fn marked_text_range(
-        &self,
-        window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<Range<usize>> {
-        match self.active_input_field(window)? {
-            SftpInputField::Path => {
-                let input = self.pending_path_input.as_ref()?;
-                (!input.ime_marked_text.is_empty()).then(|| {
-                    let start = utf16_len(&input.value);
-                    start..start + utf16_len(&input.ime_marked_text)
-                })
-            }
-            SftpInputField::Upload => (!self.upload_ime_marked_text.is_empty()).then(|| {
-                let start = utf16_len(&self.upload_input);
-                start..start + utf16_len(&self.upload_ime_marked_text)
-            }),
-        }
-    }
-
-    fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.active_input_field(window) {
-            Some(SftpInputField::Path) => {
-                if let Some(input) = &mut self.pending_path_input {
-                    input.ime_marked_text.clear();
-                }
-            }
-            Some(SftpInputField::Upload) => self.upload_ime_marked_text.clear(),
-            None => {}
-        }
-        window.invalidate_character_coordinates();
-        cx.notify();
-    }
-
-    fn replace_text_in_range(
-        &mut self,
-        replacement_range: Option<Range<usize>>,
-        text: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match self.active_input_field(window) {
-            Some(SftpInputField::Path) => {
-                if let Some(input) = &mut self.pending_path_input {
-                    let position = utf16_len(&input.value);
-                    replace_utf16_range(
-                        &mut input.value,
-                        replacement_range.unwrap_or(position..position),
-                        text,
-                    );
-                    input.ime_marked_text.clear();
-                }
-            }
-            Some(SftpInputField::Upload) => {
-                let position = utf16_len(&self.upload_input);
-                replace_utf16_range(
-                    &mut self.upload_input,
-                    replacement_range.unwrap_or(position..position),
-                    text,
-                );
-                self.upload_ime_marked_text.clear();
-            }
-            None => return,
-        }
-        window.invalidate_character_coordinates();
-        cx.notify();
-    }
-
-    fn replace_and_mark_text_in_range(
-        &mut self,
-        _range: Option<Range<usize>>,
-        new_text: &str,
-        _new_selected_range: Option<Range<usize>>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match self.active_input_field(window) {
-            Some(SftpInputField::Path) => {
-                if let Some(input) = &mut self.pending_path_input {
-                    input.ime_marked_text.clear();
-                    input.ime_marked_text.push_str(new_text);
-                }
-            }
-            Some(SftpInputField::Upload) => {
-                self.upload_ime_marked_text.clear();
-                self.upload_ime_marked_text.push_str(new_text);
-            }
-            None => return,
-        }
-        window.invalidate_character_coordinates();
-        cx.notify();
-    }
-
-    fn bounds_for_range(
-        &mut self,
-        range: Range<usize>,
-        element_bounds: Bounds<Pixels>,
-        window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<Bounds<Pixels>> {
-        match self.active_input_field(window)? {
-            SftpInputField::Path => {
-                let input = self.pending_path_input.as_ref()?;
-                let cursor = byte_index_for_utf16(&input.value, range.start);
-                Some(ime_caret_bounds(
-                    window,
-                    element_bounds,
-                    &input.value[..cursor],
-                    px(14.),
-                    px(12.),
-                    px(0.),
-                ))
-            }
-            SftpInputField::Upload => {
-                let cursor = byte_index_for_utf16(&self.upload_input, range.start);
-                Some(ime_caret_bounds(
-                    window,
-                    element_bounds,
-                    &self.upload_input[..cursor],
-                    px(12.),
-                    px(8.),
-                    px(0.),
-                ))
-            }
-        }
-    }
-
-    fn character_index_for_point(
-        &mut self,
-        _point: Point<Pixels>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<usize> {
-        None
-    }
-
-    fn text_length_utf16(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> Option<usize> {
-        match self.active_input_field(window)? {
-            SftpInputField::Path => self
-                .pending_path_input
-                .as_ref()
-                .map(|input| utf16_len(&input.value)),
-            SftpInputField::Upload => Some(utf16_len(&self.upload_input)),
-        }
-    }
-}
-
 impl Render for SftpPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.editor.is_some() {
@@ -2051,21 +1814,6 @@ impl Render for SftpPane {
         root = root.child(self.render_path_input_modal(window, cx));
         root = root.child(self.render_delete_confirm(cx));
         root.into_any_element()
-    }
-}
-
-fn format_size(b: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
-    if b >= GB {
-        format!("{:.1} GB", b as f64 / GB as f64)
-    } else if b >= MB {
-        format!("{:.1} MB", b as f64 / MB as f64)
-    } else if b >= KB {
-        format!("{:.1} KB", b as f64 / KB as f64)
-    } else {
-        format!("{b} B")
     }
 }
 

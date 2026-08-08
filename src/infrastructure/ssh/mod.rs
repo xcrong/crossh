@@ -9,10 +9,10 @@ pub mod session;
 pub mod sftp;
 
 pub use connection::{
-    Connection, ConnectionState, CredentialKind, ForwardKind, HostKeyDecision, PendingPrompt,
-    RemoteCommandStatus,
+    ConnEvent, ConnectionHandle, ConnectionState, CredentialKind, ForwardKind, HostKeyDecision,
+    RemoteCommandEvent, RemoteCommandStatus,
 };
-pub use pool::ConnectionPool;
+pub use pool::key_for as connection_key;
 pub use runtime::runtime as ssh_runtime;
 pub use session::AuthChoice;
 pub use sftp::{MAX_EDITOR_FILE_BYTES, RemoteEntry, SftpCmd, SftpEvent};

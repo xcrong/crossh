@@ -25,6 +25,9 @@ jobs:
       - name: Format check
         run: cargo fmt --check
 
+      - name: Architecture checks
+        run: scripts/check-architecture.sh
+
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 

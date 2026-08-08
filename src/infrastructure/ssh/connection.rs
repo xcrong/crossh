@@ -1,22 +1,14 @@
-//! 连接抽象：一条已认证的 SSH 会话，可向其请求多个 channel（终端/SFTP/转发）。
+//! Pure SSH connection engine: one authenticated session serving terminal,
+//! command, SFTP, and forwarding channels.
 //!
-//! 数据流：
-//!  - gpui 侧持 `Entity<Connection>`，通过 `open_terminal` 同步拿回一个
-//!    `(Sender<InputCmd>, Receiver<SessionEvent>)` 终端桥接。
-//!  - 后台 `run_connection` 任务：connect（含反应式主机密钥确认）→
-//!    逐个认证（加密密钥/密码按需向 UI 索要口令）→
-//!    `ConnEvent::Connected` → 进入 channel 服务循环，按 `ConnCmd` 开 channel 并派发 relay。
-//!  - 生命周期：channel 引用计数；全部关闭或 gpui 释放 Connection 时 disconnect。
-//!
-//! 反应式凭据/主机密钥：后台在需要时经 `ConnEvent::NeedHostKey` / `NeedCredential`
-//! 把 oneshot 回传通道交给 UI；UI 弹模态、用户决定后回传，后台继续。UI 不响应有超时兜底。
+//! The engine communicates through async channels. UI adapters may observe
+//! `ConnEvent` and answer prompt events, but this module has no UI dependency.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_channel::{Receiver, Sender};
-use gpui::{App, AppContext, Entity, Task};
 use russh::client::{self, Handle};
 use russh::keys;
 use russh::keys::ssh_key::PrivateKey;
@@ -57,7 +49,7 @@ pub enum CredentialKind {
     Password,
 }
 
-/// 发往连接任务的命令（gpui → 后台）。
+/// Commands sent to the connection task.
 pub enum ConnCmd {
     /// 开一个终端 channel。`input_rx`/`event_tx` 由调用方创建并移交，
     /// 后台在其上驱动 relay；调用方保留对应的 `input_tx`/`event_rx`。
@@ -93,7 +85,6 @@ pub enum ConnCmd {
         kind: ForwardKind,
     },
     /// 主动断开。
-    #[allow(dead_code)]
     Shutdown,
 }
 
@@ -105,7 +96,7 @@ pub enum ForwardKind {
     Dynamic,
 }
 
-/// 连接级事件（后台 → gpui）。
+/// Connection events emitted by the background task.
 pub enum ConnEvent {
     /// TCP+KEX+认证完成，可开 channel。
     Connected,
@@ -146,16 +137,6 @@ pub struct RemoteCommandEvent {
     pub exit_code: Option<i32>,
 }
 
-/// 一条 SSH 连接（gpui Entity）。
-pub struct Connection {
-    cmd_tx: Sender<ConnCmd>,
-    pub state: ConnectionState,
-    /// 后台请求 UI 决定的弹窗（主机密钥确认 / 凭据输入）。None = 无待处理。
-    pub pending_prompt: Option<PendingPrompt>,
-    next_command_id: u64,
-    _drain: Option<Task<()>>,
-}
-
 /// SSH connection lifecycle state shared by infrastructure and feature views.
 #[derive(Default, Clone, Debug, PartialEq)]
 pub enum ConnectionState {
@@ -166,31 +147,20 @@ pub enum ConnectionState {
     Closed,
 }
 
-/// UI 待处理的请求（由后台经 ConnEvent 触发，主线程 drain 写入）。
-pub enum PendingPrompt {
-    HostKey {
-        host: String,
-        port: u16,
-        key_type: String,
-        fingerprint: String,
-        changed: bool,
-        reply: Option<oneshot::Sender<HostKeyDecision>>,
-    },
-    Credential {
-        kind: CredentialKind,
-        prompt: String,
-        reply: Option<oneshot::Sender<Option<String>>>,
-    },
+/// Handle for issuing commands to a background SSH connection.
+pub struct ConnectionHandle {
+    cmd_tx: Sender<ConnCmd>,
+    next_command_id: u64,
 }
 
-impl Connection {
-    /// 立即在后台发起连接；返回的 Entity 可用于 `open_terminal`。
-    pub fn open(
+impl ConnectionHandle {
+    /// Start the background connection task and return its command handle and
+    /// event receiver. Prompt replies remain pure channel messages.
+    pub fn start(
         host: HostConfig,
         methods: Vec<AuthChoice>,
         ssh_config: Arc<crate::infrastructure::config::SshConfig>,
-        cx: &mut App,
-    ) -> Entity<Self> {
+    ) -> (Self, Receiver<ConnEvent>) {
         let (cmd_tx, cmd_rx) = async_channel::bounded::<ConnCmd>(64);
         let (event_tx, event_rx) = async_channel::bounded::<ConnEvent>(64);
 
@@ -206,75 +176,26 @@ impl Connection {
             }
         });
 
-        let entity = cx.new(|_cx| Self {
-            cmd_tx,
-            state: ConnectionState::Connecting,
-            pending_prompt: None,
-            next_command_id: 1,
-            _drain: None,
-        });
-
-        // 主线程 drain ConnEvent，更新连接状态 / 弹出待处理请求。
-        let weak = entity.downgrade();
-        let drain = cx.spawn(async move |cx| {
-            while let Ok(ev) = event_rx.recv().await {
-                let ok = weak.update(cx, |this, cx| {
-                    match ev {
-                        ConnEvent::Connected => this.state = ConnectionState::Connected,
-                        ConnEvent::Error(e) => this.state = ConnectionState::Error(e),
-                        ConnEvent::Closed => this.state = ConnectionState::Closed,
-                        ConnEvent::NeedHostKey {
-                            host,
-                            port,
-                            key_type,
-                            fingerprint,
-                            changed,
-                            reply,
-                        } => {
-                            this.pending_prompt = Some(PendingPrompt::HostKey {
-                                host,
-                                port,
-                                key_type,
-                                fingerprint,
-                                changed,
-                                reply: Some(reply),
-                            });
-                        }
-                        ConnEvent::NeedCredential {
-                            kind,
-                            prompt,
-                            reply,
-                        } => {
-                            this.pending_prompt = Some(PendingPrompt::Credential {
-                                kind,
-                                prompt,
-                                reply: Some(reply),
-                            });
-                        }
-                    }
-                    cx.notify();
-                });
-                if ok.is_err() {
-                    break;
-                }
-            }
-        });
-        entity.update(cx, |this, _cx| this._drain = Some(drain));
-        entity
+        (
+            Self {
+                cmd_tx,
+                next_command_id: 1,
+            },
+            event_rx,
+        )
     }
 
-    /// 请求开一个终端 channel，返回 per-terminal 桥接。
-    /// 同步返回：命令排队等连接 Ready 后处理；调用方 drain `event_rx` 即可。
+    /// Request a terminal channel and return its bridge.
     pub fn open_terminal(
         &self,
         cols: u16,
         rows: u16,
     ) -> (Sender<InputCmd>, Receiver<SessionEvent>) {
-        // 鼠标移动和复杂 TUI 的按键可能在一帧内产生大量小输入；容量太小会让
-        // UI 侧的非阻塞发送丢事件。TerminalView 仍会在满载时保留待发队列。
+        // Mouse motion and complex TUIs can produce many small writes per
+        // frame; keep enough capacity to absorb short bursts.
         let (input_tx, input_rx) = async_channel::bounded::<InputCmd>(1024);
-        // 高刷新率 TUI 会连续产生许多小块输出；稍大的队列可吸收一帧内的
-        // 输出突发，UI drain 会按批次消费，避免远端读循环被短暂反压。
+        // High-refresh TUIs produce many small output chunks; a larger queue
+        // absorbs bursts without applying short-lived backpressure to SSH.
         let (event_tx, event_rx) = async_channel::bounded::<SessionEvent>(256);
         let _ = self.cmd_tx.try_send(ConnCmd::OpenTerminal {
             cols,
@@ -317,13 +238,12 @@ impl Connection {
         let _ = self.cmd_tx.try_send(ConnCmd::StopCommand { id });
     }
 
-    /// 主动断开。
-    #[allow(dead_code)]
+    /// Disconnect the background connection.
     pub fn shutdown(&self) {
         let _ = self.cmd_tx.try_send(ConnCmd::Shutdown);
     }
 
-    /// 请求开一个 SFTP 工作器，返回 per-pane 桥接。
+    /// Request an SFTP worker and return its bridge.
     pub fn open_sftp(&self) -> (Sender<SftpCmd>, Receiver<SftpEvent>) {
         let (cmd_tx, cmd_rx) = async_channel::bounded::<SftpCmd>(64);
         let (event_tx, event_rx) = async_channel::bounded::<SftpEvent>(64);
@@ -331,7 +251,7 @@ impl Connection {
         (cmd_tx, event_rx)
     }
 
-    /// 启动一条端口转发。返回后台回执（Ok 或 Err 字符串）。
+    /// Start a port forward and return its asynchronous result.
     pub fn start_forward(
         &self,
         spec: crate::infrastructure::config::ForwardSpec,
@@ -346,33 +266,13 @@ impl Connection {
         rx
     }
 
-    /// 停止一条端口转发。
+    /// Stop a port forward.
     pub fn stop_forward(
         &self,
         spec: crate::infrastructure::config::ForwardSpec,
         kind: ForwardKind,
     ) {
         let _ = self.cmd_tx.try_send(ConnCmd::StopForward { spec, kind });
-    }
-
-    /// UI 回传主机密钥决定并清空待处理请求。
-    pub fn resolve_host_key(&mut self, decision: HostKeyDecision) {
-        if let Some(PendingPrompt::HostKey { reply, .. }) = &mut self.pending_prompt
-            && let Some(tx) = reply.take()
-        {
-            let _ = tx.send(decision);
-        }
-        self.pending_prompt = None;
-    }
-
-    /// UI 回传凭据（None = 取消）并清空待处理请求。
-    pub fn resolve_credential(&mut self, value: Option<String>) {
-        if let Some(PendingPrompt::Credential { reply, .. }) = &mut self.pending_prompt
-            && let Some(tx) = reply.take()
-        {
-            let _ = tx.send(value);
-        }
-        self.pending_prompt = None;
     }
 }
 

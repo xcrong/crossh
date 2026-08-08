@@ -10,8 +10,9 @@ use gpui::{
     TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions, div, px,
 };
 
+use crate::features::settings::{self, SettingsSnapshot};
 use crate::features::workspace::AppShell;
-use crate::shared::i18n::{self, AppSettings, LanguagePreference};
+use crate::shared::i18n::{self, LanguagePreference};
 use crate::shared::ui::widgets::LocalPathTooltip;
 use crate::shared::ui::{icons, theme};
 
@@ -38,10 +39,17 @@ impl SettingsWindow {
         }
     }
 
-    fn shell_settings(&self, cx: &App) -> AppSettings {
+    fn shell_settings(&self, cx: &App) -> SettingsSnapshot {
         match self.shell.upgrade() {
-            Some(shell) => shell.read(cx).settings.clone(),
-            None => i18n::settings(cx),
+            Some(shell) => {
+                let shell = shell.read(cx);
+                SettingsSnapshot {
+                    language: shell.language_preference,
+                    terminal: shell.terminal_settings.clone(),
+                    workspace: shell.workspace_settings.clone(),
+                }
+            }
+            None => settings::load(),
         }
     }
 
@@ -61,7 +69,7 @@ impl SettingsWindow {
 
     fn render_general_settings(
         &self,
-        settings: &AppSettings,
+        settings: &SettingsSnapshot,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let mut languages = div().flex().flex_row().gap_1().flex_wrap().justify_end();
@@ -94,7 +102,7 @@ impl SettingsWindow {
             languages = languages.child(option);
         }
 
-        let recent_dirs_max = settings.recent_local_dirs_max;
+        let recent_dirs_max = settings.workspace.recent_dirs_max;
         let recent_dirs_control = div()
             .flex()
             .items_center()
@@ -106,7 +114,8 @@ impl SettingsWindow {
                 cx.listener(|this, _ev, _window, cx| {
                     let max = this
                         .shell_settings(cx)
-                        .recent_local_dirs_max
+                        .workspace
+                        .recent_dirs_max
                         .saturating_sub(1);
                     this.write_to_shell(cx, |shell, cx| shell.set_recent_dirs_max(max, cx));
                 }),
@@ -131,7 +140,7 @@ impl SettingsWindow {
                 icons::IconName::Plus,
                 i18n::text("settings.recent_dirs"),
                 cx.listener(|this, _ev, _window, cx| {
-                    let max = this.shell_settings(cx).recent_local_dirs_max + 1;
+                    let max = this.shell_settings(cx).workspace.recent_dirs_max + 1;
                     this.write_to_shell(cx, |shell, cx| shell.set_recent_dirs_max(max, cx));
                 }),
             ))
@@ -165,7 +174,7 @@ impl SettingsWindow {
 
     fn render_terminal_settings(
         &self,
-        settings: &AppSettings,
+        settings: &SettingsSnapshot,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let mut timestamps = div()
@@ -177,12 +186,12 @@ impl SettingsWindow {
             .items_center()
             .rounded_full()
             .cursor_pointer()
-            .bg(if settings.show_timestamps {
+            .bg(if settings.terminal.show_timestamps {
                 theme::accent()
             } else {
                 theme::border_strong()
             });
-        timestamps = if settings.show_timestamps {
+        timestamps = if settings.terminal.show_timestamps {
             timestamps.justify_end()
         } else {
             timestamps.justify_start()
@@ -207,12 +216,12 @@ impl SettingsWindow {
             .items_center()
             .rounded_full()
             .cursor_pointer()
-            .bg(if settings.terminal_notifications {
+            .bg(if settings.terminal.notifications_enabled {
                 theme::accent()
             } else {
                 theme::border_strong()
             });
-        notifications = if settings.terminal_notifications {
+        notifications = if settings.terminal.notifications_enabled {
             notifications.justify_end()
         } else {
             notifications.justify_start()
@@ -228,7 +237,7 @@ impl SettingsWindow {
             this.write_to_shell(cx, |shell, cx| shell.toggle_terminal_notifications(cx));
         }));
 
-        let font_size = settings.terminal_font_size.round() as u32;
+        let font_size = settings.terminal.font_size.round() as u32;
         let font_control = div()
             .flex()
             .items_center()
@@ -268,7 +277,7 @@ impl SettingsWindow {
         let scrollback_values = [500usize, 1000, 5000, 10000];
         let mut scrollback = div().flex().flex_row().gap_1().flex_wrap().justify_end();
         for value in scrollback_values {
-            let selected = value == settings.terminal_scrollback;
+            let selected = value == settings.terminal.scrollback;
             let option = div()
                 .id(format!("settings-scrollback-{value}"))
                 .h(px(30.))

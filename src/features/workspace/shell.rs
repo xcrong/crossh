@@ -28,22 +28,27 @@ use crate::features::commands::{
     BackgroundTaskEvent, BackgroundTaskManager, BackgroundTaskStatus, CommandHistory, local_scope,
     remote_scope,
 };
-use crate::features::connections::{ConnectionManager, HostEntry};
+use crate::features::connections::{Connection, ConnectionManager, HostEntry, PendingPrompt};
 use crate::features::connections::{PromptDisplay, render_prompt_modal};
 use crate::features::forwarding::ForwardPane;
 use crate::features::projects::inspect;
+use crate::features::settings::{self, SettingsSnapshot};
 use crate::features::sftp::SftpPane;
+use crate::features::terminal::settings::{
+    MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK, TerminalSettings,
+};
 use crate::features::terminal::{ConnState, TerminalEvent, TerminalView};
 use crate::features::workspace::registry::WorkspaceState;
+use crate::features::workspace::settings::WorkspaceSettings;
 use crate::features::workspace::sidebar::render_sidebar;
 use crate::features::workspace::view::{
-    ActiveView, LocalDir, LocalSession, LocalSessionId, Pane, Tab, rebuild_local_dirs, render_main,
+    ActiveView, LocalDir, LocalSession, LocalSessionId, Tab, rebuild_local_dirs, render_main,
     render_quick_command_editor,
 };
 use crate::infrastructure::config::SshConfig;
 use crate::infrastructure::local;
-use crate::infrastructure::ssh::{Connection, HostKeyDecision, PendingPrompt, RemoteCommandStatus};
-use crate::shared::i18n::{self, AppSettings, LanguagePreference};
+use crate::infrastructure::ssh::{HostKeyDecision, RemoteCommandStatus};
+use crate::shared::i18n::{self, LanguagePreference};
 use crate::shared::ui::context_menu::{
     ContextMenuState, MenuEntry, ShellMenuAction, render_context_menu,
 };
@@ -53,6 +58,10 @@ use crate::shared::ui::widgets::{
     utf16_offset_for_byte, utf16_slice,
 };
 
+use super::command_editor::QuickCommandEditor;
+#[cfg(test)]
+use super::command_editor::{next_char_boundary, previous_char_boundary, selection_bounds};
+
 const GIT_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy)]
@@ -61,104 +70,13 @@ enum ExitIntent {
     CloseWindow,
 }
 
-pub(crate) struct QuickCommandEditor {
-    pub(crate) scope: String,
-    pub(crate) original: String,
-    pub(crate) value: String,
-    pub(crate) cursor: usize,
-    pub(crate) anchor: Option<usize>,
-    pub(crate) scroll: ScrollHandle,
-    pub(crate) focus: FocusHandle,
-    pub(crate) ime_marked_text: String,
-    pub(crate) ime_replacement: Option<(usize, usize)>,
-}
-
-impl QuickCommandEditor {
-    pub(crate) fn selection(&self) -> Option<(usize, usize)> {
-        selection_bounds(self.anchor, self.cursor)
-    }
-
-    fn replace_selection(&mut self, text: &str) {
-        let (start, end) = self.selection().unwrap_or((self.cursor, self.cursor));
-        self.value.replace_range(start..end, text);
-        self.cursor = start + text.len();
-        self.anchor = None;
-    }
-
-    fn backspace(&mut self) {
-        if let Some((start, end)) = self.selection() {
-            self.value.replace_range(start..end, "");
-            self.cursor = start;
-            self.anchor = None;
-            return;
-        }
-        let start = previous_char_boundary(&self.value, self.cursor);
-        if start != self.cursor {
-            self.value.replace_range(start..self.cursor, "");
-            self.cursor = start;
-        }
-    }
-
-    fn delete(&mut self) {
-        if let Some((start, end)) = self.selection() {
-            self.value.replace_range(start..end, "");
-            self.cursor = start;
-            self.anchor = None;
-            return;
-        }
-        let end = next_char_boundary(&self.value, self.cursor);
-        if end != self.cursor {
-            self.value.replace_range(self.cursor..end, "");
-        }
-    }
-
-    fn move_horizontal(&mut self, direction: i8, extend: bool) {
-        if !extend && let Some((start, end)) = self.selection() {
-            self.cursor = if direction < 0 { start } else { end };
-            self.anchor = None;
-            return;
-        }
-
-        if extend && self.anchor.is_none() {
-            self.anchor = Some(self.cursor);
-        }
-        self.cursor = if direction < 0 {
-            previous_char_boundary(&self.value, self.cursor)
-        } else {
-            next_char_boundary(&self.value, self.cursor)
-        };
-        if !extend {
-            self.anchor = None;
-        }
-    }
-
-    fn move_to_boundary(&mut self, end: bool, extend: bool) {
-        if extend && self.anchor.is_none() {
-            self.anchor = Some(self.cursor);
-        }
-        self.cursor = if end { self.value.len() } else { 0 };
-        if !extend {
-            self.anchor = None;
-        }
-    }
-
-    fn select_all(&mut self) {
-        self.anchor = Some(0);
-        self.cursor = self.value.len();
-    }
-
-    fn selected_text(&self) -> Option<String> {
-        self.selection()
-            .map(|(start, end)| self.value[start..end].to_string())
-    }
-}
-
 struct ActiveCommandContext {
-    terminal: Entity<TerminalView>,
     scope: String,
     cwd: String,
     owner: String,
     connection: Option<Entity<Connection>>,
+    remote_tab: Option<usize>,
+    local_session: Option<LocalSessionId>,
 }
 
 fn local_background_owner(session_id: LocalSessionId) -> String {
@@ -170,37 +88,7 @@ fn remote_background_owner(terminal_id: EntityId) -> String {
 }
 
 fn remote_tab_background_owner(tab: &Tab) -> Option<String> {
-    match &tab.pane {
-        Pane::Terminal(terminal) => Some(remote_background_owner(terminal.entity_id())),
-        Pane::Sftp(_) | Pane::Forward(_) => None,
-    }
-}
-
-fn previous_char_boundary(text: &str, cursor: usize) -> usize {
-    text[..cursor]
-        .char_indices()
-        .next_back()
-        .map(|(index, _)| index)
-        .unwrap_or(0)
-}
-
-fn next_char_boundary(text: &str, cursor: usize) -> usize {
-    text[cursor..]
-        .chars()
-        .next()
-        .map(|ch| cursor + ch.len_utf8())
-        .unwrap_or(cursor)
-}
-
-fn selection_bounds(anchor: Option<usize>, cursor: usize) -> Option<(usize, usize)> {
-    let anchor = anchor?;
-    (anchor != cursor).then_some({
-        if anchor < cursor {
-            (anchor, cursor)
-        } else {
-            (cursor, anchor)
-        }
-    })
+    tab.pane.terminal_entity_id().map(remote_background_owner)
 }
 
 #[derive(Default)]
@@ -266,7 +154,8 @@ pub struct AppShell {
     pub(crate) language_preference: LanguagePreference,
     /// 当前打开的右键上下文菜单（None = 未打开）。
     pub(crate) context_menu: Option<ContextMenuState<ShellMenuAction>>,
-    pub(crate) settings: AppSettings,
+    pub(crate) terminal_settings: TerminalSettings,
+    pub(crate) workspace_settings: WorkspaceSettings,
     /// 侧栏宽度与拖动状态；只影响布局，不改变导航状态。
     pub(crate) sidebar_width: Rc<Cell<f32>>,
     pub(crate) sidebar_dragging: Rc<Cell<bool>>,
@@ -297,11 +186,13 @@ impl AppShell {
             }
         };
         let config = Arc::new(config);
-        let settings = i18n::settings(cx);
-        let language_preference = settings.language;
+        let snapshot = settings::load();
+        let language_preference = snapshot.language;
+        let terminal_settings = snapshot.terminal;
+        let workspace_settings = snapshot.workspace;
         // 启动时把最近的本地目录记录恢复到侧栏 Local 分组（无活动会话，点击即重开）。
         let mut local_dirs = BTreeMap::new();
-        for cwd in &settings.recent_local_dirs {
+        for cwd in &workspace_settings.recent_dirs {
             if cwd.is_dir() {
                 local_dirs.insert(
                     normalize_local_cwd(cwd.clone()),
@@ -331,7 +222,8 @@ impl AppShell {
             last_had_prompt: false,
             language_preference,
             context_menu: None,
-            settings,
+            terminal_settings,
+            workspace_settings,
             sidebar_width: Rc::new(Cell::new(theme::SIDEBAR_WIDTH)),
             sidebar_dragging: Rc::new(Cell::new(false)),
             sidebar_scroll: gpui::ScrollHandle::new(),
@@ -382,7 +274,7 @@ impl AppShell {
                     (
                         idx,
                         tab.host_key.as_str(),
-                        matches!(&tab.pane, Pane::Terminal(_)),
+                        tab.pane.terminal_entity_id().is_some(),
                     )
                 }),
             host_key,
@@ -401,7 +293,14 @@ impl AppShell {
         // 复用或新建连接，开一个终端 channel。
         let conn = self.connections.acquire(resolved, methods, cx);
         let (input_tx, event_rx) = conn.read(cx).open_terminal(100, 30);
-        let terminal = TerminalView::from_bridge(input_tx, event_rx, 100, 30, cx);
+        let terminal = TerminalView::from_bridge(
+            input_tx,
+            event_rx,
+            100,
+            30,
+            self.terminal_settings.clone(),
+            cx,
+        );
         let event_host_key = host_key.clone();
         let subscription = cx.subscribe(&terminal, move |this, terminal, event, cx| match event {
             TerminalEvent::Closed => {
@@ -426,7 +325,7 @@ impl AppShell {
             target,
             host_key,
             connection: conn,
-            pane: Pane::Terminal(terminal),
+            pane: crate::features::terminal::view::workspace_pane(terminal),
         });
         self.workspace.active_view = Some(ActiveView::RemoteTab(
             self.workspace.sessions.remote_tabs.len() - 1,
@@ -450,7 +349,7 @@ impl AppShell {
             target: entry.alias.clone(),
             host_key,
             connection: conn.clone(),
-            pane: Pane::Sftp(pane),
+            pane: crate::features::sftp::view::workspace_pane(pane),
         });
         self.workspace.active_view = Some(ActiveView::RemoteTab(
             self.workspace.sessions.remote_tabs.len() - 1,
@@ -472,7 +371,7 @@ impl AppShell {
             target: entry.alias.clone(),
             host_key,
             connection: conn,
-            pane: Pane::Forward(pane),
+            pane: crate::features::forwarding::view::workspace_pane(pane),
         });
         self.workspace.active_view = Some(ActiveView::RemoteTab(
             self.workspace.sessions.remote_tabs.len() - 1,
@@ -493,8 +392,15 @@ impl AppShell {
         self.remember_local_dir(&project_dir, cx);
         let cwd_text = cwd.to_string_lossy().to_string();
         let (input_tx, event_rx) = local::open_terminal(cwd.clone(), 100, 30);
-        let terminal =
-            TerminalView::from_local_bridge(input_tx, event_rx, 100, 30, cwd_text.clone(), cx);
+        let terminal = TerminalView::from_local_bridge(
+            input_tx,
+            event_rx,
+            100,
+            30,
+            cwd_text.clone(),
+            self.terminal_settings.clone(),
+            cx,
+        );
         let session_id = self.workspace.sessions.allocate_local_session_id();
         log::info!("local session {session_id} opened for {}", cwd_text);
         // shell 内 `cd` 会经 OSC 7 上报新目录；订阅后更新 cwd 和 Git 状态，
@@ -615,7 +521,7 @@ impl AppShell {
             }
             next_session = dir.active_session;
             // 仍被「最近本地目录」记住的空目录保留在侧栏，等待下次点击重开。
-            dir.sessions.is_empty() && !self.settings.recent_local_dirs.contains(&cwd)
+            dir.sessions.is_empty() && !self.workspace_settings.recent_dirs.contains(&cwd)
         } else {
             false
         };
@@ -694,9 +600,13 @@ impl AppShell {
     }
 
     fn close_remote_terminal(&mut self, terminal_id: EntityId, cx: &mut Context<Self>) {
-        let Some(idx) = self.workspace.sessions.remote_tabs.iter().position(|tab| {
-            matches!(&tab.pane, Pane::Terminal(terminal) if terminal.entity_id() == terminal_id)
-        }) else {
+        let Some(idx) = self
+            .workspace
+            .sessions
+            .remote_tabs
+            .iter()
+            .position(|tab| tab.pane.terminal_entity_id() == Some(terminal_id))
+        else {
             return;
         };
         self.close_remote_tab(idx, cx);
@@ -707,29 +617,29 @@ impl AppShell {
         response: SystemNotificationResponse,
         cx: &mut Context<Self>,
     ) -> bool {
-        let mut terminals = Vec::new();
         for (index, tab) in self.workspace.sessions.remote_tabs.iter().enumerate() {
-            if let Pane::Terminal(terminal) = &tab.pane {
-                terminals.push((ActiveView::RemoteTab(index), terminal.clone()));
+            let Some(focus) = tab.pane.handle_system_notification_response(&response, cx) else {
+                continue;
+            };
+            if focus {
+                self.workspace.active_view = Some(ActiveView::RemoteTab(index));
+                tab.pane.request_focus(cx);
+                cx.notify();
             }
+            return true;
         }
         for (&session_id, session) in &self.workspace.sessions.local_sessions {
-            terminals.push((
-                ActiveView::LocalSession(session_id),
-                session.terminal.clone(),
-            ));
-        }
-
-        for (view, terminal) in terminals {
-            let handled = terminal.update(cx, |terminal, cx| {
+            let handled = session.terminal.update(cx, |terminal, cx| {
                 terminal.handle_system_notification_response(&response, cx)
             });
             let Some(focus) = handled else {
                 continue;
             };
             if focus {
-                self.workspace.active_view = Some(view);
-                terminal.update(cx, |terminal, _cx| terminal.request_focus());
+                self.workspace.active_view = Some(ActiveView::LocalSession(session_id));
+                session
+                    .terminal
+                    .update(cx, |terminal, _cx| terminal.request_focus());
                 cx.notify();
             }
             return true;
@@ -806,8 +716,8 @@ impl AppShell {
         match self.workspace.active_view? {
             ActiveView::LocalSession(session_id) => {
                 let session = self.workspace.sessions.local_sessions.get(&session_id)?;
-                let terminal = session.terminal.clone();
-                let cwd = terminal
+                let cwd = session
+                    .terminal
                     .read(cx)
                     .cwd
                     .clone()
@@ -815,27 +725,26 @@ impl AppShell {
                     .unwrap_or_else(|| session.cwd.clone());
                 let cwd = normalize_local_cwd(cwd);
                 Some(ActiveCommandContext {
-                    terminal,
                     scope: local_scope(&cwd),
                     cwd: cwd.to_string_lossy().to_string(),
                     owner: local_background_owner(session_id),
                     connection: None,
+                    remote_tab: None,
+                    local_session: Some(session_id),
                 })
             }
             ActiveView::RemoteTab(index) => {
                 let tab = self.workspace.sessions.remote_tabs.get(index)?;
-                let Pane::Terminal(terminal) = &tab.pane else {
-                    return None;
-                };
-                let terminal = terminal.clone();
-                let owner = remote_background_owner(terminal.entity_id());
-                let cwd = terminal.read(cx).cwd.clone()?;
+                let entity_id = tab.pane.terminal_entity_id()?;
+                let owner = remote_background_owner(entity_id);
+                let cwd = tab.pane.cwd(cx)?;
                 Some(ActiveCommandContext {
-                    terminal,
                     scope: remote_scope(&tab.host_key, &cwd),
                     cwd,
                     owner,
                     connection: Some(tab.connection.clone()),
+                    remote_tab: Some(index),
+                    local_session: None,
                 })
             }
         }
@@ -874,9 +783,17 @@ impl AppShell {
                 log::info!("started background command {id}");
             }
         } else {
-            context
-                .terminal
-                .update(cx, |terminal, _cx| terminal.run_command(&command));
+            if let Some(index) = context.remote_tab {
+                if let Some(tab) = self.workspace.sessions.remote_tabs.get(index) {
+                    tab.pane.run_command(&command, cx);
+                }
+            } else if let Some(session_id) = context.local_session
+                && let Some(session) = self.workspace.sessions.local_sessions.get(&session_id)
+            {
+                session
+                    .terminal
+                    .update(cx, |terminal, _cx| terminal.run_command(&command));
+            }
         }
         cx.notify();
     }
@@ -1283,21 +1200,13 @@ impl AppShell {
             }
         }
         for tab in &self.workspace.sessions.remote_tabs {
-            match &tab.pane {
-                Pane::Terminal(terminal) => {
-                    if terminal.read(cx).is_command_running() {
-                        risks.running_commands += 1;
-                    }
-                }
-                Pane::Sftp(sftp) => {
-                    let sftp = sftp.read(cx);
-                    risks.sftp_writes += usize::from(sftp.has_active_write());
-                    risks.unsaved_editors += usize::from(sftp.has_unsaved_changes());
-                }
-                Pane::Forward(forward) => {
-                    risks.active_forwards += forward.read(cx).active_count();
-                }
+            if tab.pane.is_command_running(cx) {
+                risks.running_commands += 1;
             }
+            let pane_risk = tab.pane.risk(cx);
+            risks.sftp_writes += pane_risk.sftp_writes;
+            risks.unsaved_editors += pane_risk.unsaved_editors;
+            risks.active_forwards += pane_risk.active_forwards;
         }
         risks
     }
@@ -1325,26 +1234,19 @@ impl AppShell {
             self.stop_background_task(id, cx);
         }
 
-        let mut terminals = self
+        let terminals = self
             .workspace
             .sessions
             .local_sessions
             .values()
             .map(|session| session.terminal.clone())
             .collect::<Vec<_>>();
-        let mut forwards = Vec::new();
+
         for tab in &self.workspace.sessions.remote_tabs {
-            match &tab.pane {
-                Pane::Terminal(terminal) => terminals.push(terminal.clone()),
-                Pane::Forward(forward) => forwards.push(forward.clone()),
-                Pane::Sftp(_) => {}
-            }
+            tab.pane.request_close(cx);
         }
         for terminal in terminals {
             terminal.update(cx, |terminal, _cx| terminal.request_close());
-        }
-        for forward in forwards {
-            forward.update(cx, |forward, cx| forward.stop_all(cx));
         }
         cx.notify();
     }
@@ -1483,14 +1385,9 @@ impl AppShell {
             .sessions
             .remote_tabs
             .get(idx)
-            .and_then(|tab| match &tab.pane {
-                Pane::Terminal(terminal) => Some(terminal.clone()),
-                Pane::Sftp(_) | Pane::Forward(_) => None,
-            });
-        if let Some(terminal) = terminal {
-            terminal.update(cx, |terminal, _cx| {
-                terminal.toggle_low_latency_shell_input();
-            });
+            .map(|tab| &tab.pane);
+        if let Some(pane) = terminal {
+            pane.toggle_low_latency(cx);
             cx.notify();
         }
     }
@@ -1559,86 +1456,73 @@ impl AppShell {
         cx.notify();
     }
 
-    pub(crate) fn apply_settings(&mut self, settings: AppSettings, cx: &mut Context<Self>) {
-        let settings = settings.normalized();
-        if self.settings == settings {
-            return;
-        }
-        let language_changed = self.language_preference != settings.language;
-        let language = settings.language;
-
-        for tab in &self.workspace.sessions.remote_tabs {
-            match &tab.pane {
-                Pane::Terminal(terminal) => {
-                    let terminal_settings = settings.clone();
-                    terminal.update(cx, |terminal, cx| {
-                        terminal.apply_settings(terminal_settings, cx)
-                    });
-                }
-                Pane::Sftp(pane) if language_changed => {
-                    pane.update(cx, |_, cx| cx.notify());
-                }
-                Pane::Forward(pane) if language_changed => {
-                    pane.update(cx, |_, cx| cx.notify());
-                }
-                Pane::Sftp(_) | Pane::Forward(_) => {}
-            }
-        }
-        for session in self.workspace.sessions.local_sessions.values() {
-            let terminal_settings = settings.clone();
-            session.terminal.update(cx, |terminal, cx| {
-                terminal.apply_settings(terminal_settings, cx)
-            });
-        }
-
-        i18n::set_settings(cx, settings.clone());
-        self.settings = settings;
-        self.language_preference = language;
-        cx.notify();
-    }
-
     pub(crate) fn set_language(&mut self, preference: LanguagePreference, cx: &mut Context<Self>) {
         if self.language_preference == preference {
             cx.notify();
             return;
         }
-        let mut settings = self.settings.clone();
-        settings.language = preference;
-        self.apply_settings(settings, cx);
+        i18n::set_language(cx, preference);
+        self.language_preference = preference;
+        for tab in &self.workspace.sessions.remote_tabs {
+            tab.pane.notify_language(cx);
+        }
+        self.persist_settings();
         cx.notify();
     }
 
     pub(crate) fn toggle_timestamps(&mut self, cx: &mut Context<Self>) {
-        let mut settings = self.settings.clone();
-        settings.show_timestamps = !settings.show_timestamps;
-        self.apply_settings(settings, cx);
+        let mut terminal = self.terminal_settings.clone();
+        terminal.show_timestamps = !terminal.show_timestamps;
+        self.apply_terminal_settings(terminal, cx);
     }
 
     pub(crate) fn toggle_terminal_notifications(&mut self, cx: &mut Context<Self>) {
-        let mut settings = self.settings.clone();
-        settings.terminal_notifications = !settings.terminal_notifications;
-        self.apply_settings(settings, cx);
+        let mut terminal = self.terminal_settings.clone();
+        terminal.notifications_enabled = !terminal.notifications_enabled;
+        self.apply_terminal_settings(terminal, cx);
     }
 
     pub(crate) fn adjust_font_size(&mut self, delta: f32, cx: &mut Context<Self>) {
-        let mut settings = self.settings.clone();
-        settings.terminal_font_size = (settings.terminal_font_size + delta)
+        let mut terminal = self.terminal_settings.clone();
+        terminal.font_size = (terminal.font_size + delta)
             .round()
-            .clamp(i18n::MIN_TERMINAL_FONT_SIZE, i18n::MAX_TERMINAL_FONT_SIZE);
-        self.apply_settings(settings, cx);
+            .clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
+        self.apply_terminal_settings(terminal, cx);
     }
 
     pub(crate) fn set_scrollback(&mut self, scrollback: usize, cx: &mut Context<Self>) {
-        let mut settings = self.settings.clone();
-        settings.terminal_scrollback = scrollback;
-        self.apply_settings(settings, cx);
+        let mut terminal = self.terminal_settings.clone();
+        terminal.scrollback = scrollback.clamp(MIN_SCROLLBACK, MAX_SCROLLBACK);
+        self.apply_terminal_settings(terminal, cx);
     }
 
     pub(crate) fn set_recent_dirs_max(&mut self, max: usize, cx: &mut Context<Self>) {
-        let mut settings = self.settings.clone();
-        settings.recent_local_dirs_max = max;
-        self.apply_settings(settings, cx);
+        let mut workspace = self.workspace_settings.clone();
+        workspace.recent_dirs_max = max;
+        self.workspace_settings = workspace.normalized();
+        self.persist_settings();
         self.sync_local_dirs(cx);
+        cx.notify();
+    }
+
+    fn apply_terminal_settings(&mut self, settings: TerminalSettings, cx: &mut Context<Self>) {
+        let settings = settings.normalized();
+        if self.terminal_settings == settings {
+            return;
+        }
+
+        for tab in &self.workspace.sessions.remote_tabs {
+            tab.pane.apply_terminal_settings(settings.clone(), cx);
+        }
+        for session in self.workspace.sessions.local_sessions.values() {
+            session.terminal.update(cx, |terminal, cx| {
+                terminal.apply_settings(settings.clone(), cx)
+            });
+        }
+
+        self.terminal_settings = settings;
+        self.persist_settings();
+        cx.notify();
     }
 
     /// 把本地会话按创建时的项目归属目录重建目录视图（打开/关闭/`cd` 时调用）。
@@ -1663,7 +1547,7 @@ impl AppShell {
         self.workspace.sessions.local_dirs = rebuild_local_dirs(
             &previous,
             sessions,
-            self.settings.recent_local_dirs.iter().cloned(),
+            self.workspace_settings.recent_dirs.iter().cloned(),
             active_local_session,
         );
     }
@@ -1762,46 +1646,53 @@ impl AppShell {
     }
 
     /// 把目录记入「最近本地目录」历史（最近优先、去重、截断到上限）并持久化。
-    fn remember_local_dir(&mut self, project_dir: &Path, cx: &mut Context<Self>) {
+    fn remember_local_dir(&mut self, project_dir: &Path, _cx: &mut Context<Self>) {
         let project_dir = normalize_local_cwd(project_dir.to_path_buf());
-        self.settings
-            .recent_local_dirs
+        self.workspace_settings
+            .recent_dirs
             .retain(|existing| existing != &project_dir);
-        self.settings.recent_local_dirs.insert(0, project_dir);
-        self.settings
-            .recent_local_dirs
-            .truncate(self.settings.recent_local_dirs_max);
-        self.persist_settings(cx);
+        self.workspace_settings.recent_dirs.insert(0, project_dir);
+        self.workspace_settings
+            .recent_dirs
+            .truncate(self.workspace_settings.recent_dirs_max);
+        self.persist_settings();
     }
 
     /// 从「最近本地目录」历史中移除一个目录并持久化。
     pub(crate) fn forget_local_dir(&mut self, cwd: PathBuf, cx: &mut Context<Self>) {
         let cwd = normalize_local_cwd(cwd);
-        if !self.settings.recent_local_dirs.contains(&cwd) {
+        if !self.workspace_settings.recent_dirs.contains(&cwd) {
             return;
         }
-        self.settings
-            .recent_local_dirs
+        self.workspace_settings
+            .recent_dirs
             .retain(|existing| existing != &cwd);
-        self.persist_settings(cx);
+        self.persist_settings();
         self.sync_local_dirs(cx);
         cx.notify();
     }
 
     /// 清空「最近本地目录」历史。
     pub(crate) fn clear_recent_dirs(&mut self, cx: &mut Context<Self>) {
-        if self.settings.recent_local_dirs.is_empty() {
+        if self.workspace_settings.recent_dirs.is_empty() {
             return;
         }
-        self.settings.recent_local_dirs.clear();
-        self.persist_settings(cx);
+        self.workspace_settings.recent_dirs.clear();
+        self.persist_settings();
         self.sync_local_dirs(cx);
         cx.notify();
     }
 
     /// 只写设置全局状态与磁盘，不重放终端设置（区别于 apply_settings）。
-    fn persist_settings(&mut self, cx: &mut Context<Self>) {
-        i18n::set_settings(cx, self.settings.clone());
+    fn persist_settings(&self) {
+        let snapshot = SettingsSnapshot {
+            language: self.language_preference,
+            terminal: self.terminal_settings.clone(),
+            workspace: self.workspace_settings.clone(),
+        };
+        if let Err(error) = settings::save(&snapshot) {
+            log::warn!("failed to save settings: {error}");
+        }
     }
 
     pub(crate) fn local_dir_for_session(&self, session_id: LocalSessionId) -> Option<&LocalDir> {
@@ -1864,12 +1755,8 @@ impl AppShell {
     fn refocus_active_terminal(&self, cx: &mut Context<Self>) {
         match self.workspace.active_view {
             Some(ActiveView::RemoteTab(idx)) => {
-                if let Some(Tab {
-                    pane: Pane::Terminal(terminal),
-                    ..
-                }) = self.workspace.sessions.remote_tabs.get(idx)
-                {
-                    terminal.update(cx, |terminal, _| terminal.request_focus());
+                if let Some(tab) = self.workspace.sessions.remote_tabs.get(idx) {
+                    tab.pane.request_focus(cx);
                 }
             }
             Some(ActiveView::LocalSession(session_id)) => {

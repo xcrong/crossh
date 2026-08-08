@@ -1,7 +1,7 @@
 //! SSH host entries used by the workspace navigation.
 
 use crate::infrastructure::config::SshConfig;
-use crate::infrastructure::ssh::ConnectionPool;
+use crate::infrastructure::ssh::connection_key;
 
 /// Host alias, resolved display details, and connection-pool key.
 #[derive(Clone)]
@@ -26,7 +26,7 @@ pub(crate) fn build_entries(config: &SshConfig) -> Vec<HostEntry> {
             resolved.effective_host(),
             resolved.effective_port()
         );
-        let key = ConnectionPool::key_for(&resolved);
+        let key = connection_key(&resolved);
         out.push(HostEntry { alias, detail, key });
     }
     out

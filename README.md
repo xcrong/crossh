@@ -49,23 +49,31 @@ open dist/crossh.app
 
 ```
 src/
-  main.rs         入口：日志、panic hook、窗口恢复（Dock 点击）
-  config/         ~/.ssh/config 解析（只读）
-  ssh/
-    connection.rs 连接抽象：channel 多路复用、反应式认证、引用计数生命周期
-    pool.rs       连接池（user@host:port 键）
-    session.rs    认证候选推导、终端通道协议
-    sftp.rs       SFTP worker
-    forward.rs    -L / -R / -D 转发
-    proxyjump.rs  单层 ProxyJump
-  ui/
-    app_shell.rs  外壳状态与交互行为
-    sidebar.rs    主机/目录侧栏
-    workspace.rs  标签条与主区
-    settings.rs   设置页
-    prompt.rs     主机密钥/凭据模态
-    terminal_view.rs 终端渲染（canvas）
+  main.rs                    入口编排：窗口、快捷键、启动顺序
+  infrastructure/
+    config/                  ~/.ssh/config 解析（只读）
+    logging.rs                日志、panic hook、日志裁剪
+    ssh/
+      connection.rs          无 UI 的连接引擎与 channel 多路复用
+      pool.rs                连接键推导
+      session.rs             认证候选与会话协议
+      sftp.rs                SFTP worker
+      forward.rs             -L / -R / -D 转发
+      proxyjump.rs           单层 ProxyJump
+  features/
+    connections/             GPUI 连接实体、连接管理与认证提示
+    terminal/                终端状态、输入编码、图片协议与渲染
+    sftp/                    SFTP 面板、远程编辑器与路径逻辑
+    forwarding/              端口转发面板
+    workspace/               外壳、侧栏、标签和 Pane 抽象
+    settings/                设置窗口与持久化编排
+    commands/                本地/远程命令历史与后台任务
+  shared/
+    terminal/                UI 无关的终端事件、协议和 shell 逻辑
+    ui/                      GPUI 主题、图标、菜单和通用控件
 ```
+
+依赖方向保持单向：`infrastructure` 和 `shared/terminal` 不依赖 GPUI；feature 的 GPUI 适配层依赖基础设施；`workspace` 通过 `WorkspacePane` trait 消费终端、SFTP 和转发面板。可重复执行的分层检查位于 `scripts/check-architecture.sh`。
 
 技术栈：`gpui`（UI，钉 zed git rev）、`russh`（SSH）、`alacritty_terminal` + `vte`（终端模拟）、`tokio`（2 worker 常驻）。
 
