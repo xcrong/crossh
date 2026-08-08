@@ -29,6 +29,7 @@ pub enum ProtocolEvent {
     SecondaryDeviceAttributesQuery,
     DeviceStatusQuery,
     CursorPositionQuery,
+    PrivateCursorPositionQuery,
     Cwd(String),
     /// The command about to be executed, emitted by Crossh's local shell hook.
     Command(String),
@@ -78,6 +79,8 @@ pub enum ProtocolEvent {
     UrxvtMouse(bool),
     /// xterm modifyOtherKeys level (0 through 3).
     ModifyOtherKeys(u8),
+    /// xterm modifier bits factored out by `CSI > 4 : mask m`.
+    ModifyOtherKeysMask(u8),
     ModifyOtherKeysQuery,
     /// Report the pixel dimensions of the terminal window (`CSI 14 t`).
     WindowSizeQuery,
@@ -361,15 +364,13 @@ fn parse_osc(payload: &[u8]) -> Vec<ProtocolEvent> {
 
     match command {
         b"0" | b"2" => {
-            let title = String::from_utf8_lossy(value);
-            if title.is_empty() {
-                vec![ProtocolEvent::Title(String::new())]
-            } else {
-                vec![ProtocolEvent::Title(title.into_owned())]
-            }
+            vec![ProtocolEvent::Title(clean_text(value))]
         }
         b"52" => parse_osc52(value),
         b"7" => {
+            if value.len() > MAX_NOTIFICATION_TEXT_BYTES {
+                return Vec::new();
+            }
             let value = String::from_utf8_lossy(value);
             cwd_from_osc7(&value)
                 .map(|cwd| vec![ProtocolEvent::Cwd(cwd)])
@@ -695,6 +696,9 @@ fn parse_apc(payload: &[u8]) -> Vec<ProtocolEvent> {
         };
         data
     };
+    if data.len() > MAX_IMAGE_BYTES {
+        return Vec::new();
+    }
     vec![ProtocolEvent::KittyGraphics(KittyGraphicsPayload {
         control: String::from_utf8_lossy(control).into_owned(),
         data,
@@ -774,6 +778,9 @@ fn parse_csi(payload: &[u8], final_byte: u8) -> Vec<ProtocolEvent> {
     let Some(params) = parse_csi_params(payload) else {
         return Vec::new();
     };
+    if let Some(events) = parse_modify_other_keys(&params, final_byte) {
+        return events;
+    }
     let Some(values) = simple_csi_values(&params) else {
         return Vec::new();
     };
@@ -790,8 +797,10 @@ fn parse_csi(payload: &[u8], final_byte: u8) -> Vec<ProtocolEvent> {
     if matches!(final_byte, b'h' | b'l')
         && params.private == Some(b'?')
         && no_intermediates
-        && values.len() == 1
-        && matches!(values[0], Some(47 | 1047 | 1049))
+        && values
+            .iter()
+            .flatten()
+            .any(|value| matches!(*value, 47 | 1047 | 1049))
     {
         return vec![ProtocolEvent::ScreenBufferSwitch(final_byte == b'h')];
     }
@@ -871,13 +880,26 @@ fn parse_csi(payload: &[u8], final_byte: u8) -> Vec<ProtocolEvent> {
         };
     }
 
+    if final_byte == b'n'
+        && params.private == Some(b'?')
+        && no_intermediates
+        && values.as_slice() == [Some(6)]
+    {
+        return vec![ProtocolEvent::PrivateCursorPositionQuery];
+    }
+
     if final_byte == b'm' && no_intermediates {
         if params.private == Some(b'?') && values.as_slice() == [Some(4)] {
             return vec![ProtocolEvent::ModifyOtherKeysQuery];
         }
         if params.private == Some(b'>') {
             match values.as_slice() {
-                [Some(0)] | [Some(0), None | Some(0)] | [Some(4)] | [Some(4), None] => {
+                [] => {
+                    // XTMODKEYS with no parameters resets all modifier-key
+                    // resources, including modifyOtherKeys.
+                    return vec![ProtocolEvent::ModifyOtherKeys(0)];
+                }
+                [Some(4)] | [Some(4), None] => {
                     return vec![ProtocolEvent::ModifyOtherKeys(0)];
                 }
                 [Some(4), Some(level @ 0..=3)] => {
@@ -888,7 +910,19 @@ fn parse_csi(payload: &[u8], final_byte: u8) -> Vec<ProtocolEvent> {
         }
     }
 
-    if params.private == Some(b'?') && no_intermediates && values.as_slice() == [Some(1015)] {
+    if final_byte == b'n'
+        && params.private == Some(b'>')
+        && no_intermediates
+        && values.as_slice() == [Some(4)]
+    {
+        // XTDISMODKEYS disables the modifyOtherKeys resource.
+        return vec![ProtocolEvent::ModifyOtherKeys(0)];
+    }
+
+    if params.private == Some(b'?')
+        && no_intermediates
+        && values.iter().flatten().any(|value| *value == 1015)
+    {
         return match final_byte {
             b'h' => vec![ProtocolEvent::UrxvtMouse(true)],
             b'l' => vec![ProtocolEvent::UrxvtMouse(false)],
@@ -896,6 +930,27 @@ fn parse_csi(payload: &[u8], final_byte: u8) -> Vec<ProtocolEvent> {
         };
     }
     Vec::new()
+}
+
+fn parse_modify_other_keys(params: &CsiParams, final_byte: u8) -> Option<Vec<ProtocolEvent>> {
+    if final_byte != b'm' || params.private != Some(b'>') || !params.intermediates.is_empty() {
+        return None;
+    }
+
+    if params.params.len() == 1 {
+        let subparameters = &params.params[0].subparameters;
+        if subparameters.len() == 2 && subparameters[0] == Some(4) {
+            let Some(mask) = subparameters[1]
+                .and_then(|value| u8::try_from(value).ok())
+                .filter(|mask| *mask <= 0x0f)
+            else {
+                return Some(Vec::new());
+            };
+            return Some(vec![ProtocolEvent::ModifyOtherKeysMask(mask)]);
+        }
+    }
+
+    None
 }
 
 fn parse_u32(value: &[u8]) -> Option<u32> {
@@ -1014,7 +1069,8 @@ fn cwd_from_osc7(value: &str) -> Option<String> {
         value.to_string()
     };
     let path = percent_decode(&path)?;
-    std::path::Path::new(&path).is_absolute().then_some(path)
+    (path.len() <= MAX_NOTIFICATION_TEXT_BYTES && std::path::Path::new(&path).is_absolute())
+        .then_some(path)
 }
 
 fn percent_decode(value: &str) -> Option<String> {
@@ -1047,6 +1103,7 @@ fn hex_value(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::terminal::KeyboardProtocolState;
 
     #[test]
     fn parses_split_osc7_and_decodes_path() {
@@ -1263,7 +1320,7 @@ mod tests {
     fn parses_urxvt_mouse_mode() {
         let mut parser = TerminalProtocolParser::default();
         assert_eq!(
-            parser.feed(b"\x1b[?1015h\x1b[?1015l"),
+            parser.feed(b"\x1b[?1006;1015h\x1b[?1015;1006l"),
             vec![
                 ProtocolEvent::UrxvtMouse(true),
                 ProtocolEvent::UrxvtMouse(false)
@@ -1287,11 +1344,19 @@ mod tests {
             vec![ProtocolEvent::ModifyOtherKeys(3)]
         );
         assert_eq!(
-            parser.feed(b"\x1b[>4;0m\x1b[>0m\x1b[>0;0m"),
+            parser.feed(b"\x1b[>4;0m\x1b[>m\x1b[>0m\x1b[>0;0m\x1b[>4n"),
             vec![
                 ProtocolEvent::ModifyOtherKeys(0),
                 ProtocolEvent::ModifyOtherKeys(0),
                 ProtocolEvent::ModifyOtherKeys(0),
+            ]
+        );
+
+        assert_eq!(
+            parser.feed(b"\x1b[>4:1m\x1b[>4:15m\x1b[>4:16m"),
+            vec![
+                ProtocolEvent::ModifyOtherKeysMask(1),
+                ProtocolEvent::ModifyOtherKeysMask(15),
             ]
         );
 
@@ -1310,18 +1375,38 @@ mod tests {
         let bytes = decode_hex_fixture(include_str!(
             "../../../tests/fixtures/terminal/vim_modify_other_keys.hex"
         ));
-        let mut parser = TerminalProtocolParser::default();
-        let events = bytes
+        let mut whole_parser = TerminalProtocolParser::default();
+        let whole_events = whole_parser.feed(&bytes);
+        let mut chunked_parser = TerminalProtocolParser::default();
+        let chunked_events = bytes
             .chunks(1)
-            .flat_map(|chunk| parser.feed(chunk))
+            .flat_map(|chunk| chunked_parser.feed(chunk))
             .collect::<Vec<_>>();
         assert_eq!(
-            events,
+            whole_events,
             vec![
                 ProtocolEvent::ModifyOtherKeys(2),
                 ProtocolEvent::ModifyOtherKeys(0),
             ]
         );
+        assert_eq!(chunked_events, whole_events);
+    }
+
+    #[test]
+    fn alternate_screen_exit_isolates_vim_modify_other_keys() {
+        let mut parser = TerminalProtocolParser::default();
+        let mut keyboard = KeyboardProtocolState::default();
+        for event in parser.feed(b"\x1b[>4;2m\x1b[?1049h\x1b[?1049l") {
+            match event {
+                ProtocolEvent::ModifyOtherKeys(level) => keyboard.set_modify_other_keys(level),
+                ProtocolEvent::ModifyOtherKeysMask(mask) => {
+                    keyboard.set_modify_other_keys_mask(mask)
+                }
+                ProtocolEvent::ScreenBufferSwitch(alternate) => keyboard.switch_screen(alternate),
+                _ => {}
+            }
+        }
+        assert_eq!(keyboard.modify_other_keys(), 0);
     }
 
     #[test]
@@ -1329,15 +1414,21 @@ mod tests {
         let bytes = decode_hex_fixture(include_str!(
             "../../../tests/fixtures/terminal/tmux_pty.hex"
         ));
-        let mut parser = TerminalProtocolParser::default();
-        let events = parser.feed(&bytes);
+        let mut whole_parser = TerminalProtocolParser::default();
+        let whole_events = whole_parser.feed(&bytes);
+        let mut chunked_parser = TerminalProtocolParser::default();
+        let chunked_events = bytes
+            .chunks(1)
+            .flat_map(|chunk| chunked_parser.feed(chunk))
+            .collect::<Vec<_>>();
         assert_eq!(
-            events,
+            whole_events,
             vec![
                 ProtocolEvent::ScreenBufferSwitch(true),
                 ProtocolEvent::ScreenBufferSwitch(false),
             ]
         );
+        assert_eq!(chunked_events, whole_events);
     }
 
     #[test]
@@ -1353,7 +1444,18 @@ mod tests {
                 ProtocolEvent::ScreenBufferSwitch(false),
             ]
         );
-        assert!(parser.feed(b"\x1b[>4:1m\x1b[>4;1;2m").is_empty());
+        assert_eq!(
+            parser.feed(b"\x1b[5n\x1b[6n\x1b[?6n"),
+            vec![
+                ProtocolEvent::DeviceStatusQuery,
+                ProtocolEvent::CursorPositionQuery,
+                ProtocolEvent::PrivateCursorPositionQuery,
+            ]
+        );
+        assert_eq!(
+            parser.feed(b"\x1b[>4:1m\x1b[>4;1;2m"),
+            vec![ProtocolEvent::ModifyOtherKeysMask(1)]
+        );
         assert_eq!(
             parser.feed(b"\x1b[=9;2u\x1b[>7u\x1b[<u"),
             vec![
@@ -1363,6 +1465,13 @@ mod tests {
                 },
                 ProtocolEvent::KeyboardModePush { bits: 7 },
                 ProtocolEvent::KeyboardModePop(1),
+            ]
+        );
+        assert_eq!(
+            parser.feed(b"\x1b[?1006;1049h\x1b[?1049;1006l"),
+            vec![
+                ProtocolEvent::ScreenBufferSwitch(true),
+                ProtocolEvent::ScreenBufferSwitch(false),
             ]
         );
     }
@@ -1421,6 +1530,53 @@ mod tests {
             parser.feed(b"\x1b[?4m"),
             vec![ProtocolEvent::ModifyOtherKeysQuery]
         );
+        assert_parser_state_is_bounded(&parser);
+    }
+
+    #[test]
+    fn arbitrary_chunked_streams_are_partition_invariant() {
+        for seed in 0..128u32 {
+            let mut value = seed.wrapping_add(0x9e37_79b9);
+            let mut bytes = Vec::with_capacity(1024);
+            for _ in 0..1024 {
+                value ^= value << 13;
+                value ^= value >> 17;
+                value ^= value << 5;
+                bytes.push(value as u8);
+            }
+
+            let mut whole_parser = TerminalProtocolParser::default();
+            let expected = whole_parser.feed(&bytes);
+
+            let mut chunked_parser = TerminalProtocolParser::default();
+            let mut events = Vec::new();
+            let mut offset = 0;
+            while offset < bytes.len() {
+                value ^= value << 13;
+                value ^= value >> 17;
+                value ^= value << 5;
+                let chunk_len = (value as usize % 23).max(1);
+                let end = (offset + chunk_len).min(bytes.len());
+                events.extend(chunked_parser.feed(&bytes[offset..end]));
+                assert_parser_state_is_bounded(&chunked_parser);
+                offset = end;
+            }
+            assert_eq!(events, expected, "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn protocol_events_are_stable_across_every_two_chunk_boundary() {
+        let bytes = b"\x1b]7;file://localhost/tmp%20dir\x1b\\\x1b[>4:1m\x1b[?1006;1049h";
+        let mut whole_parser = TerminalProtocolParser::default();
+        let expected = whole_parser.feed(bytes);
+
+        for split in 0..=bytes.len() {
+            let mut parser = TerminalProtocolParser::default();
+            let mut events = parser.feed(&bytes[..split]);
+            events.extend(parser.feed(&bytes[split..]));
+            assert_eq!(events, expected, "split at byte {split}");
+        }
     }
 
     #[test]
@@ -1450,6 +1606,17 @@ mod tests {
                 })
             })
             .collect()
+    }
+
+    fn assert_parser_state_is_bounded(parser: &TerminalProtocolParser) {
+        match &parser.state {
+            State::Csi(csi) => assert!(csi.bytes.len() <= MAX_CSI_BYTES),
+            State::EscapeIntermediate { bytes, .. } => assert!(bytes.len() <= 16),
+            State::String(string) | State::StringEscape(string) => {
+                assert!(string.payload.len() <= MAX_STRING_BYTES)
+            }
+            State::Ground | State::Escape => {}
+        }
     }
 
     #[test]

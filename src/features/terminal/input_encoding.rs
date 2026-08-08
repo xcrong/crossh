@@ -135,6 +135,15 @@ pub(crate) fn format_osc52_response_for_selector(selector: u8, text: &str) -> Op
     format_osc52_response(&formatter, text)
 }
 
+pub(crate) fn format_modify_other_keys_response(level: u8) -> Vec<u8> {
+    format!("\x1b[>4;{}m", level.min(3)).into_bytes()
+}
+
+pub(crate) fn format_cursor_position_response(row: usize, column: usize, private: bool) -> Vec<u8> {
+    let prefix = if private { "?" } else { "" };
+    format!("\x1b[{prefix}{};{}R", row.max(1), column.max(1)).into_bytes()
+}
+
 pub(crate) fn decode_hex_bytes(value: &[u8]) -> Option<Vec<u8>> {
     if !value.len().is_multiple_of(2) {
         return None;
@@ -190,7 +199,7 @@ pub(crate) fn encode_keystroke_with_event(
     mode: TermMode,
     event_type: u8,
 ) -> Option<Vec<u8>> {
-    encode_keystroke_with_options(ks, mode, event_type, 0)
+    encode_keystroke_with_options(ks, mode, event_type, 0, 0)
 }
 
 pub(crate) fn encode_keystroke_with_options(
@@ -198,6 +207,7 @@ pub(crate) fn encode_keystroke_with_options(
     mode: TermMode,
     event_type: u8,
     modify_other_keys: u8,
+    modify_other_keys_mask: u8,
 ) -> Option<Vec<u8>> {
     let m = &ks.modifiers;
     let key = ks.key.as_str();
@@ -214,7 +224,15 @@ pub(crate) fn encode_keystroke_with_options(
         return Some(bytes);
     }
 
-    if let Some(bytes) = encode_modify_other_keys(ks, modify_other_keys) {
+    // A full-screen application can leave modifyOtherKeys enabled when it
+    // returns to the shell. Keep the shell's canonical clear-screen control
+    // byte stable even when that stale application state remains.
+    if modify_other_keys != 0 && !mode.contains(TermMode::ALT_SCREEN) && is_clear_screen_control(ks)
+    {
+        return Some(vec![0x0c]);
+    }
+
+    if let Some(bytes) = encode_modify_other_keys(ks, modify_other_keys, modify_other_keys_mask) {
         return Some(bytes);
     }
 
@@ -327,31 +345,53 @@ pub(crate) fn encode_keystroke_with_options(
 /// handles ordinary keys; arrows, function keys, keypad keys, and the common
 /// special keys keep their established encodings. Level 3 also reports
 /// unmodified ordinary keys.
-pub(crate) fn encode_modify_other_keys(ks: &gpui::Keystroke, level: u8) -> Option<Vec<u8>> {
+pub(crate) fn encode_modify_other_keys(
+    ks: &gpui::Keystroke,
+    level: u8,
+    modifier_mask: u8,
+) -> Option<Vec<u8>> {
     if !matches!(level, 1..=3) || ks.modifiers.platform {
         return None;
     }
     let key = ks.key.as_str();
-    if is_kitty_functional_key(key)
-        || matches!(
-            key,
-            "enter" | "return" | "tab" | "back" | "backspace" | "escape"
-        )
-    {
+    if is_kitty_functional_key(key) || key == "escape" {
         return None;
     }
     let modifiers = &ks.modifiers;
     let modified = modifiers.shift || modifiers.alt || modifiers.control;
-    if level != 3
-        && (!modified || (level == 1 && modifiers.alt && !modifiers.shift && !modifiers.control))
-    {
+    match level {
+        1 => {
+            if !modified
+                || (modifiers.shift && !modifiers.alt && !modifiers.control)
+                || (modifiers.control
+                    && !modifiers.alt
+                    && !modifiers.shift
+                    && control_code(key).is_some())
+                || (modifiers.control && !modifiers.alt && key == "space")
+            {
+                return None;
+            }
+        }
+        2 if !modified => return None,
+        2 => {}
+        3 => {}
+        _ => unreachable!(),
+    }
+    if matches!(key, "back" | "backspace") && (level == 1 || !modified) {
         return None;
     }
-    if level == 1 && control_code(key).is_some() {
+    if matches!(key, "enter" | "return" | "tab") && !modified {
         return None;
     }
     let (code, _) = kitty_text_key_code(ks)?;
-    Some(format!("\x1b[27;{};{}~", modifier_code(modifiers), code).into_bytes())
+    Some(
+        format!(
+            "\x1b[27;{};{}~",
+            modifier_code_with_mask(modifiers, modifier_mask),
+            code
+        )
+        .into_bytes(),
+    )
 }
 
 /// 生成 Kitty 键盘协议的增强编码。
@@ -884,24 +924,36 @@ pub(crate) fn is_clear_screen_shortcut(ks: &gpui::Keystroke) -> bool {
         && ks.key == "l"
 }
 
+fn is_clear_screen_control(ks: &gpui::Keystroke) -> bool {
+    ks.modifiers.control
+        && !ks.modifiers.shift
+        && !ks.modifiers.alt
+        && !ks.modifiers.platform
+        && ks.key == "l"
+}
+
 pub(crate) fn is_low_latency_shell_passthrough_key(ks: &gpui::Keystroke) -> bool {
     ks.modifiers.control && !ks.modifiers.alt && !ks.modifiers.platform && ks.key == "l"
 }
 
 /// 计算带修饰键时的 CSI 修饰码（shift=1, alt=2, control=4, meta=8，再 +1）。
 pub(crate) fn modifier_code(m: &Modifiers) -> u8 {
-    let mut code = 1;
+    modifier_code_with_mask(m, 0)
+}
+
+pub(crate) fn modifier_code_with_mask(m: &Modifiers, mask: u8) -> u8 {
+    let mut bits = 0;
     if m.shift {
-        code += 1;
+        bits |= 1;
     }
     if m.alt {
-        code += 2;
+        bits |= 2;
     }
     if m.control {
-        code += 4;
+        bits |= 4;
     }
     if m.platform {
-        code += 8;
+        bits |= 8;
     }
-    code
+    1 + (bits & !mask)
 }

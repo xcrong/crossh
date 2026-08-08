@@ -316,6 +316,7 @@ impl super::TerminalView {
                 self.command_running = false;
                 self.shell_input_buffer.clear();
                 self.ime_marked_text.clear();
+                self.reset_crossh_keyboard_state();
                 if was_connected {
                     cx.emit(TerminalEvent::Closed);
                 }
@@ -388,9 +389,14 @@ impl super::TerminalView {
                     self.send_input(b"\x1b[0n".to_vec());
                 }
                 ProtocolEvent::CursorPositionQuery => {
-                    let row = self.terminal_content.cursor.point.line.max(0) + 1;
+                    let row = self.terminal_content.cursor.point.line.max(0) as usize + 1;
                     let column = self.terminal_content.cursor.point.column + 1;
-                    self.send_input(format!("\x1b[{};{}R", row, column).into_bytes());
+                    self.send_input(format_cursor_position_response(row, column, false));
+                }
+                ProtocolEvent::PrivateCursorPositionQuery => {
+                    let row = self.terminal_content.cursor.point.line.max(0) as usize + 1;
+                    let column = self.terminal_content.cursor.point.column + 1;
+                    self.send_input(format_cursor_position_response(row, column, true));
                 }
                 ProtocolEvent::Cwd(cwd) => {
                     if self.cwd.as_deref() != Some(cwd.as_str()) {
@@ -470,6 +476,9 @@ impl super::TerminalView {
                 ProtocolEvent::ModifyOtherKeys(level) => {
                     self.keyboard_protocol.set_modify_other_keys(level)
                 }
+                ProtocolEvent::ModifyOtherKeysMask(mask) => {
+                    self.keyboard_protocol.set_modify_other_keys_mask(mask)
+                }
                 ProtocolEvent::ModifyOtherKeysQuery => self.respond_modify_other_keys_query(),
                 ProtocolEvent::WindowSizeQuery => self.respond_window_size_query(),
                 ProtocolEvent::TextAreaSizeQuery => self.respond_text_area_size_query(),
@@ -513,6 +522,7 @@ impl super::TerminalView {
     fn reset_crossh_keyboard_state(&mut self) {
         self.keyboard_protocol.reset();
         self.urxvt_mouse = false;
+        self.remote_mouse_button = None;
     }
 
     pub(super) fn process_kitty_notification(
@@ -1646,9 +1656,9 @@ impl super::TerminalView {
     }
 
     pub(super) fn respond_modify_other_keys_query(&mut self) {
-        self.send_input(
-            format!("\x1b[>4;{}m", self.keyboard_protocol.modify_other_keys()).into_bytes(),
-        );
+        self.send_input(format_modify_other_keys_response(
+            self.keyboard_protocol.modify_other_keys(),
+        ));
     }
 
     pub(super) fn respond_cell_size_query(&mut self) {

@@ -15,6 +15,7 @@ struct KittyScreenState {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct KeyboardProtocolState {
     modify_other_keys: u8,
+    modify_other_keys_mask: u8,
     main: KittyScreenState,
     alternate: KittyScreenState,
     alternate_screen: bool,
@@ -28,7 +29,18 @@ impl KeyboardProtocolState {
     pub(crate) fn set_modify_other_keys(&mut self, level: u8) {
         if level <= 3 {
             self.modify_other_keys = level;
+            if level == 0 {
+                self.modify_other_keys_mask = 0;
+            }
         }
+    }
+
+    pub(crate) fn modify_other_keys_mask(&self) -> u8 {
+        self.modify_other_keys_mask
+    }
+
+    pub(crate) fn set_modify_other_keys_mask(&mut self, mask: u8) {
+        self.modify_other_keys_mask = mask & 0x0f;
     }
 
     pub(crate) fn kitty_flags(&self) -> u8 {
@@ -64,12 +76,21 @@ impl KeyboardProtocolState {
 
     pub(crate) fn switch_screen(&mut self, alternate: bool) {
         self.alternate_screen = alternate;
+        if !alternate {
+            // Applications such as Vim can enable xterm's global
+            // modifyOtherKeys mode without restoring it on exit. Do not let
+            // that application-specific input state leak into the shell.
+            self.modify_other_keys = 0;
+            self.modify_other_keys_mask = 0;
+        }
     }
 
     pub(crate) fn reset(&mut self) {
         self.modify_other_keys = 0;
+        self.modify_other_keys_mask = 0;
         self.main = KittyScreenState::default();
         self.alternate = KittyScreenState::default();
+        self.alternate_screen = false;
     }
 
     fn active_kitty_state(&self) -> &KittyScreenState {
@@ -105,7 +126,7 @@ mod tests {
         state.kitty_pop(1);
         assert_eq!(state.kitty_flags(), 4);
         state.switch_screen(false);
-        assert_eq!(state.kitty_flags(), 1);
+        assert_eq!(state.kitty_flags(), 2);
         state.kitty_pop(1);
         assert_eq!(state.kitty_flags(), 1);
     }
@@ -122,13 +143,39 @@ mod tests {
     fn reset_clears_modify_other_keys_and_both_keyboard_screens() {
         let mut state = KeyboardProtocolState::default();
         state.set_modify_other_keys(2);
+        state.set_modify_other_keys_mask(0x0f);
         state.kitty_set(1, 1);
         state.switch_screen(true);
         state.kitty_set(2, 1);
         state.reset();
         assert_eq!(state.modify_other_keys(), 0);
+        assert_eq!(state.modify_other_keys_mask(), 0);
         assert_eq!(state.kitty_flags(), 0);
         state.switch_screen(false);
+        assert_eq!(state.kitty_flags(), 0);
+    }
+
+    #[test]
+    fn leaving_alternate_screen_clears_modify_other_keys() {
+        let mut state = KeyboardProtocolState::default();
+        state.set_modify_other_keys(2);
+        state.set_modify_other_keys_mask(0x0f);
+        state.switch_screen(true);
+        state.set_modify_other_keys(3);
+        state.switch_screen(false);
+        assert_eq!(state.modify_other_keys(), 0);
+        assert_eq!(state.modify_other_keys_mask(), 0);
+    }
+
+    #[test]
+    fn reset_returns_keyboard_state_to_the_main_screen() {
+        let mut state = KeyboardProtocolState::default();
+        state.switch_screen(true);
+        state.kitty_set(1, 1);
+        state.reset();
+        state.kitty_set(2, 1);
+        assert_eq!(state.kitty_flags(), 2);
+        state.switch_screen(true);
         assert_eq!(state.kitty_flags(), 0);
     }
 }

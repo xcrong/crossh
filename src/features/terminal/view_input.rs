@@ -71,6 +71,7 @@ impl super::TerminalView {
                 self.terminal_mode(),
                 event_type,
                 self.keyboard_protocol.modify_other_keys(),
+                self.keyboard_protocol.modify_other_keys_mask(),
             )
         {
             self.ime_marked_text.clear();
@@ -85,6 +86,7 @@ impl super::TerminalView {
                 self.terminal_mode(),
                 event_type,
                 self.keyboard_protocol.modify_other_keys(),
+                self.keyboard_protocol.modify_other_keys_mask(),
             )
         {
             self.submit_shell_input(bytes);
@@ -146,6 +148,7 @@ impl super::TerminalView {
             self.terminal_mode(),
             event_type,
             self.keyboard_protocol.modify_other_keys(),
+            self.keyboard_protocol.modify_other_keys_mask(),
         ) {
             self.bypass_shell_input(bytes);
             return true;
@@ -284,6 +287,7 @@ impl super::TerminalView {
             mode,
             event_type,
             self.keyboard_protocol.modify_other_keys(),
+            self.keyboard_protocol.modify_other_keys_mask(),
         ) {
             Some(bytes) => {
                 if self.shell_activity_available && matches!(ks.key.as_str(), "enter" | "return") {

@@ -23,7 +23,7 @@ screen state.
 | C1 7-bit/8-bit introducers and string terminators | Zed + Crossh observer | Partial | Zed consumes screen controls; Crossh observes OSC/DCS/APC and must safely handle C1 forms. |
 | ESC screen controls and character-set controls | Zed terminal | Zed | Crossh observes only state-changing sequences needed for policy, such as RIS. |
 | CSI public cursor, erase, insert/delete, scroll, tab, SGR | Zed terminal | Zed | No duplicate screen implementation. |
-| CSI queries (`DA`, `DSR`, `CPR`, size reports) | Zed + Crossh | Partial | Zed handles built-in responses; Crossh handles queries not exposed by the public API and tests response bytes. |
+| CSI queries (`DA`, `DSR`, `CPR`, size reports) | Zed + Crossh | Partial | Zed handles public DA/DSR and size reports; Crossh handles private DECXCPR and policy-owned query responses not exposed by the public API. |
 | CSI private modes (alternate screen, cursor, mouse, paste, focus) | Zed terminal | Zed | Crossh observes alternate-screen transitions for image and keyboard side state. |
 | DECSTR (`CSI ! p`) and RIS (`ESC c`) | Crossh observer + Zed | Partial | Crossh resets policy-owned state; Zed resets the screen emulator. |
 | OSC title (`0`, `2`) | Zed + Crossh | Partial | Zed owns terminal title events; Crossh keeps the raw title for Crossh tab policy. |
@@ -45,11 +45,11 @@ screen state.
 | SGR mouse (`1006`) and button/drag/motion modes | Zed terminal | Zed | Zed owns mode state; Crossh routes reports where the Crossh view needs them. |
 | Alternate screen and bracketed paste | Zed terminal | Zed | Crossh only resets side state when applications leave the alternate screen. |
 | Focus in/out reporting | Zed terminal | Zed | Zed emits the standard `CSI I`/`CSI O` bytes. |
-| xterm `modifyOtherKeys` levels 0-3 | Crossh | Partial | Level parsing and input encoding exist; reset and query semantics are being hardened. |
-| Kitty keyboard flags, query, push, and pop | Crossh | Partial | Input encoding exists; per-screen stacks and reset semantics are being hardened. |
+| xterm `modifyOtherKeys` levels 0-3 | Crossh | Partial | Level 1/2/3 ordinary-key encoding, `CSI > 4 : mask m`, XTMODKEYS/XTDISMODKEYS reset, query, alternate-screen exit isolation, and Vim exit bytes are covered; xterm's broader special-key resource matrix is not claimed. |
+| Kitty keyboard flags, query, push, and pop | Crossh | Partial | Input encoding, per-screen stacks, query response, and RIS/DECSTR/alternate-screen reset semantics are covered; the full progressive-enhancement surface is not claimed. |
 | Keyboard input and application modes | Crossh input | Partial | Control, Meta, Kitty, modifyOtherKeys, keypad, mouse, and paste paths are tested independently. |
-| Fuzz/property safety for arbitrary bytes | Crossh | Unimplemented | Add bounded parser fuzz/property tests before claiming parser hardening. |
-| Real Vim/Neovim/tmux PTY captures | Crossh tests | Partial | Vim `CSI > 4;2m` / `CSI > 4;m` is covered; more minimized fixtures are required. |
+| Fuzz/property safety for arbitrary bytes | Crossh | Partial | Deterministic arbitrary-byte, cancellation, and oversized-sequence tests prove bounded recovery; a separate `cargo-fuzz` target is not maintained yet. |
+| Real Vim/Neovim/tmux PTY captures | Crossh tests | Partial | Real Vim `CSI > 4;2m` / `CSI > 4;m` and tmux alternate-screen bytes are covered; this change includes no Neovim capture, so no Neovim behavior is claimed. |
 | Kitty graphics animation, remote file/shared-memory transport | None | Out of scope | Requires media lifecycle and explicit local-file policy not present in Crossh. |
 | Printer control, VT52 personality, protected fields, DEC font loading | None | Out of scope | Not needed by the supported shell/TUI profile. |
 
@@ -59,7 +59,8 @@ The supported claim is: Crossh delegates standard screen behavior to the
 locked Zed terminal core and provides a bounded, incremental observer for the
 Crossh policy surface listed above. Compatibility is supported only for rows
 marked `Zed`, `Crossh`, or `Partial`, and only to the extent covered by tests
-and fixtures. Rows marked `Unimplemented` or `Out of scope` are not claimed.
+and fixtures. Rows marked `Out of scope` are not claimed; `Partial` rows are
+limited to the exact cases named in their evidence.
 
 ## Evidence Commands
 

@@ -71,8 +71,10 @@ policy around that grid:
   bounded expiry, and a settings toggle. Native system notifications are
   emitted according to the terminal-focus policy.
 - tmux DCS passthrough, DECRQSS, XTGETTCAP, and urxvt CSI 1015 mouse reports.
-- xterm `modifyOtherKeys` levels 0-3, including the query response and
-  level-3 unmodified-key encoding.
+- xterm `modifyOtherKeys` levels 0-3 for ordinary keys, including xterm's
+  modifier-mask form, XTMODKEYS/XTDISMODKEYS reset semantics, query response,
+  alternate-screen exit isolation, and level-3 unmodified-key encoding. The
+  broader xterm special-key resource matrix is intentionally not claimed.
 - Inline iTerm images, Sixel, and Kitty graphics. Kitty payloads support
   chunking, PNG/raw RGB/RGBA formats, bounded zlib decompression, image and
   placement IDs (including image-number lookup), Unicode placeholders (`U=1`),

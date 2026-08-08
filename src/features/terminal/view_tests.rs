@@ -534,13 +534,43 @@ fn encodes_kitty_keyboard_modes() {
     );
 
     assert_eq!(
-        encode_modify_other_keys(&keystroke("ctrl-;"), 2),
+        encode_modify_other_keys(&keystroke("ctrl-;"), 2, 0),
         Some(b"\x1b[27;5;59~".to_vec())
     );
-    assert_eq!(encode_modify_other_keys(&keystroke("ctrl-c"), 1), None);
     assert_eq!(
-        encode_modify_other_keys(&keystroke("a"), 3),
+        encode_modify_other_keys(&keystroke("alt-x"), 1, 0),
+        Some(b"\x1b[27;3;120~".to_vec())
+    );
+    assert_eq!(encode_modify_other_keys(&keystroke("shift-a"), 1, 0), None);
+    assert_eq!(encode_modify_other_keys(&keystroke("ctrl-c"), 1, 0), None);
+    assert_eq!(
+        encode_modify_other_keys(&keystroke("ctrl-c"), 2, 0),
+        Some(b"\x1b[27;5;99~".to_vec())
+    );
+    assert_eq!(
+        encode_keystroke_with_options(&keystroke("ctrl-l"), TermMode::empty(), 1, 2, 0),
+        Some(b"\x0c".to_vec())
+    );
+    #[cfg(target_os = "macos")]
+    assert_eq!(
+        encode_keystroke_with_options(&keystroke("cmd-l"), TermMode::empty(), 1, 2, 0),
+        Some(b"\x0c".to_vec())
+    );
+    assert_eq!(
+        encode_keystroke_with_options(&keystroke("ctrl-l"), TermMode::ALT_SCREEN, 1, 2, 0,),
+        Some(b"\x1b[27;5;108~".to_vec())
+    );
+    assert_eq!(
+        encode_modify_other_keys(&keystroke("shift-tab"), 2, 0),
+        Some(b"\x1b[27;2;9~".to_vec())
+    );
+    assert_eq!(
+        encode_modify_other_keys(&keystroke("a"), 3, 0),
         Some(b"\x1b[27;1;97~".to_vec())
+    );
+    assert_eq!(
+        encode_modify_other_keys(&keystroke("shift-alt-x"), 2, 1),
+        Some(b"\x1b[27;3;120~".to_vec())
     );
 
     let disambiguate_events =
@@ -737,6 +767,28 @@ fn osc52_policy_denies_remote_reads_and_rejects_oversized_payloads() {
     let formatter: Arc<dyn Fn(&str) -> String + Sync + Send> =
         Arc::new(|_| "x".repeat(MAX_OSC52_RESPONSE_BYTES + 1));
     assert!(format_osc52_response(&formatter, "safe").is_none());
+}
+
+#[test]
+fn modify_other_keys_query_response_is_restorable() {
+    assert_eq!(format_modify_other_keys_response(2), b"\x1b[>4;2m".to_vec());
+    assert_eq!(format_modify_other_keys_response(9), b"\x1b[>4;3m".to_vec());
+}
+
+#[test]
+fn cursor_position_query_responses_keep_public_and_private_forms() {
+    assert_eq!(
+        format_cursor_position_response(4, 7, false),
+        b"\x1b[4;7R".to_vec()
+    );
+    assert_eq!(
+        format_cursor_position_response(4, 7, true),
+        b"\x1b[?4;7R".to_vec()
+    );
+    assert_eq!(
+        format_cursor_position_response(0, 0, false),
+        b"\x1b[1;1R".to_vec()
+    );
 }
 
 #[test]
