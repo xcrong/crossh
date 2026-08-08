@@ -51,6 +51,7 @@ fn main() {
             .load_fonts(cx)
             .expect("Zed embedded fonts should load");
         features::settings::init(cx);
+        features::terminal::init(cx);
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
         app::open_main_window(cx);
     });

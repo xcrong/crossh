@@ -336,6 +336,9 @@ impl AppShell {
                     this.record_command(local_scope(&cwd), command.clone(), cx);
                 }
             }
+            TerminalEvent::CommandFinished { status } => {
+                log::debug!("local terminal command finished with status {status:?}");
+            }
             TerminalEvent::TitleChanged | TerminalEvent::Notification => cx.notify(),
         });
         self.workspace

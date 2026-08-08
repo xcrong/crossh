@@ -4,10 +4,13 @@
 
 Crossh is distributed under the GNU General Public License, version 3 or
 later (`GPL-3.0-or-later`). Interactive terminals use Zed's `assets`,
-`terminal`, `task`, settings, and theme infrastructure directly. Crossh's
-terminal view is a local renderer and interaction layer built on that core. The
-Zed sources are pinned in `Cargo.toml`; Crossh adds its workspace, SSH
-configuration, SFTP, forwarding, and command-management layers around them.
+`terminal`, `task`, settings, and theme infrastructure directly. Crossh also
+maintains a local, application-free fork of the required Zed `terminal_view`
+`TerminalElement` and APCA helper sources. The fork is derived from the Zed
+revision pinned in `Cargo.toml`; editor, LSP, workspace, search, and other Zed
+application integrations are intentionally omitted. Crossh adds its workspace,
+SSH configuration, SFTP, forwarding, and command-management layers around
+that foundation.
 
 ## Lucide
 
@@ -44,9 +47,15 @@ Feather MIT notice documented in Lucide's official `LICENSE` file.
   dependencies from the Zed project at the pinned revision in `Cargo.toml`.
   APACHE-2.0 / GPL-3.0-or-later (source: zed-industries/zed).
 - **terminal** — Zed's terminal emulator and PTY integration at the same pinned
-  revision. Crossh's terminal view provides the renderer and product-specific
-  input, selection, scrolling, IME, and timestamp layers.
+  revision. It owns process I/O, emulation, resize, and terminal scrollback.
   GPL-3.0-or-later.
+- **terminal_view source fork** — Crossh's
+  `src/features/terminal/zed_view/terminal_element.rs` is derived from Zed's
+  `crates/terminal_view/src/terminal_element.rs`; its local APCA helper is
+  derived from Zed's `crates/ui/src/utils/apca_contrast.rs`. Both are
+  GPL-3.0-or-later and retain the pinned revision in their source headers. The fork keeps
+  GPUI painting, keyboard/mouse input, selection, IME, and terminal scrolling,
+  while removing Zed editor/workspace application integrations.
 - **assets** — Zed's embedded resource source, including the bundled Lilex
   and IBM Plex fonts loaded by Crossh's GPUI text system. GPL-3.0-or-later.
 - **settings / task / theme / theme_settings / release_channel / util** — Zed
@@ -54,9 +63,9 @@ Feather MIT notice documented in Lucide's official `LICENSE` file.
   create shell processes, and integrate its theme.
   Licensing follows the Zed source at the pinned revision in `Cargo.toml`.
 - **russh / russh-sftp** — SSH client and SFTP protocol. MIT.
-- **alacritty_terminal / vte** — retained for protocol and test compatibility
-  utilities; they do not create or render production interactive terminals.
-  Apache-2.0 / MIT.
+- **alacritty_terminal / vte** — transitive dependencies of Zed's `terminal`
+  emulator. Crossh no longer owns a second production renderer or direct
+  protocol implementation using these crates. Apache-2.0 / MIT.
 
 ## Application icon
 

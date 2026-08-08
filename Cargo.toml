@@ -6,14 +6,11 @@ license = "GPL-3.0-or-later"
 
 [dependencies]
 assets = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
-base64 = "0.22"
-chrono = "0.4.45"
 flate2 = "1"
 hex = "0.4"
-icy_sixel = "0.5"
-png = "0.17"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3", features = ["font-kit"] }
+itertools = "0.14"
 terminal = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
 settings = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
 task = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
@@ -29,9 +26,7 @@ semver = "1"
 serde_json = "1"
 sha2 = "0.10"
 tar = "0.4"
-alacritty_terminal = "0.26"
 sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
-vte = { version = "0.15", features = ["std", "ansi"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time", "fs"] }
 async-channel = "2"
 anyhow = "1"
@@ -50,15 +45,18 @@ zip = { version = "8.6", default-features = false, features = ["deflate"] }
 pretty_assertions = "1"
 
 [profile.dev.package."*"]
-opt-level = 1
+opt-level = "z"
 
 # Keep the shipped binary close to the size profile used by Zed itself.
 # `strip` removes linker symbols from the distributable while LTO lets LLVM
 # discard code that is only reachable through the large Zed dependency graph.
 [profile.release]
-lto = "thin"
+lto = true
 codegen-units = 1
+opt-level = "z"
 strip = "symbols"
+panic = "abort"
+incremental = false
 
 [patch.crates-io]
 async-process = { git = "https://github.com/zed-industries/async-process", rev = "0b6d6713570af61806e1e5cb40e0f757cb93fd9d" }

@@ -73,15 +73,6 @@ pub enum ShellMenuAction {
     StopBackgroundTask(u64),
 }
 
-/// 终端菜单动作（由 TerminalView 自持分发）。
-#[derive(Clone, Debug)]
-pub enum TerminalMenuAction {
-    Copy,
-    Paste,
-    SelectAll,
-    OpenUrl(String),
-}
-
 /// SFTP 面板菜单动作（由 SftpPane 自持分发）。
 #[derive(Clone, Debug)]
 pub enum SftpMenuAction {

@@ -33,6 +33,9 @@ impl AppShell {
                     this.record_command(remote_scope(&event_host_key, cwd), command.clone(), cx);
                 }
             }
+            TerminalEvent::CommandFinished { status } => {
+                log::debug!("remote terminal command finished with status {status:?}");
+            }
             TerminalEvent::CwdChanged => cx.notify(),
             TerminalEvent::PromptReached => {}
         });

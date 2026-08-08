@@ -130,7 +130,7 @@ impl AppShell {
             ..QuitRiskSummary::default()
         };
         for session in self.workspace.sessions.local_sessions.values() {
-            if session.terminal.read(cx).is_command_running() {
+            if session.terminal.read(cx).is_command_running(cx) {
                 risks.running_commands += 1;
             }
         }
