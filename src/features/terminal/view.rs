@@ -32,6 +32,7 @@ use crossh_core::terminal::{
     truncate_path_title,
 };
 use crossh_terminal::settings::TerminalSettings;
+use crossh_terminal::timestamps::{TerminalRow, TerminalTimestampState, timestamp_now};
 use crossh_ui::context_menu::{
     CONTEXT_MENU_WIDTH, ContextMenuState, clamp_menu_position, estimate_menu_height,
     render_context_menu,
@@ -112,6 +113,9 @@ pub struct TerminalView {
     right_mouse_down: bool,
     /// The terminal view origin in window coordinates, used to place the menu.
     anchor_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    show_timestamps: bool,
+    timestamp_state: TerminalTimestampState,
+    pending_timestamp: Option<String>,
 }
 
 impl TerminalView {
@@ -206,6 +210,9 @@ impl TerminalView {
                 context_menu: None,
                 right_mouse_down: false,
                 anchor_bounds: Rc::new(Cell::new(None)),
+                show_timestamps: settings.show_timestamps,
+                timestamp_state: TerminalTimestampState::default(),
+                pending_timestamp: None,
             }
         });
 
@@ -301,7 +308,9 @@ impl TerminalView {
                         this.cursor_blink_on = true;
                     }
                 }
-                zed_terminal::Event::Wakeup => {}
+                zed_terminal::Event::Wakeup => {
+                    this.pending_timestamp = Some(timestamp_now());
+                }
                 zed_terminal::Event::SelectionsChanged
                 | zed_terminal::Event::NewNavigationTarget(_)
                 | zed_terminal::Event::Open(_) => {}
@@ -316,6 +325,7 @@ impl TerminalView {
         self.builder_error = None;
         self.focused_once = false;
         self.state = ConnState::Connected;
+        self.pending_timestamp = Some(timestamp_now());
     }
 
     fn process_keystroke(&mut self, keystroke: &Keystroke, cx: &mut Context<Self>) -> bool {
@@ -559,10 +569,28 @@ impl TerminalView {
         cx.notify();
     }
 
-    pub(crate) fn apply_settings(&mut self, _settings: TerminalSettings, cx: &mut Context<Self>) {
-        // The workspace updates Zed's global terminal settings before calling
-        // this method. TerminalElement reads that same global on its next
-        // layout, so no second renderer-local settings state is needed.
+    pub(crate) fn update_timestamp_state(
+        &mut self,
+        rows: &[TerminalRow],
+        display_offset: usize,
+        cursor_row: Option<usize>,
+        alternate_screen: bool,
+    ) -> (bool, Vec<Option<String>>) {
+        let timestamp = self.pending_timestamp.take();
+        let timestamps = self.timestamp_state.observe(
+            rows,
+            display_offset,
+            cursor_row,
+            timestamp,
+            alternate_screen,
+        );
+        (self.show_timestamps, timestamps)
+    }
+
+    pub(crate) fn apply_settings(&mut self, settings: TerminalSettings, cx: &mut Context<Self>) {
+        self.show_timestamps = settings.show_timestamps;
+        // The workspace updates Zed's global font/scrollback settings before
+        // calling this method. Timestamp visibility is owned by this host.
         cx.notify();
     }
 

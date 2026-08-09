@@ -5,5 +5,6 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 
 [dependencies]
+chrono = "0.4"
 crossh-core = { path = "../crossh-core" }
 serde = { version = "1", features = ["derive"] }

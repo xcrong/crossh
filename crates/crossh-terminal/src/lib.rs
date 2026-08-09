@@ -5,6 +5,7 @@
 
 pub mod events;
 pub mod settings;
+pub mod timestamps;
 
 pub use events::{ConnState, TerminalEvent};
 pub use settings::TerminalSettings;

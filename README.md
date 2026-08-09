@@ -78,7 +78,7 @@ src/
 见 [ROADMAP.md](ROADMAP.md) 和 [.kilo/plans/](.kilo/plans/)。已实现的规划外补强：设置面板、i18n、连接池生命周期。
 未落地的 stretch 项：
 
-- 时间戳 gutter、命令生命周期事件和其他 Crossh 终端附加层
+- 命令生命周期事件和其他 Crossh 终端附加层
 - SFTP 拖拽上传 / 批量 / 断点续传
 - 标签拖拽排序
 - config 编辑 UI、自动重连

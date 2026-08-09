@@ -16,7 +16,7 @@ use itertools::Itertools;
 use settings::Settings;
 use std::time::Instant;
 use terminal::{
-    Cell, Color, Content, CursorShape, IndexedCell, Modes, NamedColor, Point, Range, Terminal,
+    Cell, Color, CursorShape, IndexedCell, Modes, NamedColor, Point, Range, Terminal,
     TerminalBounds, is_app_chosen_exact_color as terminal_is_app_chosen_exact_color,
     is_default_background_color, terminal_settings::TerminalSettings,
 };
@@ -26,6 +26,8 @@ use util::ResultExt;
 
 use std::fmt::Debug;
 use std::mem;
+
+use crossh_terminal::timestamps::TerminalRow;
 
 use super::TerminalView;
 mod apca_contrast;
@@ -175,6 +177,113 @@ fn selection_highlight_color() -> Hsla {
     crossh_ui::theme::selection()
 }
 
+const TIMESTAMP_GUTTER_WIDTH: f32 = 104.0;
+const TIMESTAMP_GUTTER_GAP: f32 = 8.0;
+const TIMESTAMP_GUTTER_PADDING: f32 = 8.0;
+
+fn timestamp_rows(cells: &[IndexedCell], row_count: usize, columns: usize) -> Vec<TerminalRow> {
+    let mut rows = Vec::with_capacity(row_count);
+    let mut current_line = None;
+    let mut text = String::with_capacity(columns);
+
+    for indexed_cell in cells {
+        if current_line != Some(indexed_cell.point.line) {
+            if current_line.is_some() {
+                rows.push(TerminalRow::new(std::mem::take(&mut text)));
+            }
+            current_line = Some(indexed_cell.point.line);
+        }
+
+        if indexed_cell.cell.is_wide_char_spacer() {
+            continue;
+        }
+
+        let character = indexed_cell.cell.character();
+        text.push(if character == '\0' { ' ' } else { character });
+        if let Some(zero_width) = indexed_cell.cell.zerowidth() {
+            text.extend(zero_width.iter().copied());
+        }
+    }
+
+    if current_line.is_some() {
+        rows.push(TerminalRow::new(text));
+    }
+
+    rows.resize_with(row_count, TerminalRow::default);
+    rows.truncate(row_count);
+    rows
+}
+
+fn paint_timestamp_gutter(
+    timestamps: &[Option<String>],
+    canvas_bounds: Bounds<Pixels>,
+    terminal_bounds: &TerminalBounds,
+    line_height: Pixels,
+    text_style: &TextStyle,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let reserved_width = terminal_bounds.bounds.origin.x - canvas_bounds.origin.x;
+    let gap = px(TIMESTAMP_GUTTER_GAP);
+    let padding = px(TIMESTAMP_GUTTER_PADDING);
+    let gutter_width = reserved_width - gap;
+    if gutter_width <= px(1.) {
+        return;
+    }
+
+    let divider_bounds = Bounds {
+        origin: point(
+            terminal_bounds.bounds.origin.x - gap - px(1.),
+            canvas_bounds.origin.y,
+        ),
+        size: size(px(1.), canvas_bounds.size.height),
+    };
+    window.paint_quad(fill(divider_bounds, Hsla::from(crossh_ui::theme::border())));
+
+    let text_width = gutter_width - padding;
+    if text_width <= px(1.) {
+        return;
+    }
+
+    let timestamp_color = Hsla {
+        a: text_style.color.a * 0.48,
+        ..text_style.color
+    };
+    let font = text_style.font();
+    let font_size = (text_style.font_size.to_pixels(window.rem_size()) - px(2.)).max(px(1.));
+
+    for (row, timestamp) in timestamps.iter().enumerate() {
+        let Some(timestamp) = timestamp else {
+            continue;
+        };
+
+        let shaped = window.text_system().shape_line(
+            timestamp.clone().into(),
+            font_size,
+            &[TextRun {
+                len: timestamp.len(),
+                font: font.clone(),
+                color: timestamp_color,
+                ..Default::default()
+            }],
+            None,
+        );
+        shaped
+            .paint(
+                point(
+                    canvas_bounds.origin.x + padding / 2.,
+                    terminal_bounds.bounds.origin.y + row as f32 * line_height,
+                ),
+                line_height,
+                gpui::TextAlign::Right,
+                Some(text_width),
+                window,
+                cx,
+            )
+            .log_err();
+    }
+}
+
 /// The information generated during layout that is necessary for painting.
 pub struct LayoutState {
     hitbox: Hitbox,
@@ -189,6 +298,7 @@ pub struct LayoutState {
     mode: Modes,
     display_offset: usize,
     base_text_style: TextStyle,
+    timestamp_rows: Vec<Option<String>>,
 }
 
 /// Helper struct for converting terminal cursor points to displayed cursor points.
@@ -1292,6 +1402,7 @@ impl Element for TerminalElement {
             cx,
             |_, _, hitbox, window, cx| {
                 let hitbox = hitbox.unwrap();
+                let show_timestamps = self.terminal_view.read(cx).show_timestamps;
                 let settings = ThemeSettings::get_global(cx).clone();
 
                 let buffer_font_size = settings.buffer_font_size(cx);
@@ -1344,7 +1455,6 @@ impl Element for TerminalElement {
                 };
 
                 let text_system = cx.text_system();
-                let gutter;
                 let (dimensions, line_height_px) = {
                     let rem_size = window.rem_size();
                     let font_pixels = text_style.font_size.to_pixels(rem_size);
@@ -1355,7 +1465,14 @@ impl Element for TerminalElement {
                         .advance(font_id, font_pixels, 'm')
                         .unwrap()
                         .width;
-                    gutter = cell_width;
+
+                    let gutter = if show_timestamps {
+                        let available =
+                            (f32::from(bounds.size.width) - TIMESTAMP_GUTTER_GAP).max(0.0);
+                        px((TIMESTAMP_GUTTER_WIDTH + TIMESTAMP_GUTTER_GAP).min(available))
+                    } else {
+                        px(0.)
+                    };
 
                     let mut size = bounds.size;
                     size.width -= gutter;
@@ -1420,17 +1537,33 @@ impl Element for TerminalElement {
                     terminal.sync(window, cx);
                 });
 
-                let Content {
-                    cells,
-                    mode,
-                    display_offset,
-                    cursor_char,
-                    selection,
-                    cursor,
-                    ..
-                } = &self.terminal.read(cx).last_content;
-                let mode = *mode;
-                let display_offset = *display_offset;
+                let (mode, display_offset, cursor_char, selection, cursor, row_snapshots) = {
+                    let content = &self.terminal.read(cx).last_content;
+                    (
+                        content.mode,
+                        content.display_offset,
+                        content.cursor_char,
+                        content.selection,
+                        content.cursor,
+                        timestamp_rows(
+                            &content.cells,
+                            dimensions.num_lines(),
+                            dimensions.num_columns(),
+                        ),
+                    )
+                };
+                let (show_timestamps, timestamp_rows) = self.terminal_view.update(cx, |view, _| {
+                    view.update_timestamp_state(
+                        &row_snapshots,
+                        display_offset,
+                        DisplayCursor::from(cursor.point, display_offset)
+                            .line()
+                            .try_into()
+                            .ok(),
+                        mode.contains(Modes::ALT_SCREEN),
+                    )
+                });
+                let cells = &self.terminal.read(cx).last_content.cells;
 
                 // Keep selection painting in the element so the terminal core
                 // remains the single owner of selection coordinates.
@@ -1569,6 +1702,11 @@ impl Element for TerminalElement {
                     mode,
                     display_offset,
                     base_text_style: text_style,
+                    timestamp_rows: if show_timestamps {
+                        timestamp_rows
+                    } else {
+                        Vec::new()
+                    },
                 }
             },
         )
@@ -1593,6 +1731,16 @@ impl Element for TerminalElement {
                 Pixels::from((f32::from(value) * scale_factor).floor() / scale_factor)
             };
             let origin = point(snap_px(origin.x), snap_px(origin.y));
+
+            paint_timestamp_gutter(
+                &layout.timestamp_rows,
+                bounds,
+                &layout.dimensions,
+                layout.dimensions.line_height,
+                &layout.base_text_style,
+                window,
+                cx,
+            );
 
             let marked_text_cloned = {
                 let marked_text = &self.terminal_view.read(cx).ime_marked_text;

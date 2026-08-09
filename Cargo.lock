@@ -1889,6 +1889,7 @@ dependencies = [
 name = "crossh-terminal"
 version = "0.10.2"
 dependencies = [
+ "chrono",
  "crossh-core",
  "serde",
 ]
