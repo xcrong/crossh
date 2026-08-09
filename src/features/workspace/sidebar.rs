@@ -88,8 +88,6 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
     let active_count = active_entries.len();
     let bank_count = bank_entries.len();
     let project_count = if show_projects { project_dirs.len() } else { 0 };
-    let visible_count = active_count + bank_count + project_count;
-
     let mut active_list = div().id("active-host-list").flex().flex_col().gap_1();
     if active_entries.is_empty() {
         active_list = active_list.child(render_host_group_empty(i18n::text(
@@ -277,15 +275,6 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
         .child(search_content)
         .child(ime_input_canvas(search_focus, input_entity));
 
-    let list_footer =
-        if visible_count == 0 && shell.connections.entries().is_empty() && !show_projects {
-            i18n::text("sidebar.no_ssh_hosts")
-        } else if visible_count == 0 {
-            i18n::text("sidebar.no_matches")
-        } else {
-            rust_i18n::t!("sidebar.entry_count", count = visible_count).to_string()
-        };
-
     let width = shell
         .sidebar_width
         .get()
@@ -430,18 +419,7 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
                 .flex_col()
                 .child(titlebar)
                 .child(search)
-                .child(list)
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .px_3()
-                        .py_2()
-                        .border_t_1()
-                        .border_color(theme::border())
-                        .text_xs()
-                        .text_color(theme::faint_text())
-                        .child(SharedString::from(list_footer)),
-                ),
+                .child(list),
         )
         .child(resize_handle);
     sidebar_root.into_any_element()

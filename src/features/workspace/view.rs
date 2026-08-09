@@ -149,18 +149,17 @@ pub fn render_main(shell: &mut AppShell, cx: &mut Context<AppShell>) -> AnyEleme
         content = content.child(render_quick_commands(shell, scope, cwd, cx));
     }
     pane = pane.child(content);
-    if let Some(ActiveView::LocalSession(session_id)) = shell.workspace.active_view
-        && let Some(session) = shell.workspace.sessions.local_sessions.get(&session_id)
-    {
-        pane = pane.child(render_terminal_status_bar(session, cx));
-    }
     pane.into_any_element()
 }
 
-fn render_terminal_status_bar(session: &LocalSession, cx: &mut Context<AppShell>) -> AnyElement {
+pub(crate) fn render_terminal_status_bar(
+    session: &LocalSession,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
     let cwd = session.cwd.to_string_lossy().to_string();
     let mut bar = div()
         .h(px(25.))
+        .w_full()
         .flex_none()
         .flex()
         .items_center()

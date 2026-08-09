@@ -34,7 +34,7 @@ use crate::features::workspace::settings::WorkspaceSettings;
 use crate::features::workspace::sidebar::render_sidebar;
 use crate::features::workspace::view::{
     ActiveView, LocalDir, LocalSession, LocalSessionId, Tab, rebuild_local_dirs, render_main,
-    render_quick_command_editor,
+    render_quick_command_editor, render_terminal_status_bar,
 };
 use crate::shared::i18n::{self, LanguagePreference};
 use crossh_core::commands::{
@@ -1430,18 +1430,37 @@ impl Render for AppShell {
         // Materialize the opaque element before attaching the root listener so
         // Rust 2024 does not keep `cx` borrowed through `render_main`.
         let main = render_main(self, cx);
+        let workspace = div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_row()
+            .child(sidebar)
+            .child(main);
+        let status_bar = match self.workspace.active_view {
+            Some(ActiveView::LocalSession(session_id)) => self
+                .workspace
+                .sessions
+                .local_sessions
+                .get(&session_id)
+                .map(|session| render_terminal_status_bar(session, cx)),
+            _ => None,
+        };
 
         let mut root = div()
             .id("app-shell")
             .flex()
-            .flex_row()
+            .flex_col()
             .size_full()
             .bg(theme::canvas())
             .text_color(theme::text())
             .on_action(cx.listener(AppShell::handle_quit))
             .on_key_down(cx.listener(AppShell::handle_shell_key_down))
-            .child(sidebar)
-            .child(main);
+            .child(workspace);
+
+        if let Some(status_bar) = status_bar {
+            root = root.child(status_bar);
+        }
 
         if matches!(
             prompt,
