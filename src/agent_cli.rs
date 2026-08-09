@@ -392,6 +392,8 @@ fn render(frame: &mut Frame, app: &mut App) {
         lines.push(Line::styled(label, Style::new().fg(color).bold()));
         if matches!(role, Role::Tool) && !app.show_tool_details {
             lines.push(Line::from(collapsed_tool_summary(content, content_width)));
+        } else if matches!(role, Role::Agent) {
+            lines.extend(markdown_content(content, content_width));
         } else {
             lines.extend(wrap_content(content, content_width));
         }
@@ -499,6 +501,45 @@ fn wrap_content(content: &str, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
+fn markdown_content(content: &str, width: usize) -> Vec<Line<'static>> {
+    let markdown = tui_markdown::from_str(content);
+    wrap_styled_lines(markdown.lines, width)
+}
+
+fn wrap_styled_lines(lines: Vec<Line<'_>>, width: usize) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let mut wrapped = Vec::new();
+    for line in lines {
+        if line.spans.is_empty() {
+            wrapped.push(Line::default());
+            continue;
+        }
+        let mut spans = Vec::new();
+        let mut line_width = 0;
+        for span in line.spans {
+            let style = span.style;
+            let mut chunk = String::new();
+            for character in span.content.chars() {
+                let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+                if line_width > 0 && line_width + character_width > width {
+                    if !chunk.is_empty() {
+                        spans.push(Span::styled(std::mem::take(&mut chunk), style));
+                    }
+                    wrapped.push(Line::from(std::mem::take(&mut spans)));
+                    line_width = 0;
+                }
+                chunk.push(character);
+                line_width += character_width;
+            }
+            if !chunk.is_empty() {
+                spans.push(Span::styled(chunk, style));
+            }
+        }
+        wrapped.push(Line::from(spans));
+    }
+    wrapped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -539,5 +580,17 @@ mod tests {
         let summary = collapsed_tool_summary("bash {\n  very long arguments here\n}", 18);
         assert!(!summary.contains('\n'));
         assert!(UnicodeWidthStr::width(summary.as_str()) <= 18);
+    }
+
+    #[test]
+    fn markdown_content_preserves_formatting_and_wraps() {
+        let lines = markdown_content("# Title\n\nUse **bold text** here.", 10);
+        assert!(lines.len() >= 4);
+        assert!(lines.iter().flat_map(|line| &line.spans).any(|span| {
+            span.style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD)
+        }));
+        assert!(lines.iter().all(|line| line.width() <= 10));
     }
 }
