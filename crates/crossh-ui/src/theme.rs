@@ -1,41 +1,48 @@
 use gpui::{Hsla, Rgba, hsla, rgb};
 
-/// Crossh's visual language: a quiet graphite workbench with a mint signal
-/// reserved for the active surface and healthy connections.
-pub const SIDEBAR_WIDTH: f32 = 248.0;
+/// Crossh's visual language: a graphite command deck with a mint signal.
+///
+/// The palette intentionally has four distinct depth levels. The terminal is
+/// the canvas; chrome, controls, and popovers should read as separate layers
+/// without competing with the shell itself.
+pub const SIDEBAR_WIDTH: f32 = 252.0;
 pub const SIDEBAR_MIN_WIDTH: f32 = 216.0;
 pub const SIDEBAR_MAX_WIDTH: f32 = 360.0;
-pub const TITLEBAR_HEIGHT: f32 = 38.0;
-pub const TAB_HEIGHT: f32 = 36.0;
-pub const ROW_HEIGHT: f32 = 34.0;
-pub const RADIUS_SM: f32 = 5.0;
-pub const RADIUS_MD: f32 = 7.0;
+pub const TITLEBAR_HEIGHT: f32 = 42.0;
+pub const TAB_HEIGHT: f32 = 38.0;
+pub const ROW_HEIGHT: f32 = 36.0;
+pub const RADIUS_SM: f32 = 4.0;
+pub const RADIUS_MD: f32 = 8.0;
 pub const QUICK_COMMANDS_WIDTH: f32 = 300.0;
 pub const QUICK_COMMANDS_MIN_WIDTH: f32 = 240.0;
 pub const QUICK_COMMANDS_MAX_WIDTH: f32 = 460.0;
 
 pub fn canvas() -> Rgba {
-    rgb(0x0f1114)
+    rgb(0x0d1014)
 }
 
 pub fn sidebar() -> Rgba {
-    rgb(0x15191d)
+    rgb(0x12171c)
 }
 
 pub fn surface() -> Rgba {
-    rgb(0x1d2329)
+    rgb(0x171d23)
 }
 
 pub fn raised() -> Rgba {
-    rgb(0x232b32)
+    rgb(0x202930)
 }
 
 pub fn border() -> Rgba {
-    rgb(0x2a323a)
+    rgb(0x28323a)
 }
 
 pub fn border_strong() -> Rgba {
-    rgb(0x3a4650)
+    rgb(0x3a4854)
+}
+
+pub fn overlay() -> Rgba {
+    rgb(0x262f38)
 }
 
 pub fn text() -> Rgba {
@@ -51,7 +58,11 @@ pub fn faint_text() -> Rgba {
 }
 
 pub fn accent() -> Rgba {
-    rgb(0x69d7b0)
+    rgb(0x7de0bd)
+}
+
+pub fn accent_hover() -> Rgba {
+    rgb(0x95efd0)
 }
 
 /// Background tint of an active text selection. The translucent accent keeps
@@ -62,19 +73,23 @@ pub fn selection() -> Hsla {
 }
 
 pub fn accent_soft() -> Rgba {
-    rgb(0x1d3a33)
+    rgb(0x173a34)
 }
 
 pub fn info() -> Rgba {
-    rgb(0x78b7ff)
+    rgb(0x87bfff)
 }
 
 pub fn warning() -> Rgba {
-    rgb(0xf1c878)
+    rgb(0xf3c66e)
 }
 
 pub fn danger() -> Rgba {
-    rgb(0xf07d7d)
+    rgb(0xf28b8b)
+}
+
+pub fn danger_hover() -> Rgba {
+    rgb(0xffa4a4)
 }
 
 pub fn diff_add_bg() -> Rgba {
@@ -98,5 +113,5 @@ pub fn scrim() -> Hsla {
 }
 
 pub fn focus_ring() -> Hsla {
-    hsla(0.43, 0.58, 0.62, 0.9)
+    Hsla::from(accent()).opacity(0.9)
 }

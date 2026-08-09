@@ -139,6 +139,7 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
     let active_group = render_host_group(
         HostGroupSpec {
             id: "active",
+            icon: icons::IconName::Server,
             title: i18n::text("sidebar.active"),
             count: active_count,
             collapsed: active_collapsed,
@@ -151,6 +152,7 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
     let bank_group = render_host_group(
         HostGroupSpec {
             id: "bank",
+            icon: icons::IconName::Server,
             title: i18n::text("sidebar.bank"),
             count: bank_count,
             collapsed: bank_collapsed,
@@ -164,6 +166,7 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
         Some(render_host_group(
             HostGroupSpec {
                 id: "projects",
+                icon: icons::IconName::FolderOpen,
                 title: i18n::text("sidebar.local"),
                 count: project_count,
                 collapsed: shell.projects_collapsed && query.is_empty(),
@@ -184,9 +187,9 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
         .min_h_0()
         .flex()
         .flex_col()
-        .gap_2()
-        .px_2()
-        .py_2()
+        .gap_3()
+        .px_3()
+        .py_3()
         .overflow_y_scroll();
     if let Some(projects_group) = projects_group {
         list = list.child(projects_group);
@@ -253,9 +256,9 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
         .flex()
         .items_center()
         .gap_2()
-        .bg(theme::canvas())
+        .bg(theme::surface())
         .border_1()
-        .border_color(theme::border())
+        .border_color(theme::border_strong())
         .rounded(px(theme::RADIUS_SM))
         .relative()
         .text_xs()
@@ -363,11 +366,25 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
         .flex()
         .items_center()
         .gap_2()
-        .child(icons::icon(icons::IconName::Terminal, 15.).text_color(theme::accent()))
+        .border_b_1()
+        .border_color(theme::border())
+        .child(
+            div()
+                .w(px(24.))
+                .h(px(24.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(theme::RADIUS_SM))
+                .bg(theme::accent_soft())
+                .border_1()
+                .border_color(theme::border_strong())
+                .child(icons::icon(icons::IconName::Terminal, 14.).text_color(theme::accent())),
+        )
         .child(
             div()
                 .text_sm()
-                .font_weight(FontWeight::MEDIUM)
+                .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme::text())
                 .child(SharedString::from("crossh")),
         )
@@ -382,6 +399,7 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
                 .justify_center()
                 .rounded(px(theme::RADIUS_SM))
                 .cursor_pointer()
+                .hover(|s| s.bg(theme::surface()))
                 .tooltip(|_window, cx| {
                     cx.new(|_| LocalPathTooltip {
                         path: SharedString::from(i18n::text("tooltip.settings")),
@@ -737,6 +755,13 @@ fn render_host_entry(
                 )
                 .child(
                     div()
+                        .w(px(6.))
+                        .h(px(6.))
+                        .rounded_full()
+                        .bg(state_dot_color(&state)),
+                )
+                .child(
+                    div()
                         .flex_1()
                         .min_w_0()
                         .truncate()
@@ -818,6 +843,7 @@ fn render_host_entry(
 /// 侧栏分组的渲染参数。
 struct HostGroupSpec {
     id: &'static str,
+    icon: icons::IconName,
     title: String,
     count: usize,
     collapsed: bool,
@@ -829,6 +855,7 @@ struct HostGroupSpec {
 fn render_host_group(spec: HostGroupSpec, cx: &mut Context<AppShell>) -> AnyElement {
     let HostGroupSpec {
         id,
+        icon,
         title,
         count,
         collapsed,
@@ -843,7 +870,7 @@ fn render_host_group(spec: HostGroupSpec, cx: &mut Context<AppShell>) -> AnyElem
     };
     let mut header = div()
         .id(format!("host-group-header-{id}"))
-        .h(px(28.))
+        .h(px(30.))
         .px_2()
         .flex()
         .items_center()
@@ -855,6 +882,7 @@ fn render_host_group(spec: HostGroupSpec, cx: &mut Context<AppShell>) -> AnyElem
         .hover(|s| s.bg(theme::surface()).text_color(theme::text()))
         .on_click(cx.listener(move |this, _ev, _window, cx| toggle(this, cx)))
         .child(icons::icon(caret, 13.).text_color(theme::faint_text()))
+        .child(icons::icon(icon, 13.).text_color(theme::faint_text()))
         .child(
             div()
                 .flex_1()
@@ -863,7 +891,16 @@ fn render_host_group(spec: HostGroupSpec, cx: &mut Context<AppShell>) -> AnyElem
         )
         .child(
             div()
-                .text_color(theme::faint_text())
+                .min_w(px(20.))
+                .h(px(18.))
+                .px_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .bg(theme::raised())
+                .text_xs()
+                .text_color(theme::muted_text())
                 .child(SharedString::from(count.to_string())),
         );
 
@@ -923,6 +960,15 @@ fn render_host_group_empty(label: String) -> AnyElement {
 
 fn is_active_connection(state: &Option<ConnState>) -> bool {
     matches!(state, Some(ConnState::Connected))
+}
+
+fn state_dot_color(state: &Option<ConnState>) -> gpui::Rgba {
+    match state {
+        Some(ConnState::Connected) => theme::accent(),
+        Some(ConnState::Connecting) => theme::warning(),
+        Some(ConnState::Error(_)) => theme::danger(),
+        Some(ConnState::Closed) | None => theme::faint_text(),
+    }
 }
 
 /// 连接状态徽标文字。

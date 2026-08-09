@@ -253,12 +253,24 @@ fn host_key_button(
         .rounded(px(theme::RADIUS_SM))
         .text_xs()
         .cursor_pointer()
+        .border_1()
+        .border_color(if matches!(decision, HostKeyDecision::Reject) {
+            theme::border_strong()
+        } else {
+            theme::accent()
+        })
         .bg(if matches!(decision, HostKeyDecision::Reject) {
             theme::raised()
         } else {
             theme::accent()
         })
-        .hover(|s| s.bg(theme::border_strong()))
+        .hover(|s| {
+            s.bg(if matches!(decision, HostKeyDecision::Reject) {
+                theme::border_strong()
+            } else {
+                theme::accent_hover()
+            })
+        })
         .text_color(if matches!(decision, HostKeyDecision::Reject) {
             theme::text()
         } else {
@@ -289,12 +301,24 @@ fn cred_button(cx: &mut Context<AppShell>, label: String, submit: bool) -> impl 
         .rounded(px(theme::RADIUS_SM))
         .text_xs()
         .cursor_pointer()
+        .border_1()
+        .border_color(if submit {
+            theme::accent()
+        } else {
+            theme::border_strong()
+        })
         .bg(if submit {
             theme::accent()
         } else {
             theme::raised()
         })
-        .hover(|s| s.bg(theme::border_strong()))
+        .hover(|s| {
+            s.bg(if submit {
+                theme::accent_hover()
+            } else {
+                theme::border_strong()
+            })
+        })
         .text_color(if submit {
             theme::canvas()
         } else {

@@ -661,8 +661,9 @@ impl Render for SettingsWindow {
                             .flex()
                             .flex_col()
                             .gap_1()
+                            .bg(theme::sidebar())
                             .border_r_1()
-                            .border_color(theme::border())
+                            .border_color(theme::border_strong())
                             .child(general)
                             .child(terminal)
                             .child(updates)
@@ -698,6 +699,12 @@ fn nav_button(
         .flex()
         .items_center()
         .gap_2()
+        .border_l_2()
+        .border_color(if selected {
+            theme::accent()
+        } else {
+            theme::sidebar()
+        })
         .rounded(px(theme::RADIUS_SM))
         .cursor_pointer()
         .text_xs()
@@ -709,13 +716,13 @@ fn nav_button(
         .bg(if selected {
             theme::accent_soft()
         } else {
-            theme::canvas()
+            theme::sidebar()
         })
         .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
         .child(
             icons::icon(icon, 14.)
                 .text_color(if selected {
-                    theme::text()
+                    theme::accent()
                 } else {
                     theme::muted_text()
                 })
@@ -730,7 +737,8 @@ fn settings_heading(key: &str) -> AnyElement {
     div()
         .pb_2()
         .text_lg()
-        .font_weight(FontWeight::MEDIUM)
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme::text())
         .child(SharedString::from(i18n::text(key)))
         .into_any_element()
 }
@@ -783,6 +791,8 @@ fn settings_icon_button(
         .justify_center()
         .rounded(px(theme::RADIUS_SM))
         .cursor_pointer()
+        .border_1()
+        .border_color(theme::border())
         .bg(theme::raised())
         .text_color(theme::muted_text())
         .hover(|s| s.bg(theme::accent()).text_color(theme::canvas()))
@@ -815,6 +825,8 @@ fn settings_link_button(
         .gap_1()
         .rounded(px(theme::RADIUS_SM))
         .cursor_pointer()
+        .border_1()
+        .border_color(theme::border())
         .bg(theme::raised())
         .text_xs()
         .text_color(theme::muted_text())

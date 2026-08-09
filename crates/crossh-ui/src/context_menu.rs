@@ -206,7 +206,7 @@ pub fn render_context_menu<A: Clone + 'static, T: 'static>(
         .flex()
         .flex_col()
         .gap_1()
-        .bg(theme::raised())
+        .bg(theme::overlay())
         .border_1()
         .border_color(theme::border_strong())
         .rounded(px(theme::RADIUS_SM))
@@ -249,7 +249,7 @@ pub fn render_context_menu<A: Clone + 'static, T: 'static>(
         } else {
             row = row
                 .cursor_pointer()
-                .hover(|s| s.bg(theme::surface()))
+                .hover(|s| s.bg(theme::raised()))
                 .on_click({
                     let on_action = on_action.clone();
                     cx.listener(move |this, _ev, window, cx| {

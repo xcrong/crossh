@@ -62,6 +62,7 @@ fn main() {
         zed_release_channel::init(app_version, cx);
         zed_settings::init(cx);
         zed_theme_settings::init(LoadThemes::JustBase, cx);
+        infrastructure::theme::install_crossh_theme(cx);
         ZedAssets
             .load_fonts(cx)
             .expect("Zed embedded fonts should load");

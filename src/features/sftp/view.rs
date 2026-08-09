@@ -13,7 +13,7 @@ use gpui::{
     FocusHandle, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, Keystroke, MouseButton,
     MouseDownEvent, ParentElement, PathPromptOptions, Pixels, Point, Render, ScrollHandle,
     SharedString, StatefulInteractiveElement, Styled, Task, UTF16Selection, Window, canvas, div,
-    px, rgb,
+    px,
 };
 
 use crate::features::workspace::pane::{PaneRisk, TerminalPaneInfo, WorkspacePane};
@@ -895,7 +895,7 @@ impl SftpPane {
                     .rounded(px(theme::RADIUS_SM))
                     .cursor_pointer()
                     .bg(theme::accent())
-                    .hover(|s| s.bg(rgb(0x82e3bf)))
+                    .hover(|s| s.bg(theme::accent_hover()))
                     .text_xs()
                     .text_color(theme::canvas())
                     .child(SharedString::from(if is_rename {
@@ -990,7 +990,7 @@ impl SftpPane {
                     .rounded(px(theme::RADIUS_SM))
                     .cursor_pointer()
                     .bg(theme::danger())
-                    .hover(|s| s.bg(rgb(0xf49b9b)))
+                    .hover(|s| s.bg(theme::danger_hover()))
                     .text_xs()
                     .text_color(theme::canvas())
                     .child(SharedString::from(i18n::text("context_menu.delete")))
@@ -1199,7 +1199,7 @@ impl SftpPane {
                         .rounded(px(theme::RADIUS_SM))
                         .cursor_pointer()
                         .bg(theme::accent())
-                        .hover(|s| s.bg(rgb(0x82e3bf)))
+                        .hover(|s| s.bg(theme::accent_hover()))
                         .text_xs()
                         .text_color(theme::canvas())
                         .child(icons::icon(icons::IconName::Save, 14.).text_color(theme::canvas()))
@@ -1666,7 +1666,7 @@ impl Render for SftpPane {
                             .rounded(px(theme::RADIUS_SM))
                             .cursor_pointer()
                             .bg(theme::accent())
-                            .hover(|s| s.bg(rgb(0x82e3bf)))
+                            .hover(|s| s.bg(theme::accent_hover()))
                             .text_xs()
                             .text_color(theme::canvas())
                             .child(

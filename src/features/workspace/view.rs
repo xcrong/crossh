@@ -8,7 +8,7 @@ use std::rc::Rc;
 use gpui::{
     AnyElement, AppContext, Bounds, ClickEvent, Context, Entity, FontWeight, InteractiveElement,
     IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
-    SharedString, StatefulInteractiveElement, Styled, Window, canvas, div, hsla, px, rgb,
+    SharedString, StatefulInteractiveElement, Styled, Window, canvas, div, px,
 };
 
 use crate::features::connections::Connection;
@@ -158,7 +158,7 @@ pub(crate) fn render_terminal_status_bar(
 ) -> AnyElement {
     let cwd = session.cwd.to_string_lossy().to_string();
     let mut bar = div()
-        .h(px(25.))
+        .h(px(27.))
         .w_full()
         .flex_none()
         .flex()
@@ -171,7 +171,18 @@ pub(crate) fn render_terminal_status_bar(
         .bg(theme::surface())
         .text_xs()
         .text_color(theme::muted_text())
-        .child(div().min_w_0().truncate().child(SharedString::from(cwd)));
+        .child(
+            div()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap_2()
+                .truncate()
+                .child(
+                    icons::icon(icons::IconName::FolderOpen, 12.).text_color(theme::faint_text()),
+                )
+                .child(div().min_w_0().truncate().child(SharedString::from(cwd))),
+        );
 
     if let Some(status) = &session.git_status {
         let click_cwd = session.cwd.clone();
@@ -327,7 +338,7 @@ fn render_quick_commands(
         });
 
     let header = div()
-        .h(px(46.))
+        .h(px(50.))
         .flex_shrink_0()
         .flex()
         .flex_col()
@@ -349,8 +360,13 @@ fn render_quick_commands(
                 .child(SharedString::from(i18n::text("quick_commands.title")))
                 .child(
                     div()
+                        .px_2()
+                        .py(px(1.))
+                        .rounded_full()
+                        .bg(theme::raised())
                         .ml_auto()
-                        .text_color(theme::faint_text())
+                        .text_xs()
+                        .text_color(theme::muted_text())
                         .child(SharedString::from(format!("{}/{}", records.len(), total))),
                 ),
         )
@@ -976,8 +992,10 @@ fn render_empty_state(cx: &mut Context<AppShell>) -> AnyElement {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .rounded(px(14.))
+                        .rounded(px(theme::RADIUS_MD))
                         .bg(theme::accent_soft())
+                        .border_1()
+                        .border_color(theme::border_strong())
                         .child(
                             icons::icon(icons::IconName::Terminal, 28.).text_color(theme::accent()),
                         ),
@@ -1009,7 +1027,8 @@ fn render_empty_state(cx: &mut Context<AppShell>) -> AnyElement {
                         .cursor_pointer()
                         .bg(theme::accent())
                         .text_color(theme::canvas())
-                        .hover(|style| style.bg(rgb(0x82e3bf)))
+                        .font_weight(FontWeight::MEDIUM)
+                        .hover(|style| style.bg(theme::accent_hover()))
                         .child(
                             icons::icon(icons::IconName::FolderOpen, 14.)
                                 .text_color(theme::canvas()),
@@ -1060,7 +1079,10 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                     .px_1()
                     .rounded(px(theme::RADIUS_SM));
                 if is_active {
-                    container = container.bg(theme::accent_soft());
+                    container = container
+                        .bg(theme::accent_soft())
+                        .border_b_2()
+                        .border_color(theme::accent());
                 } else {
                     container = container.hover(|style| style.bg(theme::raised()));
                 }
@@ -1144,7 +1166,11 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                             .py_1()
                             .cursor_pointer()
                             .text_xs()
-                            .text_color(theme::text())
+                            .text_color(if is_active {
+                                theme::text()
+                            } else {
+                                theme::muted_text()
+                            })
                             .hover(|s| s.text_color(theme::accent()))
                             .child(
                                 div()
@@ -1222,7 +1248,10 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                     .px_1()
                     .rounded(px(theme::RADIUS_SM));
                 if is_active {
-                    container = container.bg(theme::accent_soft());
+                    container = container
+                        .bg(theme::accent_soft())
+                        .border_b_2()
+                        .border_color(theme::accent());
                 } else {
                     container = container.hover(|style| style.bg(theme::raised()));
                 }
@@ -1296,7 +1325,11 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                             .py_1()
                             .cursor_pointer()
                             .text_xs()
-                            .text_color(theme::text())
+                            .text_color(if is_active {
+                                theme::text()
+                            } else {
+                                theme::muted_text()
+                            })
                             .hover(|s| s.text_color(theme::accent()))
                             .child(
                                 div()
@@ -1360,9 +1393,9 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
             .justify_center()
             .rounded(px(theme::RADIUS_SM))
             .cursor_pointer()
-            .bg(theme::accent_soft())
+            .bg(theme::raised())
             .border_1()
-            .border_color(theme::border_strong())
+            .border_color(theme::border())
             .text_color(theme::accent())
             .hover(|s| {
                 s.bg(theme::accent())
@@ -1386,13 +1419,12 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
     )
 }
 
-fn tab_badge_color(state: &Option<ConnState>) -> gpui::Hsla {
+fn tab_badge_color(state: &Option<ConnState>) -> gpui::Rgba {
     match state {
-        Some(ConnState::Connecting) => hsla(0.13, 0.8, 0.6, 1.),
-        Some(ConnState::Connected) => hsla(0.33, 0.7, 0.5, 1.),
-        Some(ConnState::Error(_)) => hsla(0., 0.8, 0.55, 1.),
-        Some(ConnState::Closed) => hsla(0., 0., 0.35, 1.),
-        None => hsla(0., 0., 0.35, 1.),
+        Some(ConnState::Connecting) => theme::warning(),
+        Some(ConnState::Connected) => theme::accent(),
+        Some(ConnState::Error(_)) => theme::danger(),
+        Some(ConnState::Closed) | None => theme::faint_text(),
     }
 }
 

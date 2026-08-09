@@ -221,7 +221,8 @@ impl Render for GitWindow {
                             .flex()
                             .flex_col()
                             .border_r_1()
-                            .border_color(theme::border())
+                            .border_color(theme::border_strong())
+                            .bg(theme::sidebar())
                             .child(
                                 div()
                                     .id("git-changes-list")
@@ -273,7 +274,9 @@ impl GitWindow {
             .flex()
             .items_center()
             .rounded(px(theme::RADIUS_SM))
-            .bg(theme::raised())
+            .bg(theme::sidebar())
+            .border_1()
+            .border_color(theme::border())
             .p(px(2.))
             .child(
                 div()
@@ -286,12 +289,12 @@ impl GitWindow {
                     .text_color(if staged {
                         theme::muted_text()
                     } else {
-                        theme::text()
+                        theme::accent()
                     })
                     .bg(if staged {
-                        theme::canvas()
+                        theme::sidebar()
                     } else {
-                        theme::raised()
+                        theme::accent_soft()
                     })
                     .child(SharedString::from(i18n::text("git.working")))
                     .on_click(cx.listener(|this, _ev, _window, cx| {
@@ -307,14 +310,14 @@ impl GitWindow {
                     .rounded(px(theme::RADIUS_SM - 1.))
                     .cursor_pointer()
                     .text_color(if staged {
-                        theme::text()
+                        theme::accent()
                     } else {
                         theme::muted_text()
                     })
                     .bg(if staged {
-                        theme::raised()
+                        theme::accent_soft()
                     } else {
-                        theme::canvas()
+                        theme::sidebar()
                     })
                     .child(SharedString::from(i18n::text("git.staged")))
                     .on_click(cx.listener(|this, _ev, _window, cx| {
@@ -323,7 +326,7 @@ impl GitWindow {
             );
 
         div()
-            .h(px(40.))
+            .h(px(44.))
             .flex_shrink_0()
             .px_3()
             .flex()
@@ -496,10 +499,16 @@ fn render_entries(
             } else {
                 theme::muted_text()
             })
-            .bg(if is_selected {
-                theme::surface()
+            .border_l_2()
+            .border_color(if is_selected {
+                theme::accent()
             } else {
-                theme::canvas()
+                theme::sidebar()
+            })
+            .bg(if is_selected {
+                theme::accent_soft()
+            } else {
+                theme::sidebar()
             })
             .hover(|s| s.bg(theme::raised()))
             .child(status_glyph(entry.status))

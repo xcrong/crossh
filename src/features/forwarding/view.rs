@@ -191,8 +191,8 @@ impl Render for ForwardPane {
             .flex()
             .flex_col()
             .px_4()
-            .py_3()
-            .gap_3()
+            .py_4()
+            .gap_4()
             .bg(theme::canvas());
 
         col = col.child(
@@ -203,7 +203,18 @@ impl Render for ForwardPane {
                 .text_sm()
                 .text_color(theme::text())
                 .child(
-                    icons::icon(icons::IconName::ArrowLeftRight, 17.).text_color(theme::accent()),
+                    div()
+                        .w(px(28.))
+                        .h(px(28.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(theme::RADIUS_SM))
+                        .bg(theme::accent_soft())
+                        .child(
+                            icons::icon(icons::IconName::ArrowLeftRight, 16.)
+                                .text_color(theme::accent()),
+                        ),
                 )
                 .child(SharedString::from(i18n::text("forward.title")))
                 .child(
@@ -220,6 +231,7 @@ impl Render for ForwardPane {
                 div()
                     .p_3()
                     .rounded(px(theme::RADIUS_SM))
+                    .bg(theme::surface())
                     .border_1()
                     .border_color(theme::border())
                     .text_sm()
@@ -331,7 +343,12 @@ fn render_section(
             .px_2()
             .rounded(px(theme::RADIUS_SM))
             .cursor_pointer()
-            .hover(|s| s.bg(theme::surface()))
+            .bg(if on {
+                theme::accent_soft()
+            } else {
+                theme::canvas()
+            })
+            .hover(|s| s.bg(theme::raised()))
             .child(div().w(px(10.)).h(px(10.)).rounded_full().bg(if on {
                 theme::accent()
             } else {
