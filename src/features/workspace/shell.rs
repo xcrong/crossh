@@ -94,6 +94,9 @@ pub struct AppShell {
     pub(crate) host_query: String,
     pub(crate) host_ime_marked_text: String,
     pub(crate) host_focus: FocusHandle,
+    /// 应用外壳根焦点；无任何终端/输入框聚焦时持有，保证窗口级动作
+    /// （如 Cmd+Q → Quit）始终有合法的 dispatch 目标。
+    pub(crate) shell_focus: FocusHandle,
     /// 主机分组折叠状态；Bank 默认收起，Local/Active 默认展开。
     pub(crate) bank_collapsed: bool,
     pub(crate) active_collapsed: bool,
@@ -174,6 +177,7 @@ impl AppShell {
             host_query: String::new(),
             host_ime_marked_text: String::new(),
             host_focus: cx.focus_handle(),
+            shell_focus: cx.focus_handle(),
             bank_collapsed: true,
             active_collapsed: false,
             projects_collapsed: false,
@@ -1426,6 +1430,12 @@ impl Render for AppShell {
         }
         self.last_had_prompt = has_prompt;
 
+        // 保持根焦点：没有终端或输入框聚焦时，按键/动作仍能沿 dispatch
+        // 路径到达 #app-shell 的动作处理器（否则 Cmd+Q 等会被静默丢弃）。
+        if window.focused(cx).is_none() {
+            self.shell_focus.focus(window, cx);
+        }
+
         let sidebar = render_sidebar(self, window, cx);
         // Materialize the opaque element before attaching the root listener so
         // Rust 2024 does not keep `cx` borrowed through `render_main`.
@@ -1449,6 +1459,7 @@ impl Render for AppShell {
 
         let mut root = div()
             .id("app-shell")
+            .track_focus(&self.shell_focus)
             .flex()
             .flex_col()
             .size_full()

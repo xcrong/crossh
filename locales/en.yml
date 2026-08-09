@@ -150,6 +150,7 @@ prompt:
   password_for: "Password for %{user}:"
 
 quit:
+  menu: Quit Crossh
   title: Quit Crossh?
   warning: "Closing Crossh can interrupt active work:"
   commands: "Terminal commands still running: %{count}"

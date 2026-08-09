@@ -150,6 +150,7 @@ prompt:
   password_for: "请输入 %{user} 的密码："
 
 quit:
+  menu: 退出 Crossh
   title: 要退出 Crossh 吗？
   warning: "关闭 Crossh 可能会中断以下活动："
   commands: "正在运行的终端命令：%{count}"
