@@ -10,6 +10,16 @@ settings:
   close: Close settings
   general: General
   terminal: Terminal
+  about: About
+  about_description: A focused SSH workbench for local and remote sessions.
+  about_version: Version
+  about_version_description: The version currently installed on this device.
+  about_source: Source code
+  about_source_description: View source, report issues, and read release notes.
+  about_source_open: Open GitHub
+  about_license: License
+  about_license_description: Crossh is distributed under the GNU General Public License, version 3 or later.
+  about_license_open: View license
   language: Language
   language_description: Choose the language used by the Crossh interface.
   timestamps: Line timestamps

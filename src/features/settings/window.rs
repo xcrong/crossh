@@ -23,6 +23,7 @@ pub enum SettingsSection {
     General,
     Terminal,
     Updates,
+    About,
 }
 
 /// 设置窗口的根视图。窗口关闭即释放。
@@ -504,6 +505,90 @@ impl SettingsWindow {
             }
         }
     }
+
+    fn render_about_settings(&self) -> AnyElement {
+        let version = div()
+            .text_sm()
+            .text_color(theme::text())
+            .child(SharedString::from(format!(
+                "v{}",
+                env!("CARGO_PKG_VERSION")
+            )));
+        let source = settings_link_button(
+            "settings-about-source",
+            i18n::text("settings.about_source_open"),
+            |_, _window, cx| cx.open_url("https://github.com/xcrong/crossh"),
+        );
+        let license = settings_link_button(
+            "settings-about-license",
+            i18n::text("settings.about_license_open"),
+            |_, _window, cx| cx.open_url("https://github.com/xcrong/crossh/blob/main/LICENSE"),
+        );
+
+        div()
+            .id("settings-about")
+            .max_w(px(760.))
+            .flex()
+            .flex_col()
+            .child(settings_heading("settings.about"))
+            .child(
+                div()
+                    .w_full()
+                    .py_4()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .border_b_1()
+                    .border_color(theme::border())
+                    .child(
+                        div()
+                            .w(px(56.))
+                            .h(px(56.))
+                            .flex()
+                            .flex_shrink_0()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(theme::RADIUS_MD))
+                            .bg(theme::accent_soft())
+                            .child(
+                                icons::icon(icons::IconName::Info, 30.).text_color(theme::accent()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_lg()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme::text())
+                                    .child(SharedString::from("Crossh")),
+                            )
+                            .child(div().text_sm().text_color(theme::muted_text()).child(
+                                SharedString::from(i18n::text("settings.about_description")),
+                            )),
+                    ),
+            )
+            .child(settings_row(
+                i18n::text("settings.about_version"),
+                i18n::text("settings.about_version_description"),
+                version.into_any_element(),
+            ))
+            .child(settings_row(
+                i18n::text("settings.about_source"),
+                i18n::text("settings.about_source_description"),
+                source,
+            ))
+            .child(settings_row(
+                i18n::text("settings.about_license"),
+                i18n::text("settings.about_license_description"),
+                license,
+            ))
+            .into_any_element()
+    }
 }
 
 impl Render for SettingsWindow {
@@ -540,11 +625,21 @@ impl Render for SettingsWindow {
                 this.select_section(SettingsSection::Updates, cx);
             }),
         );
+        let about = nav_button(
+            "settings-section-about",
+            icons::IconName::Info,
+            i18n::text("settings.about"),
+            section == SettingsSection::About,
+            cx.listener(|this, _ev, _window, cx| {
+                this.select_section(SettingsSection::About, cx);
+            }),
+        );
 
         let content = match section {
             SettingsSection::General => self.render_general_settings(&settings, cx),
             SettingsSection::Terminal => self.render_terminal_settings(&settings, cx),
             SettingsSection::Updates => self.render_updates_settings(&settings, cx),
+            SettingsSection::About => self.render_about_settings(),
         };
 
         div()
@@ -570,7 +665,9 @@ impl Render for SettingsWindow {
                             .border_color(theme::border())
                             .child(general)
                             .child(terminal)
-                            .child(updates),
+                            .child(updates)
+                            .child(div().flex_1())
+                            .child(about),
                     )
                     .child(
                         div()
@@ -700,6 +797,34 @@ fn settings_icon_button(
                 .text_color(theme::muted_text())
                 .hover(|s| s.text_color(theme::canvas())),
         )
+        .on_click(on_click)
+        .into_any_element()
+}
+
+fn settings_link_button(
+    id: &'static str,
+    label: String,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    div()
+        .id(id)
+        .h(px(30.))
+        .px_2()
+        .flex()
+        .items_center()
+        .gap_1()
+        .rounded(px(theme::RADIUS_SM))
+        .cursor_pointer()
+        .bg(theme::raised())
+        .text_xs()
+        .text_color(theme::muted_text())
+        .hover(|s| s.bg(theme::accent()).text_color(theme::canvas()))
+        .child(
+            icons::icon(icons::IconName::Link, 14.)
+                .text_color(theme::muted_text())
+                .hover(|s| s.text_color(theme::canvas())),
+        )
+        .child(SharedString::from(label))
         .on_click(on_click)
         .into_any_element()
 }

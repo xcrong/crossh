@@ -10,6 +10,16 @@ settings:
   close: 关闭设置
   general: 通用
   terminal: 终端
+  about: 关于
+  about_description: 面向本地与远程工作的专注型 SSH 工作台。
+  about_version: 版本
+  about_version_description: 当前设备上安装的应用版本。
+  about_source: 源代码
+  about_source_description: 查看源码、报告问题和浏览发布说明。
+  about_source_open: 打开 GitHub
+  about_license: 许可证
+  about_license_description: Crossh 以 GNU 通用公共许可证第 3 版或更高版本发布。
+  about_license_open: 查看许可证
   language: 界面语言
   language_description: 选择 Crossh 使用的界面语言。
   timestamps: 行时间戳

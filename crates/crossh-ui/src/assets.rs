@@ -23,6 +23,7 @@ impl AssetSource for UiAssetSource {
             "icons/folder-open.svg" => include_bytes!("../../../assets/icons/folder-open.svg"),
             "icons/folder.svg" => include_bytes!("../../../assets/icons/folder.svg"),
             "icons/git-branch.svg" => include_bytes!("../../../assets/icons/git-branch.svg"),
+            "icons/info.svg" => include_bytes!("../../../assets/icons/info.svg"),
             "icons/key-round.svg" => include_bytes!("../../../assets/icons/key-round.svg"),
             "icons/link.svg" => include_bytes!("../../../assets/icons/link.svg"),
             "icons/pencil.svg" => include_bytes!("../../../assets/icons/pencil.svg"),
