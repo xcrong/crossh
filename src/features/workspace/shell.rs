@@ -37,6 +37,7 @@ use crate::features::workspace::view::{
     render_quick_command_editor, render_terminal_status_bar,
 };
 use crate::shared::i18n::{self, LanguagePreference};
+use crossh_agent::AgentSettings;
 use crossh_core::commands::{
     BackgroundTaskEvent, BackgroundTaskManager, BackgroundTaskStatus, CommandHistory, local_scope,
     remote_scope,
@@ -118,6 +119,7 @@ pub struct AppShell {
     pub(crate) update_settings: UpdateSettings,
     pub(crate) updates: Entity<UpdateController>,
     pub(crate) workspace_settings: WorkspaceSettings,
+    pub(crate) agent_settings: AgentSettings,
     /// 侧栏宽度与拖动状态；只影响布局，不改变导航状态。
     pub(crate) sidebar_width: Rc<Cell<f32>>,
     pub(crate) sidebar_dragging: Rc<Cell<bool>>,
@@ -154,6 +156,7 @@ impl AppShell {
         TerminalView::apply_zed_settings(&terminal_settings, cx);
         let update_settings = snapshot.updates;
         let workspace_settings = snapshot.workspace;
+        let agent_settings = snapshot.agent;
         let updates = cx.new(|_| UpdateController::new(update_settings.clone()));
         // 启动时把最近的本地目录记录恢复到侧栏 Local 分组（无活动会话，点击即重开）。
         let mut local_dirs = BTreeMap::new();
@@ -192,6 +195,7 @@ impl AppShell {
             update_settings,
             updates: updates.clone(),
             workspace_settings,
+            agent_settings,
             sidebar_width: Rc::new(Cell::new(theme::SIDEBAR_WIDTH)),
             sidebar_dragging: Rc::new(Cell::new(false)),
             sidebar_scroll: gpui::ScrollHandle::new(),
@@ -1093,6 +1097,16 @@ impl AppShell {
         cx.notify();
     }
 
+    pub(crate) fn set_agent_settings(&mut self, settings: AgentSettings, cx: &mut Context<Self>) {
+        let settings = settings.normalized();
+        if settings.validate().is_err() || self.agent_settings == settings {
+            return;
+        }
+        self.agent_settings = settings;
+        self.persist_settings();
+        cx.notify();
+    }
+
     pub(crate) fn adjust_font_size(&mut self, delta: f32, cx: &mut Context<Self>) {
         let mut terminal = self.terminal_settings.clone();
         terminal.font_size = (terminal.font_size + delta)
@@ -1303,6 +1317,7 @@ impl AppShell {
             terminal: self.terminal_settings.clone(),
             updates: self.update_settings.clone(),
             workspace: self.workspace_settings.clone(),
+            agent: self.agent_settings.clone(),
         };
         if let Err(error) = settings::save(&snapshot) {
             log::warn!("failed to save settings: {error}");

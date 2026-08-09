@@ -1,6 +1,7 @@
 //! Shell snippets used to instrument interactive PTYs without changing shell configuration.
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
@@ -42,7 +43,7 @@ pub struct LocalShellEnvironment {
 
 impl LocalShellEnvironment {
     pub fn create(path: &str) -> io::Result<Option<Self>> {
-        Self::create_with_zdotdir(path, std::env::var_os("ZDOTDIR").as_deref())
+        Self::create_with_zdotdir(path, env::var_os("ZDOTDIR").as_deref())
     }
 
     pub fn program(&self) -> &str {
@@ -70,7 +71,7 @@ impl LocalShellEnvironment {
         };
         let setup = shell_setup_script(shell);
 
-        let environment = match shell {
+        let mut environment = match shell {
             RemoteShell::Bash => {
                 let temp_dir = new_shell_temp_dir()?;
                 let rc_path = temp_dir.path().join("crossh.bash");
@@ -168,6 +169,17 @@ builtin source {}
                 }
             }
         };
+        if let Some(binary_dir) = env::current_exe()?.parent() {
+            let mut paths = vec![binary_dir.to_path_buf()];
+            if let Some(existing) = env::var_os("PATH") {
+                paths.extend(env::split_paths(&existing));
+            }
+            let path = env::join_paths(paths)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            environment
+                .env
+                .push(("PATH".to_string(), os_str_to_string(&path)?));
+        }
         Ok(Some(environment))
     }
 }
@@ -478,6 +490,17 @@ mod tests {
         assert_eq!(environment.args()[1], rc_path.to_string_lossy());
         assert_eq!(environment.args()[2], "-i");
         assert_eq!(environment.env()[0].0, "CROSSH_BASH_LOGIN");
+        let binary_dir = env::current_exe().unwrap().parent().unwrap().to_path_buf();
+        let injected_path = environment
+            .env()
+            .iter()
+            .find(|(name, _)| name == "PATH")
+            .map(|(_, value)| value)
+            .unwrap();
+        assert_eq!(
+            env::split_paths(OsStr::new(injected_path)).next(),
+            Some(binary_dir)
+        );
         assert!(!environment.use_system_shell());
         assert!(
             rc.find("$HOME/.bash_profile").unwrap() < rc.find("__crossh_report_command").unwrap()

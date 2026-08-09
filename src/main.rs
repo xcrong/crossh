@@ -4,6 +4,7 @@
 //! 和 Crossh 本地 renderer 的交互式终端。
 //! SFTP 与端口转发为后续阶段（见 .kilo/plans）。
 
+mod agent_cli;
 mod app;
 mod features;
 mod infrastructure;
@@ -36,6 +37,40 @@ fn install_app_menu(cx: &mut App) {
 }
 
 fn main() {
+    let mut args = std::env::args().skip(1);
+    match args.next().as_deref() {
+        Some("--help" | "-h" | "help") => {
+            print_help();
+            return;
+        }
+        Some("--version" | "-V") => {
+            println!("crossh {}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        Some("agent") => {
+            if let Some(argument) = args.next() {
+                if argument == "--help" || argument == "-h" {
+                    println!(
+                        "Usage: crossh agent\n\nStart the interactive Rust-native coding agent."
+                    );
+                    return;
+                }
+                eprintln!("unknown agent argument: {argument}");
+                std::process::exit(2);
+            }
+            if let Err(error) = agent_cli::run(features::settings::load().agent) {
+                eprintln!("crossh agent: {error}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        Some(argument) => {
+            eprintln!("unknown argument: {argument}\n");
+            print_help();
+            std::process::exit(2);
+        }
+        None => {}
+    }
     infrastructure::logging::init();
 
     // 预热 tokio 运行时（单例，限 2 worker 线程，控内存）。
@@ -72,4 +107,11 @@ fn main() {
         install_app_menu(cx);
         app::open_main_window(cx);
     });
+}
+
+fn print_help() {
+    println!(
+        "Crossh {}\n\nUsage: crossh [COMMAND]\n\nCommands:\n  agent       Start the interactive coding agent\n  help        Print help\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version",
+        env!("CARGO_PKG_VERSION")
+    );
 }

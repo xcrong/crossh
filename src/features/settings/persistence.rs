@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::features::updates::UpdateSettings;
 use crate::features::workspace::settings::WorkspaceSettings;
 use crate::shared::i18n::LanguagePreference;
+use crossh_agent::AgentSettings;
 use crossh_terminal::settings::TerminalSettings;
 
 const SETTINGS_FILE_NAME: &str = "settings.toml";
@@ -18,6 +19,7 @@ pub(crate) struct SettingsSnapshot {
     pub(crate) terminal: TerminalSettings,
     pub(crate) updates: UpdateSettings,
     pub(crate) workspace: WorkspaceSettings,
+    pub(crate) agent: AgentSettings,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -30,6 +32,8 @@ struct SettingsFile {
     updates_check_on_startup: bool,
     #[serde(flatten)]
     workspace: WorkspaceSettings,
+    #[serde(default)]
+    agent: AgentSettings,
 }
 
 fn default_updates_check_on_startup() -> bool {
@@ -45,6 +49,7 @@ impl From<SettingsFile> for SettingsSnapshot {
                 check_on_startup: file.updates_check_on_startup,
             },
             workspace: file.workspace.normalized(),
+            agent: file.agent,
         }
     }
 }
@@ -56,6 +61,7 @@ impl From<&SettingsSnapshot> for SettingsFile {
             terminal: snapshot.terminal.clone().normalized(),
             updates_check_on_startup: snapshot.updates.check_on_startup,
             workspace: snapshot.workspace.clone().normalized(),
+            agent: snapshot.agent.clone(),
         }
     }
 }
@@ -121,6 +127,7 @@ mod tests {
                 recent_dirs: vec![PathBuf::from("/a"), PathBuf::from("/b")],
                 recent_dirs_max: 2,
             },
+            agent: AgentSettings::default(),
         };
         let encoded =
             toml::to_string(&SettingsFile::from(&snapshot)).expect("settings should serialize");
@@ -156,6 +163,7 @@ mod tests {
         assert_eq!(snapshot.terminal, TerminalSettings::default());
         assert_eq!(snapshot.updates, UpdateSettings::default());
         assert_eq!(snapshot.workspace, WorkspaceSettings::default());
+        assert_eq!(snapshot.agent, AgentSettings::default());
     }
 
     #[test]
