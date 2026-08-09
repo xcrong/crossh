@@ -2,6 +2,8 @@
 
 use task::Shell;
 
+use crossh_core::terminal::remote_shell_bootstrap_command;
+
 use super::*;
 
 impl AppShell {
@@ -293,6 +295,7 @@ fn zed_ssh_shell(target: &str, host: &HostConfig) -> Shell {
         }
     }
     args.push(destination);
+    args.push(remote_shell_bootstrap_command());
 
     Shell::WithArguments {
         program: "ssh".to_string(),

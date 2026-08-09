@@ -1862,11 +1862,13 @@ name = "crossh-core"
 version = "0.10.2"
 dependencies = [
  "async-channel 2.5.0",
+ "base64",
  "dirs",
  "libc",
  "log",
  "pretty_assertions",
  "serde",
+ "tempfile",
  "thiserror 2.0.19",
  "toml 0.8.23",
 ]

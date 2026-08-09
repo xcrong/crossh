@@ -6,7 +6,6 @@
 //! entity, focus/event wiring, and the workspace pane boundary.
 
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -28,8 +27,9 @@ use theme::ActiveTheme;
 use crate::features::workspace::pane::{PaneRisk, TerminalPaneInfo, WorkspacePane};
 use crate::shared::i18n;
 use crossh_core::terminal::{
-    local_terminal_tab_title, local_terminal_title, remote_terminal_title, strip_shell_host_prefix,
-    truncate_path_title,
+    LocalShellEnvironment, ShellCommandMarker, ShellPromptMarker, command_marker_from_title,
+    local_terminal_tab_title, local_terminal_title, prompt_marker_from_title,
+    remote_terminal_title, strip_shell_host_prefix, truncate_path_title,
 };
 use crossh_terminal::settings::TerminalSettings;
 use crossh_terminal::timestamps::{TerminalRow, TerminalTimestampState, timestamp_now};
@@ -83,6 +83,20 @@ fn status_view(message: &str, focus: &FocusHandle) -> AnyElement {
         .into_any_element()
 }
 
+fn shell_lifecycle_markers(
+    event: &zed_terminal::Event,
+    breadcrumb: &str,
+) -> (Option<ShellCommandMarker>, Option<ShellPromptMarker>) {
+    if !matches!(event, zed_terminal::Event::BreadcrumbsChanged) {
+        return (None, None);
+    }
+
+    (
+        command_marker_from_title(breadcrumb),
+        prompt_marker_from_title(breadcrumb),
+    )
+}
+
 impl EventEmitter<TerminalEvent> for TerminalView {}
 
 pub struct TerminalView {
@@ -92,6 +106,7 @@ pub struct TerminalView {
     pending_builder: Option<zed_terminal::TerminalBuilder>,
     builder_error: Option<String>,
     builder_task: Option<Task<()>>,
+    shell_environment: Option<LocalShellEnvironment>,
     blink_task: Option<Task<()>>,
     terminal_subscription: Option<Subscription>,
     focus: FocusHandle,
@@ -131,7 +146,36 @@ impl TerminalView {
     }
 
     pub fn from_local_zed(cwd: PathBuf, settings: TerminalSettings, cx: &mut App) -> Entity<Self> {
-        Self::from_zed_shell(Some(cwd), None, Shell::System, false, settings, cx)
+        let initial_cwd = cwd.to_string_lossy().into_owned();
+        let system_shell = util::shell::get_system_shell();
+        let shell_environment = match LocalShellEnvironment::create(&system_shell) {
+            Ok(environment) => environment,
+            Err(error) => {
+                log::warn!("failed to prepare local shell integration: {error}");
+                None
+            }
+        };
+        let shell = shell_environment
+            .as_ref()
+            .map_or(Shell::System, |environment| {
+                if environment.use_system_shell() {
+                    return Shell::System;
+                }
+                Shell::WithArguments {
+                    program: environment.program().to_string(),
+                    args: environment.args().to_vec(),
+                    title_override: None,
+                }
+            });
+        Self::from_zed_shell_with_environment(
+            Some(cwd),
+            Some(initial_cwd),
+            shell,
+            false,
+            settings,
+            shell_environment,
+            cx,
+        )
     }
 
     /// Create a local or remote interactive shell through Zed's TerminalBuilder.
@@ -145,6 +189,26 @@ impl TerminalView {
         shell: Shell,
         is_remote_terminal: bool,
         settings: TerminalSettings,
+        cx: &mut App,
+    ) -> Entity<Self> {
+        Self::from_zed_shell_with_environment(
+            working_directory,
+            initial_cwd,
+            shell,
+            is_remote_terminal,
+            settings,
+            None,
+            cx,
+        )
+    }
+
+    fn from_zed_shell_with_environment(
+        working_directory: Option<PathBuf>,
+        initial_cwd: Option<String>,
+        shell: Shell,
+        is_remote_terminal: bool,
+        settings: TerminalSettings,
+        shell_environment: Option<LocalShellEnvironment>,
         cx: &mut App,
     ) -> Entity<Self> {
         let settings = settings.normalized();
@@ -166,11 +230,15 @@ impl TerminalView {
             ),
         );
 
+        let shell_env = shell_environment
+            .as_ref()
+            .map(|environment| environment.env().iter().cloned().collect())
+            .unwrap_or_default();
         let builder = zed_terminal::TerminalBuilder::new(
             working_directory,
             None,
             shell,
-            HashMap::default(),
+            shell_env,
             zed_settings.cursor_shape,
             AlternateScroll::On,
             Some(settings.scrollback),
@@ -191,6 +259,7 @@ impl TerminalView {
                 pending_builder: None,
                 builder_error: None,
                 builder_task: None,
+                shell_environment,
                 blink_task: None,
                 terminal_subscription: None,
                 focus: cx.focus_handle(),
@@ -228,6 +297,7 @@ impl TerminalView {
                 let message = error.to_string();
                 let _ = weak.update(cx, |this, cx| {
                     this.builder_error = Some(message.clone());
+                    this.shell_environment = None;
                     this.state = ConnState::Error(message);
                     cx.notify();
                 });
@@ -270,37 +340,63 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         let subscription = cx.subscribe(&terminal, |this, terminal, event, cx| {
-            let (title, cwd) = {
+            let (title, cwd, breadcrumb) = {
                 let terminal = terminal.read(cx);
                 (
                     terminal.title(false),
                     terminal
                         .working_directory()
                         .map(|path| path.to_string_lossy().into_owned()),
+                    terminal.breadcrumb_text.clone(),
                 )
             };
-            if this.title.as_deref() != Some(title.as_str()) {
+
+            let (command_marker, prompt_marker) = shell_lifecycle_markers(event, &breadcrumb);
+            let internal_marker = command_marker.is_some() || prompt_marker.is_some();
+
+            if !internal_marker && this.title.as_deref() != Some(title.as_str()) {
                 this.title = Some(title);
                 cx.emit(TerminalEvent::TitleChanged);
             }
 
-            if let Some(cwd) = cwd
+            let reported_cwd = command_marker
+                .as_ref()
+                .map(|marker| &marker.cwd)
+                .or_else(|| prompt_marker.as_ref().map(|marker| &marker.cwd))
+                .or(cwd.as_ref());
+            if let Some(cwd) = reported_cwd
                 && this.cwd.as_deref() != Some(cwd.as_str())
             {
-                this.cwd = Some(cwd);
+                this.cwd = Some(cwd.clone());
                 cx.emit(TerminalEvent::CwdChanged);
+            }
+
+            if let Some(marker) = command_marker {
+                cx.emit(TerminalEvent::CommandStarted {
+                    command: marker.command,
+                    cwd: Some(marker.cwd),
+                });
+            }
+            if let Some(marker) = prompt_marker {
+                cx.emit(TerminalEvent::CommandFinished {
+                    status: Some(marker.status),
+                });
+                cx.emit(TerminalEvent::PromptReached);
             }
 
             match event {
                 zed_terminal::Event::CloseTerminal => {
                     if this.state != ConnState::Closed {
+                        this.shell_environment = None;
                         this.state = ConnState::Closed;
                         cx.emit(TerminalEvent::Closed);
                     }
                 }
                 zed_terminal::Event::Bell => cx.emit(TerminalEvent::Notification),
                 zed_terminal::Event::TitleChanged | zed_terminal::Event::BreadcrumbsChanged => {
-                    cx.emit(TerminalEvent::TitleChanged);
+                    if !internal_marker {
+                        cx.emit(TerminalEvent::TitleChanged);
+                    }
                 }
                 zed_terminal::Event::BlinkChanged(blinking) => {
                     this.blinking_terminal_enabled = *blinking;
@@ -966,5 +1062,41 @@ impl Render for TerminalView {
         }
 
         root.into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lifecycle_markers_are_only_consumed_for_breadcrumb_events() {
+        let breadcrumb = "crossh-command=ZWNobyBoaQ==:L3RtcA==";
+
+        let (command, prompt) =
+            shell_lifecycle_markers(&zed_terminal::Event::BreadcrumbsChanged, breadcrumb);
+        assert_eq!(command.unwrap().command, "echo hi");
+        assert!(prompt.is_none());
+
+        for event in [
+            zed_terminal::Event::Wakeup,
+            zed_terminal::Event::Bell,
+            zed_terminal::Event::BlinkChanged(true),
+            zed_terminal::Event::SelectionsChanged,
+            zed_terminal::Event::TitleChanged,
+        ] {
+            let (command, prompt) = shell_lifecycle_markers(&event, breadcrumb);
+            assert!(command.is_none());
+            assert!(prompt.is_none());
+        }
+    }
+
+    #[test]
+    fn lifecycle_markers_include_remote_working_directory() {
+        let breadcrumb = "crossh-command=ZWNobyBoaQ==:L3RtcC9yZW1vdGU=";
+        let (command, _) =
+            shell_lifecycle_markers(&zed_terminal::Event::BreadcrumbsChanged, breadcrumb);
+
+        assert_eq!(command.unwrap().cwd, "/tmp/remote");
     }
 }
