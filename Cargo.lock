@@ -1828,41 +1828,96 @@ checksum = "61803da095bee82a81bb1a452ecc25d3b2f1416d1897eb86430c6159ef717c17"
 name = "crossh"
 version = "0.10.1"
 dependencies = [
- "anyhow",
  "assets",
  "async-channel 2.5.0",
+ "crossh-core",
+ "crossh-ssh",
+ "crossh-terminal",
+ "crossh-ui",
+ "crossh-update",
  "dirs",
  "env_logger",
- "flate2",
  "gpui",
  "gpui_platform",
- "hex",
  "itertools 0.14.0",
- "libc",
  "log",
  "pretty_assertions",
  "release_channel",
- "reqwest",
- "russh",
- "russh-sftp",
  "rust-i18n",
  "semver",
  "serde",
- "serde_json",
  "settings",
- "sha2 0.10.9",
  "sys-locale",
- "sysinfo 0.38.4",
- "tar",
  "task",
  "terminal",
  "theme",
  "theme_settings",
- "thiserror 2.0.19",
  "tokio",
  "toml 0.8.23",
- "url",
  "util",
+]
+
+[[package]]
+name = "crossh-core"
+version = "0.10.1"
+dependencies = [
+ "async-channel 2.5.0",
+ "dirs",
+ "libc",
+ "log",
+ "pretty_assertions",
+ "serde",
+ "thiserror 2.0.19",
+ "toml 0.8.23",
+]
+
+[[package]]
+name = "crossh-ssh"
+version = "0.10.1"
+dependencies = [
+ "anyhow",
+ "async-channel 2.5.0",
+ "crossh-core",
+ "env_logger",
+ "log",
+ "russh",
+ "russh-sftp",
+ "tokio",
+]
+
+[[package]]
+name = "crossh-terminal"
+version = "0.10.1"
+dependencies = [
+ "crossh-core",
+ "serde",
+]
+
+[[package]]
+name = "crossh-ui"
+version = "0.10.1"
+dependencies = [
+ "assets",
+ "gpui",
+]
+
+[[package]]
+name = "crossh-update"
+version = "0.10.1"
+dependencies = [
+ "dirs",
+ "flate2",
+ "hex",
+ "libc",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tar",
+ "thiserror 2.0.19",
+ "tokio",
+ "url",
  "zip",
 ]
 
@@ -8174,20 +8229,6 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-io-kit",
  "windows 0.61.3",
-]
-
-[[package]]
-name = "sysinfo"
-version = "0.38.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92ab6a2f8bfe508deb3c6406578252e491d299cbbf3bc0529ecc3313aee4a52f"
-dependencies = [
- "libc",
- "memchr",
- "ntapi",
- "objc2-core-foundation",
- "objc2-io-kit",
- "windows 0.62.2",
 ]
 
 [[package]]

@@ -3,11 +3,9 @@
 use gpui::{App, KeyBinding};
 use terminal as zed_terminal;
 
-pub(crate) mod events;
-pub(crate) mod settings;
 pub(crate) mod view;
 
-pub(crate) use events::{ConnState, TerminalEvent};
+pub(crate) use crossh_terminal::{ConnState, TerminalEvent};
 pub(crate) use view::TerminalView;
 
 /// Install the terminal-only portion of Zed's default keymap.

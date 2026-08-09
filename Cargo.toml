@@ -4,10 +4,24 @@ version = "0.10.1"
 edition = "2024"
 license = "GPL-3.0-or-later"
 
+[workspace]
+members = [
+    ".",
+    "crates/crossh-core",
+    "crates/crossh-ssh",
+    "crates/crossh-terminal",
+    "crates/crossh-update",
+    "crates/crossh-ui",
+]
+resolver = "2"
+
 [dependencies]
 assets = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
-flate2 = "1"
-hex = "0.4"
+crossh-core = { path = "crates/crossh-core" }
+crossh-ssh = { path = "crates/crossh-ssh" }
+crossh-terminal = { path = "crates/crossh-terminal" }
+crossh-update = { path = "crates/crossh-update" }
+crossh-ui = { path = "crates/crossh-ui" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3", features = ["font-kit"] }
 itertools = "0.14"
@@ -17,20 +31,10 @@ task = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264
 theme = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
 theme_settings = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
 util = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
-libc = "0.2"
-reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-native-roots"] }
 release_channel = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
-russh = "0.62"
-russh-sftp = "2.3"
 semver = "1"
-serde_json = "1"
-sha2 = "0.10"
-tar = "0.4"
-sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time", "fs"] }
 async-channel = "2"
-anyhow = "1"
-thiserror = "2"
 log = "0.4"
 env_logger = "0.11"
 dirs = "6"
@@ -38,8 +42,6 @@ rust-i18n = "4"
 serde = { version = "1", features = ["derive"] }
 sys-locale = "0.3"
 toml = "0.8"
-url = "2"
-zip = { version = "8.6", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 pretty_assertions = "1"

@@ -1,5 +1,3 @@
-//! Small contracts and UI primitives shared by multiple features.
+//! Application-local shared state that still needs GPUI integration.
 
 pub(crate) mod i18n;
-pub(crate) mod terminal;
-pub(crate) mod ui;

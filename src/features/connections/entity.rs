@@ -5,12 +5,12 @@ use std::sync::Arc;
 use gpui::{App, AppContext, Entity, Task};
 use tokio::sync::oneshot;
 
-use crate::infrastructure::config::{HostConfig, SshConfig};
-use crate::infrastructure::ssh::{
+use crossh_core::config::{HostConfig, SshConfig};
+use crossh_ssh::{
     AuthChoice, ConnEvent, ConnectionHandle, ConnectionState, CredentialKind, ForwardKind,
     HostKeyDecision, RemoteCommandEvent,
 };
-use crate::infrastructure::ssh::{SftpCmd, SftpEvent};
+use crossh_ssh::{SftpCmd, SftpEvent};
 
 /// A UI-owned connection entity. All network work lives in `ConnectionHandle`.
 pub(crate) struct Connection {
@@ -127,17 +127,13 @@ impl Connection {
 
     pub(crate) fn start_forward(
         &self,
-        spec: crate::infrastructure::config::ForwardSpec,
+        spec: crossh_core::config::ForwardSpec,
         kind: ForwardKind,
     ) -> oneshot::Receiver<Result<(), String>> {
         self.handle.start_forward(spec, kind)
     }
 
-    pub(crate) fn stop_forward(
-        &self,
-        spec: crate::infrastructure::config::ForwardSpec,
-        kind: ForwardKind,
-    ) {
+    pub(crate) fn stop_forward(&self, spec: crossh_core::config::ForwardSpec, kind: ForwardKind) {
         self.handle.stop_forward(spec, kind);
     }
 

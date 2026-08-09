@@ -16,19 +16,19 @@ use gpui::{
     px, rgb,
 };
 
-use crate::features::terminal::settings::TerminalSettings;
 use crate::features::workspace::pane::{PaneRisk, TerminalPaneInfo, WorkspacePane};
-use crate::infrastructure::ssh::{MAX_EDITOR_FILE_BYTES, RemoteEntry, SftpCmd, SftpEvent};
 use crate::shared::i18n;
-use crate::shared::ui::context_menu::{
+use crossh_ssh::{MAX_EDITOR_FILE_BYTES, RemoteEntry, SftpCmd, SftpEvent};
+use crossh_terminal::settings::TerminalSettings;
+use crossh_ui::context_menu::{
     ContextMenuState, MenuEntry, MenuItem, SftpMenuAction, render_context_menu,
 };
-use crate::shared::ui::widgets::text_caret;
-use crate::shared::ui::widgets::{
+use crossh_ui::widgets::text_caret;
+use crossh_ui::widgets::{
     byte_index_for_utf16, ime_caret_bounds, ime_input_canvas, replace_utf16_range, utf16_len,
     utf16_slice,
 };
-use crate::shared::ui::{icons, theme};
+use crossh_ui::{icons, theme};
 
 use super::logic::*;
 
@@ -187,7 +187,7 @@ impl WorkspacePane for SftpWorkspacePane {
     }
 
     fn title(&self, _cx: &App) -> String {
-        crate::shared::terminal::remote_pane_title(&i18n::text("tab.sftp"))
+        crossh_core::terminal::remote_pane_title(&i18n::text("tab.sftp"))
     }
 
     fn terminal_info(&self, _cx: &App) -> Option<TerminalPaneInfo> {
@@ -490,7 +490,7 @@ impl SftpPane {
             cx.notify();
             return;
         }
-        let local = std::path::PathBuf::from(crate::infrastructure::config::expand_tilde(input));
+        let local = std::path::PathBuf::from(crossh_core::config::expand_tilde(input));
         if !local.is_file() {
             self.message =
                 Some(rust_i18n::t!("sftp.local_file_missing", path = local.display()).to_string());

@@ -11,12 +11,12 @@ use gpui::{
 };
 
 use crate::features::connections::Connection;
-use crate::features::terminal::settings::TerminalSettings;
 use crate::features::workspace::pane::{PaneRisk, TerminalPaneInfo, WorkspacePane};
-use crate::infrastructure::config::ForwardSpec;
-use crate::infrastructure::ssh::ForwardKind;
 use crate::shared::i18n;
-use crate::shared::ui::{icons, theme};
+use crossh_core::config::ForwardSpec;
+use crossh_ssh::ForwardKind;
+use crossh_terminal::settings::TerminalSettings;
+use crossh_ui::{icons, theme};
 
 pub struct ForwardPane {
     conn: Entity<Connection>,
@@ -40,7 +40,7 @@ impl WorkspacePane for ForwardWorkspacePane {
     }
 
     fn title(&self, _cx: &App) -> String {
-        crate::shared::terminal::remote_pane_title(&i18n::text("tab.forward"))
+        crossh_core::terminal::remote_pane_title(&i18n::text("tab.forward"))
     }
 
     fn terminal_info(&self, _cx: &App) -> Option<TerminalPaneInfo> {
@@ -106,7 +106,7 @@ impl ForwardPane {
     pub fn new(
         conn: Entity<Connection>,
         cx: &mut App,
-        forwards: &crate::infrastructure::config::HostConfig,
+        forwards: &crossh_core::config::HostConfig,
     ) -> Entity<Self> {
         cx.new(|_cx| Self {
             conn,

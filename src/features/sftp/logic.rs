@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use async_channel::Sender;
 
-use crate::infrastructure::ssh::SftpCmd;
+use crossh_ssh::SftpCmd;
 
 pub(crate) const SFTP_CHANNEL_UNAVAILABLE: &str = "sftp channel unavailable";
 

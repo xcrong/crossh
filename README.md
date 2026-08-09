@@ -51,32 +51,25 @@ open dist/crossh.app
 ## 架构
 
 ```
+crates/
+  crossh-core/                无 UI 的配置、终端契约、命令/Git 逻辑
+  crossh-ssh/                 russh 连接、SFTP、转发和认证引擎
+  crossh-terminal/            终端 settings/events 模型边界
+  crossh-update/              manifest、下载校验、归档安装和 updater
+  crossh-ui/                  GPUI 主题、图标、菜单和通用控件
 src/
-  main.rs                    入口编排：窗口、快捷键、启动顺序
-  infrastructure/
-    config/                  ~/.ssh/config 解析（只读）
-    logging.rs                日志、panic hook、日志裁剪
-    ssh/
-      connection.rs          无 UI 的连接引擎与 channel 多路复用
-      pool.rs                连接键推导
-      session.rs             认证候选与会话协议
-      sftp.rs                SFTP worker
-      forward.rs             -L / -R / -D 转发
-      proxyjump.rs           单层 ProxyJump
-  features/
-    connections/             GPUI 连接实体、连接管理与认证提示
-    terminal/                Zed terminal/terminal_view 基础与 Crossh 工作区适配
-    sftp/                    SFTP 面板、远程编辑器与路径逻辑
-    forwarding/              端口转发面板
-    workspace/               外壳、侧栏、标签和 Pane 抽象
-    settings/                设置窗口与持久化编排
-    commands/                本地/远程命令历史与后台任务
-  shared/
-    terminal/                UI 无关的终端标题与会话契约
-    ui/                      GPUI 主题、图标、菜单和通用控件
+  main.rs                     入口编排：窗口、快捷键、启动顺序
+  infrastructure/logging.rs  日志、panic hook、日志裁剪
+  features/                   GPUI feature views 和跨 crate adapters
+    connections/              crossh-ssh 的 GPUI entity、连接管理和提示
+    terminal/                 Zed terminal 的终端视图宿主
+    sftp/                     SFTP 面板、远程编辑器和交互逻辑
+    forwarding/               端口转发面板
+    workspace/                外壳、侧栏、标签和 WorkspacePane 抽象
+    settings/                 设置窗口与持久化编排
 ```
 
-依赖方向保持单向：`infrastructure` 和 `shared/terminal` 不依赖 GPUI；feature 的 GPUI 适配层依赖基础设施；`workspace` 通过 `WorkspacePane` trait 消费终端、SFTP 和转发面板。可重复执行的分层检查位于 `scripts/check-architecture.sh`。
+依赖方向保持单向：`crossh-core`、`crossh-ssh`、`crossh-terminal` 和 `crossh-update` 不依赖 GPUI；根 package 的 GPUI feature adapter 依赖这些 crate；`workspace` 通过 `WorkspacePane` trait 消费终端、SFTP 和转发面板。可重复执行的分层检查位于 `scripts/check-architecture.sh`。
 
 技术栈：Zed `gpui`、`terminal`、`task`（UI、PTY、终端模拟和 shell 进程）；Crossh 本地裁剪的 `terminal_view` 基础（渲染和交互）以及薄宿主（生命周期、焦点和工作区边界）；`russh`（SFTP、端口转发和后台 SSH 命令）；`tokio`（2 worker 常驻）。`alacritty_terminal` / `vte` 由 Zed `terminal` 间接使用，Crossh 不再直接维护另一套生产终端实现。
 

@@ -20,10 +20,20 @@ check_absent() {
 }
 
 check_absent \
-    "pure shared terminal and SSH code imports GPUI" \
+    "logic crates import GPUI" \
     '(use|extern crate).*gpui|gpui::' \
-    "$repo_root/src/shared/terminal" \
-    "$repo_root/src/infrastructure/ssh"
+    "$repo_root/crates/crossh-core" \
+    "$repo_root/crates/crossh-ssh" \
+    "$repo_root/crates/crossh-terminal" \
+    "$repo_root/crates/crossh-update"
+
+check_absent \
+    "logic crates import the application or shared UI crate" \
+    'crossh_ui|crossh::|crate::features|crate::shared' \
+    "$repo_root/crates/crossh-core" \
+    "$repo_root/crates/crossh-ssh" \
+    "$repo_root/crates/crossh-terminal" \
+    "$repo_root/crates/crossh-update"
 
 check_absent \
     "main.rs contains infrastructure implementation details" \
@@ -39,6 +49,11 @@ check_absent \
     "shared i18n owns persisted application settings" \
     'AppSettings|std::fs|std::path|settings\.toml' \
     "$repo_root/src/shared/i18n.rs"
+
+check_absent \
+    "standalone updater includes application source with #[path]" \
+    '#\[path' \
+    "$repo_root/src/bin/crossh-updater.rs"
 
 if [ "$failure" -ne 0 ]; then
     exit 1

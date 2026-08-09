@@ -11,11 +11,11 @@ use gpui::{
     TitlebarOptions, Window, WindowBounds, WindowOptions, div, px,
 };
 
-use crate::features::git::logic::{ChangeStatus, DiffLineKind, FileChange, diff, list_changes};
-use crate::features::projects::GitStatus;
 use crate::shared::i18n;
-use crate::shared::ui::widgets::LocalPathTooltip;
-use crate::shared::ui::{icons, theme};
+use crossh_core::git::{ChangeStatus, DiffLineKind, FileChange, diff, list_changes};
+use crossh_core::project::GitStatus;
+use crossh_ui::widgets::LocalPathTooltip;
+use crossh_ui::{icons, theme};
 
 /// 窗口自身的数据刷新间隔。
 const REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
@@ -30,7 +30,7 @@ pub struct GitWindow {
     /// true = 右侧展示已暂存（相对 HEAD）的 diff，否则展示工作区（相对索引）。
     show_staged: bool,
     selected: Option<usize>,
-    diff: Option<Option<crate::features::git::logic::FileDiff>>,
+    diff: Option<Option<crossh_core::git::FileDiff>>,
     loading: bool,
     list_generation: u64,
     diff_generation: u64,
@@ -161,7 +161,7 @@ impl GitWindow {
 }
 
 fn inspect_status(cwd: &Path) -> Option<GitStatus> {
-    crate::features::projects::inspect(cwd)
+    crossh_core::project::inspect(cwd)
 }
 
 impl Render for GitWindow {
@@ -581,7 +581,7 @@ fn status_badge(text: String, color: gpui::Rgba) -> AnyElement {
 }
 
 /// 单个 diff 行：旧行号 | 新行号 | 内容。
-fn render_diff_line(line: &crate::features::git::logic::DiffLine) -> AnyElement {
+fn render_diff_line(line: &crossh_core::git::DiffLine) -> AnyElement {
     let (bg, fg) = match line.kind {
         DiffLineKind::Hunk => (theme::surface(), theme::muted_text()),
         DiffLineKind::Added => (theme::diff_add_bg(), theme::diff_add_fg()),

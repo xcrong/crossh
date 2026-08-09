@@ -6,10 +6,10 @@ use gpui::{
 };
 
 use crate::features::workspace::AppShell;
-use crate::infrastructure::ssh::{CredentialKind, HostKeyDecision};
 use crate::shared::i18n;
-use crate::shared::ui::widgets::{ime_input_canvas, printable_char, text_caret};
-use crate::shared::ui::{icons, theme};
+use crossh_ssh::{CredentialKind, HostKeyDecision};
+use crossh_ui::widgets::{ime_input_canvas, printable_char, text_caret};
+use crossh_ui::{icons, theme};
 
 /// 当前活动模态的显示快照。
 pub enum PromptDisplay {

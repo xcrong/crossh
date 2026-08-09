@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use gpui::{App, Entity};
 
-use crate::infrastructure::config::{HostConfig, SshConfig};
-use crate::infrastructure::ssh::{AuthChoice, ConnectionState, connection_key};
+use crossh_core::config::{HostConfig, SshConfig};
+use crossh_ssh::{AuthChoice, ConnectionState, connection_key, default_auth_for};
 
 use super::entity::Connection;
 use super::host::{HostEntry, build_entries};
@@ -37,7 +37,7 @@ impl ConnectionManager {
     }
 
     pub(crate) fn auth_methods(&self, host: &HostConfig) -> Vec<AuthChoice> {
-        crate::infrastructure::ssh::session::default_auth_for(host)
+        default_auth_for(host)
     }
 
     pub(crate) fn pool_key(host: &HostConfig) -> String {

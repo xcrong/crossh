@@ -1,0 +1,9 @@
+[package]
+name = "crossh-ui"
+version = "0.10.1"
+edition = "2024"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+assets = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }

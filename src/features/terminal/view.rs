@@ -23,15 +23,15 @@ use terminal::terminal_settings::{
 };
 use theme::ActiveTheme;
 
-use crate::features::terminal::settings::TerminalSettings;
 use crate::features::workspace::pane::{PaneRisk, TerminalPaneInfo, WorkspacePane};
 use crate::shared::i18n;
-use crate::shared::terminal::{
+use crossh_core::terminal::{
     local_terminal_tab_title, local_terminal_title, remote_terminal_title, strip_shell_host_prefix,
     truncate_path_title,
 };
+use crossh_terminal::settings::TerminalSettings;
 
-use super::events::{ConnState, TerminalEvent};
+use crossh_terminal::events::{ConnState, TerminalEvent};
 
 #[path = "zed_view/terminal_element.rs"]
 mod terminal_element;

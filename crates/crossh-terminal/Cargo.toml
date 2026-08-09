@@ -1,0 +1,9 @@
+[package]
+name = "crossh-terminal"
+version = "0.10.1"
+edition = "2024"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+crossh-core = { path = "../crossh-core" }
+serde = { version = "1", features = ["derive"] }

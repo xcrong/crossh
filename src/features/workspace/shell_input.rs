@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use gpui::{Bounds, EntityInputHandler, Pixels, UTF16Selection};
 
-use crate::shared::ui::widgets::{
+use crossh_ui::widgets::{
     byte_index_for_utf16, ime_caret_bounds, replace_utf16_range, utf16_len, utf16_offset_for_byte,
     utf16_slice,
 };

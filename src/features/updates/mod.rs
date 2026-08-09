@@ -6,12 +6,10 @@ use gpui::{Context, Task};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-use crate::infrastructure::ssh::ssh_runtime;
-use crate::infrastructure::update::{
-    DEFAULT_MANIFEST_URL,
-    client::{self, UpdateError},
-    installer,
-    model::{UpdateCandidate, UpdateTarget},
+use crossh_ssh::ssh_runtime;
+use crossh_update::{
+    DEFAULT_MANIFEST_URL, UpdateCandidate, UpdateError, UpdateTarget, download_artifact,
+    fetch_manifest, spawn_updater,
 };
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -114,7 +112,7 @@ impl UpdateController {
         let task = cx.spawn(async move |weak, cx| {
             let result = ssh_runtime()
                 .spawn(async move {
-                    let manifest = client::fetch_manifest(&manifest_url).await?;
+                    let manifest = fetch_manifest(&manifest_url).await?;
                     manifest
                         .candidate(&current, target)
                         .map_err(UpdateError::from)
@@ -149,7 +147,7 @@ impl UpdateController {
         self.status = UpdateStatus::Downloading(candidate.clone());
         let task = cx.spawn(async move |weak, cx| {
             let result = ssh_runtime()
-                .spawn(async move { client::download_artifact(&artifact, &version, &target).await })
+                .spawn(async move { download_artifact(&artifact, &version, &target).await })
                 .await;
             let result = match result {
                 Ok(Ok(package)) => Ok(package),
@@ -172,8 +170,7 @@ impl UpdateController {
         let UpdateStatus::Ready { candidate, package } = &self.status else {
             return Err("no downloaded update is ready".into());
         };
-        installer::spawn_updater(package, candidate.artifact.format)
-            .map_err(|error| error.to_string())?;
+        spawn_updater(package, candidate.artifact.format).map_err(|error| error.to_string())?;
         log::info!(
             "starting updater for Crossh {} from {}",
             candidate.version,

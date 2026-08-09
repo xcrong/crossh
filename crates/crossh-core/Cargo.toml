@@ -1,0 +1,17 @@
+[package]
+name = "crossh-core"
+version = "0.10.1"
+edition = "2024"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+async-channel = "2"
+dirs = "6"
+libc = "0.2"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+toml = "0.8"
+
+[dev-dependencies]
+pretty_assertions = "1"

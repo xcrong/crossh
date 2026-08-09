@@ -11,18 +11,18 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, Window, canvas, div, hsla, px, rgb,
 };
 
-use crate::features::commands::{
-    BackgroundTask, BackgroundTaskStatus, CommandRecord, local_scope, remote_scope,
-};
 use crate::features::connections::Connection;
-use crate::features::projects::GitStatus;
 use crate::features::terminal::{ConnState, TerminalView};
 use crate::features::workspace::pane::WorkspacePane;
 use crate::features::workspace::shell::AppShell;
 use crate::shared::i18n;
-use crate::shared::ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
-use crate::shared::ui::widgets::{LocalPathTooltip, ime_input_canvas, text_caret};
-use crate::shared::ui::{icons, theme};
+use crossh_core::commands::{
+    BackgroundTask, BackgroundTaskStatus, CommandRecord, local_scope, remote_scope,
+};
+use crossh_core::project::GitStatus;
+use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
+use crossh_ui::widgets::{LocalPathTooltip, ime_input_canvas, text_caret};
+use crossh_ui::{icons, theme};
 
 /// 一个远程终端/SFTP 标签。
 pub struct Tab {
@@ -586,7 +586,7 @@ fn render_quick_command_row(
                 .cursor_pointer()
                 .hover(|style| style.bg(theme::accent_soft()))
                 .tooltip(|_window, cx| {
-                    cx.new(|_| crate::shared::ui::widgets::LocalPathTooltip {
+                    cx.new(|_| crossh_ui::widgets::LocalPathTooltip {
                         path: SharedString::from(i18n::text("quick_commands.stop")),
                     })
                     .into()
@@ -610,7 +610,7 @@ fn render_command_preview(command: &str, color: gpui::Rgba, id: SharedString) ->
         .text_xs()
         .text_color(color)
         .tooltip(move |_window, cx| {
-            cx.new(|_| crate::shared::ui::widgets::CommandTooltip {
+            cx.new(|_| crossh_ui::widgets::CommandTooltip {
                 command: SharedString::from(tooltip_command.clone()),
             })
             .into()
@@ -691,7 +691,7 @@ fn render_background_task_row(task: &BackgroundTask, cx: &mut Context<AppShell>)
         .rounded(px(theme::RADIUS_SM))
         .bg(theme::surface())
         .tooltip(move |_window, cx| {
-            cx.new(|_| crate::shared::ui::widgets::LocalPathTooltip {
+            cx.new(|_| crossh_ui::widgets::LocalPathTooltip {
                 path: SharedString::from(cwd.clone()),
             })
             .into()
@@ -1178,7 +1178,7 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                             .text_color(theme::muted_text())
                             .hover(|s| s.bg(theme::raised()).text_color(theme::danger()))
                             .tooltip(|_window, cx| {
-                                cx.new(|_| crate::shared::ui::widgets::LocalPathTooltip {
+                                cx.new(|_| crossh_ui::widgets::LocalPathTooltip {
                                     path: SharedString::from(i18n::text("tooltip.close_tab")),
                                 })
                                 .into()
@@ -1330,7 +1330,7 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                             .text_color(theme::muted_text())
                             .hover(|s| s.bg(theme::raised()).text_color(theme::danger()))
                             .tooltip(|_window, cx| {
-                                cx.new(|_| crate::shared::ui::widgets::LocalPathTooltip {
+                                cx.new(|_| crossh_ui::widgets::LocalPathTooltip {
                                     path: SharedString::from(i18n::text("tooltip.close_tab")),
                                 })
                                 .into()
@@ -1371,7 +1371,7 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                     .text_color(theme::canvas())
             })
             .tooltip(|_window, cx| {
-                cx.new(|_| crate::shared::ui::widgets::LocalPathTooltip {
+                cx.new(|_| crossh_ui::widgets::LocalPathTooltip {
                     path: SharedString::from(i18n::text("tooltip.new_terminal")),
                 })
                 .into()

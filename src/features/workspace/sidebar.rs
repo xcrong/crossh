@@ -17,9 +17,9 @@ use crate::features::terminal::ConnState;
 use crate::features::workspace::shell::AppShell;
 use crate::features::workspace::view::{ActiveView, LocalDir};
 use crate::shared::i18n::{self};
-use crate::shared::ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
-use crate::shared::ui::widgets::{LocalPathTooltip, ime_input_canvas, text_caret};
-use crate::shared::ui::{icons, theme};
+use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
+use crossh_ui::widgets::{LocalPathTooltip, ime_input_canvas, text_caret};
+use crossh_ui::{icons, theme};
 
 fn host_entry_matches(entry: &HostEntry, query: &str) -> bool {
     entry.alias.to_ascii_lowercase().contains(query)

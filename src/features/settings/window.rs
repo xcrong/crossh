@@ -15,8 +15,8 @@ use crate::features::settings::{self, SettingsSnapshot};
 use crate::features::updates::{UpdateController, UpdateStatus};
 use crate::features::workspace::AppShell;
 use crate::shared::i18n::{self, LanguagePreference};
-use crate::shared::ui::widgets::LocalPathTooltip;
-use crate::shared::ui::{icons, theme};
+use crossh_ui::widgets::LocalPathTooltip;
+use crossh_ui::{icons, theme};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingsSection {

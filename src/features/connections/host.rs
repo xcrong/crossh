@@ -1,7 +1,7 @@
 //! SSH host entries used by the workspace navigation.
 
-use crate::infrastructure::config::SshConfig;
-use crate::infrastructure::ssh::connection_key;
+use crossh_core::config::SshConfig;
+use crossh_ssh::connection_key;
 
 /// Host alias, resolved display details, and connection-pool key.
 #[derive(Clone)]

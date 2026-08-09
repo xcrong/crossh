@@ -24,9 +24,9 @@ fn main() {
     infrastructure::logging::init();
 
     // 预热 tokio 运行时（单例，限 2 worker 线程，控内存）。
-    let _rt = infrastructure::ssh::ssh_runtime();
+    let _rt = crossh_ssh::ssh_runtime();
 
-    let app = gpui_platform::application().with_assets(shared::ui::assets::UiAssetSource);
+    let app = gpui_platform::application().with_assets(crossh_ui::assets::UiAssetSource);
     app.on_reopen(|cx| {
         // Reuse an existing window, including a hidden one. Only create a
         // window when the application has no windows left.

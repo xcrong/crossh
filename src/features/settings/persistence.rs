@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::features::terminal::settings::TerminalSettings;
 use crate::features::updates::UpdateSettings;
 use crate::features::workspace::settings::WorkspaceSettings;
 use crate::shared::i18n::LanguagePreference;
+use crossh_terminal::settings::TerminalSettings;
 
 const SETTINGS_FILE_NAME: &str = "settings.toml";
 
@@ -167,11 +167,11 @@ mod tests {
         .into();
         assert_eq!(
             snapshot.terminal.font_size,
-            crate::features::terminal::settings::MAX_FONT_SIZE
+            crossh_terminal::settings::MAX_FONT_SIZE
         );
         assert_eq!(
             snapshot.terminal.scrollback,
-            crate::features::terminal::settings::MAX_SCROLLBACK
+            crossh_terminal::settings::MAX_SCROLLBACK
         );
         assert_eq!(
             snapshot.workspace.recent_dirs_max,

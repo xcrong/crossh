@@ -1,46 +1,57 @@
 # Crossh Architecture
 
-Crossh is organized by user-facing feature. Technical layers remain inside the
-feature boundary where they are feature-specific, while reusable platform code
-lives under `infrastructure` and `shared`.
+Crossh follows the same useful split as Zed's `terminal` and
+`terminal_view` crates: the workspace application owns GPUI composition, while
+data, protocols, and external-system work live in packages that cannot import
+the UI.
 
 ```text
-app
-  -> features
-       -> infrastructure
-       -> shared
-infrastructure -> shared
-shared         -> no feature modules
+crossh (application + feature views)
+  -> crossh-ui
+  -> crossh-terminal -> crossh-core
+  -> crossh-ssh      -> crossh-core
+  -> crossh-update
+  -> crossh-core
+
+crossh-core       -> no GPUI, no application crate
+crossh-ssh        -> no GPUI, transport implementation only
+crossh-terminal   -> no GPUI, terminal settings/events only
+crossh-update     -> no GPUI, release/download/install implementation
+crossh-ui         -> GPUI primitives and assets
 ```
 
-## Module Ownership
+## Crate Ownership
 
-- `app`: process startup and window bootstrap only.
+- `crossh-core`: OpenSSH config parsing, terminal-neutral contracts and title helpers, command history/background tasks, Git parsing, and shared connection state.
+- `crossh-ssh`: `russh` authentication and channels, connection pooling, SFTP, port forwarding, ProxyJump, and the Tokio runtime. Its public API is re-exported from the crate root; implementation modules stay private.
+- `crossh-terminal`: terminal-owned settings and events. It is the model boundary consumed by the GPUI terminal view.
+- `crossh-update`: release manifest validation, HTTPS downloads, checksum verification, archive installation, and the standalone updater hand-off.
+- `crossh-ui`: reusable GPUI widgets, context menus, theme functions, icons, and the asset source.
+- `crossh`: process startup plus user-facing feature views and GPUI adapters. `features/terminal/view.rs` is the `terminal_view`-style host around Zed's terminal foundation; `features/connections/entity.rs` is the adapter around `crossh-ssh::ConnectionHandle`.
+
+Within the application crate:
+
 - `features/workspace`: navigation, tabs, active view, local projects, and pane composition.
-- `features/terminal`: terminal emulation, protocol effects, input delivery, and terminal events.
-- `features/connections`: connection-facing UI, host navigation data, and connection manager.
-- `features/sftp`: remote file browser and editor.
+- `features/connections`: connection-facing UI, host navigation data, and the GPUI connection entity.
+- `features/sftp`: remote file browser/editor UI and SFTP-specific interaction helpers.
 - `features/forwarding`: local, remote, and dynamic forwarding UI.
-- `features/projects`: local project Git state and project-specific services.
-- `features/settings`: settings state and settings UI.
-- `infrastructure/ssh`: russh transport, channels, authentication, pooling, SFTP worker, and forwarding primitives.
-- `infrastructure/local`: local PTY integration.
-- `infrastructure/config`: OpenSSH config loading and parsing.
-- `shared/terminal`: transport-neutral terminal contracts and protocol parsing.
-- `shared/ui`: reusable GPUI primitives, assets, icons, theme, and context menus.
+- `features/settings`: application settings persistence and settings window.
+- `features/updates`: update controller and update presentation only.
 
-`AppShell` is the GPUI composition root for the workspace feature. Its session
-collections live in `WorkspaceState` and `SessionRegistry`; SSH configuration,
-host entries, and the reusable connection pool live in `ConnectionManager`.
+`AppShell` is the GPUI composition root for the workspace feature. Session
+collections live in `WorkspaceState` and `SessionRegistry`; connection
+configuration and handles live in `ConnectionManager`, while the transport
+engine remains in `crossh-ssh`.
 
 ## Boundary Rules
 
-1. A feature may use another feature's exported API, not its internal `view` or service modules.
-2. SSH and local PTY implementations communicate through `shared::terminal` contracts.
-3. Infrastructure must not import UI or workspace modules.
-4. Terminal notifications carry terminal events to the workspace owner; they do not reach into `AppShell` directly.
-5. New cross-feature state should have an owner and a stable handle or identifier instead of another parallel collection on `AppShell`.
+1. `crossh-core`, `crossh-ssh`, `crossh-terminal`, and `crossh-update` must not import `gpui`, `gpui_platform`, or `crossh-ui`.
+2. The transport crate communicates with the application through channels and public data types; it never receives a GPUI context or entity.
+3. Feature views consume crate-root APIs, not private implementation modules from `crossh-ssh` or `crossh-update`.
+4. Feature settings stay next to the feature that owns their behavior; the persistence layer composes snapshots without becoming the settings owner.
+5. `main.rs` is assembly only: logging, runtime warm-up, platform setup, Zed global initialization, key bindings, and window boot.
+6. The updater binary depends on `crossh-update` directly. It must not include application source with `#[path]`.
 
-The directory structure is intentionally incremental. Large GPUI views may still
-contain feature-local rendering code, but their transport contracts, state
-registries, and reusable primitives have explicit boundaries for future splits.
+The crate graph is the enforcement mechanism. A logic change that attempts to
+reach into GPUI fails at dependency resolution or compilation instead of
+relying only on directory conventions.

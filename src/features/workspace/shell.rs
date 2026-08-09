@@ -22,19 +22,11 @@ use gpui::{
     WindowOptions, div, px, size,
 };
 
-use crate::features::commands::{
-    BackgroundTaskEvent, BackgroundTaskManager, BackgroundTaskStatus, CommandHistory, local_scope,
-    remote_scope,
-};
 use crate::features::connections::{Connection, ConnectionManager, HostEntry, PendingPrompt};
 use crate::features::connections::{PromptDisplay, render_prompt_modal};
 use crate::features::forwarding::ForwardPane;
-use crate::features::projects::inspect;
 use crate::features::settings::{self, SettingsSnapshot};
 use crate::features::sftp::SftpPane;
-use crate::features::terminal::settings::{
-    MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK, TerminalSettings,
-};
 use crate::features::terminal::{TerminalEvent, TerminalView};
 use crate::features::updates::{UpdateController, UpdateSettings};
 use crate::features::workspace::registry::WorkspaceState;
@@ -44,14 +36,20 @@ use crate::features::workspace::view::{
     ActiveView, LocalDir, LocalSession, LocalSessionId, Tab, rebuild_local_dirs, render_main,
     render_quick_command_editor,
 };
-use crate::infrastructure::config::{HostConfig, SshConfig};
-use crate::infrastructure::ssh::{HostKeyDecision, RemoteCommandStatus};
 use crate::shared::i18n::{self, LanguagePreference};
-use crate::shared::ui::context_menu::{
-    ContextMenuState, MenuEntry, ShellMenuAction, render_context_menu,
+use crossh_core::commands::{
+    BackgroundTaskEvent, BackgroundTaskManager, BackgroundTaskStatus, CommandHistory, local_scope,
+    remote_scope,
 };
-use crate::shared::ui::theme;
-use crate::shared::ui::widgets::printable_char;
+use crossh_core::config::{HostConfig, SshConfig};
+use crossh_core::project::inspect;
+use crossh_ssh::{HostKeyDecision, RemoteCommandStatus};
+use crossh_terminal::settings::{
+    MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK, TerminalSettings,
+};
+use crossh_ui::context_menu::{ContextMenuState, MenuEntry, ShellMenuAction, render_context_menu};
+use crossh_ui::theme;
+use crossh_ui::widgets::printable_char;
 
 use super::command_editor::QuickCommandEditor;
 #[cfg(test)]

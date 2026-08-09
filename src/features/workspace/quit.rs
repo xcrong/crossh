@@ -159,8 +159,8 @@ impl AppShell {
             .filter(|task| {
                 matches!(
                     task.status,
-                    crate::features::commands::BackgroundTaskStatus::Running
-                        | crate::features::commands::BackgroundTaskStatus::Stopping
+                    crossh_core::commands::BackgroundTaskStatus::Running
+                        | crossh_core::commands::BackgroundTaskStatus::Stopping
                 )
             })
             .map(|task| task.id)

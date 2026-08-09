@@ -2,7 +2,7 @@
 
 use gpui::{AnyElement, App, EntityId, SystemNotificationResponse};
 
-use crate::features::terminal::settings::TerminalSettings;
+use crossh_terminal::settings::TerminalSettings;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TerminalPaneInfo {
