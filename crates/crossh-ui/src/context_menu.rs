@@ -181,13 +181,20 @@ pub fn render_context_menu<A: Clone + 'static, T: 'static>(
         .left_0()
         .top_0()
         .size_full()
+        .occlude()
         .on_click({
             let on_dismiss = on_dismiss.clone();
-            cx.listener(move |this, _ev, _window, cx| on_dismiss(this, cx))
+            cx.listener(move |this, _ev, _window, cx| {
+                on_dismiss(this, cx);
+                cx.stop_propagation();
+            })
         })
         .on_mouse_down(MouseButton::Right, {
             let on_dismiss = on_dismiss.clone();
-            cx.listener(move |this, _ev, _window, cx| on_dismiss(this, cx))
+            cx.listener(move |this, _ev, _window, cx| {
+                on_dismiss(this, cx);
+                cx.stop_propagation();
+            })
         });
 
     let mut menu = div()

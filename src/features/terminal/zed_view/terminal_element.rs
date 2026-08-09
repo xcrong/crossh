@@ -1,13 +1,14 @@
 //! Derived from Zed's terminal_view TerminalElement at revision
-//! 90d024b88abc91264d9a0ad260eb4f365fa695c3. Application-only editor,
-//! workspace, and UI integrations are intentionally omitted from this fork.
+//! 90d024b88abc91264d9a0ad260eb4f365fa695c3. Application-only editor and
+//! workspace integrations are intentionally omitted from this fork. The
+//! terminal-local context menu is routed through TerminalView below.
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use gpui::{
     AbsoluteLength, App, Bounds, ContentMask, Context, Corners, DispatchPhase, Edges, Element,
     ElementId, Entity, FocusHandle, Font, FontFeatures, FontStyle, FontWeight, GlobalElementId,
     Hitbox, Hsla, InputHandler, InteractiveElement, Interactivity, IntoElement, LayoutId, Length,
-    ModifiersChangedEvent, MouseButton, MouseMoveEvent, Pixels, Point as GpuiPoint,
+    ModifiersChangedEvent, MouseButton, MouseMoveEvent, MouseUpEvent, Pixels, Point as GpuiPoint,
     StatefulInteractiveElement, StrikethroughStyle, TextRun, TextStyle, UTF16Selection,
     UnderlineStyle, WhiteSpace, Window, fill, point, px, quad, relative, size,
 };
@@ -1077,9 +1078,32 @@ impl TerminalElement {
         }
     }
 
+    fn right_button_handler(
+        terminal: Entity<Terminal>,
+        terminal_view: Entity<TerminalView>,
+        focus_handle: FocusHandle,
+    ) -> impl Fn(&MouseUpEvent, &mut Window, &mut App) {
+        move |event, window, cx| {
+            if !focus_handle.is_focused(window) {
+                return;
+            }
+
+            let forward_to_terminal =
+                terminal_view.update(cx, |terminal_view, _| terminal_view.take_right_mouse_down());
+            if forward_to_terminal {
+                terminal.update(cx, |terminal, terminal_cx| {
+                    terminal.mouse_up(event, terminal_cx);
+                    terminal_cx.notify();
+                });
+                cx.stop_propagation();
+            }
+        }
+    }
+
     fn register_mouse_listeners(&mut self, mode: Modes, hitbox: &Hitbox, window: &mut Window) {
         let focus = self.focus.clone();
         let terminal = self.terminal.clone();
+        let terminal_view = self.terminal_view.clone();
 
         self.interactivity.on_mouse_down(MouseButton::Left, {
             let terminal = terminal.clone();
@@ -1145,6 +1169,44 @@ impl TerminalElement {
             ),
         );
 
+        let forwards_right_click = mode.intersects(Modes::MOUSE_MODE);
+        self.interactivity.on_mouse_down(MouseButton::Right, {
+            let terminal = terminal.clone();
+            let terminal_view = terminal_view.clone();
+            let focus = focus.clone();
+            move |event, window, cx| {
+                let forward_to_terminal = forwards_right_click && !event.modifiers.shift;
+                terminal_view.update(cx, |terminal_view, terminal_cx| {
+                    terminal_view.begin_right_mouse_down(
+                        event.position,
+                        forward_to_terminal,
+                        terminal_cx,
+                    );
+                });
+                if forward_to_terminal {
+                    window.focus(&focus, cx);
+                    terminal.update(cx, |terminal, terminal_cx| {
+                        terminal.mouse_down(event, terminal_cx);
+                        terminal_cx.notify();
+                    });
+                }
+                cx.stop_propagation();
+            }
+        });
+
+        self.interactivity.on_mouse_up(
+            MouseButton::Right,
+            TerminalElement::right_button_handler(
+                terminal.clone(),
+                terminal_view.clone(),
+                focus.clone(),
+            ),
+        );
+        self.interactivity.on_mouse_up_out(
+            MouseButton::Right,
+            TerminalElement::right_button_handler(terminal.clone(), terminal_view, focus.clone()),
+        );
+
         self.interactivity.on_scroll_wheel({
             let terminal = self.terminal.clone();
             move |event, _window, cx| {
@@ -1158,31 +1220,9 @@ impl TerminalElement {
             }
         });
 
-        // Mouse mode handlers:
-        // All mouse modes need the extra click handlers
+        // Mouse mode handlers: middle-button release is only needed when the
+        // terminal application is tracking mouse input.
         if mode.intersects(Modes::MOUSE_MODE) {
-            self.interactivity.on_mouse_down(
-                MouseButton::Right,
-                TerminalElement::generic_button_handler(
-                    terminal.clone(),
-                    focus.clone(),
-                    true,
-                    move |terminal, e, cx| {
-                        terminal.mouse_down(e, cx);
-                    },
-                ),
-            );
-            self.interactivity.on_mouse_up(
-                MouseButton::Right,
-                TerminalElement::generic_button_handler(
-                    terminal.clone(),
-                    focus.clone(),
-                    false,
-                    move |terminal, e, cx| {
-                        terminal.mouse_up(e, cx);
-                    },
-                ),
-            );
             self.interactivity.on_mouse_up(
                 MouseButton::Middle,
                 TerminalElement::generic_button_handler(

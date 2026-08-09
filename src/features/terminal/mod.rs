@@ -3,6 +3,7 @@
 use gpui::{App, KeyBinding};
 use terminal as zed_terminal;
 
+pub(crate) mod context_menu;
 pub(crate) mod view;
 
 pub(crate) use crossh_terminal::{ConnState, TerminalEvent};

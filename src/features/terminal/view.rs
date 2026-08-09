@@ -5,15 +5,17 @@
 //! plus the local terminal element fork. This module only supplies the host
 //! entity, focus/event wiring, and the workspace pane boundary.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, App, AppContext, Bounds, Context, Entity, EventEmitter, FocusHandle,
-    InteractiveElement, IntoElement, KeyDownEvent, Keystroke, ParentElement, Pixels, Render,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, SystemNotificationResponse,
-    Task, Window, div, point, px, size,
+    InteractiveElement, IntoElement, KeyDownEvent, Keystroke, MouseDownEvent, ParentElement,
+    Pixels, Render, SharedString, StatefulInteractiveElement, Styled, Subscription,
+    SystemNotificationResponse, Task, Window, canvas, div, point, px, size,
 };
 use settings::Settings as _;
 use task::Shell;
@@ -30,8 +32,14 @@ use crossh_core::terminal::{
     truncate_path_title,
 };
 use crossh_terminal::settings::TerminalSettings;
+use crossh_ui::context_menu::{
+    CONTEXT_MENU_WIDTH, ContextMenuState, clamp_menu_position, estimate_menu_height,
+    render_context_menu,
+};
 
 use crossh_terminal::events::{ConnState, TerminalEvent};
+
+use super::context_menu::{TerminalMenuAction, menu_entries};
 
 #[path = "zed_view/terminal_element.rs"]
 mod terminal_element;
@@ -99,6 +107,11 @@ pub struct TerminalView {
     title: Option<String>,
     is_local: bool,
     ime_marked_text: String,
+    context_menu: Option<ContextMenuState<TerminalMenuAction>>,
+    /// Whether the current right-button press was forwarded to the PTY.
+    right_mouse_down: bool,
+    /// The terminal view origin in window coordinates, used to place the menu.
+    anchor_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
 }
 
 impl TerminalView {
@@ -190,6 +203,9 @@ impl TerminalView {
                 title: None,
                 is_local: !is_remote_terminal,
                 ime_marked_text: String::new(),
+                context_menu: None,
+                right_mouse_down: false,
+                anchor_bounds: Rc::new(Cell::new(None)),
             }
         });
 
@@ -324,22 +340,29 @@ impl TerminalView {
     }
 
     fn copy(&mut self, _: &zed_terminal::Copy, _: &mut Window, cx: &mut Context<Self>) {
-        self.zed_terminal
-            .update(cx, |terminal, _| terminal.copy(None));
+        self.copy_selection(cx);
         cx.notify();
     }
 
     fn paste(&mut self, _: &zed_terminal::Paste, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(clipboard) = cx.read_from_clipboard() else {
-            return;
-        };
-        if let Some(text) = clipboard.text() {
-            self.zed_terminal
-                .update(cx, |terminal, _| terminal.paste(&text));
-        }
+        self.paste_clipboard(cx);
     }
 
     fn paste_text(&mut self, _: &zed_terminal::PasteText, _: &mut Window, cx: &mut Context<Self>) {
+        self.paste_clipboard(cx);
+    }
+
+    fn select_all(&mut self, _: &zed_terminal::SelectAll, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_all_terminal(cx);
+        cx.notify();
+    }
+
+    fn copy_selection(&mut self, cx: &mut Context<Self>) {
+        self.zed_terminal
+            .update(cx, |terminal, _| terminal.copy(None));
+    }
+
+    fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
         let Some(clipboard) = cx.read_from_clipboard() else {
             return;
         };
@@ -349,10 +372,9 @@ impl TerminalView {
         }
     }
 
-    fn select_all(&mut self, _: &zed_terminal::SelectAll, _: &mut Window, cx: &mut Context<Self>) {
+    fn select_all_terminal(&mut self, cx: &mut Context<Self>) {
         self.zed_terminal
             .update(cx, |terminal, _| terminal.select_all());
-        cx.notify();
     }
 
     fn scroll_line_up(
@@ -465,6 +487,13 @@ impl TerminalView {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.context_menu.is_some() {
+            if event.keystroke.key == "escape" {
+                self.close_context_menu(cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
         self.cursor_blink_on = true;
         self.cursor_blink_pause_until = Instant::now() + Duration::from_millis(500);
         if self.process_keystroke(&event.keystroke, cx) {
@@ -488,6 +517,8 @@ impl TerminalView {
     fn focus_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.focused = false;
         self.cursor_blink_on = true;
+        self.context_menu = None;
+        self.right_mouse_down = false;
         self.zed_terminal.update(cx, |terminal, _| {
             terminal.focus_out();
             terminal.set_cursor_shape(CursorShape::Hollow);
@@ -533,6 +564,71 @@ impl TerminalView {
         // this method. TerminalElement reads that same global on its next
         // layout, so no second renderer-local settings state is needed.
         cx.notify();
+    }
+
+    pub(crate) fn begin_right_mouse_down(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        forward_to_terminal: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.right_mouse_down = forward_to_terminal;
+        if !forward_to_terminal {
+            self.open_context_menu(position, cx);
+        }
+    }
+
+    pub(crate) fn take_right_mouse_down(&mut self) -> bool {
+        let forwarded = self.right_mouse_down;
+        self.right_mouse_down = false;
+        forwarded
+    }
+
+    pub(crate) fn open_context_menu(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state != ConnState::Connected {
+            return;
+        }
+
+        let (has_selection, hovered_word) = {
+            let terminal = self.zed_terminal.read(cx);
+            let content = terminal.last_content();
+            (
+                content.selection.is_some(),
+                content
+                    .last_hovered_word
+                    .as_ref()
+                    .map(|word| word.word.clone()),
+            )
+        };
+        let entries = menu_entries(true, has_selection, hovered_word);
+        self.context_menu = Some(ContextMenuState { position, entries });
+        cx.notify();
+    }
+
+    fn close_context_menu(&mut self, cx: &mut Context<Self>) {
+        if self.context_menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn dispatch_menu_action(
+        &mut self,
+        action: TerminalMenuAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            TerminalMenuAction::Copy => self.copy_selection(cx),
+            TerminalMenuAction::Paste => self.paste_clipboard(cx),
+            TerminalMenuAction::SelectAll => self.select_all_terminal(cx),
+            TerminalMenuAction::OpenUrl(url) => cx.open_url(&url),
+        }
+        window.focus(&self.focus, cx);
+        self.close_context_menu(cx);
     }
 
     pub(crate) fn is_command_running(&self, cx: &App) -> bool {
@@ -720,6 +816,63 @@ impl Render for TerminalView {
             self.focused,
             cursor_visible,
         );
+
+        let anchor_bounds = self.anchor_bounds.clone();
+        let bounds_capture = anchor_bounds.clone();
+        let outside_click_anchor = anchor_bounds.clone();
+        let context_menu = self.context_menu.clone();
+        let context_menu_weak = cx.entity().downgrade();
+        let bounds_canvas = canvas(
+            move |bounds, _window, _cx| {
+                bounds_capture.set(Some(bounds));
+                bounds
+            },
+            move |_bounds, _state, window, _cx| {
+                let Some(menu) = context_menu.as_ref() else {
+                    return;
+                };
+                let menu_position = clamp_menu_position(menu.position, window, &menu.entries);
+                let menu_bounds = Bounds {
+                    origin: menu_position,
+                    size: size(
+                        px(CONTEXT_MENU_WIDTH + 32.0),
+                        px(estimate_menu_height(&menu.entries) + 32.0),
+                    ),
+                };
+                let anchor = outside_click_anchor.clone();
+                let weak = context_menu_weak.clone();
+                window.on_mouse_event(move |event: &MouseDownEvent, phase, event_window, cx| {
+                    if phase != gpui::DispatchPhase::Capture {
+                        return;
+                    }
+                    let outside = anchor
+                        .get()
+                        .is_some_and(|bounds| !bounds.contains(&event.position));
+                    if !outside || menu_bounds.contains(&event.position) {
+                        return;
+                    }
+                    let closed = weak
+                        .update(cx, |this, cx| {
+                            if this.context_menu.take().is_some() {
+                                cx.notify();
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                        .unwrap_or(false);
+                    if closed {
+                        cx.stop_propagation();
+                        event_window.refresh();
+                    }
+                });
+            },
+        )
+        .absolute()
+        .left_0()
+        .top_0()
+        .size_full();
+
         let mut root = div()
             .id("terminal-view")
             .size_full()
@@ -744,6 +897,7 @@ impl Render for TerminalView {
                 let focus = focus.clone();
                 move |_event, window, cx| window.focus(&focus, cx)
             })
+            .child(bounds_canvas)
             .child(
                 div()
                     .id("terminal-view-container")
@@ -766,6 +920,21 @@ impl Render for TerminalView {
                     .text_xs()
                     .child(SharedString::from(message)),
             );
+        }
+
+        if let Some(menu) = self.context_menu.clone() {
+            let anchor = anchor_bounds
+                .get()
+                .map(|bounds| bounds.origin)
+                .unwrap_or_else(|| point(px(0.), px(0.)));
+            root = root.child(render_context_menu(
+                &menu,
+                anchor,
+                window,
+                cx,
+                |this, action, window, cx| this.dispatch_menu_action(action, window, cx),
+                |this, cx| this.close_context_menu(cx),
+            ));
         }
 
         root.into_any_element()
