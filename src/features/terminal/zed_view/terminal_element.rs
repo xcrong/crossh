@@ -4,12 +4,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use gpui::{
-    AbsoluteLength, App, Bounds, ContentMask, Context, DispatchPhase, Element, ElementId, Entity,
-    FocusHandle, Font, FontFeatures, FontStyle, FontWeight, GlobalElementId, Hitbox, Hsla,
-    InputHandler, InteractiveElement, Interactivity, IntoElement, LayoutId, Length,
+    AbsoluteLength, App, Bounds, ContentMask, Context, Corners, DispatchPhase, Edges, Element,
+    ElementId, Entity, FocusHandle, Font, FontFeatures, FontStyle, FontWeight, GlobalElementId,
+    Hitbox, Hsla, InputHandler, InteractiveElement, Interactivity, IntoElement, LayoutId, Length,
     ModifiersChangedEvent, MouseButton, MouseMoveEvent, Pixels, Point as GpuiPoint,
     StatefulInteractiveElement, StrikethroughStyle, TextRun, TextStyle, UTF16Selection,
-    UnderlineStyle, WhiteSpace, Window, fill, point, px, relative, size,
+    UnderlineStyle, WhiteSpace, Window, fill, point, px, quad, relative, size,
 };
 use itertools::Itertools;
 use settings::Settings;
@@ -118,16 +118,60 @@ struct HighlightedRange {
 
 impl HighlightedRange {
     fn paint(&self, window: &mut Window) {
-        for (line, range) in self.lines.iter().enumerate() {
-            window.paint_quad(fill(
-                Bounds {
-                    origin: point(range.start_x, self.start_y + line as f32 * self.line_height),
-                    size: size(range.end_x - range.start_x, self.line_height),
+        let radius = px(crossh_ui::theme::RADIUS_SM);
+        let min_rounded_width = radius * 2.;
+        for (line_index, line) in self.lines.iter().enumerate() {
+            let bounds = Bounds::new(
+                GpuiPoint::new(
+                    line.start_x,
+                    self.start_y + line_index as f32 * self.line_height,
+                ),
+                size(line.end_x - line.start_x, self.line_height),
+            );
+
+            // Round only the outer corners of the selection so adjacent lines
+            // read as one contiguous block. Skip rounding on lines too narrow
+            // to fit the radius, otherwise short spans degenerate into blobs.
+            let rounded_line = bounds.size.width >= min_rounded_width;
+            let first_line = line_index == 0;
+            let last_line = line_index == self.lines.len() - 1;
+            let corner = |rounded: bool| {
+                if rounded && rounded_line {
+                    radius
+                } else {
+                    px(0.)
+                }
+            };
+            window.paint_quad(quad(
+                bounds,
+                Corners {
+                    top_left: corner(first_line),
+                    top_right: corner(first_line),
+                    bottom_left: corner(last_line),
+                    bottom_right: corner(last_line),
                 },
                 self.color,
+                Edges {
+                    top: px(0.),
+                    right: px(0.),
+                    bottom: px(0.),
+                    left: px(0.),
+                },
+                gpui::transparent_black(),
+                gpui::BorderStyle::default(),
             ));
         }
     }
+}
+
+/// The color used to highlight the active text selection.
+///
+/// The terminal core's default local-player color (`blue().dark().step_3()`,
+/// roughly `#0d2847`) is nearly the same lightness as the terminal background
+/// and reads as invisible. Crossh's selection color keeps the highlight
+/// clearly visible while leaving glyphs legible underneath.
+fn selection_highlight_color() -> Hsla {
+    crossh_ui::theme::selection()
 }
 
 /// The information generated during layout that is necessary for painting.
@@ -1260,7 +1304,6 @@ impl Element for TerminalElement {
                 };
 
                 let text_system = cx.text_system();
-                let player_color = theme.players().local();
                 let gutter;
                 let (dimensions, line_height_px) = {
                     let rem_size = window.rem_size();
@@ -1354,7 +1397,7 @@ impl Element for TerminalElement {
                 let mut relative_highlighted_ranges = Vec::new();
                 if let Some(selection) = selection {
                     relative_highlighted_ranges
-                        .push((selection.point_range(), player_color.selection));
+                        .push((selection.point_range(), selection_highlight_color()));
                 }
 
                 // Calculate the intersection of the terminal's bounds with the current

@@ -54,6 +54,13 @@ pub fn accent() -> Rgba {
     rgb(0x69d7b0)
 }
 
+/// Background tint of an active text selection. The translucent accent keeps
+/// the underlying glyphs readable while staying clearly visible on dark
+/// terminal backgrounds.
+pub fn selection() -> Hsla {
+    Hsla::from(accent()).opacity(0.45)
+}
+
 pub fn accent_soft() -> Rgba {
     rgb(0x1d3a33)
 }
