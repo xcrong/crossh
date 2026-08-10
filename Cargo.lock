@@ -1891,14 +1891,23 @@ dependencies = [
 name = "crossh-agent"
 version = "0.10.2"
 dependencies = [
+ "crossh-ai-sdk",
  "dirs",
- "futures-util",
  "libc",
  "regex",
- "reqwest",
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "crossh-ai-sdk"
+version = "0.10.2"
+dependencies = [
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

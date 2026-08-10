@@ -40,7 +40,7 @@ use ratatui::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-const SYSTEM_PROMPT: &str = "You are Crossh Agent, a careful coding assistant running in the user's terminal. Inspect the workspace before making claims, use the smallest appropriate tool, keep changes scoped to the request, and report what you changed and how it was verified.";
+const SYSTEM_PROMPT: &str = "You are Crossh Agent, a careful coding assistant running in the user's terminal. Inspect the workspace before making claims, use the smallest appropriate tool, keep changes scoped to the request, and report what you changed and how it was verified. For file and directory tool arguments, always generate workspace-relative paths such as `.` or `README.md`. Do not generate absolute paths; the executor tolerates an in-workspace absolute path only for compatibility. Never use paths outside the workspace.";
 const SPINNER: [&str; 4] = ["|", "/", "-", "\\"];
 const MAX_VISIBLE_INPUT_LINES: usize = 6;
 const MAX_FILE_REFERENCE_BYTES: u64 = 32 * 1024;
@@ -383,6 +383,7 @@ fn process_prompt(
         message.text = expand_file_references(&app.workspace, &message.text);
     }
     for round in 0..app.settings.max_tool_rounds {
+        let visible_response_start = app.messages.len();
         let settings = app.settings.clone();
         let api_key = app.api_key.clone();
         let request = request_messages.clone();
@@ -422,6 +423,13 @@ fn process_prompt(
             },
         };
 
+        append_response_block_if_missing(
+            app,
+            visible_response_start,
+            Role::Reasoning,
+            response.reasoning(),
+        );
+        append_response_block_if_missing(app, visible_response_start, Role::Agent, response.text());
         let text = response.text();
         let protocol_items = response.protocol_items.clone();
         let calls = response
@@ -495,7 +503,6 @@ fn process_prompt(
             persist_session(app);
         }
         app.status = format!("Completed tool round {}", round + 1);
-        app.scroll = u16::MAX;
     }
     app.messages
         .push((Role::Error, "Tool loop limit reached".into()));
@@ -563,7 +570,6 @@ fn wait_for_model(
         }
         set_spinner_status(app, "Working", spinner_frame);
         spinner_frame += 1;
-        app.scroll = u16::MAX;
         terminal.draw(|frame| render(frame, app))?;
     }
 }
@@ -589,17 +595,19 @@ fn confirm_tool(
         if !event::poll(Duration::from_millis(100))? {
             continue;
         }
-        let Event::Key(key) = event::read()? else {
-            continue;
-        };
-        if key.kind != KeyEventKind::Press {
-            continue;
-        }
-        match key.code {
-            KeyCode::Char('y') | KeyCode::Enter | KeyCode::Char('\r') | KeyCode::Char('\n') => {
-                break true;
-            }
-            KeyCode::Char('n') | KeyCode::Esc => break false,
+        match event::read()? {
+            Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                KeyCode::Char('y') | KeyCode::Enter | KeyCode::Char('\r') | KeyCode::Char('\n') => {
+                    break true;
+                }
+                KeyCode::Char('n') | KeyCode::Esc => break false,
+                _ => {}
+            },
+            Event::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::ScrollUp => scroll_conversation(app, -3),
+                MouseEventKind::ScrollDown => scroll_conversation(app, 3),
+                _ => {}
+            },
             _ => {}
         }
     };
@@ -718,12 +726,25 @@ fn wait_for_background<T>(
         set_spinner_status(app, label, frame);
         frame += 1;
         terminal.draw(|frame| render(frame, app))?;
-        if event::poll(Duration::from_millis(80))?
-            && matches!(event::read()?, Event::Key(key) if key.kind == KeyEventKind::Press && (key.code == KeyCode::Esc || key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)))
-        {
-            cancel();
-            app.status = format!("{label} cancelled");
-            return Ok(BackgroundResult::Cancelled);
+        if event::poll(Duration::from_millis(80))? {
+            match event::read()? {
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press
+                        && (key.code == KeyCode::Esc
+                            || key.code == KeyCode::Char('c')
+                                && key.modifiers.contains(KeyModifiers::CONTROL)) =>
+                {
+                    cancel();
+                    app.status = format!("{label} cancelled");
+                    return Ok(BackgroundResult::Cancelled);
+                }
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::ScrollUp => scroll_conversation(app, -3),
+                    MouseEventKind::ScrollDown => scroll_conversation(app, 3),
+                    _ => {}
+                },
+                _ => {}
+            }
         }
     }
 }
@@ -1274,8 +1295,7 @@ fn request_messages(app: &App) -> Vec<AgentMessage> {
 fn system_prompt(app: &App) -> String {
     let context = context_prompt(&app.context_files);
     let mut system = format!(
-        "{SYSTEM_PROMPT}\n\nWorkspace: {}\nThinking preference: {}\nAvailable tools: read, grep, find, ls, edit, write, bash.",
-        app.workspace.display(),
+        "{SYSTEM_PROMPT}\n\nWorkspace root: . (the current workspace; use relative paths)\nThinking preference: {}\nAvailable tools: read, grep, find, ls, edit, write, bash.",
         app.thinking.label()
     );
     if !context.is_empty() {
@@ -1446,6 +1466,17 @@ fn append_delta(app: &mut App, role: Role, delta: &str) {
     } else {
         app.messages.push((role, delta.to_string()));
     }
+}
+
+fn append_response_block_if_missing(app: &mut App, start: usize, role: Role, content: String) {
+    if content.is_empty()
+        || app.messages[start..]
+            .iter()
+            .any(|(existing_role, _)| *existing_role == role)
+    {
+        return;
+    }
+    app.messages.push((role, content));
 }
 
 fn append_notice(app: &mut App, text: impl Into<String>, role: Role) {

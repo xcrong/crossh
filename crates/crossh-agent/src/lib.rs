@@ -1,10 +1,9 @@
 //! Vendor-neutral agent messages and wire-protocol adapters.
 
-use futures_util::StreamExt;
+use crossh_ai_sdk as sdk;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
@@ -113,6 +112,7 @@ impl AgentThinkingLevel {
         }
     }
 
+    #[cfg(test)]
     fn budget(self, max_tokens: u32) -> u32 {
         let fraction = match self {
             Self::Off => 0.0,
@@ -396,37 +396,37 @@ pub fn builtin_tools() -> Vec<AgentToolDefinition> {
     vec![
         AgentToolDefinition {
             name: "read",
-            description: "Read a UTF-8 file inside the current workspace",
+            description: "Read a UTF-8 file inside the current workspace; prefer a workspace-relative path such as README.md",
             input_schema: json!({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":["integer","null"],"minimum":1},"limit":{"type":["integer","null"],"minimum":1}},"required":["path","offset","limit"],"additionalProperties":false}),
             requires_approval: false,
         },
         AgentToolDefinition {
             name: "grep",
-            description: "Search workspace files for a text or regular expression",
+            description: "Search workspace files for a text or regular expression; prefer a workspace-relative path",
             input_schema: json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":["string","null"]},"limit":{"type":["integer","null"],"minimum":1}},"required":["pattern","path","limit"],"additionalProperties":false}),
             requires_approval: false,
         },
         AgentToolDefinition {
             name: "find",
-            description: "Find files and directories in the current workspace",
+            description: "Find files and directories in the current workspace; prefer a workspace-relative path",
             input_schema: json!({"type":"object","properties":{"pattern":{"type":["string","null"]},"path":{"type":["string","null"]},"limit":{"type":["integer","null"],"minimum":1}},"required":["pattern","path","limit"],"additionalProperties":false}),
             requires_approval: false,
         },
         AgentToolDefinition {
             name: "ls",
-            description: "List entries in a workspace directory",
+            description: "List entries in a workspace directory; prefer a workspace-relative path such as .",
             input_schema: json!({"type":"object","properties":{"path":{"type":["string","null"]}},"required":["path"],"additionalProperties":false}),
             requires_approval: false,
         },
         AgentToolDefinition {
             name: "write",
-            description: "Create or replace a UTF-8 file inside the current workspace",
+            description: "Create or replace a UTF-8 file inside the current workspace; prefer a workspace-relative path",
             input_schema: json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}),
             requires_approval: true,
         },
         AgentToolDefinition {
             name: "edit",
-            description: "Replace one exact text occurrence in a workspace file",
+            description: "Replace one exact text occurrence in a workspace file; prefer a workspace-relative path",
             input_schema: json!({"type":"object","properties":{"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"}},"required":["path","old_text","new_text"],"additionalProperties":false}),
             requires_approval: true,
         },
@@ -1164,22 +1164,30 @@ fn kill_child(child: &mut Child) {
 }
 
 fn workspace_path(workspace: &Path, value: &str, allow_missing: bool) -> Result<PathBuf, String> {
-    let relative = Path::new(value);
-    if relative.is_absolute()
-        || relative
-            .components()
-            .any(|part| matches!(part, Component::ParentDir))
-    {
-        return Err("path must stay inside the current workspace".into());
-    }
+    let input = Path::new(value);
     let workspace = workspace
         .canonicalize()
         .map_err(|error| error.to_string())?;
-    let path = workspace.join(relative);
+    if !input.is_absolute()
+        && input
+            .components()
+            .any(|part| matches!(part, Component::ParentDir))
+    {
+        return Err(
+            "path must stay inside the current workspace; use a workspace-relative path".into(),
+        );
+    }
+    let path = if input.is_absolute() {
+        input.to_path_buf()
+    } else {
+        workspace.join(input)
+    };
     if path.exists() {
         let canonical = path.canonicalize().map_err(|error| error.to_string())?;
         if !canonical.starts_with(&workspace) {
-            return Err("path escapes the current workspace".into());
+            return Err(
+                "path must stay inside the current workspace; use a workspace-relative path".into(),
+            );
         }
         Ok(canonical)
     } else if allow_missing {
@@ -1193,7 +1201,9 @@ fn workspace_path(workspace: &Path, value: &str, allow_missing: bool) -> Result<
             .map_err(|error| error.to_string())?
             .starts_with(&workspace)
         {
-            return Err("path escapes the current workspace".into());
+            return Err(
+                "path must stay inside the current workspace; use a workspace-relative path".into(),
+            );
         }
         Ok(path)
     } else {
@@ -1268,36 +1278,14 @@ async fn complete_target_with_timeout(
     include_tools: bool,
     timeout: Duration,
 ) -> Result<AgentResponse, String> {
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(timeout)
-        .build()
+    let request = sdk_request(target, api_key, messages, include_tools, None, false);
+    let adapter = sdk::builtin_adapter(request.protocol);
+    let client = sdk::Client::new(timeout).map_err(|error| error.to_string())?;
+    let response = client
+        .complete(adapter, &request)
+        .await
         .map_err(|error| error.to_string())?;
-    let mut wire = encode_request(target.provider.protocol, &target.model.id, messages);
-    apply_model_options(&mut wire.body, target.provider.protocol, target.model);
-    if !include_tools {
-        wire.body.as_object_mut().map(|body| body.remove("tools"));
-    }
-    let mut request = client.post(&target.provider.url).json(&wire.body);
-    if let Some(api_key) = api_key {
-        request = match wire.auth_style {
-            AgentAuthStyle::Bearer => request.bearer_auth(api_key),
-            AgentAuthStyle::Anthropic => request
-                .header("x-api-key", api_key)
-                .header("anthropic-version", "2023-06-01"),
-        };
-    }
-    let response = request.send().await.map_err(|error| error.to_string())?;
-    let status = response.status();
-    let body: Value = response.json().await.map_err(|error| error.to_string())?;
-    if !status.is_success() {
-        let message = body
-            .pointer("/error/message")
-            .and_then(Value::as_str)
-            .unwrap_or("API returned an error");
-        return Err(format!("HTTP {status}: {message}"));
-    }
-    decode_response(target.provider.protocol, &body).map_err(ToString::to_string)
+    Ok(from_sdk_response(response))
 }
 
 pub async fn complete_stream(
@@ -1319,88 +1307,134 @@ pub async fn complete_stream_with_options(
     let target = settings
         .resolve(&settings.active_model)
         .map_err(str::to_string)?;
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(MODEL_REQUEST_TIMEOUT)
-        .build()
+    let thinking = thinking.filter(|_| target.model.reasoning);
+    let request = sdk_request(target, api_key, messages, true, thinking, true);
+    let adapter = sdk::builtin_adapter(request.protocol);
+    let client = sdk::Client::new(MODEL_REQUEST_TIMEOUT).map_err(|error| error.to_string())?;
+    let response = client
+        .stream(adapter, &request, |event| {
+            let event = from_sdk_event(event);
+            on_event(&event);
+        })
+        .await
         .map_err(|error| error.to_string())?;
-    let mut wire = encode_request(target.provider.protocol, &target.model.id, messages);
-    if let Some(thinking) = thinking.filter(|_| target.model.reasoning) {
-        apply_thinking_option(
-            &mut wire.body,
-            target.provider.protocol,
-            target.model,
-            thinking,
-        );
-    } else {
-        apply_model_options(&mut wire.body, target.provider.protocol, target.model);
-    }
-    wire.body["stream"] = Value::Bool(true);
-    let mut request = client.post(&target.provider.url).json(&wire.body);
-    if let Some(api_key) = api_key {
-        request = match wire.auth_style {
-            AgentAuthStyle::Bearer => request.bearer_auth(api_key),
-            AgentAuthStyle::Anthropic => request
-                .header("x-api-key", api_key)
-                .header("anthropic-version", "2023-06-01"),
-        };
-    }
-    let response = request.send().await.map_err(|error| error.to_string())?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!(
-            "HTTP {status}: {}",
-            response.text().await.unwrap_or_default()
-        ));
-    }
-
-    let mut bytes = response.bytes_stream();
-    let mut pending = String::new();
-    let mut utf8 = Utf8StreamDecoder::default();
-    let mut accumulator = StreamAccumulator::default();
-    while let Some(chunk) = bytes.next().await {
-        let chunk = chunk.map_err(|error| error.to_string())?;
-        pending.push_str(&utf8.push(&chunk));
-        while let Some(newline) = pending.find('\n') {
-            let line = pending[..newline].trim_end_matches('\r').to_string();
-            pending.drain(..=newline);
-            let Some(data) = line.strip_prefix("data:").map(str::trim) else {
-                continue;
-            };
-            if data.is_empty() || data == "[DONE]" {
-                continue;
-            }
-            let value: Value = serde_json::from_str(data).map_err(|error| error.to_string())?;
-            accumulator.capture_protocol_event(target.provider.protocol, &value);
-            for event in decode_stream_event(target.provider.protocol, &value) {
-                accumulator.push(&event);
-                on_event(&event);
-            }
-        }
-    }
-    pending.push_str(&utf8.finish());
-    if !pending.trim().is_empty() {
-        let line = pending.trim_end_matches('\r');
-        if let Some(data) = line.strip_prefix("data:").map(str::trim)
-            && !data.is_empty()
-            && data != "[DONE]"
-        {
-            let value: Value = serde_json::from_str(data).map_err(|error| error.to_string())?;
-            accumulator.capture_protocol_event(target.provider.protocol, &value);
-            for event in decode_stream_event(target.provider.protocol, &value) {
-                accumulator.push(&event);
-                on_event(&event);
-            }
-        }
-    }
-    accumulator.finish(target.provider.protocol)
+    Ok(from_sdk_response(response))
 }
 
+fn sdk_request(
+    target: ResolvedModel<'_>,
+    api_key: Option<&str>,
+    messages: &[AgentMessage],
+    include_tools: bool,
+    thinking: Option<AgentThinkingLevel>,
+    stream: bool,
+) -> sdk::CompletionRequest {
+    let protocol = to_sdk_protocol(target.provider.protocol);
+    let tools = sdk_tool_definitions();
+    let mut request = sdk::CompletionRequest::new(
+        protocol,
+        target.provider.url.clone(),
+        target.model.id.clone(),
+        target.model.max_tokens,
+        messages.iter().map(to_sdk_message).collect(),
+        tools,
+    );
+    request.api_key = api_key.map(str::to_owned);
+    request.reasoning = target.model.reasoning;
+    request.thinking = thinking.map(to_sdk_thinking);
+    request.include_tools = include_tools;
+    request.stream = stream;
+    request
+}
+
+fn to_sdk_protocol(protocol: AgentProtocol) -> sdk::Protocol {
+    match protocol {
+        AgentProtocol::OpenAiChat => sdk::Protocol::OpenAiChat,
+        AgentProtocol::OpenAiResponses => sdk::Protocol::OpenAiResponses,
+        AgentProtocol::AnthropicMessages => sdk::Protocol::AnthropicMessages,
+    }
+}
+
+fn to_sdk_thinking(thinking: AgentThinkingLevel) -> sdk::ThinkingLevel {
+    match thinking {
+        AgentThinkingLevel::Off => sdk::ThinkingLevel::Off,
+        AgentThinkingLevel::Minimal => sdk::ThinkingLevel::Minimal,
+        AgentThinkingLevel::Low => sdk::ThinkingLevel::Low,
+        AgentThinkingLevel::Medium => sdk::ThinkingLevel::Medium,
+        AgentThinkingLevel::High => sdk::ThinkingLevel::High,
+        AgentThinkingLevel::XHigh => sdk::ThinkingLevel::XHigh,
+    }
+}
+
+fn to_sdk_message(message: &AgentMessage) -> sdk::Message {
+    sdk::Message {
+        role: match message.role {
+            AgentRole::System => sdk::Role::System,
+            AgentRole::User => sdk::Role::User,
+            AgentRole::Assistant => sdk::Role::Assistant,
+        },
+        text: message.text.clone(),
+        tool_calls: message
+            .tool_calls
+            .iter()
+            .map(|call| sdk::ToolCall {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                arguments: call.arguments.clone(),
+            })
+            .collect(),
+        tool_result: message.tool_result.as_ref().map(|result| sdk::ToolResult {
+            call_id: result.call_id.clone(),
+            output: result.output.clone(),
+            is_error: result.is_error,
+        }),
+        protocol_items: message.protocol_items.clone(),
+    }
+}
+
+fn from_sdk_response(response: sdk::Response) -> AgentResponse {
+    AgentResponse {
+        content: response
+            .content
+            .into_iter()
+            .map(|block| match block {
+                sdk::ContentBlock::Text(text) => AgentContentBlock::Text(text),
+                sdk::ContentBlock::Reasoning(text) => AgentContentBlock::Reasoning(text),
+                sdk::ContentBlock::ToolCall(call) => AgentContentBlock::ToolCall(AgentToolCall {
+                    id: call.id,
+                    name: call.name,
+                    arguments: call.arguments,
+                }),
+            })
+            .collect(),
+        protocol_items: response.protocol_items,
+    }
+}
+
+fn from_sdk_event(event: &sdk::Event) -> AgentEvent {
+    match event {
+        sdk::Event::TextDelta(delta) => AgentEvent::TextDelta(delta.clone()),
+        sdk::Event::ReasoningDelta(delta) => AgentEvent::ReasoningDelta(delta.clone()),
+        sdk::Event::ToolCallStart { index, id, name } => AgentEvent::ToolCallStart {
+            index: *index,
+            id: id.clone(),
+            name: name.clone(),
+        },
+        sdk::Event::ToolCallArgumentsDelta { index, delta } => AgentEvent::ToolCallArgumentsDelta {
+            index: *index,
+            delta: delta.clone(),
+        },
+        sdk::Event::Stop(reason) => AgentEvent::Stop(reason.clone()),
+    }
+}
+
+#[cfg(test)]
 #[derive(Default)]
 struct Utf8StreamDecoder {
     bytes: Vec<u8>,
 }
 
+#[cfg(test)]
 impl Utf8StreamDecoder {
     fn push(&mut self, chunk: &[u8]) -> String {
         self.bytes.extend_from_slice(chunk);
@@ -1429,117 +1463,88 @@ impl Utf8StreamDecoder {
     }
 }
 
+/// Compatibility accumulator retained for callers of the original
+/// `crossh-agent` protocol helpers. The implementation lives in the SDK.
+#[cfg(test)]
 #[derive(Default)]
 struct StreamAccumulator {
-    text: String,
-    reasoning: String,
-    tools: BTreeMap<usize, AgentToolCall>,
-    protocol_items: Vec<Value>,
+    inner: sdk::StreamAccumulator,
+    protocol: AgentProtocol,
 }
 
+#[cfg(test)]
 impl StreamAccumulator {
-    fn capture_protocol_event(&mut self, protocol: AgentProtocol, event: &Value) {
-        if protocol != AgentProtocol::OpenAiResponses {
-            return;
-        }
-        match event.get("type").and_then(Value::as_str) {
-            Some("response.completed") => {
-                if let Some(items) = event.pointer("/response/output").and_then(Value::as_array) {
-                    self.protocol_items = items.clone();
-                }
-            }
-            Some("response.output_item.done") => {
-                let Some(index) = event.get("output_index").and_then(Value::as_u64) else {
-                    return;
-                };
-                let Some(item) = event.get("item") else {
-                    return;
-                };
-                let index = index as usize;
-                if self.protocol_items.len() <= index {
-                    self.protocol_items.resize(index + 1, Value::Null);
-                }
-                self.protocol_items[index] = item.clone();
-            }
-            _ => {}
+    fn set_protocol(&mut self, protocol: AgentProtocol) {
+        if self.protocol != protocol {
+            self.protocol = protocol;
+            self.inner.set_protocol(to_sdk_protocol(protocol));
         }
     }
-}
 
-impl StreamAccumulator {
+    fn capture_protocol_event(&mut self, protocol: AgentProtocol, event: &Value) {
+        self.set_protocol(protocol);
+        sdk::builtin_adapter(to_sdk_protocol(protocol))
+            .capture_stream_event(&mut self.inner, event);
+    }
+
     fn push(&mut self, event: &AgentEvent) {
-        match event {
-            AgentEvent::TextDelta(delta) => self.text.push_str(delta),
-            AgentEvent::ReasoningDelta(delta) => self.reasoning.push_str(delta),
-            AgentEvent::ToolCallStart { index, id, name } => {
-                self.tools.insert(
-                    *index,
-                    AgentToolCall {
-                        id: id.clone(),
-                        name: name.clone(),
-                        arguments: String::new(),
-                    },
-                );
-            }
-            AgentEvent::ToolCallArgumentsDelta { index, delta } => {
-                self.tools
-                    .entry(*index)
-                    .or_insert_with(|| AgentToolCall {
-                        id: String::new(),
-                        name: String::new(),
-                        arguments: String::new(),
-                    })
-                    .arguments
-                    .push_str(delta);
-            }
-            AgentEvent::Stop(_) => {}
-        }
+        self.inner.push(&to_sdk_event(event));
     }
 
     fn finish(mut self, protocol: AgentProtocol) -> Result<AgentResponse, String> {
-        let mut content = Vec::new();
-        if !self.reasoning.is_empty() {
-            content.push(AgentContentBlock::Reasoning(self.reasoning.clone()));
-        }
-        if !self.text.is_empty() {
-            content.push(AgentContentBlock::Text(self.text.clone()));
-        }
-        let tools = self.tools.into_values().collect::<Vec<_>>();
-        content.extend(tools.iter().cloned().map(AgentContentBlock::ToolCall));
-        if content.is_empty() {
-            return Err("stream completed without content".into());
-        }
-        let has_complete_protocol_items = !self.protocol_items.is_empty()
-            && self.protocol_items.iter().all(|item| !item.is_null());
-        if protocol == AgentProtocol::OpenAiResponses && !has_complete_protocol_items {
-            self.protocol_items.clear();
-            if !self.reasoning.is_empty() {
-                self.protocol_items.push(json!({
-                    "type": "reasoning",
-                    "summary": [{"type": "summary_text", "text": self.reasoning}]
-                }));
-            }
-            if !self.text.is_empty() {
-                self.protocol_items.push(json!({
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": self.text}]
-                }));
-            }
-            self.protocol_items.extend(tools.into_iter().map(|call| {
-                json!({
-                    "type": "function_call",
-                    "call_id": call.id,
-                    "name": call.name,
-                    "arguments": call.arguments
-                })
-            }));
-        }
-        Ok(AgentResponse {
-            content,
-            protocol_items: self.protocol_items,
-        })
+        self.set_protocol(protocol);
+        Ok(from_sdk_response(
+            self.inner.finish().map_err(|error| error.to_string())?,
+        ))
     }
+}
+
+#[cfg(test)]
+fn to_sdk_event(event: &AgentEvent) -> sdk::Event {
+    match event {
+        AgentEvent::TextDelta(delta) => sdk::Event::TextDelta(delta.clone()),
+        AgentEvent::ReasoningDelta(delta) => sdk::Event::ReasoningDelta(delta.clone()),
+        AgentEvent::ToolCallStart { index, id, name } => sdk::Event::ToolCallStart {
+            index: *index,
+            id: id.clone(),
+            name: name.clone(),
+        },
+        AgentEvent::ToolCallArgumentsDelta { index, delta } => sdk::Event::ToolCallArgumentsDelta {
+            index: *index,
+            delta: delta.clone(),
+        },
+        AgentEvent::Stop(reason) => sdk::Event::Stop(reason.clone()),
+    }
+}
+
+fn sdk_tool_definitions() -> Vec<sdk::ToolDefinition> {
+    builtin_tools()
+        .into_iter()
+        .map(|tool| {
+            sdk::ToolDefinition::new(
+                tool.name,
+                tool.description,
+                tool.input_schema,
+                tool.requires_approval,
+            )
+        })
+        .collect()
+}
+
+fn sdk_request_for_messages(
+    protocol: AgentProtocol,
+    model: &str,
+    messages: &[AgentMessage],
+    max_tokens: u32,
+) -> sdk::CompletionRequest {
+    sdk::CompletionRequest::new(
+        to_sdk_protocol(protocol),
+        "",
+        model,
+        max_tokens,
+        messages.iter().map(to_sdk_message).collect(),
+        sdk_tool_definitions(),
+    )
 }
 
 pub fn encode_request(
@@ -1547,61 +1552,32 @@ pub fn encode_request(
     model: &str,
     messages: &[AgentMessage],
 ) -> AgentWireRequest {
-    match protocol {
-        AgentProtocol::OpenAiChat => AgentWireRequest {
-            body: json!({
-                "model": model,
-                "messages": wire_messages(AgentProtocol::OpenAiChat, messages),
-                "tools": builtin_tools().iter().map(|tool| json!({"type":"function","function":{"name":tool.name,"description":tool.description,"parameters":tool.input_schema}})).collect::<Vec<_>>(),
-                "stream": false
-            }),
-            auth_style: AgentAuthStyle::Bearer,
+    let request = sdk_request_for_messages(protocol, model, messages, 4_096);
+    let wire = sdk::builtin_adapter(request.protocol)
+        .encode_request(&request)
+        .expect("built-in adapter request should be valid");
+    AgentWireRequest {
+        body: wire.body,
+        auth_style: match wire.auth_style {
+            sdk::AuthStyle::Anthropic => AgentAuthStyle::Anthropic,
+            sdk::AuthStyle::Bearer | sdk::AuthStyle::None => AgentAuthStyle::Bearer,
         },
-        AgentProtocol::OpenAiResponses => AgentWireRequest {
-            body: json!({
-                "model": model,
-                "input": wire_messages(AgentProtocol::OpenAiResponses, messages),
-                "tools": builtin_tools().iter().map(|tool| json!({"type":"function","name":tool.name,"description":tool.description,"parameters":tool.input_schema,"strict":true})).collect::<Vec<_>>(),
-                "include": ["reasoning.encrypted_content"],
-                "stream": false
-            }),
-            auth_style: AgentAuthStyle::Bearer,
-        },
-        AgentProtocol::AnthropicMessages => {
-            let system = messages
-                .iter()
-                .filter(|message| message.role == AgentRole::System)
-                .map(|message| message.text.as_str())
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            let regular_messages = messages
-                .iter()
-                .filter(|message| message.role != AgentRole::System)
-                .cloned()
-                .collect::<Vec<_>>();
-            AgentWireRequest {
-                body: json!({
-                    "model": model,
-                    "system": system,
-                    "messages": wire_messages(AgentProtocol::AnthropicMessages, &regular_messages),
-                    "tools": builtin_tools().iter().map(|tool| json!({"name":tool.name,"description":tool.description,"input_schema":tool.input_schema})).collect::<Vec<_>>(),
-                    "max_tokens": 4096,
-                    "stream": false
-                }),
-                auth_style: AgentAuthStyle::Anthropic,
-            }
-        }
     }
 }
 
+#[cfg(test)]
 fn apply_model_options(body: &mut Value, protocol: AgentProtocol, model: &AgentModel) {
     let key = match protocol {
         AgentProtocol::OpenAiChat | AgentProtocol::AnthropicMessages => "max_tokens",
         AgentProtocol::OpenAiResponses => "max_output_tokens",
     };
     body[key] = Value::from(model.max_tokens);
+    if protocol == AgentProtocol::OpenAiResponses && model.reasoning {
+        body["reasoning"] = json!({"summary": "auto"});
+    }
 }
 
+#[cfg(test)]
 fn apply_thinking_option(
     body: &mut Value,
     protocol: AgentProtocol,
@@ -1630,7 +1606,7 @@ fn apply_thinking_option(
                     AgentThinkingLevel::XHigh => "high",
                     other => other.label(),
                 };
-                body["reasoning"] = json!({"effort": effort});
+                body["reasoning"] = json!({"effort": effort, "summary": "auto"});
             }
         }
         AgentProtocol::AnthropicMessages => {
@@ -1647,354 +1623,37 @@ pub fn decode_response(
     protocol: AgentProtocol,
     body: &Value,
 ) -> Result<AgentResponse, &'static str> {
-    let mut blocks = Vec::new();
-    let protocol_items = if protocol == AgentProtocol::OpenAiResponses {
-        body.get("output")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    match protocol {
-        AgentProtocol::OpenAiChat => {
-            let message = body
-                .pointer("/choices/0/message")
-                .ok_or("Chat response did not contain an assistant message")?;
-            push_string(
-                &mut blocks,
-                AgentContentKind::Reasoning,
-                message.get("reasoning_content"),
-            );
-            push_string(&mut blocks, AgentContentKind::Text, message.get("content"));
-            for call in message
-                .get("tool_calls")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                push_tool_call(
-                    &mut blocks,
-                    call.get("id").and_then(Value::as_str),
-                    call.pointer("/function/name").and_then(Value::as_str),
-                    call.pointer("/function/arguments").and_then(Value::as_str),
-                );
-            }
-        }
-        AgentProtocol::OpenAiResponses => {
-            for item in body
-                .get("output")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                match item.get("type").and_then(Value::as_str) {
-                    Some("reasoning") => {
-                        let content = item.get("content").and_then(Value::as_array);
-                        let summary = item.get("summary").and_then(Value::as_array);
-                        let parts = content.filter(|parts| !parts.is_empty()).or(summary);
-                        for part in parts.into_iter().flatten() {
-                            push_string(&mut blocks, AgentContentKind::Reasoning, part.get("text"));
-                        }
-                    }
-                    Some("message") => {
-                        for part in item
-                            .get("content")
-                            .and_then(Value::as_array)
-                            .into_iter()
-                            .flatten()
-                        {
-                            push_string(&mut blocks, AgentContentKind::Text, part.get("text"));
-                        }
-                    }
-                    Some("function_call") => push_tool_call(
-                        &mut blocks,
-                        item.get("call_id").and_then(Value::as_str),
-                        item.get("name").and_then(Value::as_str),
-                        item.get("arguments").and_then(Value::as_str),
-                    ),
-                    _ => {}
-                }
-            }
-        }
-        AgentProtocol::AnthropicMessages => {
-            for part in body
-                .get("content")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                match part.get("type").and_then(Value::as_str) {
-                    Some("thinking") => push_string(
-                        &mut blocks,
-                        AgentContentKind::Reasoning,
-                        part.get("thinking"),
-                    ),
-                    Some("text") => {
-                        push_string(&mut blocks, AgentContentKind::Text, part.get("text"))
-                    }
-                    Some("tool_use") => push_tool_call(
-                        &mut blocks,
-                        part.get("id").and_then(Value::as_str),
-                        part.get("name").and_then(Value::as_str),
-                        part.get("input").map(Value::to_string).as_deref(),
-                    ),
-                    _ => {}
-                }
-            }
-        }
-    }
-    if blocks.is_empty() {
-        return Err("protocol response did not contain text or reasoning content");
-    }
-    Ok(AgentResponse {
-        content: blocks,
-        protocol_items,
-    })
-}
-
-fn push_tool_call(
-    blocks: &mut Vec<AgentContentBlock>,
-    id: Option<&str>,
-    name: Option<&str>,
-    arguments: Option<&str>,
-) {
-    let (Some(id), Some(name)) = (id, name) else {
-        return;
-    };
-    blocks.push(AgentContentBlock::ToolCall(AgentToolCall {
-        id: id.into(),
-        name: name.into(),
-        arguments: arguments.unwrap_or("{}").into(),
-    }));
+    let response = sdk::builtin_adapter(to_sdk_protocol(protocol))
+        .decode_response(body)
+        .map_err(|_| "protocol response did not contain text or reasoning content")?;
+    Ok(from_sdk_response(response))
 }
 
 /// Normalize one decoded SSE `data:` object. Tool argument fragments remain
 /// fragments and are assembled by the agent loop using their stable index.
 pub fn decode_stream_event(protocol: AgentProtocol, event: &Value) -> Vec<AgentEvent> {
-    match protocol {
-        AgentProtocol::OpenAiChat => {
-            let Some(choice) = event.pointer("/choices/0") else {
-                return Vec::new();
-            };
-            let delta = choice.get("delta").unwrap_or(&Value::Null);
-            let mut events = Vec::new();
-            push_delta(
-                &mut events,
-                delta.get("reasoning_content"),
-                AgentEvent::ReasoningDelta,
-            );
-            push_delta(&mut events, delta.get("content"), AgentEvent::TextDelta);
-            for call in delta
-                .get("tool_calls")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                let index = call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
-                if let (Some(id), Some(name)) = (
-                    call.get("id").and_then(Value::as_str),
-                    call.pointer("/function/name").and_then(Value::as_str),
-                ) {
-                    events.push(AgentEvent::ToolCallStart {
-                        index,
-                        id: id.into(),
-                        name: name.into(),
-                    });
-                }
-                push_tool_delta(&mut events, index, call.pointer("/function/arguments"));
-            }
-            if choice
-                .get("finish_reason")
-                .is_some_and(|value| !value.is_null())
-            {
-                events.push(AgentEvent::Stop(
-                    choice
-                        .get("finish_reason")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                ));
-            }
-            events
-        }
-        AgentProtocol::OpenAiResponses => {
-            let index = event
-                .get("output_index")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as usize;
-            match event.get("type").and_then(Value::as_str) {
-                Some("response.output_text.delta") => delta_event(event, AgentEvent::TextDelta),
-                Some("response.reasoning_text.delta" | "response.reasoning_summary_text.delta") => {
-                    delta_event(event, AgentEvent::ReasoningDelta)
-                }
-                Some("response.output_item.added")
-                    if event.pointer("/item/type").and_then(Value::as_str)
-                        == Some("function_call") =>
-                {
-                    vec![AgentEvent::ToolCallStart {
-                        index,
-                        id: event
-                            .pointer("/item/call_id")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .into(),
-                        name: event
-                            .pointer("/item/name")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .into(),
-                    }]
-                }
-                Some("response.function_call_arguments.delta") => delta_event(event, |delta| {
-                    AgentEvent::ToolCallArgumentsDelta { index, delta }
-                }),
-                Some("response.completed") => vec![AgentEvent::Stop(Some("completed".into()))],
-                _ => Vec::new(),
-            }
-        }
-        AgentProtocol::AnthropicMessages => {
-            let index = event.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
-            match event.get("type").and_then(Value::as_str) {
-                Some("content_block_start")
-                    if event.pointer("/content_block/type").and_then(Value::as_str)
-                        == Some("tool_use") =>
-                {
-                    vec![AgentEvent::ToolCallStart {
-                        index,
-                        id: event
-                            .pointer("/content_block/id")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .into(),
-                        name: event
-                            .pointer("/content_block/name")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .into(),
-                    }]
-                }
-                Some("content_block_delta") => {
-                    match event.pointer("/delta/type").and_then(Value::as_str) {
-                        Some("text_delta") => {
-                            value_event(event.pointer("/delta/text"), AgentEvent::TextDelta)
-                        }
-                        Some("thinking_delta") => value_event(
-                            event.pointer("/delta/thinking"),
-                            AgentEvent::ReasoningDelta,
-                        ),
-                        Some("input_json_delta") => {
-                            value_event(event.pointer("/delta/partial_json"), |delta| {
-                                AgentEvent::ToolCallArgumentsDelta { index, delta }
-                            })
-                        }
-                        _ => Vec::new(),
-                    }
-                }
-                Some("message_delta") => vec![AgentEvent::Stop(
-                    event
-                        .pointer("/delta/stop_reason")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                )],
-                _ => Vec::new(),
-            }
-        }
-    }
+    sdk::builtin_adapter(to_sdk_protocol(protocol))
+        .decode_stream_event(event)
+        .iter()
+        .map(from_sdk_event)
+        .collect()
 }
 
-fn push_delta(
-    events: &mut Vec<AgentEvent>,
-    value: Option<&Value>,
-    make: impl Fn(String) -> AgentEvent,
-) {
-    events.extend(value_event(value, make));
-}
-fn push_tool_delta(events: &mut Vec<AgentEvent>, index: usize, value: Option<&Value>) {
-    push_delta(events, value, |delta| AgentEvent::ToolCallArgumentsDelta {
-        index,
-        delta,
-    });
-}
-fn delta_event(event: &Value, make: impl Fn(String) -> AgentEvent) -> Vec<AgentEvent> {
-    value_event(event.get("delta"), make)
-}
-fn value_event(value: Option<&Value>, make: impl Fn(String) -> AgentEvent) -> Vec<AgentEvent> {
-    value
-        .and_then(Value::as_str)
-        .filter(|text| !text.is_empty())
-        .map(|text| vec![make(text.into())])
-        .unwrap_or_default()
-}
-
-#[derive(Clone, Copy)]
-enum AgentContentKind {
-    Text,
-    Reasoning,
-}
-
-fn push_string(blocks: &mut Vec<AgentContentBlock>, kind: AgentContentKind, value: Option<&Value>) {
-    let Some(text) = value
-        .and_then(Value::as_str)
-        .filter(|text| !text.is_empty())
-    else {
-        return;
-    };
-    blocks.push(match kind {
-        AgentContentKind::Text => AgentContentBlock::Text(text.to_string()),
-        AgentContentKind::Reasoning => AgentContentBlock::Reasoning(text.to_string()),
-    });
-}
-
-fn openai_message(message: &AgentMessage) -> Value {
-    json!({
-        "role": match message.role {
-            AgentRole::System => "system",
-            AgentRole::User => "user",
-            AgentRole::Assistant => "assistant",
-        },
-        "content": message.text
-    })
-}
-
+#[cfg(test)]
 fn wire_messages(protocol: AgentProtocol, messages: &[AgentMessage]) -> Vec<Value> {
-    let mut result = Vec::new();
-    for message in messages {
-        if let Some(tool_result) = &message.tool_result {
-            result.push(match protocol {
-                AgentProtocol::OpenAiChat => json!({"role":"tool","tool_call_id":tool_result.call_id,"content":tool_result.output}),
-                AgentProtocol::OpenAiResponses => json!({"type":"function_call_output","call_id":tool_result.call_id,"output":tool_result.output}),
-                AgentProtocol::AnthropicMessages => json!({"role":"user","content":[{"type":"tool_result","tool_use_id":tool_result.call_id,"content":tool_result.output,"is_error":tool_result.is_error}]}),
-            });
-            continue;
-        }
-        if protocol == AgentProtocol::OpenAiResponses && !message.protocol_items.is_empty() {
-            result.extend(message.protocol_items.iter().cloned());
-            continue;
-        }
-        if !message.tool_calls.is_empty() {
-            result.push(match protocol {
-                AgentProtocol::OpenAiChat => json!({"role":"assistant","content":if message.text.is_empty() { Value::Null } else { Value::String(message.text.clone()) },"tool_calls":message.tool_calls.iter().map(|call| json!({"id":call.id,"type":"function","function":{"name":call.name,"arguments":call.arguments}})).collect::<Vec<_>>()}),
-                AgentProtocol::OpenAiResponses => {
-                    if !message.text.is_empty() {
-                        result.push(json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":message.text}]}));
-                    }
-                    for call in &message.tool_calls { result.push(json!({"type":"function_call","call_id":call.id,"name":call.name,"arguments":call.arguments})); }
-                    continue;
-                }
-                AgentProtocol::AnthropicMessages => {
-                    let mut content = Vec::new();
-                    if !message.text.is_empty() {
-                        content.push(json!({"type":"text","text":message.text}));
-                    }
-                    content.extend(message.tool_calls.iter().map(|call| json!({"type":"tool_use","id":call.id,"name":call.name,"input":serde_json::from_str::<Value>(&call.arguments).unwrap_or(Value::Null)})));
-                    json!({"role":"assistant","content":content})
-                }
-            });
-            continue;
-        }
-        result.push(openai_message(message));
-    }
-    result
+    let request = sdk_request_for_messages(protocol, "model", messages, 4_096);
+    let body = sdk::builtin_adapter(request.protocol)
+        .encode_request(&request)
+        .expect("built-in adapter request should be valid")
+        .body;
+    let key = match protocol {
+        AgentProtocol::OpenAiResponses => "input",
+        AgentProtocol::OpenAiChat | AgentProtocol::AnthropicMessages => "messages",
+    };
+    body.get(key)
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -2195,6 +1854,88 @@ mod tests {
     }
 
     #[test]
+    fn responses_tool_events_keep_the_final_call_and_arguments() {
+        let mut accumulator = StreamAccumulator::default();
+        let events = [
+            json!({
+                "type":"response.output_item.added",
+                "output_index":0,
+                "item":{
+                    "type":"function_call",
+                    "id":"fc_1",
+                    "call_id":"call_1",
+                    "name":"read",
+                    "arguments":""
+                }
+            }),
+            json!({
+                "type":"response.function_call_arguments.delta",
+                "output_index":0,
+                "delta":"{\"path\":\"README.md\"}"
+            }),
+            json!({
+                "type":"response.function_call_arguments.done",
+                "output_index":0,
+                "arguments":"{\"path\":\"README.md\"}"
+            }),
+            json!({
+                "type":"response.output_item.done",
+                "output_index":0,
+                "item":{
+                    "type":"function_call",
+                    "id":"fc_1",
+                    "call_id":"call_1",
+                    "name":"read",
+                    "arguments":"{\"path\":\"README.md\"}"
+                }
+            }),
+        ];
+        for event in events {
+            accumulator.capture_protocol_event(AgentProtocol::OpenAiResponses, &event);
+            for decoded in decode_stream_event(AgentProtocol::OpenAiResponses, &event) {
+                accumulator.push(&decoded);
+            }
+        }
+
+        let response = accumulator.finish(AgentProtocol::OpenAiResponses).unwrap();
+        assert_eq!(
+            response.content,
+            vec![AgentContentBlock::ToolCall(AgentToolCall {
+                id: "call_1".into(),
+                name: "read".into(),
+                arguments: r#"{"path":"README.md"}"#.into(),
+            })]
+        );
+    }
+
+    #[test]
+    fn responses_output_item_done_can_create_a_tool_call() {
+        let mut accumulator = StreamAccumulator::default();
+        let event = json!({
+            "type":"response.output_item.done",
+            "output_index":2,
+            "item":{
+                "type":"function_call",
+                "id":"fc_2",
+                "call_id":"call_2",
+                "name":"ls",
+                "arguments":"{\"path\":null}"
+            }
+        });
+        accumulator.capture_protocol_event(AgentProtocol::OpenAiResponses, &event);
+
+        let response = accumulator.finish(AgentProtocol::OpenAiResponses).unwrap();
+        assert_eq!(
+            response.content,
+            vec![AgentContentBlock::ToolCall(AgentToolCall {
+                id: "call_2".into(),
+                name: "ls".into(),
+                arguments: r#"{"path":null}"#.into(),
+            })]
+        );
+    }
+
+    #[test]
     fn adapters_decode_protocol_responses() {
         assert_eq!(
             decode_response(
@@ -2332,6 +2073,20 @@ mod tests {
         );
         assert!(!result.is_error);
         assert_eq!(result.output, "2: two");
+
+        let absolute = execute_tool(
+            &AgentToolCall {
+                id: "absolute".into(),
+                name: "read".into(),
+                arguments: json!({
+                    "path": workspace.path().join("notes.txt").to_string_lossy()
+                })
+                .to_string(),
+            },
+            workspace.path(),
+        );
+        assert!(!absolute.is_error);
+        assert_eq!(absolute.output, "1: one\n2: two\n3: three");
 
         let escaped = execute_tool(
             &AgentToolCall {
