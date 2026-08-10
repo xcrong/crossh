@@ -10,6 +10,7 @@ settings:
   close: 关闭设置
   general: 通用
   terminal: 终端
+  providers: 模型供应商
   agent: Agent
   agent_provider: 供应商
   agent_provider_description: 管理多个 API 供应商，并在下方编辑当前选中的供应商。
@@ -51,7 +52,10 @@ settings:
   agent_credential_env_description: 直接密钥留空时使用的可选回退；本地接口两项都可以留空。
   agent_status: 配置
   agent_save: 保存 Agent 配置
-  agent_save_description: 直接填写的 API Key 会保存在本机 Crossh 设置文件中。
+  agent_save_description: 保存 Agent 使用的模型角色与执行策略。
+  provider_status: 供应商配置
+  provider_save: 保存供应商配置
+  provider_save_description: API Key 与模型信息会保存在本机 Crossh 设置文件中。
   about: 关于
   about_description: 面向本地与远程工作的专注型 SSH 工作台。
   about_version: 版本

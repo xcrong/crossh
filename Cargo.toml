@@ -10,6 +10,7 @@ members = [
     ".",
     "crates/crossh-core",
     "crates/crossh-agent",
+    "crates/crossh-assets",
     "crates/crossh-theme",
     "crates/crossh-ssh",
     "crates/crossh-terminal",

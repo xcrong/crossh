@@ -19,6 +19,9 @@ Crossh embeds SVG icons downloaded from the official Lucide release `1.27.0`:
 - Source: https://github.com/lucide-icons/lucide/tree/1.27.0/icons
 - Release commit: `4aec3f892fd6c23063bc2fead83c899b5d412b1c`
 - License: ISC
+- Embedded by the UI-neutral `crossh-assets` crate from
+  `crates/crossh-assets/assets/icons/`; `crossh-ui` only adapts those bytes to
+  GPUI.
 
 ```text
 ISC License

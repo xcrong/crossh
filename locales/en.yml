@@ -10,6 +10,7 @@ settings:
   close: Close settings
   general: General
   terminal: Terminal
+  providers: LLM Providers
   agent: Agent
   agent_provider: Providers
   agent_provider_description: Maintain multiple API providers and edit the selected provider below.
@@ -51,7 +52,10 @@ settings:
   agent_credential_env_description: Optional fallback when the direct API key is empty. Leave both empty for local endpoints.
   agent_status: Configuration
   agent_save: Save agent configuration
-  agent_save_description: Direct API keys are stored in the local Crossh settings file.
+  agent_save_description: Save the model roles and execution policy used by the agent.
+  provider_status: Provider configuration
+  provider_save: Save provider configuration
+  provider_save_description: API keys and model details are stored in the local Crossh settings file.
   about: About
   about_description: A focused SSH workbench for local and remote sessions.
   about_version: Version

@@ -9,7 +9,7 @@ the UI.
 crossh (application + feature views)
   -> crossh-agent
   -> crossh-theme
-  -> crossh-ui
+  -> crossh-ui -> crossh-assets
   -> crossh-terminal -> crossh-core
   -> crossh-ssh      -> crossh-core
   -> crossh-update
@@ -21,7 +21,8 @@ crossh-ssh        -> no GPUI, transport implementation only
 crossh-terminal   -> no GPUI, terminal settings/events only
 crossh-update     -> no GPUI, release/download/install implementation
 crossh-theme      -> no GPUI, renderer-independent color tokens
-crossh-ui         -> GPUI primitives and assets
+crossh-assets     -> no GPUI, embedded Crossh icon assets and icon identifiers
+crossh-ui         -> GPUI primitives and the asset-source adapter
 ```
 
 ## Crate Ownership
@@ -32,7 +33,8 @@ crossh-ui         -> GPUI primitives and assets
 - `crossh-ssh`: `russh` authentication and channels, connection pooling, SFTP, port forwarding, ProxyJump, and the Tokio runtime. Its public API is re-exported from the crate root; implementation modules stay private.
 - `crossh-terminal`: terminal-owned settings and events. It is the model boundary consumed by the GPUI terminal view.
 - `crossh-update`: release manifest validation, HTTPS downloads, checksum verification, archive installation, and the standalone updater hand-off.
-- `crossh-ui`: reusable GPUI widgets, context menus, the GPUI adapter for `crossh-theme`, icons, and the asset source.
+- `crossh-assets`: UI-neutral Lucide SVG storage, `rust-embed` loading, shared icon identifiers, and the whole-directory asset integrity test. Its files live under `crates/crossh-assets/assets/icons/`.
+- `crossh-ui`: reusable GPUI widgets, context menus, the GPUI adapter for `crossh-theme`, icon rendering, and the `AssetSource` adapter backed by `crossh-assets`.
 - `crossh`: process startup plus user-facing feature views and GPUI adapters. `features/terminal/view.rs` is the `terminal_view`-style host around Zed's terminal foundation; `features/connections/entity.rs` is the adapter around `crossh-ssh::ConnectionHandle`.
 
 Within the application crate:
@@ -51,7 +53,7 @@ engine remains in `crossh-ssh`.
 
 ## Boundary Rules
 
-1. `crossh-core`, `crossh-agent`, `crossh-theme`, `crossh-ssh`, `crossh-terminal`, and `crossh-update` must not import `gpui`, `gpui_platform`, or `crossh-ui`.
+1. `crossh-core`, `crossh-agent`, `crossh-assets`, `crossh-theme`, `crossh-ssh`, `crossh-terminal`, and `crossh-update` must not import `gpui`, `gpui_platform`, or `crossh-ui`.
 2. The transport crate communicates with the application through channels and public data types; it never receives a GPUI context or entity.
 3. Feature views consume crate-root APIs, not private implementation modules from `crossh-ssh` or `crossh-update`.
 4. Feature settings stay next to the feature that owns their behavior; the persistence layer composes snapshots without becoming the settings owner.

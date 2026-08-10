@@ -1902,6 +1902,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossh-assets"
+version = "0.10.2"
+dependencies = [
+ "rust-embed",
+]
+
+[[package]]
 name = "crossh-core"
 version = "0.10.2"
 dependencies = [
@@ -1949,6 +1956,7 @@ name = "crossh-ui"
 version = "0.10.2"
 dependencies = [
  "assets",
+ "crossh-assets",
  "crossh-theme",
  "gpui",
 ]

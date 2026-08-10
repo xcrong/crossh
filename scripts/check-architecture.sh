@@ -23,6 +23,7 @@ check_absent \
     "logic crates import GPUI" \
     '(use|extern crate).*gpui|gpui::' \
     "$repo_root/crates/crossh-core" \
+    "$repo_root/crates/crossh-assets" \
     "$repo_root/crates/crossh-ssh" \
     "$repo_root/crates/crossh-terminal" \
     "$repo_root/crates/crossh-update"
@@ -31,6 +32,7 @@ check_absent \
     "logic crates import the application or shared UI crate" \
     'crossh_ui|crossh::|crate::features|crate::shared' \
     "$repo_root/crates/crossh-core" \
+    "$repo_root/crates/crossh-assets" \
     "$repo_root/crates/crossh-ssh" \
     "$repo_root/crates/crossh-terminal" \
     "$repo_root/crates/crossh-update"

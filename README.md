@@ -65,6 +65,7 @@ crates/
   crossh-ssh/                 russh 连接、SFTP、转发和认证引擎
   crossh-terminal/            终端 settings/events 模型边界
   crossh-update/              manifest、下载校验、归档安装和 updater
+  crossh-assets/              无 UI 的图标资源、嵌入和资源完整性校验
   crossh-ui/                  GPUI 主题、图标、菜单和通用控件
 src/
   main.rs                     入口编排：窗口、快捷键、启动顺序
@@ -78,7 +79,11 @@ src/
     settings/                 设置窗口与持久化编排
 ```
 
-依赖方向保持单向：`crossh-core`、`crossh-ssh`、`crossh-terminal` 和 `crossh-update` 不依赖 GPUI；根 package 的 GPUI feature adapter 依赖这些 crate；`workspace` 通过 `WorkspacePane` trait 消费终端、SFTP 和转发面板。可重复执行的分层检查位于 `scripts/check-architecture.sh`。
+依赖方向保持单向：`crossh-core`、`crossh-assets`、`crossh-ssh`、`crossh-terminal` 和 `crossh-update` 不依赖 GPUI；`crossh-ui` 将 `crossh-assets` 适配为 GPUI 的资源源；根 package 的 GPUI feature adapter 依赖这些 crate；`workspace` 通过 `WorkspacePane` trait 消费终端、SFTP 和转发面板。可重复执行的分层检查位于 `scripts/check-architecture.sh`。
+
+UI 图标统一放在 `crates/crossh-assets/assets/icons/`，由 `crossh-assets`
+自动嵌入。图标引用必须通过 `crossh_ui::icons::IconName`，不要在业务视图中
+直接写 `icons/<name>.svg`；资源包的单个测试会校验所有声明图标和嵌入文件。
 
 技术栈：Zed `gpui`、`terminal`、`task`（UI、PTY、终端模拟和 shell 进程）；Crossh 本地裁剪的 `terminal_view` 基础（渲染和交互）以及薄宿主（生命周期、焦点和工作区边界）；`russh`（SFTP、端口转发和后台 SSH 命令）；`tokio`（2 worker 常驻）。`alacritty_terminal` / `vte` 由 Zed `terminal` 间接使用，Crossh 不再直接维护另一套生产终端实现。
 

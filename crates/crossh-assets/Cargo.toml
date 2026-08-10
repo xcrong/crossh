@@ -1,0 +1,8 @@
+[package]
+name = "crossh-assets"
+version = "0.10.2"
+edition = "2024"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+rust-embed = "8.12.0"

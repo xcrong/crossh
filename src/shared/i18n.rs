@@ -139,5 +139,18 @@ mod tests {
             text_for("quit.title", Locale::SimplifiedChinese),
             "要退出 Crossh 吗？"
         );
+        assert_eq!(
+            text_for("settings.providers", Locale::English),
+            "LLM Providers"
+        );
+        assert_eq!(text_for("settings.agent", Locale::English), "Agent");
+        assert_eq!(
+            text_for("settings.providers", Locale::SimplifiedChinese),
+            "模型供应商"
+        );
+        assert_eq!(
+            text_for("settings.agent", Locale::SimplifiedChinese),
+            "Agent"
+        );
     }
 }

@@ -26,6 +26,7 @@ use crossh_ui::{icons, theme};
 pub enum SettingsSection {
     General,
     Terminal,
+    Providers,
     Agent,
     Updates,
     About,
@@ -549,12 +550,7 @@ impl SettingsWindow {
         content.into_any_element()
     }
 
-    fn render_agent_settings(
-        &mut self,
-        settings: &SettingsSnapshot,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn prepare_agent_draft(&mut self, settings: &SettingsSnapshot) {
         if self.agent_draft == AgentSettings::default()
             && settings.agent != AgentSettings::default()
         {
@@ -588,6 +584,15 @@ impl SettingsWindow {
                 .len()
                 .saturating_sub(1),
         );
+    }
+
+    fn render_provider_settings(
+        &mut self,
+        settings: &SettingsSnapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.prepare_agent_draft(settings);
         let provider_id = self.agent_input(AgentInputField::ProviderId, window, cx);
         let provider_name = self.agent_input(AgentInputField::ProviderName, window, cx);
         let url = self.agent_input(AgentInputField::Url, window, cx);
@@ -672,86 +677,16 @@ impl SettingsWindow {
                 cx.notify();
             }),
         );
-        let mut active_models = div().flex().flex_row().gap_1().flex_wrap().justify_end();
-        let mut reviewer_models = div().flex().flex_row().gap_1().flex_wrap().justify_end();
-        for provider in &self.agent_draft.providers {
-            for model_entry in &provider.models {
-                let reference = AgentModelRef {
-                    provider: provider.id.clone(),
-                    model: model_entry.id.clone(),
-                };
-                let label = format!("{}/{}", provider.name, model_entry.name);
-                let active_reference = reference.clone();
-                active_models = active_models.child(settings_choice_button(
-                    format!("settings-agent-active-{}-{}", provider.id, model_entry.id),
-                    label.clone(),
-                    self.agent_draft.active_model == reference,
-                    cx.listener(move |this, _ev, _window, cx| {
-                        this.agent_draft.active_model = active_reference.clone();
-                        this.agent_error = None;
-                        cx.notify();
-                    }),
-                ));
-                let reviewer_reference = reference.clone();
-                reviewer_models = reviewer_models.child(settings_choice_button(
-                    format!("settings-agent-reviewer-{}-{}", provider.id, model_entry.id),
-                    label,
-                    self.agent_draft.reviewer_model == reference,
-                    cx.listener(move |this, _ev, _window, cx| {
-                        this.agent_draft.reviewer_model = reviewer_reference.clone();
-                        this.agent_error = None;
-                        cx.notify();
-                    }),
-                ));
-            }
-        }
-        let rounds = self.agent_draft.max_tool_rounds;
-        let rounds_control = div()
-            .flex()
-            .items_center()
-            .gap_1()
-            .child(settings_icon_button(
-                "settings-agent-rounds-decrease",
-                icons::IconName::Minus,
-                i18n::text("settings.agent_rounds"),
-                cx.listener(|this, _ev, _window, cx| {
-                    this.agent_draft.max_tool_rounds =
-                        this.agent_draft.max_tool_rounds.saturating_sub(10).max(1);
-                    cx.notify();
-                }),
-            ))
-            .child(
-                div()
-                    .w(px(64.))
-                    .h(px(30.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(theme::RADIUS_SM))
-                    .bg(theme::raised())
-                    .text_xs()
-                    .child(SharedString::from(rounds.to_string())),
-            )
-            .child(settings_icon_button(
-                "settings-agent-rounds-increase",
-                icons::IconName::Plus,
-                i18n::text("settings.agent_rounds"),
-                cx.listener(|this, _ev, _window, cx| {
-                    this.agent_draft.max_tool_rounds =
-                        (this.agent_draft.max_tool_rounds + 10).min(1000);
-                    cx.notify();
-                }),
-            ));
         let save = settings_icon_button(
-            "settings-agent-save",
+            "settings-provider-save",
             icons::IconName::Save,
-            i18n::text("settings.agent_save"),
+            i18n::text("settings.provider_save"),
             cx.listener(|this, _ev, _window, cx| this.save_agent_settings(cx)),
         );
         let status_description = self
             .agent_error
             .clone()
-            .unwrap_or_else(|| i18n::text("settings.agent_save_description"));
+            .unwrap_or_else(|| i18n::text("settings.provider_save_description"));
         let mut protocols = div().flex().flex_row().gap_1().flex_wrap().justify_end();
         for protocol in AgentProtocol::ALL {
             let selected = protocol == self.agent_draft.providers[provider_index].protocol;
@@ -785,11 +720,11 @@ impl SettingsWindow {
         }
 
         div()
-            .id("settings-agent")
+            .id("settings-providers")
             .max_w(px(760.))
             .flex()
             .flex_col()
-            .child(settings_heading("settings.agent"))
+            .child(settings_heading("settings.providers"))
             .child(settings_row(
                 i18n::text("settings.agent_provider"),
                 i18n::text("settings.agent_provider_description"),
@@ -846,6 +781,119 @@ impl SettingsWindow {
                 max_tokens,
             ))
             .child(settings_row(
+                i18n::text("settings.agent_credential"),
+                i18n::text("settings.agent_credential_description"),
+                api_key,
+            ))
+            .child(settings_row(
+                i18n::text("settings.agent_credential_env"),
+                i18n::text("settings.agent_credential_env_description"),
+                key_env,
+            ))
+            .child(settings_row(
+                i18n::text("settings.provider_status"),
+                status_description,
+                save,
+            ))
+            .into_any_element()
+    }
+
+    fn render_agent_settings(
+        &mut self,
+        settings: &SettingsSnapshot,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.prepare_agent_draft(settings);
+
+        let mut active_models = div().flex().flex_row().gap_1().flex_wrap().justify_end();
+        let mut reviewer_models = div().flex().flex_row().gap_1().flex_wrap().justify_end();
+        for provider in &self.agent_draft.providers {
+            for model_entry in &provider.models {
+                let reference = AgentModelRef {
+                    provider: provider.id.clone(),
+                    model: model_entry.id.clone(),
+                };
+                let label = format!("{}/{}", provider.name, model_entry.name);
+                let active_reference = reference.clone();
+                active_models = active_models.child(settings_choice_button(
+                    format!("settings-agent-active-{}-{}", provider.id, model_entry.id),
+                    label.clone(),
+                    self.agent_draft.active_model == reference,
+                    cx.listener(move |this, _ev, _window, cx| {
+                        this.agent_draft.active_model = active_reference.clone();
+                        this.agent_error = None;
+                        cx.notify();
+                    }),
+                ));
+                let reviewer_reference = reference.clone();
+                reviewer_models = reviewer_models.child(settings_choice_button(
+                    format!("settings-agent-reviewer-{}-{}", provider.id, model_entry.id),
+                    label,
+                    self.agent_draft.reviewer_model == reference,
+                    cx.listener(move |this, _ev, _window, cx| {
+                        this.agent_draft.reviewer_model = reviewer_reference.clone();
+                        this.agent_error = None;
+                        cx.notify();
+                    }),
+                ));
+            }
+        }
+
+        let rounds = self.agent_draft.max_tool_rounds;
+        let rounds_control = div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(settings_icon_button(
+                "settings-agent-rounds-decrease",
+                icons::IconName::Minus,
+                i18n::text("settings.agent_rounds"),
+                cx.listener(|this, _ev, _window, cx| {
+                    this.agent_draft.max_tool_rounds =
+                        this.agent_draft.max_tool_rounds.saturating_sub(10).max(1);
+                    cx.notify();
+                }),
+            ))
+            .child(
+                div()
+                    .w(px(64.))
+                    .h(px(30.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(theme::RADIUS_SM))
+                    .bg(theme::raised())
+                    .text_xs()
+                    .child(SharedString::from(rounds.to_string())),
+            )
+            .child(settings_icon_button(
+                "settings-agent-rounds-increase",
+                icons::IconName::Plus,
+                i18n::text("settings.agent_rounds"),
+                cx.listener(|this, _ev, _window, cx| {
+                    this.agent_draft.max_tool_rounds =
+                        (this.agent_draft.max_tool_rounds + 10).min(1000);
+                    cx.notify();
+                }),
+            ));
+        let save = settings_icon_button(
+            "settings-agent-save",
+            icons::IconName::Save,
+            i18n::text("settings.agent_save"),
+            cx.listener(|this, _ev, _window, cx| this.save_agent_settings(cx)),
+        );
+        let status_description = self
+            .agent_error
+            .clone()
+            .unwrap_or_else(|| i18n::text("settings.agent_save_description"));
+
+        div()
+            .id("settings-agent")
+            .max_w(px(760.))
+            .flex()
+            .flex_col()
+            .child(settings_heading("settings.agent"))
+            .child(settings_row(
                 i18n::text("settings.agent_active_model"),
                 i18n::text("settings.agent_active_model_description"),
                 active_models.into_any_element(),
@@ -859,16 +907,6 @@ impl SettingsWindow {
                 i18n::text("settings.agent_rounds"),
                 i18n::text("settings.agent_rounds_description"),
                 rounds_control.into_any_element(),
-            ))
-            .child(settings_row(
-                i18n::text("settings.agent_credential"),
-                i18n::text("settings.agent_credential_description"),
-                api_key,
-            ))
-            .child(settings_row(
-                i18n::text("settings.agent_credential_env"),
-                i18n::text("settings.agent_credential_env_description"),
-                key_env,
             ))
             .child(settings_row(
                 i18n::text("settings.agent_status"),
@@ -1491,9 +1529,18 @@ impl Render for SettingsWindow {
                 this.select_section(SettingsSection::Updates, cx);
             }),
         );
+        let providers = nav_button(
+            "settings-section-providers",
+            icons::IconName::Server,
+            i18n::text("settings.providers"),
+            section == SettingsSection::Providers,
+            cx.listener(|this, _ev, _window, cx| {
+                this.select_section(SettingsSection::Providers, cx);
+            }),
+        );
         let agent = nav_button(
             "settings-section-agent",
-            icons::IconName::Terminal,
+            icons::IconName::Bot,
             i18n::text("settings.agent"),
             section == SettingsSection::Agent,
             cx.listener(|this, _ev, _window, cx| {
@@ -1513,7 +1560,8 @@ impl Render for SettingsWindow {
         let content = match section {
             SettingsSection::General => self.render_general_settings(&settings, cx),
             SettingsSection::Terminal => self.render_terminal_settings(&settings, cx),
-            SettingsSection::Agent => self.render_agent_settings(&settings, window, cx),
+            SettingsSection::Providers => self.render_provider_settings(&settings, window, cx),
+            SettingsSection::Agent => self.render_agent_settings(&settings, cx),
             SettingsSection::Updates => self.render_updates_settings(&settings, cx),
             SettingsSection::About => self.render_about_settings(),
         };
@@ -1542,6 +1590,7 @@ impl Render for SettingsWindow {
                             .border_color(theme::border_strong())
                             .child(general)
                             .child(terminal)
+                            .child(providers)
                             .child(agent)
                             .child(updates)
                             .child(div().flex_1())
