@@ -32,6 +32,13 @@ pub enum SettingsSection {
     About,
 }
 
+// The sidebar is 180px wide; below this point it leaves too little room for form rows.
+const SETTINGS_COMPACT_WIDTH: f32 = 640.;
+
+fn uses_compact_settings_layout(width: Pixels) -> bool {
+    width < px(SETTINGS_COMPACT_WIDTH)
+}
+
 /// 设置窗口的根视图。窗口关闭即释放。
 pub struct SettingsWindow {
     /// 主窗口 AppShell 的弱引用：设置值读写都委托给它。
@@ -56,6 +63,7 @@ pub struct SettingsWindow {
     agent_anchor: Option<usize>,
     agent_dragging: bool,
     agent_error: Option<String>,
+    compact_layout: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -100,6 +108,7 @@ impl SettingsWindow {
             agent_anchor: None,
             agent_dragging: false,
             agent_error: None,
+            compact_layout: false,
         }
     }
 
@@ -138,7 +147,18 @@ impl SettingsWindow {
         settings: &SettingsSnapshot,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut languages = div().flex().flex_row().gap_1().flex_wrap().justify_end();
+        let compact_layout = self.compact_layout;
+        let settings_row = move |label: String, description: String, control: AnyElement| {
+            responsive_settings_row(label, description, control, compact_layout)
+        };
+        let mut languages = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_row()
+            .gap_1()
+            .flex_wrap()
+            .justify_end();
         for preference in LanguagePreference::ALL {
             let selected = preference == settings.language;
             let option = div()
@@ -243,6 +263,10 @@ impl SettingsWindow {
         settings: &SettingsSnapshot,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let compact_layout = self.compact_layout;
+        let settings_row = move |label: String, description: String, control: AnyElement| {
+            responsive_settings_row(label, description, control, compact_layout)
+        };
         let mut timestamps = div()
             .id("settings-timestamps-toggle")
             .w(px(42.))
@@ -341,7 +365,14 @@ impl SettingsWindow {
             ));
 
         let scrollback_values = [500usize, 1000, 5000, 10000];
-        let mut scrollback = div().flex().flex_row().gap_1().flex_wrap().justify_end();
+        let mut scrollback = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_row()
+            .gap_1()
+            .flex_wrap()
+            .justify_end();
         for value in scrollback_values {
             let selected = value == settings.terminal.scrollback;
             let option = div()
@@ -407,6 +438,10 @@ impl SettingsWindow {
         settings: &SettingsSnapshot,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let compact_layout = self.compact_layout;
+        let settings_row = move |label: String, description: String, control: AnyElement| {
+            responsive_settings_row(label, description, control, compact_layout)
+        };
         self.updates.update(cx, |updates, _cx| {
             updates.set_settings(settings.updates.clone())
         });
@@ -592,6 +627,10 @@ impl SettingsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let compact_layout = self.compact_layout;
+        let settings_row = move |label: String, description: String, control: AnyElement| {
+            responsive_settings_row(label, description, control, compact_layout)
+        };
         self.prepare_agent_draft(settings);
         let provider_id = self.agent_input(AgentInputField::ProviderId, window, cx);
         let provider_name = self.agent_input(AgentInputField::ProviderName, window, cx);
@@ -603,7 +642,14 @@ impl SettingsWindow {
         let context_window = self.agent_input(AgentInputField::ContextWindow, window, cx);
         let max_tokens = self.agent_input(AgentInputField::MaxTokens, window, cx);
         let provider_index = self.agent_provider_index;
-        let mut providers = div().flex().flex_row().gap_1().flex_wrap().justify_end();
+        let mut providers = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_row()
+            .gap_1()
+            .flex_wrap()
+            .justify_end();
         for (index, provider) in self.agent_draft.providers.iter().enumerate() {
             providers = providers.child(settings_choice_button(
                 format!("settings-agent-provider-{index}"),
@@ -632,7 +678,14 @@ impl SettingsWindow {
             ));
 
         let selected_provider = &self.agent_draft.providers[provider_index];
-        let mut models = div().flex().flex_row().gap_1().flex_wrap().justify_end();
+        let mut models = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_row()
+            .gap_1()
+            .flex_wrap()
+            .justify_end();
         for (index, model_entry) in selected_provider.models.iter().enumerate() {
             models = models.child(settings_choice_button(
                 format!("settings-agent-model-choice-{index}"),
@@ -687,7 +740,14 @@ impl SettingsWindow {
             .agent_error
             .clone()
             .unwrap_or_else(|| i18n::text("settings.provider_save_description"));
-        let mut protocols = div().flex().flex_row().gap_1().flex_wrap().justify_end();
+        let mut protocols = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_row()
+            .gap_1()
+            .flex_wrap()
+            .justify_end();
         for protocol in AgentProtocol::ALL {
             let selected = protocol == self.agent_draft.providers[provider_index].protocol;
             protocols = protocols.child(
@@ -803,10 +863,28 @@ impl SettingsWindow {
         settings: &SettingsSnapshot,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let compact_layout = self.compact_layout;
+        let settings_row = move |label: String, description: String, control: AnyElement| {
+            responsive_settings_row(label, description, control, compact_layout)
+        };
         self.prepare_agent_draft(settings);
 
-        let mut active_models = div().flex().flex_row().gap_1().flex_wrap().justify_end();
-        let mut reviewer_models = div().flex().flex_row().gap_1().flex_wrap().justify_end();
+        let mut active_models = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_row()
+            .gap_1()
+            .flex_wrap()
+            .justify_end();
+        let mut reviewer_models = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_row()
+            .gap_1()
+            .flex_wrap()
+            .justify_end();
         for provider in &self.agent_draft.providers {
             for model_entry in &provider.models {
                 let reference = AgentModelRef {
@@ -1411,6 +1489,10 @@ impl SettingsWindow {
     }
 
     fn render_about_settings(&self) -> AnyElement {
+        let compact_layout = self.compact_layout;
+        let settings_row = move |label: String, description: String, control: AnyElement| {
+            responsive_settings_row(label, description, control, compact_layout)
+        };
         let version = div()
             .text_sm()
             .text_color(theme::text())
@@ -1497,6 +1579,7 @@ impl SettingsWindow {
 
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.compact_layout = uses_compact_settings_layout(window.viewport_size().width);
         let section = self.section;
         let settings = self.shell_settings(cx);
         self.updates
@@ -1557,7 +1640,7 @@ impl Render for SettingsWindow {
             }),
         );
 
-        let content = match section {
+        let section_content = match section {
             SettingsSection::General => self.render_general_settings(&settings, cx),
             SettingsSection::Terminal => self.render_terminal_settings(&settings, cx),
             SettingsSection::Providers => self.render_provider_settings(&settings, window, cx),
@@ -1566,48 +1649,82 @@ impl Render for SettingsWindow {
             SettingsSection::About => self.render_about_settings(),
         };
 
+        let navigation = if self.compact_layout {
+            div()
+                .w_full()
+                .flex_shrink_0()
+                .p_3()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .gap_1()
+                .bg(theme::sidebar())
+                .border_b_1()
+                .border_color(theme::border_strong())
+                .child(general)
+                .child(terminal)
+                .child(providers)
+                .child(agent)
+                .child(updates)
+                .child(about)
+        } else {
+            div()
+                .w(px(180.))
+                .flex_shrink_0()
+                .p_3()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .bg(theme::sidebar())
+                .border_r_1()
+                .border_color(theme::border_strong())
+                .child(general)
+                .child(terminal)
+                .child(providers)
+                .child(agent)
+                .child(updates)
+                .child(div().flex_1())
+                .child(about)
+        };
+
+        let content_container = div()
+            .id("settings-content")
+            .track_scroll(&self.scroll)
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .overflow_y_scroll()
+            .py_4()
+            .child(section_content);
+        let content_container = if self.compact_layout {
+            content_container.px_4()
+        } else {
+            content_container.px_5()
+        };
+        let main = if self.compact_layout {
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(navigation)
+                .child(content_container)
+        } else {
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .child(navigation)
+                .child(content_container)
+        };
+
         div()
             .id("settings-window")
             .size_full()
             .flex()
             .flex_col()
             .bg(theme::canvas())
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .child(
-                        div()
-                            .w(px(180.))
-                            .flex_shrink_0()
-                            .p_3()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .bg(theme::sidebar())
-                            .border_r_1()
-                            .border_color(theme::border_strong())
-                            .child(general)
-                            .child(terminal)
-                            .child(providers)
-                            .child(agent)
-                            .child(updates)
-                            .child(div().flex_1())
-                            .child(about),
-                    )
-                    .child(
-                        div()
-                            .id("settings-content")
-                            .track_scroll(&self.scroll)
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_y_scroll()
-                            .px_5()
-                            .py_4()
-                            .child(content),
-                    ),
-            )
+            .child(main)
     }
 }
 
@@ -1669,36 +1786,64 @@ fn settings_heading(key: &str) -> AnyElement {
         .into_any_element()
 }
 
-fn settings_row(label: String, description: String, control: AnyElement) -> AnyElement {
-    div()
-        .w_full()
-        .py_4()
+fn responsive_settings_row(
+    label: String,
+    description: String,
+    control: AnyElement,
+    compact: bool,
+) -> AnyElement {
+    let mut label = div()
+        .min_w_0()
         .flex()
-        .items_center()
-        .gap_4()
-        .border_b_1()
-        .border_color(theme::border())
+        .flex_col()
+        .gap_1()
         .child(
             div()
-                .min_w_0()
-                .flex_1()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme::text())
-                        .child(SharedString::from(label)),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::muted_text())
-                        .child(SharedString::from(description)),
-                ),
+                .text_sm()
+                .text_color(theme::text())
+                .child(SharedString::from(label)),
         )
-        .child(control)
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::muted_text())
+                .child(SharedString::from(description)),
+        );
+    let mut control = div()
+        .min_w_0()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .child(control);
+
+    let row = if compact {
+        label = label.w_full();
+        control = control.w_full().justify_start();
+        div()
+            .w_full()
+            .py_4()
+            .flex()
+            .flex_col()
+            .items_start()
+            .gap_2()
+            .child(label)
+            .child(control)
+    } else {
+        label = label.flex_basis(px(200.)).flex_grow_1().flex_shrink_1();
+        control = control.flex_basis(px(220.)).flex_shrink_1().justify_end();
+        div()
+            .w_full()
+            .py_4()
+            .flex()
+            .flex_wrap()
+            .items_start()
+            .gap_4()
+            .child(label)
+            .child(control)
+    };
+
+    row.border_b_1()
+        .border_color(theme::border())
         .into_any_element()
 }
 
@@ -1749,6 +1894,9 @@ fn settings_choice_button(
         .px_2()
         .flex()
         .items_center()
+        .min_w_0()
+        .max_w(px(220.))
+        .truncate()
         .rounded(px(theme::RADIUS_SM))
         .cursor_pointer()
         .text_xs()
@@ -1973,4 +2121,15 @@ pub fn open_settings_window(shell: WeakEntity<AppShell>, cx: &mut App) {
         )
         .ok();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_layout_switches_at_compact_width() {
+        assert!(uses_compact_settings_layout(px(639.)));
+        assert!(!uses_compact_settings_layout(px(640.)));
+    }
 }
