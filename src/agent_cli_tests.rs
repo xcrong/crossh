@@ -1,9 +1,40 @@
 use super::*;
+use crossh_agent::{AgentModel, AgentModelRef, AgentProtocol, AgentProvider};
+
+fn test_settings() -> AgentSettings {
+    let provider = AgentProvider {
+        id: "local".into(),
+        name: "Local".into(),
+        protocol: AgentProtocol::OpenAiChat,
+        url: "http://127.0.0.1:11434/v1/chat/completions".into(),
+        api_key_env: String::new(),
+        api_key: String::new(),
+        models: vec![AgentModel {
+            id: "qwen3-coder".into(),
+            name: "qwen3-coder".into(),
+            reasoning: true,
+            context_window: 128_000,
+            max_tokens: 32_000,
+        }],
+    };
+    AgentSettings {
+        providers: vec![provider],
+        active_model: AgentModelRef {
+            provider: "local".into(),
+            model: "qwen3-coder".into(),
+        },
+        reviewer_model: AgentModelRef {
+            provider: "local".into(),
+            model: "qwen3-coder".into(),
+        },
+        ..AgentSettings::default()
+    }
+}
 
 fn app() -> App {
     let session = AgentSession::new("/tmp/project");
     App {
-        settings: AgentSettings::default(),
+        settings: test_settings(),
         api_key: None,
         workspace: PathBuf::from("/tmp/project"),
         context_files: Vec::new(),

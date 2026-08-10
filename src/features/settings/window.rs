@@ -47,8 +47,10 @@ pub struct SettingsWindow {
     scroll: gpui::ScrollHandle,
     updates: Entity<UpdateController>,
     agent_draft: AgentSettings,
+    agent_draft_initialized: bool,
     agent_provider_index: usize,
     agent_model_index: usize,
+    agent_model_editor_open: bool,
     agent_provider_id_focus: FocusHandle,
     agent_provider_name_focus: FocusHandle,
     agent_url_focus: FocusHandle,
@@ -63,6 +65,7 @@ pub struct SettingsWindow {
     agent_anchor: Option<usize>,
     agent_dragging: bool,
     agent_error: Option<String>,
+    agent_api_key_revealed: bool,
     compact_layout: bool,
 }
 
@@ -92,8 +95,10 @@ impl SettingsWindow {
             scroll: gpui::ScrollHandle::new(),
             updates,
             agent_draft: loaded.agent,
+            agent_draft_initialized: false,
             agent_provider_index: 0,
             agent_model_index: 0,
+            agent_model_editor_open: false,
             agent_provider_id_focus: cx.focus_handle(),
             agent_provider_name_focus: cx.focus_handle(),
             agent_url_focus: cx.focus_handle(),
@@ -108,6 +113,7 @@ impl SettingsWindow {
             agent_anchor: None,
             agent_dragging: false,
             agent_error: None,
+            agent_api_key_revealed: false,
             compact_layout: false,
         }
     }
@@ -138,6 +144,10 @@ impl SettingsWindow {
 
     fn select_section(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
         self.section = section;
+        if section != SettingsSection::Providers {
+            self.agent_model_editor_open = false;
+            self.reset_agent_input_state();
+        }
         self.scroll.set_offset(gpui::Point::new(px(0.), px(0.)));
         cx.notify();
     }
@@ -586,14 +596,14 @@ impl SettingsWindow {
     }
 
     fn prepare_agent_draft(&mut self, settings: &SettingsSnapshot) {
-        if self.agent_draft == AgentSettings::default()
-            && settings.agent != AgentSettings::default()
-        {
+        if !self.agent_draft_initialized {
             self.agent_draft = settings.agent.clone();
+            self.agent_draft_initialized = true;
         }
         if self.agent_draft.providers.is_empty() {
-            self.agent_draft = AgentSettings::default();
-            self.agent_error = Some("At least one provider is required".into());
+            self.agent_provider_index = 0;
+            self.agent_model_index = 0;
+            return;
         }
         self.agent_provider_index = self
             .agent_provider_index
@@ -628,92 +638,359 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let compact_layout = self.compact_layout;
-        let settings_row = move |label: String, description: String, control: AnyElement| {
-            responsive_settings_row(label, description, control, compact_layout)
-        };
         self.prepare_agent_draft(settings);
-        let provider_id = self.agent_input(AgentInputField::ProviderId, window, cx);
-        let provider_name = self.agent_input(AgentInputField::ProviderName, window, cx);
-        let url = self.agent_input(AgentInputField::Url, window, cx);
-        let model = self.agent_input(AgentInputField::Model, window, cx);
-        let model_name = self.agent_input(AgentInputField::ModelName, window, cx);
-        let api_key = self.agent_input(AgentInputField::ApiKey, window, cx);
-        let key_env = self.agent_input(AgentInputField::KeyEnv, window, cx);
-        let context_window = self.agent_input(AgentInputField::ContextWindow, window, cx);
-        let max_tokens = self.agent_input(AgentInputField::MaxTokens, window, cx);
         let provider_index = self.agent_provider_index;
-        let mut providers = div()
-            .w_full()
-            .min_w_0()
-            .flex()
-            .flex_row()
-            .gap_1()
-            .flex_wrap()
-            .justify_end();
+
+        let add_provider = settings_text_action(
+            "settings-agent-provider-add".into(),
+            icons::IconName::Plus,
+            i18n::text("settings.agent_provider_add"),
+            cx.listener(|this, _ev, _window, cx| this.add_agent_provider(cx)),
+        );
+        let mut provider_rows = div().w_full().flex().flex_col().gap_1();
         for (index, provider) in self.agent_draft.providers.iter().enumerate() {
-            providers = providers.child(settings_choice_button(
-                format!("settings-agent-provider-{index}"),
-                provider.name.clone(),
-                index == provider_index,
-                cx.listener(move |this, _ev, _window, cx| {
+            let selected = index == provider_index;
+            let protocol = provider.protocol.label();
+            let row = div()
+                .id(format!("settings-agent-provider-row-{index}"))
+                .w_full()
+                .min_w_0()
+                .h(px(48.))
+                .px_2()
+                .flex()
+                .items_center()
+                .gap_2()
+                .rounded(px(theme::RADIUS_SM))
+                .border_l_2()
+                .border_color(if selected {
+                    theme::accent()
+                } else {
+                    theme::sidebar()
+                })
+                .cursor_pointer()
+                .bg(if selected {
+                    theme::accent_soft()
+                } else {
+                    theme::sidebar()
+                })
+                .hover(|style| style.bg(theme::raised()))
+                .child(
+                    icons::icon(icons::IconName::Server, 14.).text_color(if selected {
+                        theme::accent()
+                    } else {
+                        theme::muted_text()
+                    }),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .text_color(theme::text())
+                                .child(SharedString::from(provider.name.clone())),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .text_color(theme::muted_text())
+                                .child(SharedString::from(protocol)),
+                        ),
+                )
+                .on_click(cx.listener(move |this, _ev, _window, cx| {
                     this.agent_provider_index = index;
                     this.agent_model_index = 0;
                     this.agent_error = None;
+                    this.agent_model_editor_open = false;
+                    this.reset_agent_input_state();
                     cx.notify();
-                }),
-            ));
+                }));
+            provider_rows = provider_rows.child(row);
         }
-        providers = providers
-            .child(settings_icon_button(
-                "settings-agent-provider-add",
-                icons::IconName::Plus,
-                i18n::text("settings.agent_provider_add"),
-                cx.listener(|this, _ev, _window, cx| this.add_agent_provider(cx)),
-            ))
-            .child(settings_icon_button(
+
+        let mut provider_actions = div().flex().items_center().gap_1().child(add_provider);
+        if !self.agent_draft.providers.is_empty() {
+            provider_actions = provider_actions.child(settings_icon_button(
                 "settings-agent-provider-remove",
                 icons::IconName::Trash,
                 i18n::text("settings.agent_provider_remove"),
                 cx.listener(|this, _ev, _window, cx| this.remove_agent_provider(cx)),
             ));
+        }
+        let provider_header = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::text())
+                    .child(SharedString::from(i18n::text("settings.agent_provider"))),
+            )
+            .child(provider_actions);
+        let provider_list = if compact_layout {
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .pb_3()
+                .border_b_1()
+                .border_color(theme::border())
+                .child(provider_header)
+                .child(provider_rows)
+        } else {
+            div()
+                .w(px(190.))
+                .flex_shrink_0()
+                .pr_3()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .border_r_1()
+                .border_color(theme::border())
+                .child(provider_header)
+                .child(provider_rows)
+        };
+
+        if self.agent_draft.providers.is_empty() {
+            let provider_detail =
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap_2()
+                    .p_6()
+                    .child(
+                        icons::icon(icons::IconName::Server, 28.).text_color(theme::muted_text()),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(theme::text())
+                            .child(SharedString::from(i18n::text(
+                                "settings.agent_provider_empty",
+                            ))),
+                    )
+                    .child(div().text_xs().text_color(theme::muted_text()).child(
+                        SharedString::from(i18n::text("settings.agent_provider_empty_description")),
+                    ));
+            let provider_detail = if compact_layout {
+                provider_detail.w_full().pt_3()
+            } else {
+                provider_detail.pl_4()
+            };
+            let body = if compact_layout {
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .child(provider_list)
+                    .child(provider_detail)
+            } else {
+                div()
+                    .w_full()
+                    .flex()
+                    .items_start()
+                    .child(provider_list)
+                    .child(provider_detail)
+            };
+            return div()
+                .id("settings-providers")
+                .max_w(px(760.))
+                .flex()
+                .flex_col()
+                .child(settings_heading("settings.providers"))
+                .child(body)
+                .into_any_element();
+        }
 
         let selected_provider = &self.agent_draft.providers[provider_index];
-        let mut models = div()
-            .w_full()
-            .min_w_0()
-            .flex()
-            .flex_row()
-            .gap_1()
-            .flex_wrap()
-            .justify_end();
-        for (index, model_entry) in selected_provider.models.iter().enumerate() {
-            models = models.child(settings_choice_button(
-                format!("settings-agent-model-choice-{index}"),
-                model_entry.name.clone(),
-                index == self.agent_model_index,
-                cx.listener(move |this, _ev, _window, cx| {
-                    this.agent_model_index = index;
-                    this.agent_error = None;
-                    cx.notify();
-                }),
-            ));
-        }
-        models = models
-            .child(settings_icon_button(
-                "settings-agent-model-add",
-                icons::IconName::Plus,
-                i18n::text("settings.agent_model_add"),
-                cx.listener(|this, _ev, _window, cx| this.add_agent_model(cx)),
-            ))
-            .child(settings_icon_button(
-                "settings-agent-model-remove",
-                icons::IconName::Trash,
-                i18n::text("settings.agent_model_remove"),
-                cx.listener(|this, _ev, _window, cx| this.remove_agent_model(cx)),
-            ));
+        let provider_id = self.agent_input(AgentInputField::ProviderId, window, cx);
+        let provider_name = self.agent_input(AgentInputField::ProviderName, window, cx);
+        let url = self.agent_input(AgentInputField::Url, window, cx);
+        let api_key = self.agent_input(AgentInputField::ApiKey, window, cx);
+        let key_env = self.agent_input(AgentInputField::KeyEnv, window, cx);
 
         let selected_model =
             &self.agent_draft.providers[provider_index].models[self.agent_model_index];
+        let add_model = settings_text_action(
+            "settings-agent-model-add".into(),
+            icons::IconName::Plus,
+            i18n::text("settings.agent_model_add"),
+            cx.listener(|this, _ev, _window, cx| this.add_agent_model(cx)),
+        );
+        let model_actions = div().flex().items_center().gap_1().child(add_model);
+        let model_header = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .child(
+                div()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::text())
+                            .child(SharedString::from(i18n::text("settings.agent_models"))),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_xs()
+                            .text_color(theme::muted_text())
+                            .child(SharedString::from(i18n::text(
+                                "settings.agent_models_description",
+                            ))),
+                    ),
+            )
+            .child(model_actions);
+        let mut model_rows = div()
+            .id("settings-agent-model-list")
+            .w_full()
+            .max_h(px(180.))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .border_1()
+            .border_color(theme::border())
+            .rounded(px(theme::RADIUS_SM));
+        for (index, model_entry) in selected_provider.models.iter().enumerate() {
+            let selected = index == self.agent_model_index;
+            let context_badge = div()
+                .h(px(24.))
+                .px_2()
+                .flex()
+                .items_center()
+                .rounded(px(theme::RADIUS_SM))
+                .bg(theme::raised())
+                .text_xs()
+                .text_color(theme::muted_text())
+                .child(SharedString::from(compact_token_count(
+                    model_entry.context_window,
+                )));
+            let reasoning_mark = div()
+                .w(px(16.))
+                .h(px(16.))
+                .flex()
+                .items_center()
+                .justify_center();
+            let reasoning_mark = if model_entry.reasoning {
+                reasoning_mark
+                    .child(icons::icon(icons::IconName::Check, 13.).text_color(theme::accent()))
+            } else {
+                reasoning_mark
+            };
+            let edit_model = settings_icon_button(
+                format!("settings-agent-model-edit-{index}"),
+                icons::IconName::Pencil,
+                i18n::text("settings.agent_model_edit"),
+                cx.listener(move |this, _ev, _window, cx| {
+                    cx.stop_propagation();
+                    this.agent_model_index = index;
+                    this.agent_error = None;
+                    this.agent_model_editor_open = true;
+                    this.reset_agent_input_state();
+                    cx.notify();
+                }),
+            );
+            let remove_model = settings_icon_button(
+                format!("settings-agent-model-remove-{index}"),
+                icons::IconName::Trash,
+                i18n::text("settings.agent_model_remove"),
+                cx.listener(move |this, _ev, _window, cx| {
+                    this.agent_model_index = index;
+                    this.remove_agent_model(cx);
+                    cx.stop_propagation();
+                }),
+            );
+            let row = div()
+                .id(format!("settings-agent-model-row-{index}"))
+                .w_full()
+                .min_w_0()
+                .h(px(44.))
+                .px_2()
+                .flex()
+                .items_center()
+                .gap_2()
+                .rounded(px(theme::RADIUS_SM))
+                .border_l_2()
+                .border_color(if selected {
+                    theme::accent()
+                } else {
+                    theme::sidebar()
+                })
+                .cursor_pointer()
+                .bg(if selected {
+                    theme::accent_soft()
+                } else {
+                    theme::sidebar()
+                })
+                .hover(|style| style.bg(theme::raised()))
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .text_color(theme::text())
+                                .child(SharedString::from(model_entry.name.clone())),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .text_color(theme::muted_text())
+                                .child(SharedString::from(model_entry.id.clone())),
+                        ),
+                )
+                .child(context_badge)
+                .child(reasoning_mark)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(edit_model)
+                        .child(remove_model),
+                )
+                .on_click(cx.listener(move |this, _ev, _window, cx| {
+                    this.agent_model_index = index;
+                    this.agent_error = None;
+                    this.agent_model_editor_open = false;
+                    this.reset_agent_input_state();
+                    cx.notify();
+                }));
+            model_rows = model_rows.child(row);
+        }
         let reasoning = settings_choice_button(
             "settings-agent-reasoning".into(),
             if selected_model.reasoning {
@@ -729,12 +1006,6 @@ impl SettingsWindow {
                 this.agent_error = None;
                 cx.notify();
             }),
-        );
-        let save = settings_icon_button(
-            "settings-provider-save",
-            icons::IconName::Save,
-            i18n::text("settings.provider_save"),
-            cx.listener(|this, _ev, _window, cx| this.save_agent_settings(cx)),
         );
         let status_description = self
             .agent_error
@@ -779,82 +1050,349 @@ impl SettingsWindow {
             );
         }
 
+        let save = settings_icon_button(
+            "settings-provider-save",
+            icons::IconName::Save,
+            i18n::text("settings.provider_save"),
+            cx.listener(|this, _ev, _window, cx| this.save_agent_settings(cx)),
+        );
+        let provider_title = div()
+            .w_full()
+            .pb_3()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .border_b_1()
+            .border_color(theme::border())
+            .child(
+                div()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(icons::icon(icons::IconName::Server, 20.).text_color(theme::accent()))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_lg()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme::text())
+                                    .child(SharedString::from(selected_provider.name.clone())),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme::muted_text())
+                                    .child(SharedString::from(selected_provider.protocol.label())),
+                            ),
+                    ),
+            );
+        let status_icon = if self.agent_error.is_some() {
+            icons::IconName::CircleX
+        } else {
+            icons::IconName::Check
+        };
+        let status = div()
+            .w_full()
+            .pt_3()
+            .flex()
+            .items_center()
+            .gap_2()
+            .border_t_1()
+            .border_color(theme::border())
+            .child(
+                icons::icon(status_icon, 14.).text_color(if self.agent_error.is_some() {
+                    theme::danger()
+                } else {
+                    theme::accent()
+                }),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(if self.agent_error.is_some() {
+                        theme::danger()
+                    } else {
+                        theme::muted_text()
+                    })
+                    .child(SharedString::from(status_description)),
+            );
+        let provider_ready = !selected_provider.api_key.trim().is_empty()
+            || !selected_provider.api_key_env.trim().is_empty()
+            || selected_provider.url.contains("localhost")
+            || selected_provider.url.contains("127.0.0.1");
+        let provider_status = if provider_ready {
+            i18n::text("settings.agent_provider_ready")
+        } else {
+            i18n::text("settings.agent_provider_unconfigured")
+        };
+        let provider_status_chip = div()
+            .h(px(28.))
+            .px_2()
+            .flex()
+            .items_center()
+            .rounded_full()
+            .bg(if provider_ready {
+                theme::accent_soft()
+            } else {
+                theme::raised()
+            })
+            .text_xs()
+            .text_color(if provider_ready {
+                theme::accent()
+            } else {
+                theme::muted_text()
+            })
+            .child(SharedString::from(provider_status));
+        let provider_notice = div()
+            .w_full()
+            .p_3()
+            .flex()
+            .items_center()
+            .gap_2()
+            .rounded(px(theme::RADIUS_SM))
+            .border_1()
+            .border_color(theme::border())
+            .bg(theme::surface())
+            .child(icons::icon(icons::IconName::Info, 15.).text_color(theme::muted_text()))
+            .child(
+                div()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(theme::muted_text())
+                    .child(SharedString::from(if provider_ready {
+                        i18n::text("settings.agent_provider_ready_notice")
+                    } else {
+                        i18n::text("settings.agent_provider_key_notice")
+                    })),
+            );
+        let provider_title = provider_title.child(provider_status_chip).child(save);
+        let provider_identity = if compact_layout {
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(settings_form_field(
+                    i18n::text("settings.agent_provider_id"),
+                    provider_id,
+                ))
+                .child(settings_form_field(
+                    i18n::text("settings.agent_provider_name"),
+                    provider_name,
+                ))
+        } else {
+            div()
+                .w_full()
+                .flex()
+                .gap_3()
+                .child(settings_form_field(
+                    i18n::text("settings.agent_provider_id"),
+                    provider_id,
+                ))
+                .child(settings_form_field(
+                    i18n::text("settings.agent_provider_name"),
+                    provider_name,
+                ))
+        };
+        let connection_method = settings_form_field(
+            i18n::text("settings.agent_connection_method"),
+            protocols.into_any_element(),
+        );
+        let base_url = settings_form_field(i18n::text("settings.agent_base_url"), url);
+        let api_key_visibility = settings_icon_button(
+            "settings-agent-api-key-visibility",
+            if self.agent_api_key_revealed {
+                icons::IconName::EyeOff
+            } else {
+                icons::IconName::Eye
+            },
+            if self.agent_api_key_revealed {
+                i18n::text("settings.agent_api_key_hide")
+            } else {
+                i18n::text("settings.agent_api_key_show")
+            },
+            cx.listener(|this, _ev, _window, cx| this.toggle_api_key_visibility(cx)),
+        );
+        let api_key_control = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(div().min_w_0().flex_1().child(api_key))
+            .child(api_key_visibility);
+        let credentials = if compact_layout {
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(settings_form_field(
+                    i18n::text("settings.agent_credential"),
+                    api_key_control.into_any_element(),
+                ))
+                .child(settings_form_field(
+                    i18n::text("settings.agent_credential_env"),
+                    key_env,
+                ))
+        } else {
+            div()
+                .w_full()
+                .flex()
+                .gap_3()
+                .child(settings_form_field(
+                    i18n::text("settings.agent_credential"),
+                    api_key_control.into_any_element(),
+                ))
+                .child(settings_form_field(
+                    i18n::text("settings.agent_credential_env"),
+                    key_env,
+                ))
+        };
+        let model_editor = if self.agent_model_editor_open {
+            let model = self.agent_input(AgentInputField::Model, window, cx);
+            let model_name = self.agent_input(AgentInputField::ModelName, window, cx);
+            let context_window = self.agent_input(AgentInputField::ContextWindow, window, cx);
+            let max_tokens = self.agent_input(AgentInputField::MaxTokens, window, cx);
+            let close_editor = settings_icon_button(
+                "settings-agent-model-editor-close",
+                icons::IconName::X,
+                i18n::text("settings.agent_model_editor_close"),
+                cx.listener(|this, _ev, _window, cx| {
+                    this.agent_model_editor_open = false;
+                    this.reset_agent_input_state();
+                    cx.notify();
+                }),
+            );
+            let editor_header = div()
+                .w_full()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::text())
+                        .child(SharedString::from(i18n::text("settings.agent_model_edit"))),
+                )
+                .child(close_editor);
+            Some(
+                div()
+                    .w_full()
+                    .pt_3()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .border_t_1()
+                    .border_color(theme::border())
+                    .child(editor_header)
+                    .child(settings_form_field(
+                        i18n::text("settings.agent_model_id"),
+                        model,
+                    ))
+                    .child(settings_form_field(
+                        i18n::text("settings.agent_model_name"),
+                        model_name,
+                    ))
+                    .child(if compact_layout {
+                        div()
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .child(settings_form_field(
+                                i18n::text("settings.agent_reasoning"),
+                                reasoning,
+                            ))
+                            .child(settings_form_field(
+                                i18n::text("settings.agent_context_window"),
+                                context_window,
+                            ))
+                            .child(settings_form_field(
+                                i18n::text("settings.agent_max_tokens"),
+                                max_tokens,
+                            ))
+                    } else {
+                        div()
+                            .w_full()
+                            .flex()
+                            .gap_3()
+                            .child(settings_form_field(
+                                i18n::text("settings.agent_reasoning"),
+                                reasoning,
+                            ))
+                            .child(settings_form_field(
+                                i18n::text("settings.agent_context_window"),
+                                context_window,
+                            ))
+                            .child(settings_form_field(
+                                i18n::text("settings.agent_max_tokens"),
+                                max_tokens,
+                            ))
+                    }),
+            )
+        } else {
+            None
+        };
+        let mut provider_detail = div()
+            .min_w_0()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(provider_title)
+            .child(provider_notice)
+            .child(settings_subheading("settings.agent_connection"))
+            .child(provider_identity)
+            .child(connection_method)
+            .child(base_url)
+            .child(credentials)
+            .child(settings_subheading("settings.agent_models"))
+            .child(model_header)
+            .child(model_rows);
+        if let Some(model_editor) = model_editor {
+            provider_detail = provider_detail.child(model_editor);
+        }
+        provider_detail = provider_detail.child(status);
+        if compact_layout {
+            provider_detail = provider_detail.w_full().pt_3();
+        } else {
+            provider_detail = provider_detail.pl_4();
+        }
+
+        let body = if compact_layout {
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .child(provider_list)
+                .child(provider_detail)
+        } else {
+            div()
+                .w_full()
+                .flex()
+                .items_start()
+                .child(provider_list)
+                .child(provider_detail)
+        };
+
         div()
             .id("settings-providers")
             .max_w(px(760.))
             .flex()
             .flex_col()
             .child(settings_heading("settings.providers"))
-            .child(settings_row(
-                i18n::text("settings.agent_provider"),
-                i18n::text("settings.agent_provider_description"),
-                providers.into_any_element(),
-            ))
-            .child(settings_row(
-                i18n::text("settings.agent_provider_id"),
-                i18n::text("settings.agent_provider_id_description"),
-                provider_id,
-            ))
-            .child(settings_row(
-                i18n::text("settings.agent_provider_name"),
-                i18n::text("settings.agent_provider_name_description"),
-                provider_name,
-            ))
-            .child(settings_row(
-                i18n::text("settings.agent_protocol"),
-                i18n::text("settings.agent_protocol_description"),
-                protocols.into_any_element(),
-            ))
-            .child(settings_row(
-                i18n::text("settings.agent_url"),
-                i18n::text("settings.agent_url_description"),
-                url,
-            ))
-            .child(settings_row(
-                i18n::text("settings.agent_models"),
-                i18n::text("settings.agent_models_description"),
-                models.into_any_element(),
-            ))
-            .child(settings_row(
-                i18n::text("settings.agent_model_id"),
-                i18n::text("settings.agent_model_id_description"),
-                model,
-            ))
-            .child(settings_row(
-                i18n::text("settings.agent_model_name"),
-                i18n::text("settings.agent_model_name_description"),
-                model_name,
-            ))
-            .child(settings_row(
-                i18n::text("settings.agent_reasoning"),
-                i18n::text("settings.agent_reasoning_description"),
-                reasoning,
-            ))
-            .child(settings_row(
-                i18n::text("settings.agent_context_window"),
-                i18n::text("settings.agent_context_window_description"),
-                context_window,
-            ))
-            .child(settings_row(
-                i18n::text("settings.agent_max_tokens"),
-                i18n::text("settings.agent_max_tokens_description"),
-                max_tokens,
-            ))
-            .child(settings_row(
-                i18n::text("settings.agent_credential"),
-                i18n::text("settings.agent_credential_description"),
-                api_key,
-            ))
-            .child(settings_row(
-                i18n::text("settings.agent_credential_env"),
-                i18n::text("settings.agent_credential_env_description"),
-                key_env,
-            ))
-            .child(settings_row(
-                i18n::text("settings.provider_status"),
-                status_description,
-                save,
-            ))
+            .child(body)
             .into_any_element()
     }
 
@@ -1021,16 +1559,23 @@ impl SettingsWindow {
             }
         };
         let value = self.agent_input_value(field);
+        let mask_api_key = field == AgentInputField::ApiKey && !self.agent_api_key_revealed;
         let focus = focus.clone();
         let focused = focus.is_focused(window);
         let active = focused && self.agent_edit_field == Some(field);
         let cursor = if active {
-            self.agent_cursor.min(value.len())
+            clamp_char_boundary(&value, self.agent_cursor)
         } else {
             value.len()
         };
+        let anchor = if active {
+            self.agent_anchor
+                .map(|anchor| clamp_char_boundary(&value, anchor))
+        } else {
+            None
+        };
         let selection = if active {
-            selection_bounds(self.agent_anchor, cursor)
+            selection_bounds(anchor, cursor)
         } else {
             None
         };
@@ -1062,7 +1607,8 @@ impl SettingsWindow {
                             let index = input_index_for_x(
                                 window,
                                 &value,
-                                field == AgentInputField::ApiKey,
+                                field == AgentInputField::ApiKey
+                                    && !entity.read(cx).agent_api_key_revealed,
                                 event.position.x,
                                 input_bounds,
                             );
@@ -1089,7 +1635,7 @@ impl SettingsWindow {
         .size_full();
         let mut input = div()
             .id(id)
-            .w(px(300.))
+            .w_full()
             .h(px(32.))
             .px_2()
             .flex()
@@ -1119,7 +1665,8 @@ impl SettingsWindow {
                                 input_index_for_x(
                                     window,
                                     &value,
-                                    field == AgentInputField::ApiKey,
+                                    field == AgentInputField::ApiKey
+                                        && !this.agent_api_key_revealed,
                                     event.position.x,
                                     input_bounds,
                                 )
@@ -1138,20 +1685,20 @@ impl SettingsWindow {
             .on_key_down(cx.listener(move |this, event, _window, cx| {
                 this.handle_agent_input_key(field, event, cx)
             }));
-        input = input.child(input_text_part(field, &value[..start]));
+        input = input.child(input_text_part(field, &value[..start], mask_api_key));
         if selection.is_some() {
             input = input.child(
                 div()
                     .flex_shrink_0()
                     .whitespace_nowrap()
                     .bg(theme::selection())
-                    .child(input_text_part(field, &value[start..end])),
+                    .child(input_text_part(field, &value[start..end], mask_api_key)),
             );
         } else if focused {
             input = input.child(text_caret(px(16.)));
         }
         input
-            .child(input_text_part(field, &value[end..]))
+            .child(input_text_part(field, &value[end..], mask_api_key))
             .child(tracking)
             .into_any_element()
     }
@@ -1165,10 +1712,14 @@ impl SettingsWindow {
         self.activate_agent_input(field);
         let provider_index = self.agent_provider_index;
         let model_index = self.agent_model_index;
-        let old_model_id = self.agent_draft.providers[provider_index].models[model_index]
-            .id
-            .clone();
-        let old_provider_id = self.agent_draft.providers[provider_index].id.clone();
+        let Some(provider) = self.agent_draft.providers.get(provider_index) else {
+            return;
+        };
+        let Some(model) = provider.models.get(model_index) else {
+            return;
+        };
+        let old_model_id = model.id.clone();
+        let old_provider_id = provider.id.clone();
         let key = &event.keystroke;
         let primary = key.modifiers.control || key.modifiers.platform;
         let extend = key.modifiers.shift;
@@ -1272,28 +1823,50 @@ impl SettingsWindow {
     }
 
     fn activate_agent_input(&mut self, field: AgentInputField) {
+        let value = self.agent_input_value(field);
         if self.agent_edit_field != Some(field) {
             self.agent_edit_field = Some(field);
-            self.agent_cursor = self.agent_input_value(field).len();
+            self.agent_cursor = value.len();
             self.agent_anchor = None;
         } else {
-            self.agent_cursor = self.agent_cursor.min(self.agent_input_value(field).len());
+            self.agent_cursor = clamp_char_boundary(&value, self.agent_cursor);
+            self.agent_anchor = self
+                .agent_anchor
+                .map(|anchor| clamp_char_boundary(&value, anchor));
         }
     }
 
+    fn reset_agent_input_state(&mut self) {
+        self.agent_edit_field = None;
+        self.agent_cursor = 0;
+        self.agent_anchor = None;
+        self.agent_dragging = false;
+    }
+
+    fn toggle_api_key_visibility(&mut self, cx: &mut Context<Self>) {
+        self.agent_api_key_revealed = !self.agent_api_key_revealed;
+        cx.notify();
+    }
+
     fn agent_input_value(&self, field: AgentInputField) -> String {
-        let provider = &self.agent_draft.providers[self.agent_provider_index];
-        let model = &provider.models[self.agent_model_index];
+        let Some(provider) = self.agent_draft.providers.get(self.agent_provider_index) else {
+            return String::new();
+        };
+        let model = provider.models.get(self.agent_model_index);
         match field {
             AgentInputField::ProviderId => provider.id.clone(),
             AgentInputField::ProviderName => provider.name.clone(),
             AgentInputField::Url => provider.url.clone(),
-            AgentInputField::Model => model.id.clone(),
-            AgentInputField::ModelName => model.name.clone(),
+            AgentInputField::Model => model.map(|model| model.id.clone()).unwrap_or_default(),
+            AgentInputField::ModelName => model.map(|model| model.name.clone()).unwrap_or_default(),
             AgentInputField::ApiKey => provider.api_key.clone(),
             AgentInputField::KeyEnv => provider.api_key_env.clone(),
-            AgentInputField::ContextWindow => model.context_window.to_string(),
-            AgentInputField::MaxTokens => model.max_tokens.to_string(),
+            AgentInputField::ContextWindow => model
+                .map(|model| model.context_window.to_string())
+                .unwrap_or_default(),
+            AgentInputField::MaxTokens => model
+                .map(|model| model.max_tokens.to_string())
+                .unwrap_or_default(),
         }
     }
 
@@ -1319,8 +1892,11 @@ impl SettingsWindow {
 
     fn replace_agent_selection(&mut self, field: AgentInputField, replacement: &str) {
         let mut value = self.agent_input_value(field);
-        let (start, end) = selection_bounds(self.agent_anchor, self.agent_cursor)
-            .unwrap_or((self.agent_cursor, self.agent_cursor));
+        let cursor = clamp_char_boundary(&value, self.agent_cursor);
+        let anchor = self
+            .agent_anchor
+            .map(|anchor| clamp_char_boundary(&value, anchor));
+        let (start, end) = selection_bounds(anchor, cursor).unwrap_or((cursor, cursor));
         value.replace_range(start..end, replacement);
         self.agent_cursor = start + replacement.len();
         self.agent_anchor = None;
@@ -1333,6 +1909,7 @@ impl SettingsWindow {
             return;
         }
         let value = self.agent_input_value(field);
+        self.agent_cursor = clamp_char_boundary(&value, self.agent_cursor);
         let start = previous_char_boundary(&value, self.agent_cursor);
         if start != self.agent_cursor {
             self.agent_anchor = Some(start);
@@ -1346,6 +1923,7 @@ impl SettingsWindow {
             return;
         }
         let value = self.agent_input_value(field);
+        self.agent_cursor = clamp_char_boundary(&value, self.agent_cursor);
         let end = next_char_boundary(&value, self.agent_cursor);
         if end != self.agent_cursor {
             self.agent_anchor = Some(end);
@@ -1365,6 +1943,10 @@ impl SettingsWindow {
             self.agent_anchor = Some(self.agent_cursor);
         }
         let value = self.agent_input_value(field);
+        self.agent_cursor = clamp_char_boundary(&value, self.agent_cursor);
+        self.agent_anchor = self
+            .agent_anchor
+            .map(|anchor| clamp_char_boundary(&value, anchor));
         self.agent_cursor = if right {
             next_char_boundary(&value, self.agent_cursor)
         } else {
@@ -1382,7 +1964,7 @@ impl SettingsWindow {
             id: id.clone(),
             name: format!("Provider {number}"),
             protocol: AgentProtocol::OpenAiChat,
-            url: "http://127.0.0.1:11434/v1/chat/completions".into(),
+            url: String::new(),
             api_key_env: String::new(),
             api_key: String::new(),
             models: vec![AgentModel {
@@ -1393,28 +1975,51 @@ impl SettingsWindow {
                 max_tokens: 32_000,
             }],
         });
+        let first_model = AgentModelRef {
+            provider: id,
+            model: "model".into(),
+        };
+        if self.agent_draft.active_model == AgentModelRef::default() {
+            self.agent_draft.active_model = first_model.clone();
+        }
+        if self.agent_draft.reviewer_model == AgentModelRef::default() {
+            self.agent_draft.reviewer_model = first_model;
+        }
         self.agent_provider_index = self.agent_draft.providers.len() - 1;
         self.agent_model_index = 0;
         self.agent_error = None;
+        self.agent_model_editor_open = false;
+        self.reset_agent_input_state();
         cx.notify();
     }
 
     fn remove_agent_provider(&mut self, cx: &mut Context<Self>) {
-        if self.agent_draft.providers.len() <= 1 {
-            self.agent_error = Some("At least one provider is required".into());
-            cx.notify();
+        if self.agent_draft.providers.is_empty() {
             return;
         }
         let removed = self.agent_draft.providers.remove(self.agent_provider_index);
         self.agent_provider_index = self
             .agent_provider_index
-            .min(self.agent_draft.providers.len() - 1);
+            .min(self.agent_draft.providers.len().saturating_sub(1));
         self.agent_model_index = 0;
+        if self.agent_draft.providers.is_empty() {
+            self.agent_draft.active_model = AgentModelRef::default();
+            self.agent_draft.reviewer_model = AgentModelRef::default();
+            self.agent_error = None;
+            self.agent_model_editor_open = false;
+            self.reset_agent_input_state();
+            cx.notify();
+            return;
+        }
         let fallback = &self.agent_draft.providers[self.agent_provider_index];
-        let fallback_ref = AgentModelRef {
-            provider: fallback.id.clone(),
-            model: fallback.models[0].id.clone(),
-        };
+        let fallback_ref = fallback
+            .models
+            .first()
+            .map(|model| AgentModelRef {
+                provider: fallback.id.clone(),
+                model: model.id.clone(),
+            })
+            .unwrap_or_default();
         if self.agent_draft.active_model.provider == removed.id {
             self.agent_draft.active_model = fallback_ref.clone();
         }
@@ -1422,11 +2027,21 @@ impl SettingsWindow {
             self.agent_draft.reviewer_model = fallback_ref;
         }
         self.agent_error = None;
+        self.agent_model_editor_open = false;
+        self.reset_agent_input_state();
         cx.notify();
     }
 
     fn add_agent_model(&mut self, cx: &mut Context<Self>) {
-        let provider = &mut self.agent_draft.providers[self.agent_provider_index];
+        let Some(provider) = self
+            .agent_draft
+            .providers
+            .get_mut(self.agent_provider_index)
+        else {
+            self.agent_error = Some(i18n::text("settings.agent_provider_required"));
+            cx.notify();
+            return;
+        };
         let number = provider.models.len() + 1;
         provider.models.push(AgentModel {
             id: format!("model-{number}"),
@@ -1437,11 +2052,24 @@ impl SettingsWindow {
         });
         self.agent_model_index = provider.models.len() - 1;
         self.agent_error = None;
+        self.agent_model_editor_open = true;
+        self.reset_agent_input_state();
         cx.notify();
     }
 
     fn remove_agent_model(&mut self, cx: &mut Context<Self>) {
-        let provider = &mut self.agent_draft.providers[self.agent_provider_index];
+        let Some(provider) = self
+            .agent_draft
+            .providers
+            .get_mut(self.agent_provider_index)
+        else {
+            self.agent_error = Some(i18n::text("settings.agent_provider_required"));
+            cx.notify();
+            return;
+        };
+        if self.agent_model_index >= provider.models.len() {
+            return;
+        }
         if provider.models.len() <= 1 {
             self.agent_error = Some("At least one model is required".into());
             cx.notify();
@@ -1462,6 +2090,8 @@ impl SettingsWindow {
             }
         }
         self.agent_error = None;
+        self.agent_model_editor_open = false;
+        self.reset_agent_input_state();
         cx.notify();
     }
 
@@ -1786,6 +2416,68 @@ fn settings_heading(key: &str) -> AnyElement {
         .into_any_element()
 }
 
+fn settings_subheading(key: &str) -> AnyElement {
+    div()
+        .pt_2()
+        .pb_1()
+        .text_sm()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme::text())
+        .child(SharedString::from(i18n::text(key)))
+        .into_any_element()
+}
+
+fn settings_form_field(label: String, control: AnyElement) -> AnyElement {
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .text_sm()
+                .text_color(theme::muted_text())
+                .child(SharedString::from(label)),
+        )
+        .child(control)
+        .into_any_element()
+}
+
+fn settings_text_action(
+    id: String,
+    icon: icons::IconName,
+    label: String,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    div()
+        .id(id)
+        .h(px(30.))
+        .px_2()
+        .flex()
+        .items_center()
+        .gap_1()
+        .rounded(px(theme::RADIUS_SM))
+        .cursor_pointer()
+        .bg(theme::raised())
+        .text_xs()
+        .text_color(theme::muted_text())
+        .hover(|style| style.bg(theme::accent()).text_color(theme::canvas()))
+        .child(icons::icon(icon, 14.).text_color(theme::muted_text()))
+        .child(SharedString::from(label))
+        .on_click(on_click)
+        .into_any_element()
+}
+
+fn compact_token_count(value: u32) -> String {
+    if value >= 1_000_000 {
+        format!("{:.1}M", value as f32 / 1_000_000.0)
+    } else if value >= 1_000 {
+        format!("{}K", value / 1_000)
+    } else {
+        value.to_string()
+    }
+}
+
 fn responsive_settings_row(
     label: String,
     description: String,
@@ -1848,13 +2540,13 @@ fn responsive_settings_row(
 }
 
 fn settings_icon_button(
-    id: &'static str,
+    id: impl Into<SharedString>,
     icon: icons::IconName,
     tooltip: String,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     div()
-        .id(id)
+        .id(id.into())
         .w(px(30.))
         .h(px(30.))
         .flex()
@@ -1915,8 +2607,8 @@ fn settings_choice_button(
         .into_any_element()
 }
 
-fn input_text_part(field: AgentInputField, value: &str) -> AnyElement {
-    let display = if field == AgentInputField::ApiKey {
+fn input_text_part(field: AgentInputField, value: &str, mask_api_key: bool) -> AnyElement {
+    let display = if field == AgentInputField::ApiKey && mask_api_key {
         "*".repeat(value.chars().count())
     } else {
         value.to_string()
@@ -1958,6 +2650,14 @@ fn input_index_for_x(
         previous_width = width;
     }
     value.len()
+}
+
+fn clamp_char_boundary(value: &str, index: usize) -> usize {
+    let mut index = index.min(value.len());
+    while index > 0 && !value.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
 }
 
 fn selection_bounds(anchor: Option<usize>, cursor: usize) -> Option<(usize, usize)> {
@@ -2131,5 +2831,12 @@ mod tests {
     fn settings_layout_switches_at_compact_width() {
         assert!(uses_compact_settings_layout(px(639.)));
         assert!(!uses_compact_settings_layout(px(640.)));
+    }
+
+    #[test]
+    fn input_cursor_is_clamped_to_a_valid_utf8_boundary() {
+        assert_eq!(clamp_char_boundary("model", 99), 5);
+        assert_eq!(clamp_char_boundary("模型", 2), 0);
+        assert_eq!(clamp_char_boundary("模型", 3), 3);
     }
 }

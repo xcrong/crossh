@@ -156,6 +156,9 @@ pub(crate) fn run_with_options(
         select_model(&mut settings, selector)?;
     }
     settings.validate().map_err(ToString::to_string)?;
+    if settings.providers.is_empty() {
+        return Err("No agent provider configured; add one in Settings first.".into());
+    }
 
     let current_workspace = std::env::current_dir().map_err(|error| error.to_string())?;
     let (session_path, mut session) = open_starting_session(&current_workspace, &options)?;

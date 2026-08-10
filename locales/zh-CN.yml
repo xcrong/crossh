@@ -14,6 +14,16 @@ settings:
   agent: Agent
   agent_provider: 供应商
   agent_provider_description: 管理多个 API 供应商，并在下方编辑当前选中的供应商。
+  agent_connection: 连接配置
+  agent_connection_method: 连接方式
+  agent_base_url: Base URL
+  agent_provider_ready: 已启用
+  agent_provider_unconfigured: 未启用
+  agent_provider_ready_notice: 该供应商已配置，可以使用。
+  agent_provider_key_notice: 设置 API Key 或环境变量后即可启用。
+  agent_provider_empty: 尚未配置供应商
+  agent_provider_empty_description: 添加供应商后即可配置连接和模型。
+  agent_provider_required: 请先添加供应商，再管理模型。
   agent_provider_add: 添加供应商
   agent_provider_remove: 删除当前供应商
   agent_provider_id: 供应商 ID
@@ -28,6 +38,8 @@ settings:
   agent_models_description: 管理当前供应商提供的模型。
   agent_model_add: 添加模型
   agent_model_remove: 删除当前模型
+  agent_model_edit: 编辑模型
+  agent_model_editor_close: 关闭模型编辑
   agent_model_id: 模型 API ID
   agent_model_id_description: 原样发送给当前供应商的模型标识。
   agent_model_name: 模型名称
@@ -50,6 +62,8 @@ settings:
   agent_credential_description: 直接保存在 Crossh 设置中，优先于环境变量回退值使用。
   agent_credential_env: API Key 环境变量
   agent_credential_env_description: 直接密钥留空时使用的可选回退；本地接口两项都可以留空。
+  agent_api_key_show: 显示 API Key
+  agent_api_key_hide: 隐藏 API Key
   agent_status: 配置
   agent_save: 保存 Agent 配置
   agent_save_description: 保存 Agent 使用的模型角色与执行策略。

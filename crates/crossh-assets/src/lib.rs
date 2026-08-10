@@ -43,6 +43,8 @@ define_icons! {
     ChevronDown => "icons/chevron-down.svg",
     ChevronRight => "icons/chevron-right.svg",
     Download => "icons/download.svg",
+    Eye => "icons/eye.svg",
+    EyeOff => "icons/eye-off.svg",
     FileText => "icons/file-text.svg",
     Folder => "icons/folder.svg",
     FolderOpen => "icons/folder-open.svg",

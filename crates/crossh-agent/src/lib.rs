@@ -25,13 +25,6 @@ pub use session::{
     load_prompts, load_session, load_skills, save_session,
 };
 
-fn default_url() -> String {
-    "http://127.0.0.1:11434/v1/chat/completions".into()
-}
-
-fn default_model() -> String {
-    "qwen3-coder".into()
-}
 fn default_max_tool_rounds() -> u32 {
     200
 }
@@ -167,7 +160,7 @@ fn default_max_tokens() -> u32 {
     32_000
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct AgentModelRef {
     pub provider: String,
     pub model: String,
@@ -185,29 +178,9 @@ pub struct AgentSettings {
 impl Default for AgentSettings {
     fn default() -> Self {
         Self {
-            providers: vec![AgentProvider {
-                id: "local".into(),
-                name: "Local".into(),
-                protocol: AgentProtocol::default(),
-                url: default_url(),
-                api_key_env: String::new(),
-                api_key: String::new(),
-                models: vec![AgentModel {
-                    id: default_model(),
-                    name: default_model(),
-                    reasoning: true,
-                    context_window: default_context_window(),
-                    max_tokens: default_max_tokens(),
-                }],
-            }],
-            active_model: AgentModelRef {
-                provider: "local".into(),
-                model: default_model(),
-            },
-            reviewer_model: AgentModelRef {
-                provider: "local".into(),
-                model: default_model(),
-            },
+            providers: Vec::new(),
+            active_model: AgentModelRef::default(),
+            reviewer_model: AgentModelRef::default(),
             max_tool_rounds: default_max_tool_rounds(),
         }
     }
@@ -215,6 +188,10 @@ impl Default for AgentSettings {
 
 impl AgentSettings {
     pub fn normalized(mut self) -> Self {
+        self.active_model.provider = self.active_model.provider.trim().into();
+        self.active_model.model = self.active_model.model.trim().into();
+        self.reviewer_model.provider = self.reviewer_model.provider.trim().into();
+        self.reviewer_model.model = self.reviewer_model.model.trim().into();
         for provider in &mut self.providers {
             provider.id = provider.id.trim().into();
             provider.name = provider.name.trim().into();
@@ -230,7 +207,15 @@ impl AgentSettings {
 
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.providers.is_empty() {
-            return Err("At least one provider is required");
+            if self.active_model == AgentModelRef::default()
+                && self.reviewer_model == AgentModelRef::default()
+            {
+                if !(1..=1000).contains(&self.max_tool_rounds) {
+                    return Err("Tool rounds must be between 1 and 1000");
+                }
+                return Ok(());
+            }
+            return Err("Model references require a configured provider");
         }
         let mut provider_ids = std::collections::BTreeSet::new();
         for provider in &self.providers {
@@ -269,8 +254,18 @@ impl AgentSettings {
                 }
             }
         }
-        self.resolve(&self.active_model)?;
-        self.resolve(&self.reviewer_model)?;
+        let has_models = self
+            .providers
+            .iter()
+            .any(|provider| !provider.models.is_empty());
+        if has_models {
+            self.resolve(&self.active_model)?;
+            self.resolve(&self.reviewer_model)?;
+        } else if self.active_model != AgentModelRef::default()
+            || self.reviewer_model != AgentModelRef::default()
+        {
+            return Err("Model references require a configured model");
+        }
         if !(1..=1000).contains(&self.max_tool_rounds) {
             return Err("Tool rounds must be between 1 and 1000");
         }
@@ -2006,6 +2001,36 @@ fn wire_messages(protocol: AgentProtocol, messages: &[AgentMessage]) -> Vec<Valu
 mod tests {
     use super::*;
 
+    fn configured_settings() -> AgentSettings {
+        let provider = AgentProvider {
+            id: "local".into(),
+            name: "Local".into(),
+            protocol: AgentProtocol::OpenAiChat,
+            url: "http://127.0.0.1:11434/v1/chat/completions".into(),
+            api_key_env: String::new(),
+            api_key: String::new(),
+            models: vec![AgentModel {
+                id: "qwen3-coder".into(),
+                name: "qwen3-coder".into(),
+                reasoning: true,
+                context_window: 128_000,
+                max_tokens: 32_000,
+            }],
+        };
+        AgentSettings {
+            providers: vec![provider],
+            active_model: AgentModelRef {
+                provider: "local".into(),
+                model: "qwen3-coder".into(),
+            },
+            reviewer_model: AgentModelRef {
+                provider: "local".into(),
+                model: "qwen3-coder".into(),
+            },
+            ..AgentSettings::default()
+        }
+    }
+
     fn messages() -> Vec<AgentMessage> {
         vec![
             AgentMessage::new(AgentRole::System, "be useful"),
@@ -2030,8 +2055,21 @@ mod tests {
     }
 
     #[test]
+    fn empty_default_settings_are_valid_without_model_references() {
+        let settings = AgentSettings::default();
+        assert!(settings.providers.is_empty());
+        assert_eq!(settings.active_model, AgentModelRef::default());
+        assert_eq!(settings.reviewer_model, AgentModelRef::default());
+        assert_eq!(settings.validate(), Ok(()));
+        assert!(matches!(
+            settings.resolve(&settings.active_model),
+            Err("Provider not found")
+        ));
+    }
+
+    #[test]
     fn multi_provider_models_resolve_independently() {
-        let mut settings = AgentSettings::default();
+        let mut settings = configured_settings();
         settings.providers.push(AgentProvider {
             id: "reviewer".into(),
             name: "Reviewer".into(),
@@ -2062,11 +2100,11 @@ mod tests {
 
     #[test]
     fn provider_and_model_ids_must_be_unique() {
-        let mut settings = AgentSettings::default();
+        let mut settings = configured_settings();
         settings.providers.push(settings.providers[0].clone());
         assert_eq!(settings.validate(), Err("Provider IDs must be unique"));
 
-        let mut settings = AgentSettings::default();
+        let mut settings = configured_settings();
         let duplicate = settings.providers[0].models[0].clone();
         settings.providers[0].models.push(duplicate);
         assert_eq!(

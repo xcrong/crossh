@@ -14,6 +14,16 @@ settings:
   agent: Agent
   agent_provider: Providers
   agent_provider_description: Maintain multiple API providers and edit the selected provider below.
+  agent_connection: Connection
+  agent_connection_method: Connection method
+  agent_base_url: Base URL
+  agent_provider_ready: Enabled
+  agent_provider_unconfigured: Not enabled
+  agent_provider_ready_notice: This provider is ready to use.
+  agent_provider_key_notice: Set an API key or environment variable to enable this provider.
+  agent_provider_empty: No providers configured
+  agent_provider_empty_description: Add a provider to configure its connection and models.
+  agent_provider_required: Add a provider before managing models.
   agent_provider_add: Add provider
   agent_provider_remove: Remove selected provider
   agent_provider_id: Provider ID
@@ -28,6 +38,8 @@ settings:
   agent_models_description: Maintain the models exposed by the selected provider.
   agent_model_add: Add model
   agent_model_remove: Remove selected model
+  agent_model_edit: Edit model
+  agent_model_editor_close: Close model editor
   agent_model_id: Model API ID
   agent_model_id_description: Identifier sent unchanged to the selected provider.
   agent_model_name: Model name
@@ -50,6 +62,8 @@ settings:
   agent_credential_description: Stored directly in Crossh settings and used before the environment variable fallback.
   agent_credential_env: API key environment variable
   agent_credential_env_description: Optional fallback when the direct API key is empty. Leave both empty for local endpoints.
+  agent_api_key_show: Show API key
+  agent_api_key_hide: Hide API key
   agent_status: Configuration
   agent_save: Save agent configuration
   agent_save_description: Save the model roles and execution policy used by the agent.
