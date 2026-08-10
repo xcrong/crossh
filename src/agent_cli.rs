@@ -43,6 +43,9 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 const SYSTEM_PROMPT: &str = "You are Crossh Agent, a careful coding assistant running in the user's terminal. Inspect the workspace before making claims, use the smallest appropriate tool, keep changes scoped to the request, and report what you changed and how it was verified. For multi-line changes, prefer the patch tool with a unified diff; use edit only for a short exact replacement. For file and directory tool arguments, always generate workspace-relative paths such as `.` or `README.md`. Do not generate absolute paths; the executor tolerates an in-workspace absolute path only for compatibility. Never use paths outside the workspace.";
 const SPINNER: [&str; 4] = ["|", "/", "-", "\\"];
 const MAX_VISIBLE_INPUT_LINES: usize = 6;
+const HEADER_HEIGHT: u16 = 3;
+const FOOTER_HEIGHT: u16 = 1;
+const MIN_CONVERSATION_HEIGHT: u16 = 5;
 const MAX_FILE_REFERENCE_BYTES: u64 = 32 * 1024;
 const MAX_FILE_REFERENCE_TOTAL_BYTES: u64 = 128 * 1024;
 const MAX_FILE_REFERENCE_COUNT: usize = 32;
@@ -1837,13 +1840,7 @@ fn tui_color(value: theme::Rgb) -> Color {
 
 fn render(frame: &mut Frame, app: &mut App) {
     let input_height = input_height(frame.area(), app);
-    let [header, conversation, input, footer] = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Min(5),
-        Constraint::Length(input_height),
-        Constraint::Length(1),
-    ])
-    .areas(frame.area());
+    let [header, conversation, input, footer] = agent_layout(frame.area(), input_height);
     let accent = tui_color(theme::accent());
     let bg = tui_color(theme::canvas());
     let surface = tui_color(theme::surface());
@@ -1926,8 +1923,11 @@ fn render(frame: &mut Frame, app: &mut App) {
         }
         lines.push(Line::default());
     }
-    let conversation_area = conversation.inner(Margin::new(2, 0));
-    let viewport_height = conversation_area.height as usize;
+    let conversation_block = Block::new()
+        .title(" conversation ")
+        .borders(Borders::TOP | Borders::BOTTOM)
+        .border_style(Style::new().fg(border));
+    let viewport_height = conversation_block.inner(conversation).height as usize;
     app.max_scroll = lines
         .len()
         .saturating_sub(viewport_height)
@@ -1944,12 +1944,7 @@ fn render(frame: &mut Frame, app: &mut App) {
         Paragraph::new(lines)
             .style(Style::new().fg(text).bg(bg))
             .scroll((scroll, 0))
-            .block(
-                Block::new()
-                    .title(" conversation ")
-                    .borders(Borders::TOP | Borders::BOTTOM)
-                    .border_style(Style::new().fg(border)),
-            ),
+            .block(conversation_block),
         conversation,
     );
 
@@ -2004,10 +1999,25 @@ fn render(frame: &mut Frame, app: &mut App) {
     );
 }
 
+fn agent_layout(area: Rect, input_height: u16) -> [Rect; 4] {
+    Layout::vertical([
+        Constraint::Length(HEADER_HEIGHT),
+        Constraint::Fill(1),
+        Constraint::Length(input_height),
+        Constraint::Length(FOOTER_HEIGHT),
+    ])
+    .areas(area)
+}
+
 fn input_height(area: Rect, app: &App) -> u16 {
     let width = area.width.saturating_sub(4).max(1) as usize;
     let lines = visual_line_count(&app.input, width);
-    (lines.min(MAX_VISIBLE_INPUT_LINES) as u16 + 2).min(area.height.saturating_sub(8).max(3))
+    let desired = lines.min(MAX_VISIBLE_INPUT_LINES) as u16 + 2;
+    let max_height = area
+        .height
+        .saturating_sub(HEADER_HEIGHT + FOOTER_HEIGHT + MIN_CONVERSATION_HEIGHT)
+        .max(1);
+    desired.min(max_height)
 }
 
 fn cursor_position(area: Rect, input: &str, cursor: usize) -> (u16, u16) {

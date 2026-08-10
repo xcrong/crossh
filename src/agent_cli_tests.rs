@@ -196,3 +196,17 @@ fn input_layout_accounts_for_wrapping_and_wide_characters() {
     assert_eq!(visual_line_count("中中文", 4), 2);
     assert_eq!(cursor_position(Rect::new(0, 0, 4, 3), "abcd", 4), (0, 1));
 }
+
+#[test]
+fn agent_layout_keeps_prompt_below_the_conversation() {
+    let mut app = app();
+    app.input = "one\ntwo\nthree\nfour\nfive\nsix\nseven".into();
+    let area = Rect::new(0, 0, 80, 16);
+    let [header, conversation, input, footer] = agent_layout(area, input_height(area, &app));
+
+    assert_eq!(header.bottom(), conversation.y);
+    assert_eq!(conversation.bottom(), input.y);
+    assert_eq!(input.bottom(), footer.y);
+    assert_eq!(footer.bottom(), area.bottom());
+    assert!(conversation.height >= MIN_CONVERSATION_HEIGHT);
+}
