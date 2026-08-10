@@ -54,8 +54,8 @@ settings:
   agent_max_tokens_description: Enter the model's maximum output capacity as a number.
   agent_active_model: Active model
   agent_active_model_description: Model used for conversation, reasoning, and tool requests.
-  agent_reviewer_model: Secondary reviewer model
-  agent_reviewer_model_description: Optional second opinion before local approval; used only when it differs from the active model.
+  agent_reviewer_model: Approval model
+  agent_reviewer_model_description: Language model that automatically approves or denies write, edit, and shell requests. Local confirmation is used only when no approval model is configured or available.
   agent_rounds: Maximum tool rounds
   agent_rounds_description: Maximum consecutive model/tool iterations per prompt. Default is 200.
   agent_credential: API key

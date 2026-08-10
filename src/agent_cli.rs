@@ -109,12 +109,13 @@ pub(crate) fn print_help() {
     );
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Role {
     User,
     Reasoning,
     Agent,
     Tool,
+    Approval,
     Error,
     Notice,
     Queued,
@@ -465,21 +466,62 @@ fn process_prompt(
         for call in calls {
             app.messages.push((Role::Tool, format_tool_call(&call)));
             app.status = format!("Tool requested: {}", call.name);
-            let mut approved = true;
-            if reviewer_is_distinct(app) {
-                approved = match review_tool_animated(terminal, app, &call, &user_request)? {
-                    BackgroundResult::Complete(result) => result,
-                    BackgroundResult::Cancelled => {
-                        app.messages
-                            .push((Role::Notice, "Tool review cancelled".into()));
-                        app.status = "Cancelled".into();
-                        return Ok(false);
+            let approval_source = tool_approval_source(&app.settings, &call.name);
+            if approval_source == ToolApprovalSource::LanguageModel {
+                push_approval(
+                    app,
+                    format!(
+                        "Language-model approval requested.\n\nTool: {}\nArguments:\n{}",
+                        call.name,
+                        pretty_tool_arguments(&call.arguments)
+                    ),
+                );
+            }
+            let mut reviewer_denial_reason = None;
+            let approved = match approval_source {
+                ToolApprovalSource::None => true,
+                ToolApprovalSource::LanguageModel => {
+                    match review_tool_animated(terminal, app, &call, &user_request)? {
+                        BackgroundResult::Complete(ReviewDecision::Approved(reason)) => {
+                            push_approval(
+                                app,
+                                format!(
+                                    "Language-model approval granted.\n\nTool: {}\nReason: {}",
+                                    call.name, reason
+                                ),
+                            );
+                            true
+                        }
+                        BackgroundResult::Complete(ReviewDecision::Denied(reason)) => {
+                            push_approval(
+                                app,
+                                format!(
+                                    "Language-model approval denied.\n\nTool: {}\nReason: {}",
+                                    call.name, reason
+                                ),
+                            );
+                            reviewer_denial_reason = Some(reason);
+                            false
+                        }
+                        BackgroundResult::Complete(ReviewDecision::Unavailable(error)) => {
+                            push_approval(
+                                app,
+                                format!(
+                                    "Language-model approval unavailable: {error}\nFalling back to local confirmation for {}.",
+                                    call.name
+                                ),
+                            );
+                            confirm_tool(terminal, app, &call)?
+                        }
+                        BackgroundResult::Cancelled => {
+                            push_approval(app, "Language-model approval cancelled");
+                            app.status = "Cancelled".into();
+                            return Ok(false);
+                        }
                     }
-                };
-            }
-            if approved && tool_requires_approval(&call.name) {
-                approved = confirm_tool(terminal, app, &call)?;
-            }
+                }
+                ToolApprovalSource::User => confirm_tool(terminal, app, &call)?,
+            };
             let result = if approved {
                 match execute_tool_animated(terminal, app, call.clone(), app.workspace.clone())? {
                     BackgroundResult::Complete(result) => result,
@@ -493,7 +535,11 @@ fn process_prompt(
             } else {
                 AgentToolResult {
                     call_id: call.id.clone(),
-                    output: "Tool execution denied by the user".into(),
+                    output: if let Some(reason) = reviewer_denial_reason {
+                        format!("Tool execution denied by the language-model reviewer: {reason}")
+                    } else {
+                        "Tool execution denied by the user".into()
+                    },
                     is_error: true,
                 }
             };
@@ -581,14 +627,14 @@ fn confirm_tool(
 ) -> io::Result<bool> {
     let previous_details = app.show_tool_details;
     app.show_tool_details = true;
-    app.messages.push((
-        Role::Notice,
+    push_approval(
+        app,
         format!(
-            "Approval required for tool execution.\n\nTool: {}\nArguments:\n{}",
+            "Local confirmation required for tool execution.\n\nTool: {}\nArguments:\n{}",
             call.name,
             pretty_tool_arguments(&call.arguments)
         ),
-    ));
+    );
     app.status = format!("Allow {}?  y/Enter allow  n/Esc deny", call.name);
     let decision = loop {
         terminal.draw(|frame| render(frame, app))?;
@@ -615,8 +661,28 @@ fn confirm_tool(
     Ok(decision)
 }
 
-fn reviewer_is_distinct(app: &App) -> bool {
-    app.settings.reviewer_model != app.settings.active_model
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToolApprovalSource {
+    None,
+    LanguageModel,
+    User,
+}
+
+enum ReviewDecision {
+    Approved(String),
+    Denied(String),
+    Unavailable(String),
+}
+
+fn tool_approval_source(settings: &AgentSettings, tool_name: &str) -> ToolApprovalSource {
+    if !tool_requires_approval(tool_name) {
+        return ToolApprovalSource::None;
+    }
+    if settings.resolve(&settings.reviewer_model).is_ok() {
+        ToolApprovalSource::LanguageModel
+    } else {
+        ToolApprovalSource::User
+    }
 }
 
 fn review_tool_animated(
@@ -624,13 +690,15 @@ fn review_tool_animated(
     app: &mut App,
     call: &AgentToolCall,
     user_request: &str,
-) -> io::Result<BackgroundResult<bool>> {
+) -> io::Result<BackgroundResult<ReviewDecision>> {
     let settings = app.settings.clone();
     let key = match resolve_model_key(&settings, &settings.reviewer_model) {
         Ok(key) => key,
         Err(error) => {
             app.status = format!("Reviewer unavailable: {error}");
-            return Ok(BackgroundResult::Complete(false));
+            return Ok(BackgroundResult::Complete(ReviewDecision::Unavailable(
+                error,
+            )));
         }
     };
     let tool_name = call.name.clone();
@@ -639,12 +707,15 @@ fn review_tool_animated(
     let user_request = user_request.to_string();
     let (tx, rx) = mpsc::channel();
     let task = crossh_ssh::ssh_runtime().spawn(async move {
-        let result = review_tool(&settings, key.as_deref(), &call, &workspace, &user_request)
-            .await
-            .unwrap_or(false);
+        let result =
+            match review_tool(&settings, key.as_deref(), &call, &workspace, &user_request).await {
+                Ok(review) if review.approved => ReviewDecision::Approved(review.reason),
+                Ok(review) => ReviewDecision::Denied(review.reason),
+                Err(error) => ReviewDecision::Unavailable(error),
+            };
         let _ = tx.send(result);
     });
-    app.status = format!("Reviewing {tool_name} with the secondary model");
+    app.status = format!("Reviewing {tool_name} with the language model");
     wait_for_background(terminal, app, "Reviewing tool", rx, move || task.abort())
 }
 
@@ -1488,6 +1559,10 @@ fn push_notice(app: &mut App, text: impl Into<String>) {
     append_notice(app, text, Role::Notice);
 }
 
+fn push_approval(app: &mut App, text: impl Into<String>) {
+    append_notice(app, text, Role::Approval);
+}
+
 fn push_error(app: &mut App, text: impl Into<String>) {
     append_notice(app, text, Role::Error);
     app.status = "Command failed".into();
@@ -1822,6 +1897,7 @@ fn render(frame: &mut Frame, app: &mut App) {
             Role::Reasoning => ("thinking", faint),
             Role::Agent => ("agent", tui_color(theme::diff_add_fg())),
             Role::Tool => ("tool", tui_color(theme::warning())),
+            Role::Approval => ("approval", tui_color(theme::accent())),
             Role::Error => ("error", tui_color(theme::danger())),
             Role::Notice => ("note", tui_color(theme::info())),
             Role::Queued => ("queued", tui_color(theme::accent_hover())),

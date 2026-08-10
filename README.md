@@ -53,7 +53,7 @@ open dist/crossh.app
 
 侧栏搜索支持关键词：`local` / `project`（或中文 `本地` / `项目`）直达目录视图与目录选择器。
 
-Agent 终端内输入 `/help` 查看命令。常用命令包括 `/model`、`/thinking`、`/resume`、`/new`、`/compact`、`/export`、`/skills`、`/prompts`；`/skill NAME` 应用项目技能，`/prompt NAME [args]` 执行 prompt template。`!command` 会执行 Shell 并把输出交给模型，`!!command` 只执行不回传。写入和 Shell 工具默认需要本地确认。
+Agent 终端内输入 `/help` 查看命令。常用命令包括 `/model`、`/thinking`、`/resume`、`/new`、`/compact`、`/export`、`/skills`、`/prompts`；`/skill NAME` 应用项目技能，`/prompt NAME [args]` 执行 prompt template。`!command` 会执行 Shell 并把输出交给模型，`!!command` 只执行不回传。写入和 Shell 工具默认由审批模型自动审核；审批模型不可用时才回退到本地确认，审批请求、结果和拒绝原因会显示在消息流中。
 
 项目资源目录支持 `.agents/skills/<name>/SKILL.md`、`.pi/skills/<name>/SKILL.md`、`.pi/prompts/<name>.md` 和 `prompts/<name>.md`；用户级资源放在 `~/.pi/agent/`、`~/.agents/` 或 `~/.config/crossh/agent/` 对应目录。当前项目目录优先于全局同名资源。
 

@@ -292,20 +292,26 @@ pub struct ResolvedModel<'a> {
     pub model: &'a AgentModel,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentReviewResult {
+    pub approved: bool,
+    pub reason: String,
+}
+
 pub async fn review_tool(
     settings: &AgentSettings,
     api_key: Option<&str>,
     call: &AgentToolCall,
     workspace: &Path,
     user_request: &str,
-) -> Result<bool, String> {
+) -> Result<AgentReviewResult, String> {
     let reviewer = settings
         .resolve(&settings.reviewer_model)
         .map_err(str::to_string)?;
     let messages = vec![
         AgentMessage::new(
             AgentRole::System,
-            "You are a tool execution reviewer. Reply with exactly ALLOW or DENY. Allow only actions that are necessary, scoped to the stated workspace, and consistent with the user's request.",
+            "You are a tool execution reviewer. Reply with exactly one JSON object and no markdown: {\"decision\":\"ALLOW\"|\"DENY\",\"reason\":\"brief explanation\"}. Allow only actions that are necessary, scoped to the stated workspace, and consistent with the user's request. A DENY response must explain the concrete safety or scope problem.",
         ),
         AgentMessage::new(
             AgentRole::User,
@@ -326,7 +332,78 @@ pub async fn review_tool(
         REVIEWER_REQUEST_TIMEOUT,
     )
     .await?;
-    Ok(response.text().trim().eq_ignore_ascii_case("ALLOW"))
+    Ok(parse_review_result(&response.text()))
+}
+
+fn parse_review_result(text: &str) -> AgentReviewResult {
+    let text = text.trim();
+    if let Some(value) = parse_review_json(text)
+        && let Some(decision) = value.get("decision").and_then(Value::as_str)
+    {
+        let reason = value
+            .get("reason")
+            .or_else(|| value.get("message"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|reason| !reason.is_empty())
+            .unwrap_or_else(|| {
+                if decision.eq_ignore_ascii_case("ALLOW") {
+                    "Approved by the language-model reviewer"
+                } else {
+                    "The language-model reviewer denied this request without a reason"
+                }
+            });
+        return AgentReviewResult {
+            approved: decision.eq_ignore_ascii_case("ALLOW"),
+            reason: reason.into(),
+        };
+    }
+
+    let bytes = text.as_bytes();
+    if bytes.len() >= 5
+        && bytes[..5].eq_ignore_ascii_case(b"ALLOW")
+        && (bytes.len() == 5 || !bytes[5].is_ascii_alphanumeric())
+    {
+        return AgentReviewResult {
+            approved: true,
+            reason: text[5..]
+                .trim()
+                .trim_start_matches([':', '-'])
+                .trim()
+                .into(),
+        };
+    }
+    if bytes.len() >= 4
+        && bytes[..4].eq_ignore_ascii_case(b"DENY")
+        && (bytes.len() == 4 || !bytes[4].is_ascii_alphanumeric())
+    {
+        let reason = text[4..].trim().trim_start_matches([':', '-']).trim();
+        return AgentReviewResult {
+            approved: false,
+            reason: if reason.is_empty() {
+                "The language-model reviewer denied this request without a reason".into()
+            } else {
+                reason.into()
+            },
+        };
+    }
+
+    AgentReviewResult {
+        approved: false,
+        reason: if text.is_empty() {
+            "The language-model reviewer returned an empty decision".into()
+        } else {
+            format!("Invalid reviewer response: {text}")
+        },
+    }
+}
+
+fn parse_review_json(text: &str) -> Option<Value> {
+    serde_json::from_str(text).ok().or_else(|| {
+        let start = text.find('{')?;
+        let end = text.rfind('}')?;
+        serde_json::from_str(&text[start..=end]).ok()
+    })
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1695,6 +1772,25 @@ mod tests {
             AgentMessage::new(AgentRole::System, "be useful"),
             AgentMessage::new(AgentRole::User, "hello"),
         ]
+    }
+
+    #[test]
+    fn reviewer_denials_preserve_a_reason() {
+        assert_eq!(
+            parse_review_result(r#"{"decision":"DENY","reason":"shell command deletes data"}"#),
+            AgentReviewResult {
+                approved: false,
+                reason: "shell command deletes data".into(),
+            }
+        );
+        assert_eq!(
+            parse_review_result("DENY: path is outside the workspace"),
+            AgentReviewResult {
+                approved: false,
+                reason: "path is outside the workspace".into(),
+            }
+        );
+        assert!(parse_review_result(r#"{"decision":"ALLOW","reason":"scoped read"}"#).approved);
     }
 
     #[test]

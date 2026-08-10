@@ -74,6 +74,35 @@ fn parse_options_supports_session_and_model_controls() {
 }
 
 #[test]
+fn mutating_tools_use_the_language_model_reviewer_by_default() {
+    let settings = test_settings();
+    assert_eq!(
+        tool_approval_source(&settings, "bash"),
+        ToolApprovalSource::LanguageModel
+    );
+    assert_eq!(
+        tool_approval_source(&settings, "read"),
+        ToolApprovalSource::None
+    );
+
+    assert_eq!(
+        tool_approval_source(&AgentSettings::default(), "bash"),
+        ToolApprovalSource::User
+    );
+}
+
+#[test]
+fn approval_messages_are_added_to_the_visible_stream() {
+    let mut app = app();
+    push_approval(&mut app, "Language-model approval granted");
+    assert_eq!(
+        app.messages,
+        vec![(Role::Approval, "Language-model approval granted".into())]
+    );
+    assert_eq!(app.scroll, u16::MAX);
+}
+
+#[test]
 fn editor_handles_unicode_and_word_deletion() {
     let mut app = app();
     insert_text(&mut app, "hello 中😀 world");
