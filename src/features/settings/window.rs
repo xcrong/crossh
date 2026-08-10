@@ -1480,6 +1480,8 @@ impl SettingsWindow {
                     .rounded(px(theme::RADIUS_SM))
                     .bg(theme::raised())
                     .text_xs()
+                    .text_color(theme::text())
+                    .font_weight(FontWeight::MEDIUM)
                     .child(SharedString::from(rounds.to_string())),
             )
             .child(settings_icon_button(
