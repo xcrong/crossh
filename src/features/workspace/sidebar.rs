@@ -379,7 +379,7 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
                 .bg(theme::accent_soft())
                 .border_1()
                 .border_color(theme::border_strong())
-                .child(icons::icon(icons::IconName::Terminal, 14.).text_color(theme::accent())),
+                .child(icons::logo(20.)),
         )
         .child(
             div()

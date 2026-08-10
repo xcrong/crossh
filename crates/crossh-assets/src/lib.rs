@@ -6,8 +6,14 @@ use rust_embed::RustEmbed;
 #[folder = "assets/icons/"]
 struct Icons;
 
+pub const LOGO_PATH: &str = "brand/crossh-logo.svg";
+const CROSSH_LOGO: &[u8] = include_bytes!("../../../assets/appicon/icon-master.svg");
+
 /// Return an embedded Crossh asset by its GPUI-style path.
 pub fn load(path: &str) -> Option<Cow<'static, [u8]>> {
+    if path == LOGO_PATH {
+        return Some(Cow::Borrowed(CROSSH_LOGO));
+    }
     let icon_path = path.strip_prefix("icons/")?;
     Icons::get(icon_path).map(|asset| asset.data)
 }
@@ -74,6 +80,8 @@ mod tests {
 
     #[test]
     fn every_declared_and_embedded_icon_is_loadable() {
+        let logo = load(LOGO_PATH).expect("brand logo should be embedded");
+        assert!(logo.starts_with(b"<svg"));
         for icon in IconName::ALL {
             let data = load(icon.path()).expect("declared icon should be embedded");
             assert!(
