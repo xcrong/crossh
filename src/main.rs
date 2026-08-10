@@ -48,17 +48,21 @@ fn main() {
             return;
         }
         Some("agent") => {
-            if let Some(argument) = args.next() {
-                if argument == "--help" || argument == "-h" {
-                    println!(
-                        "Usage: crossh agent\n\nStart the interactive Rust-native coding agent."
-                    );
+            let options = match agent_cli::parse_options(args) {
+                Ok(options) => options,
+                Err(error) if error == "help" => {
+                    agent_cli::print_help();
                     return;
                 }
-                eprintln!("unknown agent argument: {argument}");
-                std::process::exit(2);
-            }
-            if let Err(error) = agent_cli::run(features::settings::load().agent) {
+                Err(error) => {
+                    eprintln!("crossh agent: {error}\n");
+                    agent_cli::print_help();
+                    std::process::exit(2);
+                }
+            };
+            if let Err(error) =
+                agent_cli::run_with_options(features::settings::load().agent, options)
+            {
                 eprintln!("crossh agent: {error}");
                 std::process::exit(1);
             }

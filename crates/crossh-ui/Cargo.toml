@@ -6,4 +6,5 @@ license = "GPL-3.0-or-later"
 
 [dependencies]
 assets = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
+crossh-theme = { path = "../crossh-theme" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }

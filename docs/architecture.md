@@ -8,6 +8,7 @@ the UI.
 ```text
 crossh (application + feature views)
   -> crossh-agent
+  -> crossh-theme
   -> crossh-ui
   -> crossh-terminal -> crossh-core
   -> crossh-ssh      -> crossh-core
@@ -19,17 +20,19 @@ crossh-agent      -> no GPUI, protocol-neutral agent core and wire adapters
 crossh-ssh        -> no GPUI, transport implementation only
 crossh-terminal   -> no GPUI, terminal settings/events only
 crossh-update     -> no GPUI, release/download/install implementation
+crossh-theme      -> no GPUI, renderer-independent color tokens
 crossh-ui         -> GPUI primitives and assets
 ```
 
 ## Crate Ownership
 
 - `crossh-core`: OpenSSH config parsing, terminal-neutral contracts and title helpers, command history/background tasks, Git parsing, and shared connection state.
-- `crossh-agent`: canonical agent messages, persisted agent configuration, HTTP transport, and adapters for OpenAI Chat, OpenAI Responses, and Anthropic Messages wire formats.
+- `crossh-agent`: canonical agent messages, workspace-scoped tools, project context/skill/prompt discovery, JSONL session persistence, persisted agent configuration, HTTP transport, and adapters for OpenAI Chat, OpenAI Responses, and Anthropic Messages wire formats. Resource discovery stays UI-neutral; the terminal CLI owns command presentation and prompt injection.
+- `crossh-theme`: renderer-independent Crossh color tokens shared by the GPUI and ratatui surfaces.
 - `crossh-ssh`: `russh` authentication and channels, connection pooling, SFTP, port forwarding, ProxyJump, and the Tokio runtime. Its public API is re-exported from the crate root; implementation modules stay private.
 - `crossh-terminal`: terminal-owned settings and events. It is the model boundary consumed by the GPUI terminal view.
 - `crossh-update`: release manifest validation, HTTPS downloads, checksum verification, archive installation, and the standalone updater hand-off.
-- `crossh-ui`: reusable GPUI widgets, context menus, theme functions, icons, and the asset source.
+- `crossh-ui`: reusable GPUI widgets, context menus, the GPUI adapter for `crossh-theme`, icons, and the asset source.
 - `crossh`: process startup plus user-facing feature views and GPUI adapters. `features/terminal/view.rs` is the `terminal_view`-style host around Zed's terminal foundation; `features/connections/entity.rs` is the adapter around `crossh-ssh::ConnectionHandle`.
 
 Within the application crate:
@@ -48,7 +51,7 @@ engine remains in `crossh-ssh`.
 
 ## Boundary Rules
 
-1. `crossh-core`, `crossh-agent`, `crossh-ssh`, `crossh-terminal`, and `crossh-update` must not import `gpui`, `gpui_platform`, or `crossh-ui`.
+1. `crossh-core`, `crossh-agent`, `crossh-theme`, `crossh-ssh`, `crossh-terminal`, and `crossh-update` must not import `gpui`, `gpui_platform`, or `crossh-ui`.
 2. The transport crate communicates with the application through channels and public data types; it never receives a GPUI context or entity.
 3. Feature views consume crate-root APIs, not private implementation modules from `crossh-ssh` or `crossh-update`.
 4. Feature settings stay next to the feature that owns their behavior; the persistence layer composes snapshots without becoming the settings owner.

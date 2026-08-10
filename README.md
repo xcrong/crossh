@@ -14,6 +14,7 @@
 - **本地终端**：Zed `TerminalBuilder` 创建本地 PTY；Crossh 只叠加项目目录、当前 `cwd` 和多会话标签，Git 状态由工作区单独维护。
 - **设置**：语言（zh/en）、Zed 终端字号、滚动回退行数、启动时检查更新，持久化到 `~/.config/crossh/`。
 - **远程更新**：设置页从 HTTPS release manifest 检查版本，按平台下载并校验 SHA-256，再交给随应用分发的独立 updater 完成替换和重启。
+- **Crossh Agent**：`crossh agent` 提供流式多协议模型对话、`read`/`grep`/`find`/`ls`/`edit`/`write`/`bash` 工具、项目 `AGENTS.md`/`CLAUDE.md`/`.pi/SYSTEM.md` 上下文、项目与用户级 `skills`/prompt templates、JSONL 会话恢复/分叉/树回退/压缩/导出、模型与思考级别切换、Markdown 输出、工具确认、取消和工作中排队。
 - 常驻友好：日志裁剪（`/tmp/crossh/run.log`）、panic 现场保留、空闲内存 ~70MB。
 
 ## 构建与运行
@@ -22,6 +23,10 @@
 # 需要 Xcode Command Line Tools + Rust (edition 2024)
 cargo run            # 开发模式（日志同时 tee 到 stderr）
 cargo run --release  # 发布模式
+
+# 交互式 coding agent
+cargo run -- agent
+cargo run -- agent --continue
 ```
 
 打包为未签名 `.app`（当前没有 Developer ID）：
@@ -47,6 +52,10 @@ open dist/crossh.app
 | 侧栏搜索框回车 | 打开主机 / 快速连接 `user@host` |
 
 侧栏搜索支持关键词：`local` / `project`（或中文 `本地` / `项目`）直达目录视图与目录选择器。
+
+Agent 终端内输入 `/help` 查看命令。常用命令包括 `/model`、`/thinking`、`/resume`、`/new`、`/compact`、`/export`、`/skills`、`/prompts`；`/skill NAME` 应用项目技能，`/prompt NAME [args]` 执行 prompt template。`!command` 会执行 Shell 并把输出交给模型，`!!command` 只执行不回传。写入和 Shell 工具默认需要本地确认。
+
+项目资源目录支持 `.agents/skills/<name>/SKILL.md`、`.pi/skills/<name>/SKILL.md`、`.pi/prompts/<name>.md` 和 `prompts/<name>.md`；用户级资源放在 `~/.pi/agent/`、`~/.agents/` 或 `~/.config/crossh/agent/` 对应目录。当前项目目录优先于全局同名资源。
 
 ## 架构
 

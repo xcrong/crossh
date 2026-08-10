@@ -1857,6 +1857,7 @@ dependencies = [
  "crossh-core",
  "crossh-ssh",
  "crossh-terminal",
+ "crossh-theme",
  "crossh-ui",
  "crossh-update",
  "crossterm",
@@ -1872,6 +1873,7 @@ dependencies = [
  "rust-i18n",
  "semver",
  "serde",
+ "serde_json",
  "settings",
  "sys-locale",
  "task",
@@ -1889,7 +1891,10 @@ dependencies = [
 name = "crossh-agent"
 version = "0.10.2"
 dependencies = [
+ "dirs",
  "futures-util",
+ "libc",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
@@ -1936,10 +1941,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossh-theme"
+version = "0.10.2"
+
+[[package]]
 name = "crossh-ui"
 version = "0.10.2"
 dependencies = [
  "assets",
+ "crossh-theme",
  "gpui",
 ]
 

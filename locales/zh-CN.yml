@@ -41,8 +41,8 @@ settings:
   agent_max_tokens_description: 直接输入该模型的最大输出 Token 数字。
   agent_active_model: 主模型
   agent_active_model_description: 用于对话、推理和发起工具调用的模型。
-  agent_reviewer_model: 审核模型
-  agent_reviewer_model_description: 可选择任意已配置供应商的模型；仅返回 ALLOW 时允许执行工具。
+  agent_reviewer_model: 二次审核模型
+  agent_reviewer_model_description: 可选的第二意见；仅当它不同于主模型时先进行审核，之后仍需本地确认。
   agent_rounds: 最大工具轮次
   agent_rounds_description: 每条提示允许连续执行的模型/工具迭代次数，默认为 200。
   agent_credential: API Key
