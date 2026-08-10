@@ -81,6 +81,10 @@ fn mutating_tools_use_the_language_model_reviewer_by_default() {
         ToolApprovalSource::LanguageModel
     );
     assert_eq!(
+        tool_approval_source(&settings, "patch"),
+        ToolApprovalSource::LanguageModel
+    );
+    assert_eq!(
         tool_approval_source(&settings, "read"),
         ToolApprovalSource::None
     );

@@ -39,6 +39,9 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(120);
 const MODEL_REQUEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const REVIEWER_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[cfg(unix)]
+static PATCH_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
 struct ToolControl<'a> {
     cancel: &'a AtomicBool,
     deadline: Instant,
@@ -508,6 +511,12 @@ pub fn builtin_tools() -> Vec<AgentToolDefinition> {
             requires_approval: true,
         },
         AgentToolDefinition {
+            name: "patch",
+            description: "Apply a unified-diff patch to one existing UTF-8 workspace file; provide the file path separately and include @@ hunks with context lines",
+            input_schema: json!({"type":"object","properties":{"path":{"type":"string"},"patch":{"type":"string"}},"required":["path","patch"],"additionalProperties":false}),
+            requires_approval: true,
+        },
+        AgentToolDefinition {
             name: "bash",
             description: "Run a shell command in the current workspace",
             input_schema: json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}),
@@ -665,6 +674,15 @@ fn execute_tool_inner(
             fs::write(&path, text).map_err(|error| error.to_string())?;
             Ok(format!("edited {}", path.display()))
         }
+        "patch" => {
+            let path = workspace_path(workspace, required_str(&args, "path")?, false)?;
+            let text = read_file_string(&path, control)?;
+            let patch = required_str(&args, "patch")?;
+            let updated = apply_unified_patch(&text, patch)?;
+            check_cancelled(control)?;
+            write_file_atomically(&path, &updated)?;
+            Ok(format!("patched {}", path.display()))
+        }
         "bash" => {
             let command = required_str(&args, "command")?;
             let mut process = shell_command(command, workspace);
@@ -672,6 +690,258 @@ fn execute_tool_inner(
             Ok(format_command_output(&output))
         }
         _ => Err(format!("unknown tool: {}", call.name)),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PatchHunk {
+    old_start: usize,
+    old_count: usize,
+    new_count: usize,
+    lines: Vec<PatchLine>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PatchLine {
+    Context(String),
+    Remove(String),
+    Add(String),
+}
+
+fn apply_unified_patch(original: &str, patch: &str) -> Result<String, String> {
+    let hunks = parse_unified_patch(patch)?;
+    let uses_crlf = original.contains("\r\n");
+    let newline = if uses_crlf { "\r\n" } else { "\n" };
+    let had_final_newline = original.ends_with('\n');
+    let mut source_lines = if original.is_empty() {
+        Vec::new()
+    } else {
+        original
+            .split('\n')
+            .map(|line| line.strip_suffix('\r').unwrap_or(line).to_string())
+            .collect::<Vec<_>>()
+    };
+    if had_final_newline {
+        source_lines.pop();
+    }
+
+    let mut result_lines = Vec::new();
+    let mut source_cursor = 0;
+    for hunk in hunks {
+        let hunk_position = if hunk.old_count == 0 {
+            hunk.old_start
+        } else {
+            hunk.old_start.saturating_sub(1)
+        };
+        if hunk_position < source_cursor || hunk_position > source_lines.len() {
+            return Err(format!(
+                "patch hunk starts outside the source at line {}",
+                hunk.old_start
+            ));
+        }
+        result_lines.extend(source_lines[source_cursor..hunk_position].iter().cloned());
+
+        let mut index = hunk_position;
+        for line in hunk.lines {
+            match line {
+                PatchLine::Context(expected) => {
+                    verify_patch_line(&source_lines, index, &expected)?;
+                    result_lines.push(expected);
+                    index += 1;
+                }
+                PatchLine::Remove(expected) => {
+                    verify_patch_line(&source_lines, index, &expected)?;
+                    index += 1;
+                }
+                PatchLine::Add(text) => result_lines.push(text),
+            }
+        }
+        source_cursor = index;
+    }
+    result_lines.extend(source_lines[source_cursor..].iter().cloned());
+
+    let mut updated = result_lines.join(newline);
+    if had_final_newline && !result_lines.is_empty() {
+        updated.push_str(newline);
+    }
+    Ok(updated)
+}
+
+fn verify_patch_line(source: &[String], index: usize, expected: &str) -> Result<(), String> {
+    match source.get(index) {
+        Some(actual) if actual == expected => Ok(()),
+        Some(_) => Err(format!(
+            "patch context mismatch at source line {}",
+            index + 1
+        )),
+        None => Err(format!(
+            "patch reaches past the end at source line {}",
+            index + 1
+        )),
+    }
+}
+
+fn parse_unified_patch(patch: &str) -> Result<Vec<PatchHunk>, String> {
+    let lines = patch
+        .split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .collect::<Vec<_>>();
+    let mut hunks = Vec::new();
+    let mut current = None;
+
+    for (line_index, line) in lines.iter().enumerate() {
+        if line.starts_with("@@") {
+            if let Some(hunk) = current.take() {
+                validate_patch_hunk(&hunk)?;
+                hunks.push(hunk);
+            }
+            current = Some(parse_patch_hunk_header(line, line_index + 1)?);
+            continue;
+        }
+
+        if let Some(hunk) = current.as_mut() {
+            if let Some(text) = line.strip_prefix(' ') {
+                hunk.lines.push(PatchLine::Context(text.into()));
+            } else if let Some(text) = line.strip_prefix('-') {
+                hunk.lines.push(PatchLine::Remove(text.into()));
+            } else if let Some(text) = line.strip_prefix('+') {
+                hunk.lines.push(PatchLine::Add(text.into()));
+            } else if *line == "\\ No newline at end of file" {
+                // The current file's newline style is preserved by the writer.
+            } else if *line == "*** End Patch" {
+                // Accept the common apply_patch wrapper around unified hunks.
+            } else if line.is_empty() && line_index + 1 == lines.len() {
+                // split('\n') produces a final empty item when the patch ends in a newline.
+            } else {
+                return Err(format!(
+                    "invalid unified patch line {}: expected context, addition, or removal",
+                    line_index + 1
+                ));
+            }
+            continue;
+        }
+
+        if line.starts_with("--- ")
+            || line.starts_with("+++ ")
+            || line.starts_with("diff ")
+            || line.starts_with("index ")
+            || *line == "*** Begin Patch"
+            || *line == "*** End Patch"
+            || line.starts_with("*** Update File:")
+            || (line.is_empty() && line_index + 1 == lines.len())
+        {
+            continue;
+        }
+        return Err(format!(
+            "invalid unified patch line {}: expected a hunk header",
+            line_index + 1
+        ));
+    }
+
+    if let Some(hunk) = current {
+        validate_patch_hunk(&hunk)?;
+        hunks.push(hunk);
+    }
+    if hunks.is_empty() {
+        return Err("patch does not contain a unified-diff hunk".into());
+    }
+    Ok(hunks)
+}
+
+fn validate_patch_hunk(hunk: &PatchHunk) -> Result<(), String> {
+    let old_count = hunk
+        .lines
+        .iter()
+        .filter(|line| matches!(line, PatchLine::Context(_) | PatchLine::Remove(_)))
+        .count();
+    let new_count = hunk
+        .lines
+        .iter()
+        .filter(|line| matches!(line, PatchLine::Context(_) | PatchLine::Add(_)))
+        .count();
+    if old_count != hunk.old_count || new_count != hunk.new_count {
+        return Err(format!(
+            "patch hunk line count mismatch: expected -{}, +{} but received -{}, +{}",
+            hunk.old_count, hunk.new_count, old_count, new_count
+        ));
+    }
+    Ok(())
+}
+
+fn parse_patch_hunk_header(line: &str, line_number: usize) -> Result<PatchHunk, String> {
+    let ranges = line
+        .strip_prefix("@@")
+        .and_then(|line| line.find("@@").map(|end| &line[..end]))
+        .ok_or_else(|| format!("invalid patch hunk header on line {line_number}"))?;
+    let mut ranges = ranges.split_whitespace();
+    let (old_start, old_count) = parse_patch_range(
+        ranges
+            .next()
+            .ok_or_else(|| format!("missing old range on patch line {line_number}"))?,
+        '-',
+        line_number,
+    )?;
+    let (_new_start, new_count) = parse_patch_range(
+        ranges
+            .next()
+            .ok_or_else(|| format!("missing new range on patch line {line_number}"))?,
+        '+',
+        line_number,
+    )?;
+    Ok(PatchHunk {
+        old_start,
+        old_count,
+        new_count,
+        lines: Vec::new(),
+    })
+}
+
+fn parse_patch_range(
+    range: &str,
+    prefix: char,
+    line_number: usize,
+) -> Result<(usize, usize), String> {
+    let value = range
+        .strip_prefix(prefix)
+        .ok_or_else(|| format!("invalid patch range on line {line_number}"))?;
+    let (start, count) = value.split_once(',').unwrap_or((value, "1"));
+    let start = start
+        .parse::<usize>()
+        .map_err(|_| format!("invalid patch range on line {line_number}"))?;
+    let count = count
+        .parse::<usize>()
+        .map_err(|_| format!("invalid patch range on line {line_number}"))?;
+    Ok((start, count))
+}
+
+fn write_file_atomically(path: &Path, contents: &str) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("file name is not valid UTF-8")?;
+        let temp_path = path.with_file_name(format!(
+            ".{file_name}.crossh-patch-{}-{}.tmp",
+            std::process::id(),
+            PATCH_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let permissions = fs::metadata(path)
+            .map_err(|error| error.to_string())?
+            .permissions();
+        let result = (|| {
+            fs::write(&temp_path, contents).map_err(|error| error.to_string())?;
+            fs::set_permissions(&temp_path, permissions).map_err(|error| error.to_string())?;
+            fs::rename(&temp_path, path).map_err(|error| error.to_string())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        result
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(path, contents).map_err(|error| error.to_string())
     }
 }
 
@@ -2193,6 +2463,43 @@ mod tests {
             workspace.path(),
         );
         assert!(escaped.is_error);
+    }
+
+    #[test]
+    fn patch_tool_applies_unified_hunks_and_keeps_failed_patches_atomic() {
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace.path().join("notes.txt");
+        fs::write(&path, "one\ntwo\nthree\n").unwrap();
+        let patch = json!({
+            "path": "notes.txt",
+            "patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+updated\n three\n"
+        });
+        let result = execute_tool(
+            &AgentToolCall {
+                id: "patch".into(),
+                name: "patch".into(),
+                arguments: patch.to_string(),
+            },
+            workspace.path(),
+        );
+        assert!(!result.is_error);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "one\nupdated\nthree\n");
+
+        let failed_patch = json!({
+            "path": "notes.txt",
+            "patch": "@@ -1,3 +1,3 @@\n one\n-missing\n+broken\n three\n"
+        });
+        let result = execute_tool(
+            &AgentToolCall {
+                id: "patch-failed".into(),
+                name: "patch".into(),
+                arguments: failed_patch.to_string(),
+            },
+            workspace.path(),
+        );
+        assert!(result.is_error);
+        assert!(result.output.contains("patch context mismatch"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "one\nupdated\nthree\n");
     }
 
     #[test]

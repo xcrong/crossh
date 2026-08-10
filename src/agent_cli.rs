@@ -40,7 +40,7 @@ use ratatui::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-const SYSTEM_PROMPT: &str = "You are Crossh Agent, a careful coding assistant running in the user's terminal. Inspect the workspace before making claims, use the smallest appropriate tool, keep changes scoped to the request, and report what you changed and how it was verified. For file and directory tool arguments, always generate workspace-relative paths such as `.` or `README.md`. Do not generate absolute paths; the executor tolerates an in-workspace absolute path only for compatibility. Never use paths outside the workspace.";
+const SYSTEM_PROMPT: &str = "You are Crossh Agent, a careful coding assistant running in the user's terminal. Inspect the workspace before making claims, use the smallest appropriate tool, keep changes scoped to the request, and report what you changed and how it was verified. For multi-line changes, prefer the patch tool with a unified diff; use edit only for a short exact replacement. For file and directory tool arguments, always generate workspace-relative paths such as `.` or `README.md`. Do not generate absolute paths; the executor tolerates an in-workspace absolute path only for compatibility. Never use paths outside the workspace.";
 const SPINNER: [&str; 4] = ["|", "/", "-", "\\"];
 const MAX_VISIBLE_INPUT_LINES: usize = 6;
 const MAX_FILE_REFERENCE_BYTES: u64 = 32 * 1024;
@@ -1366,7 +1366,7 @@ fn request_messages(app: &App) -> Vec<AgentMessage> {
 fn system_prompt(app: &App) -> String {
     let context = context_prompt(&app.context_files);
     let mut system = format!(
-        "{SYSTEM_PROMPT}\n\nWorkspace root: . (the current workspace; use relative paths)\nThinking preference: {}\nAvailable tools: read, grep, find, ls, edit, write, bash.",
+        "{SYSTEM_PROMPT}\n\nWorkspace root: . (the current workspace; use relative paths)\nThinking preference: {}\nAvailable tools: read, grep, find, ls, patch, edit, write, bash.",
         app.thinking.label()
     );
     if !context.is_empty() {

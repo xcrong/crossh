@@ -14,7 +14,7 @@
 - **本地终端**：Zed `TerminalBuilder` 创建本地 PTY；Crossh 只叠加项目目录、当前 `cwd` 和多会话标签，Git 状态由工作区单独维护。
 - **设置**：语言（zh/en）、Zed 终端字号、滚动回退行数、启动时检查更新，持久化到 `~/.config/crossh/`。
 - **远程更新**：设置页从 HTTPS release manifest 检查版本，按平台下载并校验 SHA-256，再交给随应用分发的独立 updater 完成替换和重启。
-- **Crossh Agent**：`crossh agent` 提供流式多协议模型对话、`read`/`grep`/`find`/`ls`/`edit`/`write`/`bash` 工具、项目 `AGENTS.md`/`CLAUDE.md`/`.pi/SYSTEM.md` 上下文、项目与用户级 `skills`/prompt templates、JSONL 会话恢复/分叉/树回退/压缩/导出、模型与思考级别切换、Markdown 输出、工具确认、取消和工作中排队。
+- **Crossh Agent**：`crossh agent` 提供流式多协议模型对话、`read`/`grep`/`find`/`ls`/`patch`/`edit`/`write`/`bash` 工具、项目 `AGENTS.md`/`CLAUDE.md`/`.pi/SYSTEM.md` 上下文、项目与用户级 `skills`/prompt templates、JSONL 会话恢复/分叉/树回退/压缩/导出、模型与思考级别切换、Markdown 输出、工具确认、取消和工作中排队。
 - 常驻友好：日志裁剪（`/tmp/crossh/run.log`）、panic 现场保留、空闲内存 ~70MB。
 
 ## 构建与运行
