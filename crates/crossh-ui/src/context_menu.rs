@@ -65,6 +65,8 @@ pub enum ShellMenuAction {
     },
     /// Open the command editor.
     EditQuickCommand { scope: String, command: String },
+    /// Toggle whether a command is shown in the collapsed rail.
+    ToggleQuickCommandPin { scope: String, command: String },
     /// Remove a command from the aggregate history.
     DeleteQuickCommand { scope: String, command: String },
     /// Exclude a command from cwd-bound history.

@@ -443,6 +443,144 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
     sidebar_root.into_any_element()
 }
 
+/// 收起主机栏时保留活跃项目与连接主机，便于直接切换工作目标。
+pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
+    let settings_open = is_settings_window_open(cx);
+    let settings = render_sidebar_rail_button(
+        "sidebar-rail-settings",
+        icons::IconName::Settings,
+        "tooltip.settings",
+        settings_open,
+        AppShell::toggle_settings,
+        cx,
+    );
+    let mut activity = div().flex().flex_col().items_center().gap_1();
+    for dir in shell
+        .workspace
+        .sessions
+        .local_dirs
+        .values()
+        .filter(|dir| !dir.sessions.is_empty())
+    {
+        let project_dir = dir.project_dir.clone();
+        let label = local_dir_name(&project_dir);
+        activity = activity.child(
+            div()
+                .id(SharedString::from(format!("sidebar-rail-project-{label}")))
+                .w(px(30.))
+                .h(px(30.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(theme::RADIUS_SM))
+                .cursor_pointer()
+                .hover(|style| style.bg(theme::surface()))
+                .tooltip(move |_window, cx| {
+                    cx.new(|_| LocalPathTooltip {
+                        path: SharedString::from(label.clone()),
+                    })
+                    .into()
+                })
+                .child(icons::icon(icons::IconName::Folder, 15.).text_color(theme::accent()))
+                .on_click(cx.listener(move |this, _ev, _window, cx| {
+                    this.activate_local_dir(project_dir.clone(), cx);
+                })),
+        );
+    }
+    for (index, entry) in shell.connections.entries().iter().enumerate() {
+        if !is_active_connection(&shell.connections.state_for_key(&entry.key, cx)) {
+            continue;
+        }
+        let alias = entry.alias.clone();
+        activity = activity.child(
+            div()
+                .id(("sidebar-rail-host", index))
+                .w(px(30.))
+                .h(px(30.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(theme::RADIUS_SM))
+                .cursor_pointer()
+                .hover(|style| style.bg(theme::surface()))
+                .tooltip(move |_window, cx| {
+                    cx.new(|_| LocalPathTooltip {
+                        path: SharedString::from(alias.clone()),
+                    })
+                    .into()
+                })
+                .child(icons::icon(icons::IconName::Server, 15.).text_color(theme::accent()))
+                .on_click(cx.listener(move |this, _ev, _window, cx| {
+                    this.open_host(index, cx);
+                })),
+        );
+    }
+
+    div()
+        .id("sidebar-rail")
+        .w(px(theme::SIDEBAR_RAIL_WIDTH))
+        .h_full()
+        .flex_none()
+        .flex()
+        .flex_col()
+        .items_center()
+        .py_2()
+        .bg(theme::sidebar())
+        .border_r_1()
+        .border_color(theme::border())
+        .child(
+            div()
+                .w(px(30.))
+                .h(px(30.))
+                .mb_2()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(theme::RADIUS_SM))
+                .bg(theme::accent_soft())
+                .border_1()
+                .border_color(theme::border_strong())
+                .child(icons::logo(19.)),
+        )
+        .child(activity)
+        .child(div().flex_1())
+        .child(settings)
+        .into_any_element()
+}
+
+fn render_sidebar_rail_button(
+    id: &'static str,
+    icon: icons::IconName,
+    tooltip: &'static str,
+    active: bool,
+    on_click: fn(&mut AppShell, &mut Context<AppShell>),
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    div()
+        .id(id)
+        .w(px(30.))
+        .h(px(30.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(theme::RADIUS_SM))
+        .cursor_pointer()
+        .hover(|style| style.bg(theme::surface()))
+        .tooltip(move |_window, cx| {
+            cx.new(|_| LocalPathTooltip {
+                path: SharedString::from(i18n::text(tooltip)),
+            })
+            .into()
+        })
+        .child(icons::icon(icon, 15.).text_color(if active {
+            theme::accent()
+        } else {
+            theme::muted_text()
+        }))
+        .on_click(cx.listener(move |this, _ev, _window, cx| on_click(this, cx)))
+        .into_any_element()
+}
+
 fn local_dir_name(path: &Path) -> String {
     path.file_name()
         .and_then(|name| name.to_str())

@@ -82,8 +82,6 @@ settings:
   about_license_open: 查看许可证
   language: 界面语言
   language_description: 选择 Crossh 使用的界面语言。
-  timestamps: 行时间戳
-  timestamps_description: 在终端左侧 gutter 显示精确到毫秒的时间戳。
   notifications: 终端通知
   notifications_description: 终端未获得焦点时，显示终端应用发出的系统通知。
   font_size: 字体大小
@@ -138,6 +136,10 @@ tooltip:
   port_forwarding: 端口转发
   new_project: 新建项目
   close_tab: 关闭标签
+  host_sidebar: 显示或隐藏主机栏
+  timestamps: 显示或隐藏行时间戳
+  quick_commands: 显示或隐藏快捷命令栏
+  pin_command: 固定或取消固定命令
 
 context_menu:
   open_terminal: 打开终端
@@ -299,6 +301,7 @@ quick_commands:
   save: 保存
   delete: 移除命令
   ignore: 从历史记录中排除
+  unpin: 取消固定命令
   background_tasks: 后台任务
   running: 运行中
   stopping: 正在停止

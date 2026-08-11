@@ -82,8 +82,6 @@ settings:
   about_license_open: View license
   language: Language
   language_description: Choose the language used by the Crossh interface.
-  timestamps: Line timestamps
-  timestamps_description: Show millisecond timestamps in the terminal gutter.
   notifications: Terminal notifications
   notifications_description: Show desktop notifications from terminal apps when this terminal is unfocused.
   font_size: Font size
@@ -138,6 +136,10 @@ tooltip:
   port_forwarding: Port forwarding
   new_project: New project
   close_tab: Close tab
+  host_sidebar: Show or hide the host sidebar
+  timestamps: Show or hide line timestamps
+  quick_commands: Show or hide the quick commands panel
+  pin_command: Pin or unpin command
 
 context_menu:
   open_terminal: Open Terminal
@@ -299,6 +301,7 @@ quick_commands:
   save: Save
   delete: Remove command
   ignore: Exclude from history
+  unpin: Unpin command
   background_tasks: Background tasks
   running: Running
   stopping: Stopping

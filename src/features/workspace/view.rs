@@ -146,18 +146,78 @@ pub fn render_main(shell: &mut AppShell, cx: &mut Context<AppShell>) -> AnyEleme
     }
     content = content.child(terminal_area);
     if let Some((scope, cwd)) = quick_context {
-        content = content.child(render_quick_commands(shell, scope, cwd, cx));
+        content = if shell.workspace_settings.show_quick_commands {
+            content.child(render_quick_commands(shell, scope, cwd, cx))
+        } else {
+            content.child(render_quick_commands_rail(shell, &scope, cx))
+        };
     }
     pane = pane.child(content);
     pane.into_any_element()
 }
 
-pub(crate) fn render_terminal_status_bar(
-    session: &LocalSession,
+pub(crate) fn render_workspace_status_bar(
+    shell: &AppShell,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
-    let cwd = session.cwd.to_string_lossy().to_string();
-    let mut bar = div()
+    let terminal_active = match shell.workspace.active_view {
+        Some(ActiveView::LocalSession(_)) => true,
+        Some(ActiveView::RemoteTab(index)) => shell
+            .workspace
+            .sessions
+            .remote_tabs
+            .get(index)
+            .and_then(|tab| tab.pane.terminal_entity_id())
+            .is_some(),
+        None => false,
+    };
+    let mut left = div()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap_1()
+        .child(render_status_bar_toggle(
+            "status-host-sidebar",
+            icons::IconName::PanelLeft,
+            "tooltip.host_sidebar",
+            shell.workspace_settings.show_host_sidebar,
+            AppShell::toggle_host_sidebar,
+            cx,
+        ));
+    if terminal_active {
+        left = left.child(render_status_bar_toggle(
+            "status-timestamps",
+            icons::IconName::Clock,
+            "tooltip.timestamps",
+            shell.terminal_settings.show_timestamps,
+            AppShell::toggle_timestamps,
+            cx,
+        ));
+    }
+
+    if let Some(ActiveView::LocalSession(session_id)) = shell.workspace.active_view
+        && let Some(session) = shell.workspace.sessions.local_sessions.get(&session_id)
+    {
+        let cwd = session.cwd.to_string_lossy().to_string();
+        left = left.child(
+            div()
+                .ml_2()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap_2()
+                .truncate()
+                .child(
+                    icons::icon(icons::IconName::FolderOpen, 12.).text_color(theme::faint_text()),
+                )
+                .child(div().min_w_0().truncate().child(SharedString::from(cwd))),
+        );
+        if let Some(status) = &session.git_status {
+            left = left.child(render_git_status(status, session, cx));
+        }
+    }
+
+    div()
         .h(px(27.))
         .w_full()
         .flex_none()
@@ -171,82 +231,116 @@ pub(crate) fn render_terminal_status_bar(
         .bg(theme::surface())
         .text_xs()
         .text_color(theme::muted_text())
+        .child(left)
+        .child(render_status_bar_toggle(
+            "status-quick-commands",
+            icons::IconName::PanelRight,
+            "tooltip.quick_commands",
+            shell.workspace_settings.show_quick_commands,
+            AppShell::toggle_quick_commands,
+            cx,
+        ))
+        .into_any_element()
+}
+
+fn render_status_bar_toggle(
+    id: &'static str,
+    icon: icons::IconName,
+    tooltip: &'static str,
+    active: bool,
+    toggle: fn(&mut AppShell, &mut Context<AppShell>),
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    div()
+        .id(id)
+        .w(px(22.))
+        .h(px(22.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(theme::RADIUS_SM))
+        .cursor_pointer()
+        .hover(|style| style.bg(theme::raised()))
+        .tooltip(move |_window, cx| {
+            cx.new(|_| LocalPathTooltip {
+                path: SharedString::from(i18n::text(tooltip)),
+            })
+            .into()
+        })
+        .child(icons::icon(icon, 13.).text_color(if active {
+            theme::accent()
+        } else {
+            theme::muted_text()
+        }))
+        .on_click(cx.listener(move |this, _ev, _window, cx| toggle(this, cx)))
+        .into_any_element()
+}
+
+fn render_git_status(
+    status: &GitStatus,
+    session: &LocalSession,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    let click_cwd = session.cwd.clone();
+    let mut git = div()
+        .id("status-git")
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap_2()
+        .px(px(6.))
+        .py(px(2.))
+        .rounded(px(theme::RADIUS_SM))
+        .cursor_pointer()
+        .hover(|s| s.bg(theme::raised()))
+        .tooltip(|_window, cx| {
+            cx.new(|_| LocalPathTooltip {
+                path: SharedString::from(crate::shared::i18n::text("git.title")),
+            })
+            .into()
+        })
+        .child(icons::icon(icons::IconName::GitBranch, 13.).text_color(theme::accent()))
         .child(
             div()
-                .min_w_0()
-                .flex()
-                .items_center()
-                .gap_2()
-                .truncate()
-                .child(
-                    icons::icon(icons::IconName::FolderOpen, 12.).text_color(theme::faint_text()),
-                )
-                .child(div().min_w_0().truncate().child(SharedString::from(cwd))),
-        );
+                .text_color(theme::text())
+                .child(SharedString::from(status.branch.clone())),
+        )
+        .on_click(cx.listener(move |_this, _ev, _window, cx| {
+            crate::features::git::open_git_window(click_cwd.clone(), cx);
+        }));
 
-    if let Some(status) = &session.git_status {
-        let click_cwd = session.cwd.clone();
-        let mut git = div()
-            .id("status-git")
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap_2()
-            .px(px(6.))
-            .py(px(2.))
-            .rounded(px(theme::RADIUS_SM))
-            .cursor_pointer()
-            .hover(|s| s.bg(theme::raised()))
-            .tooltip(|_window, cx| {
-                cx.new(|_| LocalPathTooltip {
-                    path: SharedString::from(crate::shared::i18n::text("git.title")),
-                })
-                .into()
-            })
-            .child(icons::icon(icons::IconName::GitBranch, 13.).text_color(theme::accent()))
-            .child(
-                div()
-                    .text_color(theme::text())
-                    .child(SharedString::from(status.branch.clone())),
-            )
-            .on_click(cx.listener(move |_this, _ev, _window, cx| {
-                crate::features::git::open_git_window(click_cwd.clone(), cx);
-            }));
-
-        if status.ahead > 0 {
-            git = git.child(status_badge(format!("↑{}", status.ahead), theme::info()));
-        }
-        if status.behind > 0 {
-            git = git.child(status_badge(format!("↓{}", status.behind), theme::info()));
-        }
-        if status.staged > 0 {
-            git = git.child(status_badge(format!("+{}", status.staged), theme::accent()));
-        }
-        if status.modified > 0 {
-            git = git.child(status_badge(
-                format!("~{}", status.modified),
-                theme::warning(),
-            ));
-        }
-        if status.untracked > 0 {
-            git = git.child(status_badge(
-                format!("?{}", status.untracked),
-                theme::muted_text(),
-            ));
-        }
-        if status.conflicts > 0 {
-            git = git.child(status_badge(
-                format!("!{}", status.conflicts),
-                theme::danger(),
-            ));
-        }
-        if status.is_clean() {
-            git = git.child(status_badge(i18n::text("git.clean"), theme::accent()));
-        }
-        bar = bar.child(git);
+    if status.ahead > 0 {
+        git = git.child(status_badge(format!("↑{}", status.ahead), theme::info()));
     }
-
-    bar.into_any_element()
+    if status.behind > 0 {
+        git = git.child(status_badge(format!("↓{}", status.behind), theme::info()));
+    }
+    if status.staged > 0 {
+        git = git.child(status_badge(format!("+{}", status.staged), theme::accent()));
+    }
+    if status.modified > 0 {
+        git = git.child(status_badge(
+            format!("~{}", status.modified),
+            theme::warning(),
+        ));
+    }
+    if status.untracked > 0 {
+        git = git.child(status_badge(
+            format!("?{}", status.untracked),
+            theme::muted_text(),
+        ));
+    }
+    if status.conflicts > 0 {
+        git = git.child(status_badge(
+            format!("!{}", status.conflicts),
+            theme::danger(),
+        ));
+    }
+    if status.is_clean() {
+        git = git.child(status_badge(i18n::text("git.clean"), theme::accent()));
+    }
+    git.into_any_element()
 }
 
 fn render_quick_commands(
@@ -448,6 +542,123 @@ fn render_quick_commands(
     panel.into_any_element()
 }
 
+fn render_quick_commands_rail(
+    shell: &AppShell,
+    scope: &str,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    let mut rail = div()
+        .id("quick-commands-rail")
+        .w(px(theme::QUICK_COMMANDS_RAIL_WIDTH))
+        .h_full()
+        .flex_none()
+        .flex()
+        .flex_col()
+        .items_center()
+        .pt_2()
+        .bg(theme::surface())
+        .border_l_1()
+        .border_color(theme::border());
+    for (index, record) in shell.command_history.pinned(scope).iter().enumerate() {
+        let command = record.command.clone();
+        let run_scope = scope.to_string();
+        let menu_scope = scope.to_string();
+        let menu_command = command.clone();
+        let tooltip_command = command.clone();
+        rail = rail.child(
+            div()
+                .id(SharedString::from(format!("quick-command-rail-{index}")))
+                .w(px(30.))
+                .h(px(30.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(theme::RADIUS_SM))
+                .cursor_pointer()
+                .hover(|style| style.bg(theme::raised()))
+                .tooltip(move |_window, cx| {
+                    cx.new(|_| crossh_ui::widgets::CommandTooltip {
+                        command: SharedString::from(tooltip_command.clone()),
+                    })
+                    .into()
+                })
+                .child(icons::icon(icons::IconName::Pin, 14.).text_color(theme::accent()))
+                .on_click(cx.listener(move |this, ev: &ClickEvent, _window, cx| {
+                    if ev.click_count() == 2 {
+                        this.run_quick_command(run_scope.clone(), command.clone(), false, cx);
+                    }
+                }))
+                .on_mouse_down(MouseButton::Right, {
+                    cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
+                        this.open_context_menu(
+                            ev.position,
+                            vec![
+                                MenuEntry::Item(MenuItem {
+                                    id: "quick-run-background".into(),
+                                    label: i18n::text("quick_commands.run_background"),
+                                    shortcut_hint: None,
+                                    disabled: false,
+                                    danger: false,
+                                    action: ShellMenuAction::RunQuickCommand {
+                                        scope: menu_scope.clone(),
+                                        command: menu_command.clone(),
+                                        background: true,
+                                    },
+                                }),
+                                MenuEntry::Item(MenuItem {
+                                    id: "quick-edit".into(),
+                                    label: i18n::text("quick_commands.edit"),
+                                    shortcut_hint: None,
+                                    disabled: false,
+                                    danger: false,
+                                    action: ShellMenuAction::EditQuickCommand {
+                                        scope: menu_scope.clone(),
+                                        command: menu_command.clone(),
+                                    },
+                                }),
+                                MenuEntry::Item(MenuItem {
+                                    id: "quick-unpin".into(),
+                                    label: i18n::text("quick_commands.unpin"),
+                                    shortcut_hint: None,
+                                    disabled: false,
+                                    danger: false,
+                                    action: ShellMenuAction::ToggleQuickCommandPin {
+                                        scope: menu_scope.clone(),
+                                        command: menu_command.clone(),
+                                    },
+                                }),
+                                MenuEntry::Item(MenuItem {
+                                    id: "quick-delete".into(),
+                                    label: i18n::text("quick_commands.delete"),
+                                    shortcut_hint: None,
+                                    disabled: false,
+                                    danger: true,
+                                    action: ShellMenuAction::DeleteQuickCommand {
+                                        scope: menu_scope.clone(),
+                                        command: menu_command.clone(),
+                                    },
+                                }),
+                                MenuEntry::Item(MenuItem {
+                                    id: "quick-ignore".into(),
+                                    label: i18n::text("quick_commands.ignore"),
+                                    shortcut_hint: None,
+                                    disabled: false,
+                                    danger: true,
+                                    action: ShellMenuAction::IgnoreQuickCommand {
+                                        scope: menu_scope.clone(),
+                                        command: menu_command.clone(),
+                                    },
+                                }),
+                            ],
+                            cx,
+                        );
+                    })
+                }),
+        );
+    }
+    rail.into_any_element()
+}
+
 fn render_quick_command_row(
     shell: &AppShell,
     scope: &str,
@@ -459,6 +670,8 @@ fn render_quick_command_row(
     let active_ids = shell.background_tasks.active_for_command(scope, &command);
     let command_for_click = command.clone();
     let scope_for_click = scope.to_string();
+    let pin_scope = scope.to_string();
+    let pin_command = command.clone();
     let mut row = div()
         .id(SharedString::from(format!("quick-command-row-{index}")))
         .min_h(px(32.))
@@ -573,6 +786,36 @@ fn render_quick_command_row(
             theme::text(),
             SharedString::from(format!("quick-command-preview-{index}")),
         ))
+        .child(
+            div()
+                .id(SharedString::from(format!("quick-pin-{index}")))
+                .w(px(20.))
+                .h(px(20.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(theme::RADIUS_SM))
+                .cursor_pointer()
+                .hover(|style| style.bg(theme::raised()))
+                .tooltip(|_window, cx| {
+                    cx.new(|_| LocalPathTooltip {
+                        path: SharedString::from(i18n::text("tooltip.pin_command")),
+                    })
+                    .into()
+                })
+                .child(
+                    icons::icon(icons::IconName::Pin, 12.).text_color(if record.pinned {
+                        theme::accent()
+                    } else {
+                        theme::faint_text()
+                    }),
+                )
+                .on_click(cx.listener(move |this, _ev, _window, cx| {
+                    this.toggle_quick_command_pin(pin_scope.clone(), pin_command.clone(), cx);
+                    cx.stop_propagation();
+                })),
+        )
         .child(
             div()
                 .flex_shrink_0()

@@ -31,10 +31,10 @@ use crate::features::terminal::{TerminalEvent, TerminalView};
 use crate::features::updates::{UpdateController, UpdateSettings};
 use crate::features::workspace::registry::WorkspaceState;
 use crate::features::workspace::settings::WorkspaceSettings;
-use crate::features::workspace::sidebar::render_sidebar;
+use crate::features::workspace::sidebar::{render_sidebar, render_sidebar_rail};
 use crate::features::workspace::view::{
     ActiveView, LocalDir, LocalSession, LocalSessionId, Tab, rebuild_local_dirs, render_main,
-    render_quick_command_editor, render_terminal_status_bar,
+    render_quick_command_editor, render_workspace_status_bar,
 };
 use crate::shared::i18n::{self, LanguagePreference};
 use crossh_agent::AgentSettings;
@@ -492,6 +492,17 @@ impl AppShell {
 
     fn record_command(&mut self, scope: String, command: String, cx: &mut Context<Self>) {
         if self.command_history.record(&scope, &command) {
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn toggle_quick_command_pin(
+        &mut self,
+        scope: String,
+        command: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.command_history.toggle_pinned(&scope, &command) {
             cx.notify();
         }
     }
@@ -1029,6 +1040,9 @@ impl AppShell {
             ShellMenuAction::EditQuickCommand { scope, command } => {
                 self.open_quick_command_editor(scope, command, window, cx)
             }
+            ShellMenuAction::ToggleQuickCommandPin { scope, command } => {
+                self.toggle_quick_command_pin(scope, command, cx)
+            }
             ShellMenuAction::DeleteQuickCommand { scope, command } => {
                 self.command_history.remove(&scope, &command);
                 cx.notify();
@@ -1078,6 +1092,18 @@ impl AppShell {
         let mut terminal = self.terminal_settings.clone();
         terminal.show_timestamps = !terminal.show_timestamps;
         self.apply_terminal_settings(terminal, cx);
+    }
+
+    pub(crate) fn toggle_host_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.workspace_settings.show_host_sidebar = !self.workspace_settings.show_host_sidebar;
+        self.persist_settings();
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_quick_commands(&mut self, cx: &mut Context<Self>) {
+        self.workspace_settings.show_quick_commands = !self.workspace_settings.show_quick_commands;
+        self.persist_settings();
+        cx.notify();
     }
 
     pub(crate) fn toggle_terminal_notifications(&mut self, cx: &mut Context<Self>) {
@@ -1449,10 +1475,14 @@ impl Render for AppShell {
             self.shell_focus.focus(window, cx);
         }
 
-        let sidebar = render_sidebar(self, window, cx);
         // Materialize the opaque element before attaching the root listener so
         // Rust 2024 does not keep `cx` borrowed through `render_main`.
         let main = render_main(self, cx);
+        let sidebar = if self.workspace_settings.show_host_sidebar {
+            render_sidebar(self, window, cx)
+        } else {
+            render_sidebar_rail(self, cx)
+        };
         let workspace = div()
             .flex_1()
             .min_h_0()
@@ -1460,15 +1490,7 @@ impl Render for AppShell {
             .flex_row()
             .child(sidebar)
             .child(main);
-        let status_bar = match self.workspace.active_view {
-            Some(ActiveView::LocalSession(session_id)) => self
-                .workspace
-                .sessions
-                .local_sessions
-                .get(&session_id)
-                .map(|session| render_terminal_status_bar(session, cx)),
-            _ => None,
-        };
+        let status_bar = render_workspace_status_bar(self, cx);
 
         let mut root = div()
             .id("app-shell")
@@ -1480,11 +1502,8 @@ impl Render for AppShell {
             .text_color(theme::text())
             .on_action(cx.listener(AppShell::handle_quit))
             .on_key_down(cx.listener(AppShell::handle_shell_key_down))
-            .child(workspace);
-
-        if let Some(status_bar) = status_bar {
-            root = root.child(status_bar);
-        }
+            .child(workspace)
+            .child(status_bar);
 
         if matches!(
             prompt,

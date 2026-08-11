@@ -8,6 +8,7 @@ use gpui::{Hsla, Rgba, hsla, rgb};
 pub const SIDEBAR_WIDTH: f32 = 252.0;
 pub const SIDEBAR_MIN_WIDTH: f32 = 216.0;
 pub const SIDEBAR_MAX_WIDTH: f32 = 360.0;
+pub const SIDEBAR_RAIL_WIDTH: f32 = 44.0;
 pub const TITLEBAR_HEIGHT: f32 = 42.0;
 pub const TAB_HEIGHT: f32 = 38.0;
 pub const ROW_HEIGHT: f32 = 36.0;
@@ -16,6 +17,7 @@ pub const RADIUS_MD: f32 = 8.0;
 pub const QUICK_COMMANDS_WIDTH: f32 = 300.0;
 pub const QUICK_COMMANDS_MIN_WIDTH: f32 = 240.0;
 pub const QUICK_COMMANDS_MAX_WIDTH: f32 = 460.0;
+pub const QUICK_COMMANDS_RAIL_WIDTH: f32 = 40.0;
 
 fn color(value: Rgb) -> Rgba {
     rgb(value.hex())

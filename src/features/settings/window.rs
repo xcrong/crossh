@@ -282,36 +282,6 @@ impl SettingsWindow {
         let settings_row = move |label: String, description: String, control: AnyElement| {
             responsive_settings_row(label, description, control, compact_layout)
         };
-        let mut timestamps = div()
-            .id("settings-timestamps-toggle")
-            .w(px(42.))
-            .h(px(24.))
-            .p_1()
-            .flex()
-            .items_center()
-            .rounded_full()
-            .cursor_pointer()
-            .bg(if settings.terminal.show_timestamps {
-                theme::accent()
-            } else {
-                theme::border_strong()
-            });
-        timestamps = if settings.terminal.show_timestamps {
-            timestamps.justify_end()
-        } else {
-            timestamps.justify_start()
-        };
-        timestamps = timestamps.child(
-            div()
-                .w(px(18.))
-                .h(px(18.))
-                .rounded_full()
-                .bg(theme::canvas()),
-        );
-        timestamps = timestamps.on_click(cx.listener(|this, _ev, _window, cx| {
-            this.write_to_shell(cx, |shell, cx| shell.toggle_timestamps(cx));
-        }));
-
         let mut notifications = div()
             .id("settings-terminal-notifications-toggle")
             .w(px(42.))
@@ -425,11 +395,6 @@ impl SettingsWindow {
             .flex()
             .flex_col()
             .child(settings_heading("settings.terminal"))
-            .child(settings_row(
-                i18n::text("settings.timestamps"),
-                i18n::text("settings.timestamps_description"),
-                timestamps.into_any_element(),
-            ))
             .child(settings_row(
                 i18n::text("settings.notifications"),
                 i18n::text("settings.notifications_description"),

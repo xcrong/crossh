@@ -22,6 +22,8 @@ const MAX_OUTPUT_BYTES: usize = 24 * 1024;
 pub struct CommandRecord {
     pub command: String,
     #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
     pub count: u64,
     #[serde(default)]
     pub last_used: u64,
@@ -105,6 +107,26 @@ impl CommandHistory {
         })
     }
 
+    pub fn pinned(&self, scope: &str) -> Vec<CommandRecord> {
+        self.top(scope)
+            .into_iter()
+            .filter(|record| record.pinned)
+            .collect()
+    }
+
+    pub fn toggle_pinned(&mut self, scope: &str, command: &str) -> bool {
+        let Some(record) = self
+            .scopes
+            .get_mut(scope)
+            .and_then(|records| records.iter_mut().find(|record| record.command == command))
+        else {
+            return false;
+        };
+        record.pinned = !record.pinned;
+        self.persist();
+        true
+    }
+
     pub fn record(&mut self, scope: &str, command: &str) -> bool {
         let Some(command) = normalize_command(command) else {
             return false;
@@ -120,6 +142,7 @@ impl CommandHistory {
         } else {
             records.push(CommandRecord {
                 command,
+                pinned: false,
                 count: 1,
                 last_used: now,
             });
@@ -333,11 +356,13 @@ fn atomic_write(path: &Path, contents: &str) -> io::Result<()> {
 
 fn sort_records(records: &mut [CommandRecord]) {
     records.sort_by(|left, right| {
-        right
-            .count
-            .cmp(&left.count)
-            .then_with(|| right.last_used.cmp(&left.last_used))
-            .then_with(|| left.command.cmp(&right.command))
+        right.pinned.cmp(&left.pinned).then_with(|| {
+            right
+                .count
+                .cmp(&left.count)
+                .then_with(|| right.last_used.cmp(&left.last_used))
+                .then_with(|| left.command.cmp(&right.command))
+        })
     });
 }
 
@@ -803,6 +828,26 @@ mod tests {
         assert_eq!(history.top("local:/tmp/project")[0].count, 2);
         assert!(history.remove("local:/tmp/project", "git status --short"));
         assert_eq!(history.total("local:/tmp/project"), 0);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn pinned_commands_are_scoped_and_sorted_first() {
+        let path = std::env::temp_dir().join(format!(
+            "crossh-command-history-pin-{}.toml",
+            std::process::id()
+        ));
+        let mut history = CommandHistory::from_path(path.clone());
+        history.record("local:/tmp/project", "git status");
+        history.record("local:/tmp/project", "cargo test");
+        history.record("local:/tmp/other", "cargo test");
+
+        assert!(history.toggle_pinned("local:/tmp/project", "cargo test"));
+        assert_eq!(history.top("local:/tmp/project")[0].command, "cargo test");
+        assert_eq!(history.pinned("local:/tmp/project").len(), 1);
+        assert!(history.pinned("local:/tmp/other").is_empty());
+        assert!(history.toggle_pinned("local:/tmp/project", "cargo test"));
+        assert!(history.pinned("local:/tmp/project").is_empty());
         let _ = fs::remove_file(path);
     }
 
