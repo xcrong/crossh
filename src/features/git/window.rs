@@ -16,6 +16,7 @@ use crossh_core::git::{ChangeStatus, DiffLineKind, FileChange, diff, list_change
 use crossh_core::project::GitStatus;
 use crossh_ui::widgets::LocalPathTooltip;
 use crossh_ui::{icons, theme};
+use crossh_ui_component::{Badge, BadgeTone};
 
 /// 窗口自身的数据刷新间隔。
 const REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
@@ -260,12 +261,10 @@ impl GitWindow {
             );
         if let Some(status) = &self.status {
             if status.ahead > 0 {
-                branch_info =
-                    branch_info.child(status_badge(format!("↑{}", status.ahead), theme::info()));
+                branch_info = branch_info.child(status_badge(format!("↑{}", status.ahead)));
             }
             if status.behind > 0 {
-                branch_info =
-                    branch_info.child(status_badge(format!("↓{}", status.behind), theme::info()));
+                branch_info = branch_info.child(status_badge(format!("↓{}", status.behind)));
             }
         }
 
@@ -578,15 +577,8 @@ fn status_glyph(status: ChangeStatus) -> AnyElement {
 }
 
 /// 顶部的小徽章（↑n / ↓n）。
-fn status_badge(text: String, color: gpui::Rgba) -> AnyElement {
-    div()
-        .px(px(6.))
-        .rounded(px(theme::RADIUS_SM))
-        .bg(color)
-        .text_xs()
-        .text_color(theme::canvas())
-        .child(SharedString::from(text))
-        .into_any_element()
+fn status_badge(text: String) -> AnyElement {
+    Badge::new(text).tone(BadgeTone::Info).into_any_element()
 }
 
 /// 单个 diff 行：旧行号 | 新行号 | 内容。

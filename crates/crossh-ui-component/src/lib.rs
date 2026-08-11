@@ -1,0 +1,29 @@
+//! Crossh's reusable GPUI component layer.
+//!
+//! This crate follows the useful part of `gpui-component`'s model: components
+//! are stateless `RenderOnce` values with builder APIs, while application state
+//! and event handlers remain owned by feature views. The visual tokens come
+//! from Crossh's own theme and no third-party component runtime is required.
+
+pub mod badge;
+pub mod button;
+pub mod layout;
+pub mod separator;
+pub mod tooltip;
+
+/// Crossh theme tokens exposed to component consumers.
+pub mod theme {
+    pub use crossh_ui::theme::*;
+}
+
+pub mod prelude {
+    pub use crate::badge::{Badge, BadgeTone};
+    pub use crate::button::{Button, ButtonSize, ButtonVariant};
+    pub use crate::layout::{h_flex, v_flex};
+    pub use crate::separator::{Separator, SeparatorOrientation};
+}
+
+pub use badge::{Badge, BadgeTone};
+pub use button::{Button, ButtonSize, ButtonVariant};
+pub use layout::{h_flex, v_flex};
+pub use separator::{Separator, SeparatorOrientation};

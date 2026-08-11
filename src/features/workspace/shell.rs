@@ -131,7 +131,6 @@ pub struct AppShell {
     pub(crate) command_history: CommandHistory,
     pub(crate) background_tasks: BackgroundTaskManager,
     remote_background_controls: BTreeMap<u64, (Entity<Connection>, u64)>,
-    background_event_tasks: Vec<Task<()>>,
     pub(crate) quick_command_editor: Option<QuickCommandEditor>,
     /// 周期性刷新本地会话的 Git 状态，覆盖 shell 空闲时的外部文件变更。
     _git_status_refresh_task: Option<Task<()>>,
@@ -205,7 +204,6 @@ impl AppShell {
             command_history: CommandHistory::load(),
             background_tasks: BackgroundTaskManager::default(),
             remote_background_controls: BTreeMap::new(),
-            background_event_tasks: Vec::new(),
             quick_command_editor: None,
             _git_status_refresh_task: None,
             quit_confirmation_open: false,
@@ -563,7 +561,7 @@ impl AppShell {
             } else {
                 let cwd = normalize_local_cwd(PathBuf::from(context.cwd));
                 let (id, event_rx) = self.background_tasks.start(scope, cwd, command, owner);
-                let task = cx.spawn(async move |weak, cx| {
+                cx.spawn(async move |weak, cx| {
                     let Ok(event) = event_rx.recv().await else {
                         return;
                     };
@@ -571,8 +569,8 @@ impl AppShell {
                         this.apply_background_event(event);
                         cx.notify();
                     });
-                });
-                self.background_event_tasks.push(task);
+                })
+                .detach();
                 log::info!("started background command {id}");
             }
         } else {
@@ -609,7 +607,7 @@ impl AppShell {
         self.remote_background_controls
             .insert(task_id, (connection, remote_id));
         let expected_remote_id = remote_id;
-        let task = cx.spawn(async move |weak, cx| {
+        cx.spawn(async move |weak, cx| {
             let event = match event_rx.recv().await {
                 Ok(event) => {
                     debug_assert_eq!(event.id, expected_remote_id);
@@ -635,8 +633,8 @@ impl AppShell {
                 this.apply_background_event(event);
                 cx.notify();
             });
-        });
-        self.background_event_tasks.push(task);
+        })
+        .detach();
         log::info!("started remote background command {task_id}");
     }
 

@@ -3,11 +3,11 @@
 //! 开关经 `Connection::start_forward`/`stop_forward` 控制；启停结果（含端口占用等）
 //! 显示在底部消息区。转发规则来自 ~/.ssh/config（只读），不可在此编辑。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use gpui::{
-    AnyElement, App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement,
-    Render, SharedString, StatefulInteractiveElement, Styled, Task, Window, div, px,
+    AnyElement, App, AppContext, Context, Entity, FocusHandle, InteractiveElement, IntoElement,
+    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
 use crate::features::connections::Connection;
@@ -18,14 +18,19 @@ use crossh_ssh::ForwardKind;
 use crossh_terminal::settings::TerminalSettings;
 use crossh_ui::{icons, theme};
 
+type ForwardKey = (ForwardKind, ForwardSpec);
+
 pub struct ForwardPane {
     conn: Entity<Connection>,
     local: Vec<ForwardSpec>,
     remote: Vec<ForwardSpec>,
     dynamic: Vec<ForwardSpec>,
     active: HashSet<(ForwardKind, ForwardSpec)>,
+    pending: HashMap<ForwardKey, u64>,
+    next_request_id: u64,
     messages: Vec<String>,
-    _pending: Option<Task<()>>,
+    focus: FocusHandle,
+    focus_requested: bool,
 }
 
 pub(crate) fn workspace_pane(entity: Entity<ForwardPane>) -> Box<dyn WorkspacePane> {
@@ -71,9 +76,15 @@ impl WorkspacePane for ForwardWorkspacePane {
         None
     }
 
-    fn request_focus(&self, _cx: &mut App) {}
+    fn request_focus(&self, cx: &mut App) {
+        self.0.update(cx, |pane, cx| pane.request_focus(cx));
+    }
 
     fn request_close(&self, cx: &mut App) {
+        self.0.update(cx, |pane, cx| pane.stop_all(cx));
+    }
+
+    fn cleanup(&self, cx: &mut App) {
         self.0.update(cx, |pane, cx| pane.stop_all(cx));
     }
 
@@ -93,13 +104,20 @@ impl WorkspacePane for ForwardWorkspacePane {
 
 impl ForwardPane {
     pub(crate) fn active_count(&self) -> usize {
-        self.active.len()
+        self.active.len() + self.pending.len()
     }
 
     pub(crate) fn stop_all(&mut self, cx: &mut Context<Self>) {
-        for (kind, spec) in std::mem::take(&mut self.active) {
+        let mut forwards = std::mem::take(&mut self.active);
+        forwards.extend(std::mem::take(&mut self.pending).into_keys());
+        for (kind, spec) in forwards {
             self.conn.read(cx).stop_forward(spec, kind);
         }
+        cx.notify();
+    }
+
+    fn request_focus(&mut self, cx: &mut Context<Self>) {
+        self.focus_requested = true;
         cx.notify();
     }
 
@@ -108,22 +126,40 @@ impl ForwardPane {
         cx: &mut App,
         forwards: &crossh_core::config::HostConfig,
     ) -> Entity<Self> {
+        let focus = cx.focus_handle();
         cx.new(|_cx| Self {
             conn,
             local: forwards.local_forwards.clone(),
             remote: forwards.remote_forwards.clone(),
             dynamic: forwards.dynamic_forwards.clone(),
             active: HashSet::new(),
+            pending: HashMap::new(),
+            next_request_id: 0,
             messages: Vec::new(),
-            _pending: None,
+            focus,
+            focus_requested: false,
         })
     }
 
     fn toggle(&mut self, kind: ForwardKind, spec: ForwardSpec, cx: &mut Context<Self>) {
-        if self.active.contains(&(kind, spec.clone())) {
+        let key = (kind, spec.clone());
+        if self.active.remove(&key) {
             // 关闭。
             let listen = spec.listen.clone();
-            self.active.remove(&(kind, spec.clone()));
+            self.conn.read(cx).stop_forward(spec, kind);
+            self.push_msg(
+                cx,
+                rust_i18n::t!(
+                    "forward.stopping",
+                    kind = forward_kind_label(kind),
+                    listen = listen
+                )
+                .to_string(),
+            );
+        } else if self.pending.remove(&key).is_some() {
+            // 启动尚未回执时也必须发送停止命令；连接层会按队列顺序
+            // 在 StartForward 完成后处理它，避免遗留一个无 UI 控制的 listener。
+            let listen = spec.listen.clone();
             self.conn.read(cx).stop_forward(spec, kind);
             self.push_msg(
                 cx,
@@ -137,11 +173,17 @@ impl ForwardPane {
         } else {
             // 启动：发命令并等回执。
             let rx = self.conn.read(cx).start_forward(spec.clone(), kind);
-            let key = (kind, spec.clone());
-            let task = cx.spawn(async move |weak, cx| {
+            let request_id = self.next_request_id;
+            self.next_request_id = self.next_request_id.wrapping_add(1);
+            self.pending.insert(key.clone(), request_id);
+            cx.spawn(async move |weak, cx| {
                 let res = rx.await;
                 let _ = weak.update(cx, |this, cx| match res {
                     Ok(Ok(())) => {
+                        if this.pending.get(&key).copied() != Some(request_id) {
+                            return;
+                        }
+                        this.pending.remove(&key);
                         this.active.insert(key.clone());
                         this.push_msg(
                             cx,
@@ -154,6 +196,10 @@ impl ForwardPane {
                         );
                     }
                     Ok(Err(e)) => {
+                        if this.pending.get(&key).copied() != Some(request_id) {
+                            return;
+                        }
+                        this.pending.remove(&key);
                         this.push_msg(
                             cx,
                             rust_i18n::t!(
@@ -166,11 +212,15 @@ impl ForwardPane {
                         );
                     }
                     Err(_) => {
+                        if this.pending.get(&key).copied() != Some(request_id) {
+                            return;
+                        }
+                        this.pending.remove(&key);
                         this.push_msg(cx, i18n::text("forward.connection_closed"));
                     }
                 });
-            });
-            self._pending = Some(task);
+            })
+            .detach();
         }
         cx.notify();
     }
@@ -185,7 +235,12 @@ impl ForwardPane {
 }
 
 impl Render for ForwardPane {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.focus_requested {
+            self.focus_requested = false;
+            self.focus.focus(window, cx);
+        }
+
         let mut col = div()
             .size_full()
             .flex()
@@ -246,6 +301,7 @@ impl Render for ForwardPane {
             ForwardKind::Local,
             &self.local,
             &self.active,
+            &self.pending,
             cx,
         );
         col = render_section(
@@ -254,6 +310,7 @@ impl Render for ForwardPane {
             ForwardKind::Remote,
             &self.remote,
             &self.active,
+            &self.pending,
             cx,
         );
         col = render_section(
@@ -262,6 +319,7 @@ impl Render for ForwardPane {
             ForwardKind::Dynamic,
             &self.dynamic,
             &self.active,
+            &self.pending,
             cx,
         );
 
@@ -282,7 +340,12 @@ impl Render for ForwardPane {
                     )),
             );
         }
-        col
+        div()
+            .id("forward-pane")
+            .size_full()
+            .track_focus(&self.focus)
+            .tab_stop(true)
+            .child(col)
     }
 }
 
@@ -309,6 +372,7 @@ fn render_section(
     kind: ForwardKind,
     specs: &[ForwardSpec],
     active: &HashSet<(ForwardKind, ForwardSpec)>,
+    pending: &HashMap<ForwardKey, u64>,
     cx: &mut Context<ForwardPane>,
 ) -> gpui::Div {
     if specs.is_empty() {
@@ -322,7 +386,8 @@ fn render_section(
             .child(SharedString::from(title)),
     );
     for (i, spec) in specs.iter().enumerate() {
-        let on = active.contains(&(kind, spec.clone()));
+        let on =
+            active.contains(&(kind, spec.clone())) || pending.contains_key(&(kind, spec.clone()));
         let spec2 = spec.clone();
         let label = format!(
             "{}  →  {}",

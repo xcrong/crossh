@@ -26,7 +26,7 @@ use crossh_ui::context_menu::{
 use crossh_ui::widgets::text_caret;
 use crossh_ui::widgets::{
     byte_index_for_utf16, ime_caret_bounds, ime_input_canvas, replace_utf16_range, utf16_len,
-    utf16_slice,
+    utf16_offset_for_byte, utf16_slice,
 };
 use crossh_ui::{icons, theme};
 
@@ -43,6 +43,10 @@ struct Progress {
     total: Option<u64>,
 }
 
+const SFTP_ROW_HEIGHT: f32 = 34.;
+const EDITOR_ROW_HEIGHT: f32 = 20.;
+const VIRTUAL_LIST_OVERSCAN: usize = 6;
+
 struct RemoteEditor {
     remote: String,
     name: String,
@@ -54,6 +58,8 @@ struct RemoteEditor {
     saving: bool,
     error: Option<String>,
     focus: FocusHandle,
+    ime_marked_text: String,
+    ime_replacement: Option<(usize, usize)>,
 }
 
 impl RemoteEditor {
@@ -69,6 +75,8 @@ impl RemoteEditor {
             saving: false,
             error: None,
             focus,
+            ime_marked_text: String::new(),
+            ime_replacement: None,
         }
     }
 
@@ -169,6 +177,8 @@ pub struct SftpPane {
     context_menu: Option<ContextMenuState<SftpMenuAction>>,
     /// 根 div 在窗口坐标中的 bounds（右键菜单定位/外点关闭用）。
     anchor_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    root_focus: FocusHandle,
+    focus_requested: bool,
     /// 重命名 / 新建目录输入模态。
     pending_path_input: Option<PendingPathInput>,
     /// 删除确认模态。
@@ -218,7 +228,12 @@ impl WorkspacePane for SftpWorkspacePane {
         None
     }
 
-    fn request_focus(&self, _cx: &mut App) {}
+    fn request_focus(&self, cx: &mut App) {
+        self.0.update(cx, |pane, cx| {
+            pane.focus_requested = true;
+            cx.notify();
+        });
+    }
 
     fn request_close(&self, _cx: &mut App) {}
 
@@ -277,6 +292,8 @@ impl SftpPane {
             _picker: None,
             context_menu: None,
             anchor_bounds: Rc::new(Cell::new(None)),
+            root_focus: cx.focus_handle(),
+            focus_requested: false,
             pending_path_input: None,
             confirm_delete: None,
         });
@@ -303,6 +320,8 @@ impl SftpPane {
                                     Ok(content) => {
                                         editor.content = content;
                                         editor.cursor = 0;
+                                        editor.ime_marked_text.clear();
+                                        editor.ime_replacement = None;
                                         editor.error = None;
                                     }
                                     Err(_) => {
@@ -603,6 +622,8 @@ impl SftpPane {
         if editor.read_only || editor.loading || editor.error.is_some() || editor.saving {
             return;
         }
+        editor.ime_marked_text.clear();
+        editor.ime_replacement = None;
         if let Some(text) = pasted {
             editor.insert(&text);
             cx.notify();
@@ -1070,7 +1091,7 @@ impl SftpPane {
             .into_any_element()
     }
 
-    fn render_editor(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(editor) = self.editor.as_ref() else {
             return div().into_any_element();
         };
@@ -1084,6 +1105,8 @@ impl SftpPane {
         let content = editor.content.clone();
         let cursor = editor.cursor;
         let focus = editor.focus.clone();
+        let ime_marked_text = editor.ime_marked_text.clone();
+        let ime_replacement = editor.ime_replacement;
         let cursor_line = content[..cursor]
             .bytes()
             .filter(|byte| *byte == b'\n')
@@ -1244,6 +1267,7 @@ impl SftpPane {
             .flex_col()
             .px_3()
             .py_2()
+            .relative()
             .track_scroll(&self.editor_scroll)
             .overflow_y_scroll()
             .bg(theme::canvas())
@@ -1271,12 +1295,31 @@ impl SftpPane {
                     .child(SharedString::from(error)),
             );
         } else {
-            for (line_idx, line) in content.split('\n').enumerate() {
+            let line_count = content.matches('\n').count() + 1;
+            let scroll_offset = self.editor_scroll.offset().y.as_f32().max(0.);
+            let first_line = ((scroll_offset / EDITOR_ROW_HEIGHT).floor() as usize)
+                .min(line_count.saturating_sub(1));
+            let visible_lines = (window.viewport_size().height.as_f32() / EDITOR_ROW_HEIGHT).ceil()
+                as usize
+                + VIRTUAL_LIST_OVERSCAN;
+            let last_line = (first_line + visible_lines).min(line_count);
+
+            body = body.child(
+                div()
+                    .h(px(first_line as f32 * EDITOR_ROW_HEIGHT))
+                    .flex_shrink_0(),
+            );
+            for (line_idx, line) in content
+                .split('\n')
+                .enumerate()
+                .skip(first_line)
+                .take(last_line.saturating_sub(first_line))
+            {
                 let mut row = div()
                     .flex()
                     .flex_row()
                     .flex_shrink_0()
-                    .min_h(px(20.))
+                    .min_h(px(EDITOR_ROW_HEIGHT))
                     .text_xs()
                     .text_color(theme::text())
                     .child(
@@ -1292,22 +1335,44 @@ impl SftpPane {
                         .nth(cursor_column)
                         .map(|(idx, _)| idx)
                         .unwrap_or(line.len());
-                    row = row
-                        .child(SharedString::from(line[..cursor_byte].to_string()))
-                        .child(
+                    row = row.child(SharedString::from(line[..cursor_byte].to_string()));
+                    if ime_marked_text.is_empty() {
+                        row = row.child(
                             div()
                                 .w(px(1.))
                                 .h(px(18.))
                                 .flex_shrink_0()
                                 .bg(theme::accent()),
-                        )
-                        .child(SharedString::from(line[cursor_byte..].to_string()));
+                        );
+                    }
+                    if !ime_marked_text.is_empty() {
+                        row = row.child(
+                            div()
+                                .flex_shrink_0()
+                                .whitespace_nowrap()
+                                .underline()
+                                .text_decoration_color(theme::accent())
+                                .child(SharedString::from(ime_marked_text.clone())),
+                        );
+                    }
+                    let suffix_start = ime_replacement
+                        .filter(|_| !ime_marked_text.is_empty())
+                        .map(|(_, end)| end.saturating_sub(cursor_line_start))
+                        .unwrap_or(cursor_byte)
+                        .min(line.len());
+                    row = row.child(SharedString::from(line[suffix_start..].to_string()));
                 } else {
                     row = row.child(SharedString::from(line.to_string()));
                 }
                 body = body.child(row);
             }
+            body = body.child(
+                div()
+                    .h(px((line_count - last_line) as f32 * EDITOR_ROW_HEIGHT))
+                    .flex_shrink_0(),
+            );
         }
+        body = body.child(ime_input_canvas(focus.clone(), cx.entity()));
 
         let footer_text = if loading {
             i18n::text("sftp.reading_remote")
@@ -1353,6 +1418,14 @@ fn printable_char(ks: &Keystroke) -> Option<char> {
 
 impl Render for SftpPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.focus_requested {
+            self.focus_requested = false;
+            if let Some(editor) = &self.editor {
+                editor.focus.focus(window, cx);
+            } else {
+                self.root_focus.focus(window, cx);
+            }
+        }
         if self.editor.is_some() {
             return self.render_editor(window, cx);
         }
@@ -1435,7 +1508,25 @@ impl Render for SftpPane {
             .py_2()
             .track_scroll(&self.list_scroll)
             .overflow_y_scroll();
-        for (idx, e) in self.entries.iter().enumerate() {
+        let first_entry = ((self.list_scroll.offset().y.as_f32().max(0.) / SFTP_ROW_HEIGHT).floor()
+            as usize)
+            .min(self.entries.len());
+        let visible_entries = (window.viewport_size().height.as_f32() / SFTP_ROW_HEIGHT).ceil()
+            as usize
+            + VIRTUAL_LIST_OVERSCAN;
+        let last_entry = (first_entry + visible_entries).min(self.entries.len());
+        list = list.child(
+            div()
+                .h(px(first_entry as f32 * SFTP_ROW_HEIGHT))
+                .flex_shrink_0(),
+        );
+        for (idx, e) in self
+            .entries
+            .iter()
+            .enumerate()
+            .skip(first_entry)
+            .take(last_entry.saturating_sub(first_entry))
+        {
             let name = e.name.clone();
             let is_dir = e.is_dir;
             let size = if is_dir {
@@ -1450,7 +1541,7 @@ impl Render for SftpPane {
                 .flex_shrink_0()
                 .items_center()
                 .gap_2()
-                .h(px(34.))
+                .h(px(SFTP_ROW_HEIGHT))
                 .px_2()
                 .rounded(px(theme::RADIUS_SM))
                 .cursor_pointer()
@@ -1570,6 +1661,13 @@ impl Render for SftpPane {
                 });
             list = list.child(row);
         }
+        list = list.child(
+            div()
+                .h(px(
+                    (self.entries.len() - last_entry) as f32 * SFTP_ROW_HEIGHT
+                ))
+                .flex_shrink_0(),
+        );
 
         // 底部：上传输入 + 进度/消息。
         let focus = self.focus.clone();
@@ -1784,12 +1882,15 @@ impl Render for SftpPane {
         .size_full();
 
         let mut root = div()
+            .id("sftp-pane")
             .relative()
             .size_full()
             .min_h_0()
             .flex()
             .flex_col()
             .bg(theme::canvas())
+            .track_focus(&self.root_focus)
+            .tab_stop(true)
             .on_key_down(cx.listener(SftpPane::handle_root_key))
             .child(bounds_canvas)
             .child(top)
@@ -1820,6 +1921,7 @@ impl Render for SftpPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::TestAppContext;
     use std::path::Path;
 
     #[test]
@@ -1893,5 +1995,38 @@ mod tests {
             line_bounds(text, text.len()),
             (end_of_first_line + 1, text.len())
         );
+    }
+
+    #[gpui::test]
+    fn workspace_pane_focus_request_is_recorded_on_the_entity(cx: &mut TestAppContext) {
+        let pane = cx.update(|cx| {
+            let (cmd_tx, _cmd_rx) = async_channel::bounded(1);
+            cx.new(|cx| SftpPane {
+                cmd_tx,
+                cwd: ".".into(),
+                entries: Vec::new(),
+                message: None,
+                loading: false,
+                upload_input: String::new(),
+                upload_ime_marked_text: String::new(),
+                progress: None,
+                editor: None,
+                focus: cx.focus_handle(),
+                list_scroll: ScrollHandle::new(),
+                editor_scroll: ScrollHandle::new(),
+                _drain: None,
+                _picker: None,
+                context_menu: None,
+                anchor_bounds: Rc::new(Cell::new(None)),
+                root_focus: cx.focus_handle(),
+                focus_requested: false,
+                pending_path_input: None,
+                confirm_delete: None,
+            })
+        });
+
+        cx.update(|cx| SftpWorkspacePane(pane.clone()).request_focus(cx));
+
+        assert!(pane.read_with(cx, |pane, _| pane.focus_requested));
     }
 }

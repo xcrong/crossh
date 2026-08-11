@@ -109,6 +109,7 @@ impl UpdateController {
             .unwrap_or(DEFAULT_MANIFEST_URL)
             .to_owned();
         self.status = UpdateStatus::Checking;
+        cx.notify();
         let task = cx.spawn(async move |weak, cx| {
             let result = ssh_runtime()
                 .spawn(async move {
@@ -145,6 +146,7 @@ impl UpdateController {
         let version = candidate.version.to_string();
         let target = candidate.target.key().to_owned();
         self.status = UpdateStatus::Downloading(candidate.clone());
+        cx.notify();
         let task = cx.spawn(async move |weak, cx| {
             let result = ssh_runtime()
                 .spawn(async move { download_artifact(&artifact, &version, &target).await })

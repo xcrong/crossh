@@ -90,6 +90,7 @@ impl AppShell {
         {
             self.stop_background_tasks_for_owner(&owner, cx);
         }
+        self.workspace.sessions.remote_tabs[idx].pane.cleanup(cx);
         self.workspace.sessions.remote_tabs.remove(idx);
         // 移除 Tab → Entity<TerminalView> 释放 → input_tx 断 → relay 结束 →
         // Connection channel 计数减；归 0 则连接自行 disconnect。
@@ -200,6 +201,11 @@ impl AppShell {
         for owner in owners {
             self.stop_background_tasks_for_owner(&owner, cx);
         }
+        for (index, tab) in self.workspace.sessions.remote_tabs.iter().enumerate() {
+            if index != keep {
+                tab.pane.cleanup(cx);
+            }
+        }
         self.workspace.sessions.remote_tabs =
             vec![self.workspace.sessions.remote_tabs.swap_remove(keep)];
         self.workspace.active_view = Some(ActiveView::RemoteTab(0));
@@ -219,6 +225,9 @@ impl AppShell {
             .collect::<Vec<_>>();
         for owner in owners {
             self.stop_background_tasks_for_owner(&owner, cx);
+        }
+        for tab in &self.workspace.sessions.remote_tabs {
+            tab.pane.cleanup(cx);
         }
         self.workspace.sessions.remote_tabs.clear();
         self.workspace.active_view = self.first_local_view();
