@@ -29,6 +29,7 @@ use crate::features::settings::{self, SettingsSnapshot};
 use crate::features::sftp::SftpPane;
 use crate::features::terminal::{TerminalEvent, TerminalView};
 use crate::features::updates::{UpdateController, UpdateSettings};
+use crate::features::workspace::empty_state::EmptyStateFilter;
 use crate::features::workspace::registry::WorkspaceState;
 use crate::features::workspace::settings::WorkspaceSettings;
 use crate::features::workspace::sidebar::{render_sidebar, render_sidebar_rail};
@@ -103,6 +104,7 @@ pub struct AppShell {
     pub(crate) bank_collapsed: bool,
     pub(crate) active_collapsed: bool,
     pub(crate) projects_collapsed: bool,
+    pub(crate) empty_state_filter: EmptyStateFilter,
     /// 原生项目目录选择器任务，持有到选择结果返回。
     _project_picker: Option<Task<()>>,
     /// 模态文本输入缓冲（密码/口令）。
@@ -184,6 +186,7 @@ impl AppShell {
             bank_collapsed: true,
             active_collapsed: false,
             projects_collapsed: false,
+            empty_state_filter: EmptyStateFilter::default(),
             _project_picker: None,
             prompt_input: String::new(),
             prompt_ime_marked_text: String::new(),
@@ -1100,6 +1103,17 @@ impl AppShell {
         cx.notify();
     }
 
+    pub(crate) fn set_empty_state_filter(
+        &mut self,
+        filter: EmptyStateFilter,
+        cx: &mut Context<Self>,
+    ) {
+        if self.empty_state_filter != filter {
+            self.empty_state_filter = filter;
+            cx.notify();
+        }
+    }
+
     pub(crate) fn toggle_quick_commands(&mut self, cx: &mut Context<Self>) {
         self.workspace_settings.show_quick_commands = !self.workspace_settings.show_quick_commands;
         self.persist_settings();
@@ -1522,7 +1536,16 @@ impl Render for AppShell {
 
         // Materialize opaque elements before attaching the root listener so Rust 2024 does not
         // keep `cx` borrowed through the render helpers.
-        let main = render_main(self, cx);
+        let sidebar_width = if self.workspace_settings.show_host_sidebar {
+            self.sidebar_width
+                .get()
+                .clamp(theme::SIDEBAR_MIN_WIDTH, theme::SIDEBAR_MAX_WIDTH)
+        } else {
+            theme::SIDEBAR_RAIL_WIDTH
+        };
+        let available_main_width =
+            px((window.viewport_size().width.as_f32() - sidebar_width).max(0.));
+        let main = render_main(self, available_main_width, cx);
         let sidebar = if self.workspace_settings.show_host_sidebar {
             render_sidebar(self, window, cx)
         } else {

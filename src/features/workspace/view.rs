@@ -14,6 +14,7 @@ use gpui::{
 use crate::features::connections::Connection;
 use crate::features::settings::is_settings_window_open;
 use crate::features::terminal::{ConnState, TerminalView};
+use crate::features::workspace::empty_state;
 use crate::features::workspace::pane::WorkspacePane;
 use crate::features::workspace::shell::AppShell;
 use crate::shared::i18n;
@@ -62,7 +63,11 @@ pub struct LocalDir {
 }
 
 /// 主区：标签条 + 内容区。
-pub fn render_main(shell: &mut AppShell, cx: &mut Context<AppShell>) -> AnyElement {
+pub fn render_main(
+    shell: &mut AppShell,
+    available_width: Pixels,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
     let mut pane = div()
         .flex_1()
         .min_h_0()
@@ -95,7 +100,7 @@ pub fn render_main(shell: &mut AppShell, cx: &mut Context<AppShell>) -> AnyEleme
     if let Some(active_pane) = active_pane {
         terminal_area = terminal_area.child(active_pane);
     } else {
-        terminal_area = terminal_area.child(render_empty_state(cx));
+        terminal_area = terminal_area.child(empty_state::render(shell, available_width, cx));
     }
 
     if let Some(status) = &shell.status {
@@ -1264,76 +1269,6 @@ fn status_badge(text: String, color: impl Into<gpui::Hsla>) -> impl IntoElement 
     div()
         .text_color(color.into())
         .child(SharedString::from(text))
-}
-
-fn render_empty_state(cx: &mut Context<AppShell>) -> AnyElement {
-    div()
-        .size_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(
-            div()
-                .w(px(340.))
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap_2()
-                .child(
-                    div()
-                        .w(px(56.))
-                        .h(px(56.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(theme::RADIUS_MD))
-                        .bg(theme::accent_soft())
-                        .border_1()
-                        .border_color(theme::border_strong())
-                        .child(
-                            icons::icon(icons::IconName::Terminal, 28.).text_color(theme::accent()),
-                        ),
-                )
-                .child(
-                    div()
-                        .mt_2()
-                        .text_lg()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme::text())
-                        .child(SharedString::from(i18n::text("empty_state.title"))),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme::muted_text())
-                        .child(SharedString::from(i18n::text("empty_state.description"))),
-                )
-                .child(
-                    div()
-                        .id("empty-new-project")
-                        .mt_3()
-                        .px_3()
-                        .h(px(32.))
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .rounded(px(theme::RADIUS_SM))
-                        .cursor_pointer()
-                        .bg(theme::accent())
-                        .text_color(theme::canvas())
-                        .font_weight(FontWeight::MEDIUM)
-                        .hover(|style| style.bg(theme::accent_hover()))
-                        .child(
-                            icons::icon(icons::IconName::FolderOpen, 14.)
-                                .text_color(theme::canvas()),
-                        )
-                        .child(SharedString::from(i18n::text("project.open")))
-                        .on_click(cx.listener(|this, _ev, _window, cx| {
-                            this.choose_project_directory(cx);
-                        })),
-                ),
-        )
-        .into_any_element()
 }
 
 fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoElement {

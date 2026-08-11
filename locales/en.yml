@@ -203,6 +203,7 @@ context_menu:
 project:
   choose_directory: Choose project directory
   open: Open local project
+  open_folder: Open folder
 
 git:
   clean: Clean
@@ -231,6 +232,10 @@ tab:
 empty_state:
   title: Ready when you are
   description: Select a host or open a local project
+  local_projects: Local projects
+  remote_hosts: Remote hosts
+  recent_projects: Recent projects
+  saved_hosts: Configured hosts
 
 prompt:
   changed_host_key_warning: "The host key has changed, which may indicate a man-in-the-middle attack.\nThe connection will be rejected by default."

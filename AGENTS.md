@@ -37,6 +37,13 @@
 - **Match the surrounding language.** Preserve the existing language of comments and documentation when editing a file. New documentation defaults to Chinese; `AGENTS.md` and `docs/architecture.md` remain in English.
 - **Record structural decisions.** Review the relevant files under `docs/adr/` before significant architecture changes, and add or update an ADR plus the index in `docs/architecture.md` when the decision changes a boundary or ownership rule.
 
+## Responsive UI
+
+- **Responsive layout is a default requirement for every UI change.** New and modified views must remain usable from the application's declared minimum window size through the standard window size, without clipped controls, overlapping text, or unreachable content.
+- Base layout decisions on the space actually available to the component. A workspace view must account for visible sidebars, rails, and panels instead of using the full window width as a proxy for its own width.
+- Define explicit compact-layout behavior for controls that cannot safely shrink. Prefer reflowing rows into columns, reducing nonessential spacing, and enabling scrolling over shrinking text or interactive targets below usable sizes.
+- Keep breakpoint decisions deterministic and cover them with focused pure tests where practical. For material UI changes, verify both compact and standard layouts visually when the local platform supports it.
+
 ## Build Cache Discipline
 
 - Use the project's default `target/` directory for Cargo builds, tests, checks, and releases. Do not set `CARGO_TARGET_DIR` or create an independent compiler cache unless the user explicitly requests it.

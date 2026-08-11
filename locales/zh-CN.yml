@@ -203,6 +203,7 @@ context_menu:
 project:
   choose_directory: 选择项目目录
   open: 打开本地项目
+  open_folder: 打开文件夹
 
 git:
   clean: 干净
@@ -231,6 +232,10 @@ tab:
 empty_state:
   title: 准备开始
   description: 选择一个主机，或打开一个本地项目
+  local_projects: 本地项目
+  remote_hosts: 远程主机
+  recent_projects: 最近项目
+  saved_hosts: 已配置主机
 
 prompt:
   changed_host_key_warning: "主机密钥已变更，可能存在中间人攻击。\n按计划默认拒绝连接。"
