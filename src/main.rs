@@ -78,7 +78,16 @@ fn main() {
             args,
             std::env::current_dir().map_err(|error| error.to_string()),
         ) {
-            Ok(features::git::GitCliCommand::Open(cwd)) => app::LaunchTarget::Git(cwd),
+            Ok(features::git::GitCliCommand::Open(cwd)) => {
+                if !features::git::running_as_window_process() {
+                    if let Err(error) = features::git::spawn_window_process(&cwd) {
+                        eprintln!("crossh git: failed to start Git Viewer: {error}");
+                        std::process::exit(1);
+                    }
+                    return;
+                }
+                app::LaunchTarget::Git(cwd)
+            }
             Ok(features::git::GitCliCommand::Help) => {
                 features::git::print_cli_help();
                 return;

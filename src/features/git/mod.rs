@@ -36,7 +36,10 @@ mod model;
 mod render;
 mod window;
 
-pub(crate) use cli::{GitCliCommand, parse as parse_cli, print_help as print_cli_help};
+pub(crate) use cli::{
+    GitCliCommand, parse as parse_cli, print_help as print_cli_help, running_as_window_process,
+    spawn_window_process,
+};
 pub(crate) use window::open_git_window;
 
 #[cfg(feature = "visual-tests")]

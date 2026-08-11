@@ -381,31 +381,53 @@ pub fn open_git_window(cwd: PathBuf, cx: &mut App) {
         return;
     }
 
-    cx.defer(move |cx| {
-        let bounds = Bounds::centered(
-            None,
-            Size {
-                width: px(1000.),
-                height: px(640.),
-            },
-            cx,
-        );
-        cx.open_window(
-            WindowOptions {
-                titlebar: Some(TitlebarOptions {
-                    title: Some(directory_label(&cwd).into()),
-                    ..Default::default()
-                }),
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(Size {
-                    width: px(720.),
-                    height: px(480.),
-                }),
+    if cx.windows().is_empty() {
+        create_git_window(cwd, cx);
+    } else {
+        cx.defer(move |cx| create_git_window(cwd, cx));
+    }
+}
+
+fn create_git_window(cwd: PathBuf, cx: &mut App) {
+    let bounds = Bounds::centered(
+        None,
+        Size {
+            width: px(1000.),
+            height: px(640.),
+        },
+        cx,
+    );
+    cx.open_window(
+        WindowOptions {
+            titlebar: Some(TitlebarOptions {
+                title: Some(directory_label(&cwd).into()),
                 ..Default::default()
-            },
-            |_window, cx| cx.new(|cx| GitWindow::new(cwd.clone(), cx)),
-        )
-        .ok();
-        cx.activate(true);
-    });
+            }),
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_min_size: Some(Size {
+                width: px(720.),
+                height: px(480.),
+            }),
+            ..Default::default()
+        },
+        |_window, cx| cx.new(|cx| GitWindow::new(cwd.clone(), cx)),
+    )
+    .expect("Git window should open");
+    cx.activate(true);
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::TestAppContext;
+
+    use super::open_git_window;
+
+    #[gpui::test]
+    fn cold_start_opens_git_window_synchronously(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            assert!(cx.windows().is_empty());
+            open_git_window(std::env::temp_dir(), cx);
+            assert_eq!(cx.windows().len(), 1);
+        });
+    }
 }
