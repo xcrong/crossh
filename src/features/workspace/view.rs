@@ -17,9 +17,7 @@ use crate::features::terminal::{ConnState, TerminalView};
 use crate::features::workspace::pane::WorkspacePane;
 use crate::features::workspace::shell::AppShell;
 use crate::shared::i18n;
-use crossh_core::commands::{
-    BackgroundTask, BackgroundTaskStatus, CommandRecord, local_scope, remote_scope,
-};
+use crossh_core::commands::{BackgroundTask, BackgroundTaskStatus, CommandRecord};
 use crossh_core::project::GitStatus;
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::widgets::{LocalPathTooltip, ime_input_canvas, text_caret};
@@ -93,35 +91,6 @@ pub fn render_main(shell: &mut AppShell, cx: &mut Context<AppShell>) -> AnyEleme
             .map(|session| session.terminal.clone().into_any_element()),
         None => None,
     };
-    let quick_context =
-        match shell.workspace.active_view {
-            Some(ActiveView::LocalSession(session_id)) => shell
-                .workspace
-                .sessions
-                .local_sessions
-                .get(&session_id)
-                .map(|session| {
-                    let cwd = session
-                        .terminal
-                        .read(cx)
-                        .cwd
-                        .clone()
-                        .unwrap_or_else(|| session.cwd.to_string_lossy().to_string());
-                    let cwd = PathBuf::from(cwd);
-                    (local_scope(&cwd), cwd.to_string_lossy().to_string())
-                }),
-            Some(ActiveView::RemoteTab(idx)) => shell
-                .workspace
-                .sessions
-                .remote_tabs
-                .get(idx)
-                .and_then(|tab| {
-                    tab.pane
-                        .cwd(cx)
-                        .map(|cwd| (remote_scope(&tab.host_key, &cwd), cwd))
-                }),
-            _ => None,
-        };
     let mut terminal_area = div().flex_1().min_w_0().min_h_0().relative();
     if let Some(active_pane) = active_pane {
         terminal_area = terminal_area.child(active_pane);
@@ -147,13 +116,6 @@ pub fn render_main(shell: &mut AppShell, cx: &mut Context<AppShell>) -> AnyEleme
         );
     }
     content = content.child(terminal_area);
-    if let Some((scope, cwd)) = quick_context {
-        content = if shell.workspace_settings.show_quick_commands {
-            content.child(render_quick_commands(shell, scope, cwd, cx))
-        } else {
-            content.child(render_quick_commands_rail(shell, &scope, cx))
-        };
-    }
     pane = pane.child(content);
     pane.into_any_element()
 }
@@ -353,7 +315,7 @@ fn render_git_status(
     git.into_any_element()
 }
 
-fn render_quick_commands(
+pub(crate) fn render_quick_commands(
     shell: &mut AppShell,
     scope: String,
     cwd: String,
@@ -449,8 +411,6 @@ fn render_quick_commands(
         .justify_center()
         .gap_1()
         .px_3()
-        .border_b_1()
-        .border_color(theme::border())
         .bg(theme::surface())
         .child(
             div()
@@ -510,29 +470,47 @@ fn render_quick_commands(
         }
     }
 
-    let mut task_section = div()
-        .id("quick-commands-tasks")
-        .flex_shrink_0()
-        .max_h(px(180.))
-        .border_t_1()
-        .border_color(theme::border())
-        .bg(theme::canvas())
-        .p_2();
-    task_section.style().overflow.y = Some(gpui::Overflow::Scroll);
-    if !tasks.is_empty() {
-        task_section = task_section.child(
+    let task_section = (!tasks.is_empty()).then(|| {
+        let mut section = div()
+            .id("quick-commands-tasks")
+            .flex_shrink_0()
+            .max_h(px(180.))
+            .flex()
+            .flex_col()
+            .gap_1()
+            .border_t_1()
+            .border_color(theme::border())
+            .bg(theme::canvas())
+            .p_2();
+        section.style().overflow.y = Some(gpui::Overflow::Scroll);
+        section = section.child(
             div()
-                .mb_1()
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_1()
                 .text_xs()
                 .text_color(theme::faint_text())
+                .child(icons::icon(icons::IconName::Clock, 12.).text_color(theme::warning()))
                 .child(SharedString::from(i18n::text(
                     "quick_commands.background_tasks",
-                ))),
+                )))
+                .child(
+                    div()
+                        .ml_auto()
+                        .px_1()
+                        .rounded_full()
+                        .bg(theme::raised())
+                        .text_color(theme::muted_text())
+                        .child(SharedString::from(tasks.len().to_string())),
+                ),
         );
         for task in tasks {
-            task_section = task_section.child(render_background_task_row(&task, cx));
+            section = section.child(render_background_task_row(&task, cx));
         }
-    }
+        section.into_any_element()
+    });
 
     let panel = div()
         .relative()
@@ -547,12 +525,12 @@ fn render_quick_commands(
         .child(backing)
         .child(header)
         .child(list)
-        .child(task_section)
+        .children(task_section)
         .child(resize_handle);
     panel.into_any_element()
 }
 
-fn render_quick_commands_rail(
+pub(crate) fn render_quick_commands_rail(
     shell: &AppShell,
     scope: &str,
     cx: &mut Context<AppShell>,
@@ -1014,7 +992,7 @@ fn render_background_task_row(task: &BackgroundTask, cx: &mut Context<AppShell>)
         .gap_2()
         .px_2()
         .rounded(px(theme::RADIUS_SM))
-        .bg(theme::surface())
+        .bg(theme::raised())
         .tooltip(move |_window, cx| {
             cx.new(|_| crossh_ui::widgets::LocalPathTooltip {
                 path: SharedString::from(cwd.clone()),
@@ -1052,6 +1030,12 @@ fn render_background_task_row(task: &BackgroundTask, cx: &mut Context<AppShell>)
                 .justify_center()
                 .cursor_pointer()
                 .hover(|style| style.bg(theme::accent_soft()))
+                .tooltip(|_window, cx| {
+                    cx.new(|_| LocalPathTooltip {
+                        path: SharedString::from(i18n::text("quick_commands.stop")),
+                    })
+                    .into()
+                })
                 .child(icons::icon(icons::IconName::CircleX, 12.).text_color(theme::danger()))
                 .on_click(cx.listener(move |this, _ev, _window, cx| {
                     this.stop_background_task(id, cx);
@@ -1367,9 +1351,7 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
     strip = strip
         .track_scroll(&shell.tab_scroll)
         .restrict_scroll_to_axis()
-        .bg(theme::surface())
-        .border_b_1()
-        .border_color(theme::border());
+        .bg(theme::surface());
 
     match shell.workspace.active_view {
         Some(ActiveView::RemoteTab(active_idx)) => {

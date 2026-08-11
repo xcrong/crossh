@@ -34,7 +34,8 @@ use crate::features::workspace::settings::WorkspaceSettings;
 use crate::features::workspace::sidebar::{render_sidebar, render_sidebar_rail};
 use crate::features::workspace::view::{
     ActiveView, LocalDir, LocalSession, LocalSessionId, Tab, rebuild_local_dirs, render_main,
-    render_quick_command_editor, render_workspace_status_bar,
+    render_quick_command_editor, render_quick_commands, render_quick_commands_rail,
+    render_workspace_status_bar,
 };
 use crate::shared::i18n::{self, LanguagePreference};
 use crossh_agent::AgentSettings;
@@ -1474,8 +1475,53 @@ impl Render for AppShell {
             self.shell_focus.focus(window, cx);
         }
 
-        // Materialize the opaque element before attaching the root listener so
-        // Rust 2024 does not keep `cx` borrowed through `render_main`.
+        // 快捷命令是 workspace 级面板，使用当前活动视图的上下文；没有活动视图时不显示。
+        let quick_context = match self.workspace.active_view {
+            Some(ActiveView::LocalSession(session_id)) => self
+                .workspace
+                .sessions
+                .local_sessions
+                .get(&session_id)
+                .map(|session| {
+                    let cwd = session
+                        .terminal
+                        .read(cx)
+                        .cwd
+                        .clone()
+                        .unwrap_or_else(|| session.cwd.to_string_lossy().to_string());
+                    let cwd = PathBuf::from(cwd);
+                    (local_scope(&cwd), cwd.to_string_lossy().to_string())
+                }),
+            Some(ActiveView::RemoteTab(index)) => self
+                .workspace
+                .sessions
+                .remote_tabs
+                .get(index)
+                .and_then(|tab| {
+                    tab.pane
+                        .cwd(cx)
+                        .map(|cwd| (remote_scope(&tab.host_key, &cwd), cwd))
+                }),
+            None => None,
+        };
+        let quick_commands = match quick_commands_panel_mode(
+            quick_context.is_some(),
+            self.workspace_settings.show_quick_commands,
+        ) {
+            Some(QuickCommandsPanelMode::Expanded) => {
+                let (scope, cwd) =
+                    quick_context.expect("expanded panel requires a command context");
+                Some(render_quick_commands(self, scope, cwd, cx))
+            }
+            Some(QuickCommandsPanelMode::Rail) => {
+                let (scope, _) = quick_context.expect("rail requires a command context");
+                Some(render_quick_commands_rail(self, &scope, cx))
+            }
+            None => None,
+        };
+
+        // Materialize opaque elements before attaching the root listener so Rust 2024 does not
+        // keep `cx` borrowed through the render helpers.
         let main = render_main(self, cx);
         let sidebar = if self.workspace_settings.show_host_sidebar {
             render_sidebar(self, window, cx)
@@ -1488,7 +1534,8 @@ impl Render for AppShell {
             .flex()
             .flex_row()
             .child(sidebar)
-            .child(main);
+            .child(main)
+            .children(quick_commands);
         let status_bar = render_workspace_status_bar(self, cx);
 
         let mut root =
@@ -1543,6 +1590,23 @@ impl Render for AppShell {
         }
         root
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QuickCommandsPanelMode {
+    Expanded,
+    Rail,
+}
+
+fn quick_commands_panel_mode(
+    has_command_context: bool,
+    show_quick_commands: bool,
+) -> Option<QuickCommandsPanelMode> {
+    has_command_context.then_some(if show_quick_commands {
+        QuickCommandsPanelMode::Expanded
+    } else {
+        QuickCommandsPanelMode::Rail
+    })
 }
 
 fn current_local_cwd() -> PathBuf {
@@ -1623,7 +1687,8 @@ pub fn open_main_window(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::{
-        find_remote_terminal_index, next_char_boundary, previous_char_boundary, selection_bounds,
+        QuickCommandsPanelMode, find_remote_terminal_index, next_char_boundary,
+        previous_char_boundary, quick_commands_panel_mode, selection_bounds,
     };
 
     #[test]
@@ -1648,5 +1713,19 @@ mod tests {
             Some((4, text.len()))
         );
         assert_eq!(selection_bounds(Some(4), 4), None);
+    }
+
+    #[test]
+    fn quick_commands_panel_requires_an_active_command_context() {
+        assert_eq!(
+            quick_commands_panel_mode(true, true),
+            Some(QuickCommandsPanelMode::Expanded)
+        );
+        assert_eq!(
+            quick_commands_panel_mode(true, false),
+            Some(QuickCommandsPanelMode::Rail)
+        );
+        assert_eq!(quick_commands_panel_mode(false, true), None);
+        assert_eq!(quick_commands_panel_mode(false, false), None);
     }
 }
