@@ -38,7 +38,7 @@ impl RenderOnce for Avatar {
         let color = match self.kind {
             AvatarKind::Project => theme::accent(),
             AvatarKind::Host => theme::info(),
-            AvatarKind::Command => theme::warning(),
+            AvatarKind::Command => theme::muted_text(),
         };
         div()
             .w(px(30.))
