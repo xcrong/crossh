@@ -2,6 +2,8 @@
 
 use gpui::{App, KeyBinding, actions};
 
+mod cli;
+
 actions!(
     git_window,
     [
@@ -34,6 +36,7 @@ mod model;
 mod render;
 mod window;
 
+pub(crate) use cli::{GitCliCommand, parse as parse_cli, print_help as print_cli_help};
 pub(crate) use window::open_git_window;
 
 #[cfg(feature = "visual-tests")]

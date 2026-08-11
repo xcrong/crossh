@@ -44,7 +44,7 @@ actions!(
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    match args.next().as_deref() {
+    let launch_target = match args.next().as_deref() {
         Some("--help" | "-h" | "help") => {
             print_help();
             return;
@@ -74,26 +74,42 @@ fn main() {
             }
             return;
         }
+        Some("git") => match features::git::parse_cli(
+            args,
+            std::env::current_dir().map_err(|error| error.to_string()),
+        ) {
+            Ok(features::git::GitCliCommand::Open(cwd)) => app::LaunchTarget::Git(cwd),
+            Ok(features::git::GitCliCommand::Help) => {
+                features::git::print_cli_help();
+                return;
+            }
+            Err(error) => {
+                eprintln!("crossh git: {error}\n");
+                features::git::print_cli_help();
+                std::process::exit(2);
+            }
+        },
         Some(argument) => {
             eprintln!("unknown argument: {argument}\n");
             print_help();
             std::process::exit(2);
         }
-        None => {}
-    }
+        None => app::LaunchTarget::Main,
+    };
     infrastructure::logging::init();
 
     // 预热 tokio 运行时（单例，限 2 worker 线程，控内存）。
     let _rt = crossh_ssh::ssh_runtime();
 
     let app = gpui_platform::application().with_assets(crossh_ui::assets::UiAssetSource);
-    app.on_reopen(|cx| {
+    let reopen_target = launch_target.clone();
+    app.on_reopen(move |cx| {
         // Reuse an existing window, including a hidden one. Only create a
         // window when the application has no windows left.
         if let Some(window) = cx.windows().into_iter().next() {
             let _ = window.update(cx, |_, window, _| window.activate_window());
         } else {
-            app::open_main_window(cx);
+            app::open_launch_target(reopen_target.clone(), cx);
         }
     });
     app.run(move |cx: &mut App| {
@@ -115,13 +131,13 @@ fn main() {
         features::git::init(cx);
         features::terminal::init(cx);
         infrastructure::app_menu::install(cx);
-        app::open_main_window(cx);
+        app::open_launch_target(launch_target, cx);
     });
 }
 
 fn print_help() {
     println!(
-        "Crossh {}\n\nUsage: crossh [COMMAND]\n\nCommands:\n  agent       Start the interactive coding agent\n  help        Print help\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version",
+        "Crossh {}\n\nUsage: crossh [COMMAND]\n\nCommands:\n  agent       Start the interactive coding agent\n  git         Open the Git Viewer for the current directory\n  help        Print help\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version",
         env!("CARGO_PKG_VERSION")
     );
 }

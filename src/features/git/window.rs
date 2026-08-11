@@ -406,5 +406,6 @@ pub fn open_git_window(cwd: PathBuf, cx: &mut App) {
             |_window, cx| cx.new(|cx| GitWindow::new(cwd.clone(), cx)),
         )
         .ok();
+        cx.activate(true);
     });
 }
