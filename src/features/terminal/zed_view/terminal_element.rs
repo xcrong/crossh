@@ -7,10 +7,10 @@
 use gpui::{
     AbsoluteLength, App, Bounds, ContentMask, Context, Corners, DispatchPhase, Edges, Element,
     ElementId, Entity, FocusHandle, Font, FontFeatures, FontStyle, FontWeight, GlobalElementId,
-    Hitbox, Hsla, InputHandler, InteractiveElement, Interactivity, IntoElement, LayoutId, Length,
-    ModifiersChangedEvent, MouseButton, MouseMoveEvent, MouseUpEvent, Pixels, Point as GpuiPoint,
-    StatefulInteractiveElement, StrikethroughStyle, TextRun, TextStyle, UTF16Selection,
-    UnderlineStyle, WhiteSpace, Window, fill, point, px, quad, relative, size,
+    HighlightStyle, Hitbox, Hsla, InputHandler, InteractiveElement, Interactivity, IntoElement,
+    LayoutId, Length, ModifiersChangedEvent, MouseButton, MouseMoveEvent, MouseUpEvent, Pixels,
+    Point as GpuiPoint, StatefulInteractiveElement, StrikethroughStyle, TextRun, TextStyle,
+    UTF16Selection, UnderlineStyle, WhiteSpace, Window, fill, point, px, quad, relative, size,
 };
 use itertools::Itertools;
 use settings::Settings;
@@ -177,6 +177,23 @@ fn selection_highlight_color() -> Hsla {
     crossh_ui::theme::selection()
 }
 
+fn apply_hovered_link_style(
+    point: Point,
+    hyperlink: Option<(HighlightStyle, &Range)>,
+    text_run: &mut TextRun,
+) {
+    if let Some((style, range)) = hyperlink
+        && range.contains(point)
+    {
+        if let Some(underline) = style.underline {
+            text_run.underline = Some(underline);
+        }
+        if let Some(color) = style.color {
+            text_run.color = color;
+        }
+    }
+}
+
 const TIMESTAMP_GUTTER_WIDTH: f32 = 104.0;
 const TIMESTAMP_GUTTER_GAP: f32 = 8.0;
 const TIMESTAMP_GUTTER_PADDING: f32 = 8.0;
@@ -297,6 +314,7 @@ pub struct LayoutState {
     dimensions: TerminalBounds,
     mode: Modes,
     display_offset: usize,
+    hovered_link: bool,
     base_text_style: TextStyle,
     timestamp_rows: Vec<Option<String>>,
 }
@@ -686,6 +704,7 @@ impl TerminalElement {
         grid: impl Iterator<Item = T>,
         start_line_offset: i32,
         text_style: &TextStyle,
+        hyperlink: Option<(HighlightStyle, &Range)>,
         minimum_contrast: f32,
         cx: &App,
     ) -> (
@@ -765,7 +784,7 @@ impl TerminalElement {
                 {
                     if !is_blank(cell) {
                         cell_count += 1;
-                        let cell_style = TerminalElement::cell_style(
+                        let mut cell_style = TerminalElement::cell_style(
                             cell,
                             fg,
                             bg,
@@ -773,6 +792,7 @@ impl TerminalElement {
                             text_style,
                             minimum_contrast,
                         );
+                        apply_hovered_link_style(point, hyperlink, &mut cell_style);
 
                         let cell_point = LayoutPoint::new(display_line, point.column as i32);
                         if Self::collect_block_element_regions(
@@ -1439,6 +1459,17 @@ impl Element for TerminalElement {
 
                 let theme = cx.theme().clone();
 
+                let link_style = HighlightStyle {
+                    color: Some(theme.colors().link_text_hover),
+                    font_weight: Some(font_weight),
+                    underline: Some(UnderlineStyle {
+                        color: Some(theme.colors().link_text_hover),
+                        thickness: px(1.0),
+                        wavy: false,
+                    }),
+                    ..Default::default()
+                };
+
                 let text_style = TextStyle {
                     font_family,
                     font_features,
@@ -1532,10 +1563,16 @@ impl Element for TerminalElement {
 
                 let background_color = theme.colors().terminal_background;
 
-                self.terminal.update(cx, |terminal, cx| {
+                let last_hovered_word = self.terminal.update(cx, |terminal, cx| {
                     terminal.set_size(dimensions);
                     terminal.sync(window, cx);
+
+                    (window.modifiers().secondary()
+                        && dimensions.bounds.contains(&window.mouse_position()))
+                    .then(|| terminal.last_content.last_hovered_word.clone())
+                    .flatten()
                 });
+                let hovered_link = last_hovered_word.is_some();
 
                 let (mode, display_offset, cursor_char, selection, cursor, row_snapshots) = {
                     let content = &self.terminal.read(cx).last_content;
@@ -1597,7 +1634,16 @@ impl Element for TerminalElement {
                 } else if intersection == content_bounds {
                     // Fast path: terminal fully visible, no clipping needed.
                     // Avoid grouping/allocation overhead by streaming cells directly.
-                    TerminalElement::layout_grid(cells.iter(), 0, &text_style, minimum_contrast, cx)
+                    TerminalElement::layout_grid(
+                        cells.iter(),
+                        0,
+                        &text_style,
+                        last_hovered_word
+                            .as_ref()
+                            .map(|word| (link_style, &word.word_match)),
+                        minimum_contrast,
+                        cx,
+                    )
                 } else {
                     // Calculate which screen rows are visible based on pixel positions.
                     // This works for both Scrollable and Inline modes because we filter
@@ -1623,6 +1669,9 @@ impl Element for TerminalElement {
                             .flat_map(|(_, line_cells)| line_cells),
                         rows_above_viewport as i32,
                         &text_style,
+                        last_hovered_word
+                            .as_ref()
+                            .map(|word| (link_style, &word.word_match)),
                         minimum_contrast,
                         cx,
                     )
@@ -1701,6 +1750,7 @@ impl Element for TerminalElement {
                     relative_highlighted_ranges,
                     mode,
                     display_offset,
+                    hovered_link,
                     base_text_style: text_style,
                     timestamp_rows: if show_timestamps {
                         timestamp_rows
@@ -1753,7 +1803,14 @@ impl Element for TerminalElement {
             };
 
             self.register_mouse_listeners(layout.mode, &layout.hitbox, window);
-            window.set_cursor_style(gpui::CursorStyle::IBeam, &layout.hitbox);
+            window.set_cursor_style(
+                if layout.hovered_link {
+                    gpui::CursorStyle::PointingHand
+                } else {
+                    gpui::CursorStyle::IBeam
+                },
+                &layout.hitbox,
+            );
 
             let original_cursor = layout.cursor.take();
             self.interactivity.paint(

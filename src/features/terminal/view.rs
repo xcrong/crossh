@@ -117,6 +117,12 @@ fn shell_lifecycle_markers(
     )
 }
 
+fn open_navigation_target(target: &zed_terminal::MaybeNavigationTarget, cx: &mut App) {
+    if let zed_terminal::MaybeNavigationTarget::Url(url) = target {
+        cx.open_url(url);
+    }
+}
+
 impl EventEmitter<TerminalEvent> for TerminalView {}
 
 pub struct TerminalView {
@@ -431,9 +437,9 @@ impl TerminalView {
                 zed_terminal::Event::Wakeup => {
                     this.pending_timestamp = Some(timestamp_now());
                 }
+                zed_terminal::Event::Open(target) => open_navigation_target(target, cx),
                 zed_terminal::Event::SelectionsChanged
-                | zed_terminal::Event::NewNavigationTarget(_)
-                | zed_terminal::Event::Open(_) => {}
+                | zed_terminal::Event::NewNavigationTarget(_) => {}
             }
             cx.notify();
         });
@@ -1114,6 +1120,33 @@ impl Render for TerminalView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn terminal_url_navigation_uses_platform_opener(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            open_navigation_target(
+                &zed_terminal::MaybeNavigationTarget::Url("https://example.com/docs".into()),
+                cx,
+            );
+        });
+
+        assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/docs"));
+    }
+
+    #[gpui::test]
+    fn terminal_path_navigation_does_not_use_url_opener(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            open_navigation_target(
+                &zed_terminal::MaybeNavigationTarget::PathLike(zed_terminal::PathLikeTarget {
+                    maybe_path: "/tmp/example.rs:12".into(),
+                    terminal_dir: Some(PathBuf::from("/tmp")),
+                }),
+                cx,
+            );
+        });
+
+        assert_eq!(cx.opened_url(), None);
+    }
 
     #[test]
     fn lifecycle_markers_are_only_consumed_for_breadcrumb_events() {

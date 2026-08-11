@@ -557,6 +557,38 @@ fn test_batched_text_run_can_append() {
 }
 
 #[test]
+fn hovered_link_style_only_changes_cells_inside_the_link_range() {
+    let link_color = Hsla::blue();
+    let underline = UnderlineStyle {
+        color: Some(link_color),
+        thickness: px(1.0),
+        wavy: false,
+    };
+    let style = HighlightStyle {
+        color: Some(link_color),
+        underline: Some(underline),
+        ..Default::default()
+    };
+    let range = Range::new(Point::new(2, 4), Point::new(2, 8));
+
+    let mut inside = TextRun {
+        color: Hsla::red(),
+        ..Default::default()
+    };
+    apply_hovered_link_style(Point::new(2, 6), Some((style, &range)), &mut inside);
+    assert_eq!(inside.color, link_color);
+    assert_eq!(inside.underline, Some(underline));
+
+    let mut outside = TextRun {
+        color: Hsla::red(),
+        ..Default::default()
+    };
+    apply_hovered_link_style(Point::new(2, 9), Some((style, &range)), &mut outside);
+    assert_eq!(outside.color, Hsla::red());
+    assert_eq!(outside.underline, None);
+}
+
+#[test]
 fn test_batched_text_run_append() {
     let style = TextRun {
         len: 1,
