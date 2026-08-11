@@ -49,6 +49,16 @@
 - Linux- and Windows-specific behavior is verified by GitHub Actions. Changes that affect those platforms must add or update the corresponding CI coverage, and must not be reported as platform-verified until the relevant Actions jobs pass.
 - Local verification should still run all cached, platform-independent tests that are available on macOS. A platform-specific test skipped locally must be named explicitly in the handoff together with the CI job that owns it.
 
+## Test-Driven Development
+
+- TDD is the default workflow for behavior changes and bug fixes: first add or change a test that describes the intended observable behavior and fails for the expected reason, then implement the minimum production change that makes it pass, then refactor while keeping the suite green.
+- A confirmed regression must be reproduced by a failing test before its fix is implemented. Keep the test after the fix as the regression contract.
+- Tests are executable behavior documentation. Prefer public outcomes, state transitions, protocol bytes, persisted data, and user-visible effects over private fields, call counts, render-tree shape, or other implementation details.
+- Test the smallest deterministic layer that proves the contract. Use pure tests by default, GPUI tests for framework behavior, and hermetic integration tests only for real boundary interactions.
+- Do not weaken, delete, or broadly rewrite an existing assertion merely to make a new implementation pass. If a contract intentionally changes, update the test and the relevant documentation or ADR together and explain the behavior change.
+- Documentation-only edits, formatting, generated artifacts, and provably behavior-preserving mechanical refactors do not require a new test. They still require the existing relevant checks.
+- When a platform-specific test cannot run locally, add it in the same change and let the owning GitHub Actions runner perform the red/green verification. State that limitation explicitly; do not claim to have observed the local failing phase.
+
 ## Sandbox-Aware Command Execution
 
 - The workspace sandbox may permit source changes while denying writes to `.git` and external network access.
