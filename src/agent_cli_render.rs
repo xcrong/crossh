@@ -46,7 +46,7 @@ pub(super) fn render(frame: &mut Frame, app: &mut App) {
     let mut lines = Vec::new();
     if app.messages.is_empty() {
         lines.push(Line::styled(
-            "No messages yet. Ask about this project or type /help.",
+            "No messages yet. Ask about this project or type /help (、help also works).",
             Style::new().fg(faint),
         ));
     }

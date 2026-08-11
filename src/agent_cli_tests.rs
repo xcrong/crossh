@@ -74,6 +74,19 @@ fn parse_options_supports_session_and_model_controls() {
 }
 
 #[test]
+fn chinese_ime_command_prefix_is_normalized_to_a_slash() {
+    assert!(is_command_input("、help"));
+    assert_eq!(normalize_command_name("、help"), "/help");
+    assert_eq!(normalize_command_name("/MODEL"), "/model");
+}
+
+#[test]
+fn chinese_punctuation_in_a_prompt_is_not_treated_as_a_command() {
+    assert!(!is_command_input("请解释一下、这个实现"));
+    assert!(!is_command_input("  请解释一下、这个实现"));
+}
+
+#[test]
 fn mutating_tools_use_the_language_model_reviewer_by_default() {
     let settings = test_settings();
     assert_eq!(

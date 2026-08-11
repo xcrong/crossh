@@ -305,7 +305,7 @@ fn handle_key(terminal: &mut DefaultTerminal, app: &mut App, key: KeyEvent) -> i
         if app.input.trim().is_empty() {
             return Ok(false);
         }
-        if app.input.trim_start().starts_with('/') {
+        if is_command_input(&app.input) {
             let command = take_input(app);
             return handle_command(terminal, app, command);
         }
@@ -837,7 +837,7 @@ fn handle_command(
     input: String,
 ) -> io::Result<bool> {
     let mut parts = input.trim().splitn(2, char::is_whitespace);
-    let command = parts.next().unwrap_or_default().to_ascii_lowercase();
+    let command = normalize_command_name(parts.next().unwrap_or_default());
     let argument = parts.next().unwrap_or_default().trim();
     match command.as_str() {
         "/quit" | "/exit" => return Ok(true),
@@ -975,8 +975,19 @@ fn handle_command(
     Ok(false)
 }
 
+fn is_command_input(input: &str) -> bool {
+    matches!(input.trim_start().chars().next(), Some('/' | '、'))
+}
+
+fn normalize_command_name(command: &str) -> String {
+    match command.strip_prefix('、') {
+        Some(rest) => format!("/{rest}").to_ascii_lowercase(),
+        None => command.to_ascii_lowercase(),
+    }
+}
+
 fn help_text() -> String {
-    "Commands:\n  /help, /hotkeys       Show commands and shortcuts\n  /model [value]        List or switch provider/model\n  /thinking [level]     Set reasoning level\n  /tools                Show available tools\n  /skills               List project skills\n  /skill NAME [request] Apply a skill to a request\n  /prompts              List prompt templates\n  /prompt NAME [args]   Run a prompt template\n  /new, /clear          Start a fresh session\n  /continue             Resume the most recent session\n  /resume [value]       List or resume a saved session\n  /fork, /clone         Branch the current conversation\n  /name [value]         Set or show the session name\n  /session, /stats      Show session and context details\n  /compact              Compact older conversation context\n  /reload               Reload project instructions and resources\n  /export [path]        Export the session as Markdown\n  /quit, /exit          Quit\n\nShortcuts:\n  Enter                 Send prompt\n  Shift+Enter           Insert a new line\n  Escape                Clear input, then quit\n  Ctrl+C                Clear input, then quit\n  Ctrl+T                Expand or collapse thinking\n  Ctrl+O                Expand or collapse tool output\n  Up/Down               Browse prompt history\n  While working, Enter  Queue a follow-up prompt"
+    "Commands (start with / or 、):\n  /help, /hotkeys       Show commands and shortcuts\n  /model [value]        List or switch provider/model\n  /thinking [level]     Set reasoning level\n  /tools                Show available tools\n  /skills               List project skills\n  /skill NAME [request] Apply a skill to a request\n  /prompts              List prompt templates\n  /prompt NAME [args]   Run a prompt template\n  /new, /clear          Start a fresh session\n  /continue             Resume the most recent session\n  /resume [value]       List or resume a saved session\n  /fork, /clone         Branch the current conversation\n  /name [value]         Set or show the session name\n  /session, /stats      Show session and context details\n  /compact              Compact older conversation context\n  /reload               Reload project instructions and resources\n  /export [path]        Export the session as Markdown\n  /quit, /exit          Quit\n\nShortcuts:\n  Enter                 Send prompt\n  Shift+Enter           Insert a new line\n  Escape                Clear input, then quit\n  Ctrl+C                Clear input, then quit\n  Ctrl+T                Expand or collapse thinking\n  Ctrl+O                Expand or collapse tool output\n  Up/Down               Browse prompt history\n  While working, Enter  Queue a follow-up prompt"
         .into()
 }
 
