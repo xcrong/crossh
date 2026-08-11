@@ -11,7 +11,7 @@ mod infrastructure;
 mod shared;
 
 use assets::Assets as ZedAssets;
-use gpui::{App, KeyBinding, Menu, MenuItem, actions};
+use gpui::{App, actions};
 use release_channel as zed_release_channel;
 use settings as zed_settings;
 use theme::LoadThemes;
@@ -19,22 +19,28 @@ use theme_settings as zed_theme_settings;
 
 rust_i18n::i18n!("locales", fallback = "en");
 
-actions!(crossh, [Quit]);
-
-/// 安装应用菜单。macOS 的 Cmd+Q 通常经由菜单项的 key equivalent 由 AppKit
-/// 直接截获；不装菜单时该按键只能在某个聚焦窗口内被分发，零窗口时按了无效。
-fn install_app_menu(cx: &mut App) {
-    cx.set_menus([
-        Menu::new("Crossh").items([MenuItem::action(shared::i18n::text("quit.menu"), Quit)])
-    ]);
-    // 无窗口时菜单触发的 Quit 走应用级全局分发，直接退出；有窗口时仍由
-    // AppShell 的窗口处理器负责风险检查与清理流程。
-    cx.on_action(|_: &Quit, cx| {
-        if cx.active_window().is_none() {
-            cx.quit();
-        }
-    });
-}
+actions!(
+    crossh,
+    [
+        About,
+        CheckForUpdates,
+        CloseActiveTab,
+        CloseWindow,
+        Hide,
+        HideOthers,
+        MinimizeWindow,
+        NewTerminal,
+        OpenProject,
+        OpenSettings,
+        Quit,
+        ShowAll,
+        ToggleFullScreen,
+        ToggleHostSidebar,
+        ToggleQuickCommands,
+        ToggleTimestamps,
+        ZoomWindow
+    ]
+);
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -107,8 +113,7 @@ fn main() {
             .expect("Zed embedded fonts should load");
         features::settings::init(cx);
         features::terminal::init(cx);
-        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
-        install_app_menu(cx);
+        infrastructure::app_menu::install(cx);
         app::open_main_window(cx);
     });
 }

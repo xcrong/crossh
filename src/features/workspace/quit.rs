@@ -55,7 +55,17 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.request_app_quit(window, cx);
+    }
+
+    pub(crate) fn request_app_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.request_exit(ExitIntent::QuitApp, window, cx);
+    }
+
+    pub(crate) fn request_close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.should_close_window(window, cx) {
+            window.remove_window();
+        }
     }
 
     pub(super) fn should_close_window(

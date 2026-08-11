@@ -928,7 +928,7 @@ impl AppShell {
     fn handle_shell_key_down(
         &mut self,
         ev: &KeyDownEvent,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         // 菜单打开时只响应 Escape（其余键被菜单模态拦截）。
@@ -951,8 +951,6 @@ impl AppShell {
         }
 
         match ks.key.as_str() {
-            "w" => self.close_active_tab(cx),
-            "t" => self.new_tab(window, cx),
             "tab" => self.cycle_tab(if ks.modifiers.shift { -1 } else { 1 }, cx),
             "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" => {
                 if let Ok(n) = ks.key.parse::<usize>() {
@@ -1080,6 +1078,7 @@ impl AppShell {
             return;
         }
         i18n::set_language(cx, preference);
+        crate::infrastructure::app_menu::refresh(cx);
         self.language_preference = preference;
         for tab in &self.workspace.sessions.remote_tabs {
             tab.pane.notify_language(cx);
@@ -1492,18 +1491,34 @@ impl Render for AppShell {
             .child(main);
         let status_bar = render_workspace_status_bar(self, cx);
 
-        let mut root = div()
-            .id("app-shell")
-            .track_focus(&self.shell_focus)
-            .flex()
-            .flex_col()
-            .size_full()
-            .bg(theme::canvas())
-            .text_color(theme::text())
-            .on_action(cx.listener(AppShell::handle_quit))
-            .on_key_down(cx.listener(AppShell::handle_shell_key_down))
-            .child(workspace)
-            .child(status_bar);
+        let mut root =
+            div()
+                .id("app-shell")
+                .key_context("AppShell")
+                .track_focus(&self.shell_focus)
+                .flex()
+                .flex_col()
+                .size_full()
+                .bg(theme::canvas())
+                .text_color(theme::text())
+                .on_action(cx.listener(AppShell::handle_new_terminal))
+                .on_action(cx.listener(AppShell::handle_close_active_tab))
+                .on_action(cx.listener(|this, _: &crate::OpenProject, _, cx| {
+                    this.choose_project_directory(cx)
+                }))
+                .on_action(cx.listener(|this, _: &crate::ToggleHostSidebar, _, cx| {
+                    this.toggle_host_sidebar(cx)
+                }))
+                .on_action(cx.listener(|this, _: &crate::ToggleQuickCommands, _, cx| {
+                    this.toggle_quick_commands(cx)
+                }))
+                .on_action(cx.listener(|this, _: &crate::ToggleTimestamps, _, cx| {
+                    this.toggle_timestamps(cx)
+                }))
+                .on_action(cx.listener(AppShell::handle_quit))
+                .on_key_down(cx.listener(AppShell::handle_shell_key_down))
+                .child(workspace)
+                .child(status_bar);
 
         if matches!(
             prompt,

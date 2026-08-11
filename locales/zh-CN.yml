@@ -5,6 +5,33 @@ language:
   english: 英语
   simplified_chinese: 简体中文
 
+app_menu:
+  about: 关于 Crossh
+  check_for_updates: 检查更新…
+  settings: 设置…
+  services: 服务
+  hide: 隐藏 Crossh
+  hide_others: 隐藏其他应用
+  show_all: 全部显示
+  file: 文件
+  new_terminal: 新建终端
+  open_project: 打开项目…
+  close_tab: 关闭标签页
+  close_window: 关闭窗口
+  edit: 编辑
+  copy: 复制
+  paste: 粘贴
+  select_all: 全选
+  clear_terminal: 清空终端
+  view: 显示
+  toggle_host_sidebar: 显示或隐藏主机栏
+  toggle_quick_commands: 显示或隐藏快捷命令栏
+  toggle_timestamps: 显示或隐藏时间戳
+  window: 窗口
+  minimize: 最小化
+  zoom: 缩放
+  toggle_full_screen: 进入全屏幕
+
 settings:
   title: 设置
   close: 关闭设置

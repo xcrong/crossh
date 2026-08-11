@@ -7,6 +7,24 @@ use crossh_core::terminal::remote_shell_bootstrap_command;
 use super::*;
 
 impl AppShell {
+    pub(super) fn handle_new_terminal(
+        &mut self,
+        _: &crate::NewTerminal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.new_tab(window, cx);
+    }
+
+    pub(super) fn handle_close_active_tab(
+        &mut self,
+        _: &crate::CloseActiveTab,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_active_tab(cx);
+    }
+
     /// 按别名或 `user@host[:port]` 打开一个终端标签。
     ///
     /// Zed owns the interactive SSH process and keeps authentication prompts

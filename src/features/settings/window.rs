@@ -1759,18 +1759,25 @@ pub fn toggle_settings(shell: WeakEntity<AppShell>, cx: &mut Context<AppShell>) 
         cx.notify();
         return;
     }
-    open_settings_window(shell, cx);
+    open_settings_section(shell, SettingsSection::General, cx);
 }
 
-/// 打开设置窗口（借鉴 Zed：复用已有窗口，否则新开独立窗口）。
+/// 打开设置窗口并定位到指定页面（借鉴 Zed：复用已有窗口，否则新开独立窗口）。
 /// 延迟到当前帧结束再开窗口，避免在渲染/输入分发中途操作窗口列表。
-pub fn open_settings_window(shell: WeakEntity<AppShell>, cx: &mut App) {
+pub fn open_settings_section(shell: WeakEntity<AppShell>, section: SettingsSection, cx: &mut App) {
     if let Some(window) = cx
         .windows()
         .iter()
         .find_map(|handle| handle.downcast::<SettingsWindow>())
     {
-        let _ = window.update(cx, |_, window, _| window.activate_window());
+        let _ = window.update(cx, |settings, window, cx| {
+            if let Some(shell) = shell.upgrade() {
+                settings.updates = shell.read(cx).updates.clone();
+            }
+            settings.shell = shell;
+            settings.select_section(section, cx);
+            window.activate_window();
+        });
         return;
     }
 
@@ -1803,7 +1810,11 @@ pub fn open_settings_window(shell: WeakEntity<AppShell>, cx: &mut App) {
                     let _ = notify_shell.update(cx, |_shell, cx| cx.notify());
                     true
                 });
-                cx.new(|cx| SettingsWindow::new(shell, cx))
+                cx.new(|cx| {
+                    let mut settings = SettingsWindow::new(shell, cx);
+                    settings.section = section;
+                    settings
+                })
             },
         )
         .ok();

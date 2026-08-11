@@ -5,6 +5,33 @@ language:
   english: English
   simplified_chinese: Simplified Chinese
 
+app_menu:
+  about: About Crossh
+  check_for_updates: Check for Updates…
+  settings: Settings…
+  services: Services
+  hide: Hide Crossh
+  hide_others: Hide Others
+  show_all: Show All
+  file: File
+  new_terminal: New Terminal
+  open_project: Open Project…
+  close_tab: Close Tab
+  close_window: Close Window
+  edit: Edit
+  copy: Copy
+  paste: Paste
+  select_all: Select All
+  clear_terminal: Clear Terminal
+  view: View
+  toggle_host_sidebar: Toggle Host Sidebar
+  toggle_quick_commands: Toggle Quick Commands
+  toggle_timestamps: Toggle Timestamps
+  window: Window
+  minimize: Minimize
+  zoom: Zoom
+  toggle_full_screen: Enter Full Screen
+
 settings:
   title: Settings
   close: Close settings

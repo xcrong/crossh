@@ -145,12 +145,20 @@ mod tests {
         );
         assert_eq!(text_for("settings.agent", Locale::English), "Agent");
         assert_eq!(
+            text_for("app_menu.check_for_updates", Locale::English),
+            "Check for Updates…"
+        );
+        assert_eq!(
             text_for("settings.providers", Locale::SimplifiedChinese),
             "模型供应商"
         );
         assert_eq!(
             text_for("settings.agent", Locale::SimplifiedChinese),
             "Agent"
+        );
+        assert_eq!(
+            text_for("app_menu.check_for_updates", Locale::SimplifiedChinese),
+            "检查更新…"
         );
     }
 }
