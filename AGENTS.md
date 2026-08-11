@@ -21,6 +21,11 @@
 - Load the `gpui` skill whenever working with GPUI framework code or answering GPUI API questions. It also points to the Zed source under `~/.cargo/git/checkouts/` for authoritative API lookups.
 - For Terminal/PTY debugging, see also the `terminal-pty-capture` skill at `.agents/skills/terminal-pty-capture/SKILL.md`.
 
+## Engineering Notes
+
+- Reusable debugging findings live under `docs/engineering-notes/`. Start with `docs/engineering-notes/README.md`, then load only the topic note whose keywords match the current symptom; do not load the whole collection by default.
+- After resolving a non-obvious, reproducible failure, add or update a concise note with the symptom, root cause, durable rule, verification method, and search keywords. Keep decisions and normative architecture in ADRs; engineering notes are operational memory, not policy.
+
 ## Engineering Rules (derived from Zed's architecture)
 
 - **Logic must not depend on UI.** Pure-logic modules (`shared/terminal/`, SSH sessions, protocols, engines) must contain zero `gpui` imports. GPUI views depend on logic; logic never depends on views. To verify, treat any `gpui` import in a logic module as a layering violation.
