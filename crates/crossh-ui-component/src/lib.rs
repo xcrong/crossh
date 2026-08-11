@@ -5,6 +5,7 @@
 //! and event handlers remain owned by feature views. The visual tokens come
 //! from Crossh's own theme and no third-party component runtime is required.
 
+pub mod avatar;
 pub mod badge;
 pub mod button;
 pub mod layout;
@@ -17,12 +18,14 @@ pub mod theme {
 }
 
 pub mod prelude {
+    pub use crate::avatar::{Avatar, AvatarKind};
     pub use crate::badge::{Badge, BadgeTone};
     pub use crate::button::{Button, ButtonSize, ButtonVariant};
     pub use crate::layout::{h_flex, v_flex};
     pub use crate::separator::{Separator, SeparatorOrientation};
 }
 
+pub use avatar::{Avatar, AvatarKind};
 pub use badge::{Badge, BadgeTone};
 pub use button::{Button, ButtonSize, ButtonVariant};
 pub use layout::{h_flex, v_flex};

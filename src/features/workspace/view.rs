@@ -23,6 +23,7 @@ use crossh_core::project::GitStatus;
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::widgets::{LocalPathTooltip, ime_input_canvas, text_caret};
 use crossh_ui::{icons, theme};
+use crossh_ui_component::{Avatar, AvatarKind};
 
 /// 一个远程终端/SFTP 标签。
 pub struct Tab {
@@ -582,7 +583,7 @@ fn render_quick_commands_rail(
                     })
                     .into()
                 })
-                .child(icons::icon(icons::IconName::Pin, 14.).text_color(theme::accent()))
+                .child(Avatar::new(&command).kind(AvatarKind::Command))
                 .on_click(cx.listener(move |this, ev: &ClickEvent, _window, cx| {
                     if ev.click_count() == 2 {
                         this.run_quick_command(run_scope.clone(), command.clone(), false, cx);

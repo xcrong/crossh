@@ -20,6 +20,7 @@ use crate::shared::i18n::{self};
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::widgets::{LocalPathTooltip, ime_input_canvas, text_caret};
 use crossh_ui::{icons, theme};
+use crossh_ui_component::{Avatar, AvatarKind};
 
 fn host_entry_matches(entry: &HostEntry, query: &str) -> bool {
     entry.alias.to_ascii_lowercase().contains(query)
@@ -464,6 +465,7 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
     {
         let project_dir = dir.project_dir.clone();
         let label = local_dir_name(&project_dir);
+        let avatar = Avatar::new(&label).kind(AvatarKind::Project);
         activity = activity.child(
             div()
                 .id(SharedString::from(format!("sidebar-rail-project-{label}")))
@@ -481,7 +483,7 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
                     })
                     .into()
                 })
-                .child(icons::icon(icons::IconName::Folder, 15.).text_color(theme::accent()))
+                .child(avatar)
                 .on_click(cx.listener(move |this, _ev, _window, cx| {
                     this.activate_local_dir(project_dir.clone(), cx);
                 })),
@@ -492,6 +494,7 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
             continue;
         }
         let alias = entry.alias.clone();
+        let avatar = Avatar::new(&alias).kind(AvatarKind::Host);
         activity = activity.child(
             div()
                 .id(("sidebar-rail-host", index))
@@ -509,7 +512,7 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
                     })
                     .into()
                 })
-                .child(icons::icon(icons::IconName::Server, 15.).text_color(theme::accent()))
+                .child(avatar)
                 .on_click(cx.listener(move |this, _ev, _window, cx| {
                     this.open_host(index, cx);
                 })),
