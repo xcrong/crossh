@@ -11,10 +11,10 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, App, AppContext, Bounds, Context, Entity, EventEmitter, FocusHandle,
+    AnyElement, App, AppContext, Bounds, Context, Entity, EntityId, EventEmitter, FocusHandle,
     InteractiveElement, IntoElement, KeyDownEvent, Keystroke, MouseDownEvent, ParentElement,
     Pixels, Render, SharedString, StatefulInteractiveElement, Styled, Subscription,
-    SystemNotificationResponse, Task, Window, canvas, div, point, px, size,
+    SystemNotification, SystemNotificationResponse, Task, Window, canvas, div, point, px, size,
 };
 use settings::Settings as _;
 use task::Shell;
@@ -50,6 +50,26 @@ const INITIAL_COLUMNS: usize = 100;
 const INITIAL_ROWS: usize = 30;
 const DEFAULT_CELL_WIDTH: f32 = 8.0;
 const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(530);
+const TERMINAL_NOTIFICATION_TAG_PREFIX: &str = "crossh-terminal";
+
+fn terminal_notification_tag(entity_id: EntityId, serial: u64) -> String {
+    format!("{TERMINAL_NOTIFICATION_TAG_PREFIX}-{entity_id}-bell-{serial}")
+}
+
+fn terminal_notification_tag_matches(entity_id: EntityId, tag: &str) -> bool {
+    tag.strip_prefix(TERMINAL_NOTIFICATION_TAG_PREFIX)
+        .and_then(|tag| tag.strip_prefix('-'))
+        .and_then(|tag| tag.strip_prefix(&entity_id.to_string()))
+        .is_some_and(|tag| {
+            tag.strip_prefix("-bell-").is_some_and(|serial| {
+                !serial.is_empty() && serial.bytes().all(|byte| byte.is_ascii_digit())
+            })
+        })
+}
+
+fn should_show_terminal_notification(enabled: bool, focused: bool) -> bool {
+    enabled && !focused
+}
 
 fn terminal_bounds_for_grid(
     columns: usize,
@@ -129,6 +149,8 @@ pub struct TerminalView {
     /// The terminal view origin in window coordinates, used to place the menu.
     anchor_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     show_timestamps: bool,
+    notifications_enabled: bool,
+    notification_serial: u64,
     timestamp_state: TerminalTimestampState,
     pending_timestamp: Option<String>,
 }
@@ -280,6 +302,8 @@ impl TerminalView {
                 right_mouse_down: false,
                 anchor_bounds: Rc::new(Cell::new(None)),
                 show_timestamps: settings.show_timestamps,
+                notifications_enabled: settings.notifications_enabled,
+                notification_serial: 0,
                 timestamp_state: TerminalTimestampState::default(),
                 pending_timestamp: None,
             }
@@ -392,7 +416,7 @@ impl TerminalView {
                         cx.emit(TerminalEvent::Closed);
                     }
                 }
-                zed_terminal::Event::Bell => cx.emit(TerminalEvent::Notification),
+                zed_terminal::Event::Bell => this.notify_bell(cx),
                 zed_terminal::Event::TitleChanged | zed_terminal::Event::BreadcrumbsChanged => {
                     if !internal_marker {
                         cx.emit(TerminalEvent::TitleChanged);
@@ -633,6 +657,22 @@ impl TerminalView {
         cx.notify();
     }
 
+    fn notify_bell(&mut self, cx: &mut Context<Self>) {
+        cx.emit(TerminalEvent::Notification);
+        if !should_show_terminal_notification(self.notifications_enabled, self.focused) {
+            return;
+        }
+
+        let tag = terminal_notification_tag(cx.entity_id(), self.notification_serial);
+        self.notification_serial = self.notification_serial.wrapping_add(1);
+        cx.show_system_notification(SystemNotification {
+            tag: tag.into(),
+            title: self.tab_title("Terminal").into(),
+            body: i18n::text("terminal.bell").into(),
+            actions: Vec::new(),
+        });
+    }
+
     pub(crate) fn request_focus(&mut self) {
         self.focused_once = false;
     }
@@ -685,8 +725,9 @@ impl TerminalView {
 
     pub(crate) fn apply_settings(&mut self, settings: TerminalSettings, cx: &mut Context<Self>) {
         self.show_timestamps = settings.show_timestamps;
+        self.notifications_enabled = settings.notifications_enabled;
         // The workspace updates Zed's global font/scrollback settings before
-        // calling this method. Timestamp visibility is owned by this host.
+        // calling this method. Host-only settings are applied above.
         cx.notify();
     }
 
@@ -803,10 +844,14 @@ impl TerminalView {
 
     pub(crate) fn handle_system_notification_response(
         &mut self,
-        _response: &SystemNotificationResponse,
-        _cx: &mut Context<Self>,
+        response: &SystemNotificationResponse,
+        cx: &mut Context<Self>,
     ) -> Option<bool> {
-        None
+        if !terminal_notification_tag_matches(cx.entity_id(), response.tag.as_ref()) {
+            return None;
+        }
+        cx.dismiss_system_notification(response.tag.as_ref());
+        Some(true)
     }
 
     pub(crate) fn notify_language(&mut self, _cx: &mut Context<Self>) {}
@@ -1099,5 +1144,24 @@ mod tests {
             shell_lifecycle_markers(&zed_terminal::Event::BreadcrumbsChanged, breadcrumb);
 
         assert_eq!(command.unwrap().cwd, "/tmp/remote");
+    }
+
+    #[test]
+    fn terminal_notifications_respect_settings_and_focus() {
+        assert!(should_show_terminal_notification(true, false));
+        assert!(!should_show_terminal_notification(false, false));
+        assert!(!should_show_terminal_notification(true, true));
+    }
+
+    #[test]
+    fn terminal_notification_tags_are_scoped_to_the_source_entity() {
+        let source = EntityId::from(7);
+        let tag = terminal_notification_tag(source, 42);
+
+        assert_eq!(tag, format!("crossh-terminal-{source}-bell-42"));
+        assert!(terminal_notification_tag_matches(source, &tag));
+        assert!(!terminal_notification_tag_matches(EntityId::from(8), &tag));
+        let invalid_serial = format!("crossh-terminal-{source}-bell-invalid");
+        assert!(!terminal_notification_tag_matches(source, &invalid_serial));
     }
 }
