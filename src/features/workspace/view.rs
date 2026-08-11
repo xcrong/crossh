@@ -548,6 +548,7 @@ pub(crate) fn render_quick_commands_rail(
         .flex()
         .flex_col()
         .items_center()
+        .gap(px(QUICK_COMMANDS_RAIL_ITEM_GAP))
         .pt_2()
         .bg(theme::surface())
         .border_l_1()
@@ -561,8 +562,8 @@ pub(crate) fn render_quick_commands_rail(
         rail = rail.child(
             div()
                 .id(SharedString::from(format!("quick-command-rail-{index}")))
-                .w(px(30.))
-                .h(px(30.))
+                .w(px(QUICK_COMMANDS_RAIL_ITEM_SIZE))
+                .h(px(QUICK_COMMANDS_RAIL_ITEM_SIZE))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -650,6 +651,14 @@ pub(crate) fn render_quick_commands_rail(
         );
     }
     rail.into_any_element()
+}
+
+const QUICK_COMMANDS_RAIL_ITEM_SIZE: f32 = 30.0;
+const QUICK_COMMANDS_RAIL_ITEM_GAP: f32 = 4.0;
+
+#[cfg(test)]
+const fn quick_commands_rail_item_pitch() -> f32 {
+    QUICK_COMMANDS_RAIL_ITEM_SIZE + QUICK_COMMANDS_RAIL_ITEM_GAP
 }
 
 fn render_quick_command_row(
@@ -1816,5 +1825,10 @@ mod tests {
         assert!(tail.ends_with("release.tar.gz"));
         assert!(head.starts_with("deploy"));
         assert!(command_preview_parts("git status").is_none());
+    }
+
+    #[test]
+    fn collapsed_quick_commands_leave_space_between_avatars() {
+        assert_eq!(quick_commands_rail_item_pitch(), 34.0);
     }
 }
