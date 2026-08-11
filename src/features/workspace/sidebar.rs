@@ -12,7 +12,6 @@ use gpui::{
 };
 
 use crate::features::connections::HostEntry;
-use crate::features::settings::is_settings_window_open;
 use crate::features::terminal::ConnState;
 use crate::features::workspace::shell::AppShell;
 use crate::features::workspace::view::{ActiveView, LocalDir};
@@ -357,8 +356,6 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
             }
         });
 
-    let is_open = is_settings_window_open(cx);
-
     let titlebar = div()
         .relative()
         .h(px(theme::TITLEBAR_HEIGHT))
@@ -389,37 +386,7 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
                 .text_color(theme::text())
                 .child(SharedString::from("crossh")),
         )
-        .child(div().flex_1())
-        .child(
-            div()
-                .id("settings-toggle")
-                .w(px(24.))
-                .h(px(24.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(theme::RADIUS_SM))
-                .cursor_pointer()
-                .hover(|s| s.bg(theme::surface()))
-                .tooltip(|_window, cx| {
-                    cx.new(|_| LocalPathTooltip {
-                        path: SharedString::from(i18n::text("tooltip.settings")),
-                    })
-                    .into()
-                })
-                .child(
-                    icons::icon(icons::IconName::Settings, 14.)
-                        .text_color(if is_open {
-                            theme::accent()
-                        } else {
-                            theme::muted_text()
-                        })
-                        .hover(|s| s.text_color(theme::text())),
-                )
-                .on_click(cx.listener(|this, _ev, _window, cx| {
-                    this.toggle_settings(cx);
-                })),
-        );
+        .child(div().flex_1());
     let sidebar_root = div()
         .relative()
         .flex_shrink_0()
@@ -446,15 +413,6 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
 
 /// 收起主机栏时保留活跃项目与连接主机，便于直接切换工作目标。
 pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
-    let settings_open = is_settings_window_open(cx);
-    let settings = render_sidebar_rail_button(
-        "sidebar-rail-settings",
-        icons::IconName::Settings,
-        "tooltip.settings",
-        settings_open,
-        AppShell::toggle_settings,
-        cx,
-    );
     let mut activity = div().flex().flex_col().items_center().gap_1();
     for dir in shell
         .workspace
@@ -547,40 +505,6 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
         )
         .child(activity)
         .child(div().flex_1())
-        .child(settings)
-        .into_any_element()
-}
-
-fn render_sidebar_rail_button(
-    id: &'static str,
-    icon: icons::IconName,
-    tooltip: &'static str,
-    active: bool,
-    on_click: fn(&mut AppShell, &mut Context<AppShell>),
-    cx: &mut Context<AppShell>,
-) -> AnyElement {
-    div()
-        .id(id)
-        .w(px(30.))
-        .h(px(30.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(theme::RADIUS_SM))
-        .cursor_pointer()
-        .hover(|style| style.bg(theme::surface()))
-        .tooltip(move |_window, cx| {
-            cx.new(|_| LocalPathTooltip {
-                path: SharedString::from(i18n::text(tooltip)),
-            })
-            .into()
-        })
-        .child(icons::icon(icon, 15.).text_color(if active {
-            theme::accent()
-        } else {
-            theme::muted_text()
-        }))
-        .on_click(cx.listener(move |this, _ev, _window, cx| on_click(this, cx)))
         .into_any_element()
 }
 

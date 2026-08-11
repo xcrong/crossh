@@ -12,6 +12,7 @@ use gpui::{
 };
 
 use crate::features::connections::Connection;
+use crate::features::settings::is_settings_window_open;
 use crate::features::terminal::{ConnState, TerminalView};
 use crate::features::workspace::pane::WorkspacePane;
 use crate::features::workspace::shell::AppShell;
@@ -177,6 +178,14 @@ pub(crate) fn render_workspace_status_bar(
         .flex()
         .items_center()
         .gap_1()
+        .child(render_status_bar_toggle(
+            "status-settings",
+            icons::IconName::Settings,
+            "tooltip.settings",
+            is_settings_window_open(cx),
+            AppShell::toggle_settings,
+            cx,
+        ))
         .child(render_status_bar_toggle(
             "status-host-sidebar",
             icons::IconName::PanelLeft,
