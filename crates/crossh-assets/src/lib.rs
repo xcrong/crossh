@@ -64,6 +64,7 @@ define_icons! {
     PanelLeft => "icons/panel-left.svg",
     PanelRight => "icons/panel-right.svg",
     Plus => "icons/plus.svg",
+    Play => "icons/play.svg",
     RefreshCw => "icons/refresh-cw.svg",
     Save => "icons/save.svg",
     Search => "icons/search.svg",

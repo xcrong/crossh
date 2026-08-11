@@ -680,6 +680,10 @@ fn render_quick_command_row(
     let active_ids = shell.background_tasks.active_for_command(scope, &command);
     let command_for_click = command.clone();
     let scope_for_click = scope.to_string();
+    let run_scope = scope.to_string();
+    let run_command = command.clone();
+    let background_scope = scope.to_string();
+    let background_command = command.clone();
     let pin_scope = scope.to_string();
     let pin_command = command.clone();
     let mut row = div()
@@ -796,6 +800,59 @@ fn render_quick_command_row(
             theme::text(),
             SharedString::from(format!("quick-command-preview-{index}")),
         ))
+        .child(
+            div()
+                .id(SharedString::from(format!("quick-run-{index}")))
+                .w(px(20.))
+                .h(px(20.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(theme::RADIUS_SM))
+                .cursor_pointer()
+                .hover(|style| style.bg(theme::raised()))
+                .tooltip(|_window, cx| {
+                    cx.new(|_| LocalPathTooltip {
+                        path: SharedString::from(i18n::text("quick_commands.run")),
+                    })
+                    .into()
+                })
+                .child(icons::icon(icons::IconName::Play, 12.).text_color(theme::faint_text()))
+                .on_click(cx.listener(move |this, _ev, _window, cx| {
+                    this.run_quick_command(run_scope.clone(), run_command.clone(), false, cx);
+                    cx.stop_propagation();
+                })),
+        )
+        .child(
+            div()
+                .id(SharedString::from(format!("quick-run-background-{index}")))
+                .w(px(20.))
+                .h(px(20.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(theme::RADIUS_SM))
+                .cursor_pointer()
+                .hover(|style| style.bg(theme::raised()))
+                .tooltip(|_window, cx| {
+                    cx.new(|_| LocalPathTooltip {
+                        path: SharedString::from(i18n::text("quick_commands.run_background")),
+                    })
+                    .into()
+                })
+                .child(icons::icon(icons::IconName::Clock, 12.).text_color(theme::faint_text()))
+                .on_click(cx.listener(move |this, _ev, _window, cx| {
+                    this.run_quick_command(
+                        background_scope.clone(),
+                        background_command.clone(),
+                        true,
+                        cx,
+                    );
+                    cx.stop_propagation();
+                })),
+        )
         .child(
             div()
                 .id(SharedString::from(format!("quick-pin-{index}")))
