@@ -15,6 +15,12 @@
 - Do NOT hardcode the revision: it changes whenever the Zed dependency is updated. Always resolve the current revision by reading the `rev` key in `Cargo.toml`, then locate the matching subdirectory under `~/.cargo/git/checkouts/zed-*/`.
 - The full git database is also cached at `~/.cargo/git/db/zed-<hash>/`.
 
+## GPUI Skill
+
+- This project has a local GPUI skill at `.agents/skills/gpui/SKILL.md` covering GPUI concepts, patterns, and APIs (actions/keybindings, async tasks, context management, entities, focus, layout, testing).
+- Load the `gpui` skill whenever working with GPUI framework code or answering GPUI API questions. It also points to the Zed source under `~/.cargo/git/checkouts/` for authoritative API lookups.
+- For Terminal/PTY debugging, see also the `terminal-pty-capture` skill at `.agents/skills/terminal-pty-capture/SKILL.md`.
+
 ## Engineering Rules (derived from Zed's architecture)
 
 - **Logic must not depend on UI.** Pure-logic modules (`shared/terminal/`, SSH sessions, protocols, engines) must contain zero `gpui` imports. GPUI views depend on logic; logic never depends on views. To verify, treat any `gpui` import in a logic module as a layering violation.
