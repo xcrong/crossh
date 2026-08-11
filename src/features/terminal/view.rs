@@ -1026,6 +1026,7 @@ impl Render for TerminalView {
                 div()
                     .id("terminal-view-container")
                     .size_full()
+                    .p(px(8.))
                     .child(terminal_element),
             );
 
