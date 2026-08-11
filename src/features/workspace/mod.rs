@@ -3,6 +3,7 @@
 pub(crate) mod command_editor;
 pub(crate) mod empty_state;
 pub(crate) mod pane;
+pub(crate) mod quick_commands_rail;
 pub(crate) mod registry;
 pub(crate) mod settings;
 pub(crate) mod shell;

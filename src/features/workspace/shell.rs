@@ -30,13 +30,13 @@ use crate::features::sftp::SftpPane;
 use crate::features::terminal::{TerminalEvent, TerminalView};
 use crate::features::updates::{UpdateController, UpdateSettings};
 use crate::features::workspace::empty_state::EmptyStateFilter;
+use crate::features::workspace::quick_commands_rail::render_quick_commands_rail;
 use crate::features::workspace::registry::WorkspaceState;
 use crate::features::workspace::settings::WorkspaceSettings;
 use crate::features::workspace::sidebar::{render_sidebar, render_sidebar_rail};
 use crate::features::workspace::view::{
     ActiveView, LocalDir, LocalSession, LocalSessionId, Tab, rebuild_local_dirs, render_main,
-    render_quick_command_editor, render_quick_commands, render_quick_commands_rail,
-    render_workspace_status_bar,
+    render_quick_command_editor, render_quick_commands, render_workspace_status_bar,
 };
 use crate::shared::i18n::{self, LanguagePreference};
 use crossh_agent::AgentSettings;

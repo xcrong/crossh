@@ -23,7 +23,6 @@ use crossh_core::project::GitStatus;
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::widgets::{LocalPathTooltip, ime_input_canvas, text_caret};
 use crossh_ui::{icons, theme};
-use crossh_ui_component::{Avatar, AvatarKind};
 
 /// 一个远程终端/SFTP 标签。
 pub struct Tab {
@@ -533,132 +532,6 @@ pub(crate) fn render_quick_commands(
         .children(task_section)
         .child(resize_handle);
     panel.into_any_element()
-}
-
-pub(crate) fn render_quick_commands_rail(
-    shell: &AppShell,
-    scope: &str,
-    cx: &mut Context<AppShell>,
-) -> AnyElement {
-    let mut rail = div()
-        .id("quick-commands-rail")
-        .w(px(theme::QUICK_COMMANDS_RAIL_WIDTH))
-        .h_full()
-        .flex_none()
-        .flex()
-        .flex_col()
-        .items_center()
-        .gap(px(QUICK_COMMANDS_RAIL_ITEM_GAP))
-        .pt_2()
-        .bg(theme::surface())
-        .border_l_1()
-        .border_color(theme::border());
-    for (index, record) in shell.command_history.pinned(scope).iter().enumerate() {
-        let command = record.command.clone();
-        let run_scope = scope.to_string();
-        let menu_scope = scope.to_string();
-        let menu_command = command.clone();
-        let tooltip_command = command.clone();
-        rail = rail.child(
-            div()
-                .id(SharedString::from(format!("quick-command-rail-{index}")))
-                .w(px(QUICK_COMMANDS_RAIL_ITEM_SIZE))
-                .h(px(QUICK_COMMANDS_RAIL_ITEM_SIZE))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(theme::RADIUS_SM))
-                .cursor_pointer()
-                .hover(|style| style.bg(theme::raised()))
-                .tooltip(move |_window, cx| {
-                    cx.new(|_| crossh_ui::widgets::CommandTooltip {
-                        command: SharedString::from(tooltip_command.clone()),
-                    })
-                    .into()
-                })
-                .child(Avatar::new(&command).kind(AvatarKind::Command))
-                .on_click(cx.listener(move |this, ev: &ClickEvent, _window, cx| {
-                    if ev.click_count() == 2 {
-                        this.run_quick_command(run_scope.clone(), command.clone(), false, cx);
-                    }
-                }))
-                .on_mouse_down(MouseButton::Right, {
-                    cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
-                        this.open_context_menu(
-                            ev.position,
-                            vec![
-                                MenuEntry::Item(MenuItem {
-                                    id: "quick-run-background".into(),
-                                    label: i18n::text("quick_commands.run_background"),
-                                    shortcut_hint: None,
-                                    disabled: false,
-                                    danger: false,
-                                    action: ShellMenuAction::RunQuickCommand {
-                                        scope: menu_scope.clone(),
-                                        command: menu_command.clone(),
-                                        background: true,
-                                    },
-                                }),
-                                MenuEntry::Item(MenuItem {
-                                    id: "quick-edit".into(),
-                                    label: i18n::text("quick_commands.edit"),
-                                    shortcut_hint: None,
-                                    disabled: false,
-                                    danger: false,
-                                    action: ShellMenuAction::EditQuickCommand {
-                                        scope: menu_scope.clone(),
-                                        command: menu_command.clone(),
-                                    },
-                                }),
-                                MenuEntry::Item(MenuItem {
-                                    id: "quick-unpin".into(),
-                                    label: i18n::text("quick_commands.unpin"),
-                                    shortcut_hint: None,
-                                    disabled: false,
-                                    danger: false,
-                                    action: ShellMenuAction::ToggleQuickCommandPin {
-                                        scope: menu_scope.clone(),
-                                        command: menu_command.clone(),
-                                    },
-                                }),
-                                MenuEntry::Item(MenuItem {
-                                    id: "quick-delete".into(),
-                                    label: i18n::text("quick_commands.delete"),
-                                    shortcut_hint: None,
-                                    disabled: false,
-                                    danger: true,
-                                    action: ShellMenuAction::DeleteQuickCommand {
-                                        scope: menu_scope.clone(),
-                                        command: menu_command.clone(),
-                                    },
-                                }),
-                                MenuEntry::Item(MenuItem {
-                                    id: "quick-ignore".into(),
-                                    label: i18n::text("quick_commands.ignore"),
-                                    shortcut_hint: None,
-                                    disabled: false,
-                                    danger: true,
-                                    action: ShellMenuAction::IgnoreQuickCommand {
-                                        scope: menu_scope.clone(),
-                                        command: menu_command.clone(),
-                                    },
-                                }),
-                            ],
-                            cx,
-                        );
-                    })
-                }),
-        );
-    }
-    rail.into_any_element()
-}
-
-const QUICK_COMMANDS_RAIL_ITEM_SIZE: f32 = 30.0;
-const QUICK_COMMANDS_RAIL_ITEM_GAP: f32 = 4.0;
-
-#[cfg(test)]
-const fn quick_commands_rail_item_pitch() -> f32 {
-    QUICK_COMMANDS_RAIL_ITEM_SIZE + QUICK_COMMANDS_RAIL_ITEM_GAP
 }
 
 fn render_quick_command_row(
@@ -1825,10 +1698,5 @@ mod tests {
         assert!(tail.ends_with("release.tar.gz"));
         assert!(head.starts_with("deploy"));
         assert!(command_preview_parts("git status").is_none());
-    }
-
-    #[test]
-    fn collapsed_quick_commands_leave_space_between_avatars() {
-        assert_eq!(quick_commands_rail_item_pitch(), 34.0);
     }
 }
