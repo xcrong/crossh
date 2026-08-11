@@ -218,6 +218,13 @@ git:
   no_diff: 无文本更改
   binary: 二进制文件
   loading: 加载中…
+  stage: 暂存此文件
+  unstage: 取消暂存此文件
+  stage_all: 暂存所有更改
+  unstage_all: 取消暂存所有更改
+  back_to_changes: 返回更改列表
+  commit_message_placeholder: 输入提交信息
+  commit_files: "提交 %{count} 个文件"
 
 connection:
   connecting_with_separator: "连接中 · "

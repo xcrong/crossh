@@ -1,77 +1,121 @@
-//! Git 可视化窗口：独立的 gpui 窗口（VS Code 源码管理风格）。
-//!
-//! 窗口自持目录与拉取的数据（`logic.rs` 纯逻辑），不依赖主窗口；
-//! 由状态栏 Git 指示条点击打开。
+//! Git 窗口状态、后台任务与窗口生命周期。
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, AppContext, Bounds, Context, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, Render, SharedString, Size, StatefulInteractiveElement, Styled, Task,
-    TitlebarOptions, Window, WindowBounds, WindowOptions, div, px,
+    App, AppContext, Bounds, Context, FocusHandle, Size, Task, TitlebarOptions, WindowBounds,
+    WindowOptions, px,
 };
 
-use crate::shared::i18n;
-use crossh_core::git::{ChangeStatus, DiffLineKind, FileChange, diff, list_changes};
+use crossh_core::git::{FileChange, commit, diff, list_changes, stage, unstage};
 use crossh_core::project::GitStatus;
-use crossh_ui::widgets::LocalPathTooltip;
-use crossh_ui::{icons, theme};
-use crossh_ui_component::{Badge, BadgeTone};
 
-/// 窗口自身的数据刷新间隔。
-const REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+use super::editor::CommitEditor;
+use super::model::{
+    CHANGES_PANE_DEFAULT_WIDTH, ChangeKey, CompactPage, DiffState, OperationState,
+    diff_uses_staged_baseline, reconcile_selection, selected_index,
+};
 
-/// Git 窗口的根视图。窗口关闭即释放。
+const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+
+enum GitOperation {
+    Stage(Vec<String>),
+    Unstage(Vec<String>),
+    Commit(String),
+}
+
 pub struct GitWindow {
-    cwd: PathBuf,
-    label: String,
-    /// 全部改动（已暂存 + 未暂存）。
-    changes: Vec<FileChange>,
-    status: Option<GitStatus>,
-    /// true = 右侧展示已暂存（相对 HEAD）的 diff，否则展示工作区（相对索引）。
-    show_staged: bool,
-    selected: Option<usize>,
-    diff: Option<Option<crossh_core::git::FileDiff>>,
-    loading: bool,
-    list_generation: u64,
-    diff_generation: u64,
-    _refresh_task: Option<Task<()>>,
-    changes_scroll: gpui::ScrollHandle,
-    diff_scroll: gpui::ScrollHandle,
+    pub(super) cwd: PathBuf,
+    pub(super) label: String,
+    pub(super) changes: Vec<FileChange>,
+    pub(super) status: Option<GitStatus>,
+    pub(super) selected: Option<ChangeKey>,
+    pub(super) diff: DiffState,
+    pub(super) initial_loading: bool,
+    pub(super) refreshing: bool,
+    pub(super) operation: OperationState,
+    pub(super) compact_layout: bool,
+    pub(super) compact_page: CompactPage,
+    pub(super) staged_collapsed: bool,
+    pub(super) working_collapsed: bool,
+    pub(super) commit_editor: CommitEditor,
+    pub(super) changes_focus: FocusHandle,
+    pub(super) list_generation: u64,
+    pub(super) diff_generation: u64,
+    pub(super) operation_generation: u64,
+    pub(super) _refresh_task: Option<Task<()>>,
+    pub(super) changes_scroll: gpui::ScrollHandle,
+    pub(super) diff_scroll: gpui::ScrollHandle,
+    pub(super) changes_pane_width: Rc<Cell<f32>>,
+    pub(super) changes_pane_dragging: Rc<Cell<bool>>,
 }
 
 impl GitWindow {
-    fn new(cwd: PathBuf, cx: &mut Context<Self>) -> Self {
-        let label = cwd
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| cwd.to_string_lossy().into_owned());
-        let mut window = Self {
+    pub(crate) fn new(cwd: PathBuf, cx: &mut Context<Self>) -> Self {
+        let label = directory_label(&cwd);
+        let mut git_window = Self {
             cwd,
             label,
             changes: Vec::new(),
             status: None,
-            show_staged: false,
             selected: None,
-            diff: None,
-            loading: true,
+            diff: DiffState::Idle,
+            initial_loading: true,
+            refreshing: false,
+            operation: OperationState::Idle,
+            compact_layout: false,
+            compact_page: CompactPage::Changes,
+            staged_collapsed: false,
+            working_collapsed: false,
+            commit_editor: CommitEditor::new(cx.focus_handle()),
+            changes_focus: cx.focus_handle(),
             list_generation: 0,
             diff_generation: 0,
+            operation_generation: 0,
             _refresh_task: None,
             changes_scroll: gpui::ScrollHandle::new(),
             diff_scroll: gpui::ScrollHandle::new(),
+            changes_pane_width: Rc::new(Cell::new(CHANGES_PANE_DEFAULT_WIDTH)),
+            changes_pane_dragging: Rc::new(Cell::new(false)),
         };
-        window.refresh_list(cx);
-        window.ensure_refresh_loop(cx);
-        window
+        git_window.refresh_list(cx);
+        git_window.ensure_refresh_loop(cx);
+        git_window
     }
 
-    /// 重新拉取文件列表与汇总状态。
-    fn refresh_list(&mut self, cx: &mut Context<Self>) {
+    #[cfg(feature = "visual-tests")]
+    pub(crate) fn visual_fixture(
+        cwd: PathBuf,
+        show_compact_diff: bool,
+        show_error: bool,
+        cx: &mut App,
+    ) -> gpui::Entity<Self> {
+        cx.new(|cx| {
+            let mut git_window = Self::new(cwd, cx);
+            git_window.commit_editor.value = "完善 Git 窗口\n保持紧凑布局可用".to_string();
+            git_window.commit_editor.cursor = git_window.commit_editor.value.len();
+            if show_compact_diff {
+                git_window.compact_page = CompactPage::Diff;
+            }
+            if show_error {
+                git_window.operation = OperationState::Error(
+                    "提交失败：请先配置 Git 用户名和邮箱，然后重试。".to_string(),
+                );
+            }
+            git_window
+        })
+    }
+
+    pub(super) fn refresh_list(&mut self, cx: &mut Context<Self>) {
         self.list_generation = self.list_generation.wrapping_add(1);
         let generation = self.list_generation;
         let cwd = self.cwd.clone();
-        self.loading = true;
+        let previous_index = selected_index(&self.changes, self.selected.as_ref());
+        self.refreshing = true;
+        self.initial_loading = self.changes.is_empty();
 
         cx.spawn(async move |weak, cx| {
             let (changes, status) = cx
@@ -82,12 +126,12 @@ impl GitWindow {
                 if this.list_generation != generation {
                     return;
                 }
+                this.selected =
+                    reconcile_selection(&changes, this.selected.as_ref(), previous_index);
                 this.changes = changes;
                 this.status = status;
-                this.loading = false;
-                if this.selected.is_none() && !this.changes.is_empty() {
-                    this.selected = Some(0);
-                }
+                this.initial_loading = false;
+                this.refreshing = false;
                 this.refresh_diff(cx);
                 cx.notify();
             });
@@ -95,37 +139,46 @@ impl GitWindow {
         .detach();
     }
 
-    /// 重新拉取选中文件的 diff。
-    fn refresh_diff(&mut self, cx: &mut Context<Self>) {
-        let Some(index) = self.selected else {
-            self.diff = None;
+    pub(super) fn refresh_diff(&mut self, cx: &mut Context<Self>) {
+        let Some(index) = selected_index(&self.changes, self.selected.as_ref()) else {
+            self.diff = DiffState::Idle;
             return;
         };
-        let Some(entry) = self.changes.get(index).cloned() else {
-            return;
-        };
+        let entry = self.changes[index].clone();
+        let key = ChangeKey::from(&entry);
         let cwd = self.cwd.clone();
-        let staged = self.show_staged;
         self.diff_generation = self.diff_generation.wrapping_add(1);
         let generation = self.diff_generation;
+        let keep_current_diff = matches!(
+            &self.diff,
+            DiffState::Ready(current_key, _) if current_key == &key
+        );
+        if !keep_current_diff {
+            self.diff = DiffState::Loading(key.clone());
+        }
 
         cx.spawn(async move |weak, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { diff(&cwd, &entry, staged) })
+                .spawn({
+                    let key = key.clone();
+                    async move {
+                        let staged = diff_uses_staged_baseline(&entry);
+                        (key, diff(&cwd, &entry, staged))
+                    }
+                })
                 .await;
             let _ = weak.update(cx, |this, cx| {
-                if this.diff_generation != generation {
+                if this.diff_generation != generation || this.selected.as_ref() != Some(&result.0) {
                     return;
                 }
-                this.diff = Some(result);
+                this.diff = DiffState::Ready(result.0, result.1);
                 cx.notify();
             });
         })
         .detach();
     }
 
-    /// 周期刷新循环，保证窗口数据与工作区同步。
     fn ensure_refresh_loop(&mut self, cx: &mut Context<Self>) {
         if self._refresh_task.is_some() {
             return;
@@ -133,31 +186,158 @@ impl GitWindow {
         self._refresh_task = Some(cx.spawn(async move |weak, cx| {
             loop {
                 cx.background_executor().timer(REFRESH_INTERVAL).await;
-                let _ = weak.update(cx, |this, cx| this.refresh_list(cx));
+                if weak.update(cx, |this, cx| this.refresh_list(cx)).is_err() {
+                    break;
+                }
             }
         }));
     }
 
-    fn select(&mut self, index: usize, cx: &mut Context<Self>) {
-        if self.selected == Some(index) {
-            return;
+    pub(super) fn select(&mut self, key: ChangeKey, cx: &mut Context<Self>) {
+        let changed = self.selected.as_ref() != Some(&key);
+        self.selected = Some(key);
+        if self.compact_layout {
+            self.compact_page = CompactPage::Diff;
         }
-        self.selected = Some(index);
-        self.diff_scroll
-            .set_offset(gpui::Point::new(px(0.), px(0.)));
-        self.refresh_diff(cx);
+        if changed {
+            self.diff_scroll
+                .set_offset(gpui::Point::new(px(0.), px(0.)));
+            self.refresh_diff(cx);
+        }
         cx.notify();
     }
 
-    fn set_show_staged(&mut self, staged: bool, cx: &mut Context<Self>) {
-        if self.show_staged == staged {
+    pub(super) fn move_selection(&mut self, direction: i8, cx: &mut Context<Self>) {
+        if self.changes.is_empty() {
             return;
         }
-        self.show_staged = staged;
-        self.diff_scroll
-            .set_offset(gpui::Point::new(px(0.), px(0.)));
-        self.refresh_diff(cx);
+        let current = selected_index(&self.changes, self.selected.as_ref()).unwrap_or(0);
+        let next = if direction < 0 {
+            current.saturating_sub(1)
+        } else {
+            (current + 1).min(self.changes.len() - 1)
+        };
+        self.select(ChangeKey::from(&self.changes[next]), cx);
+    }
+
+    pub(super) fn toggle_selected_stage(&mut self, cx: &mut Context<Self>) {
+        let Some(index) = selected_index(&self.changes, self.selected.as_ref()) else {
+            return;
+        };
+        let entry = &self.changes[index];
+        self.run_paths_operation(entry.staged, vec![entry.path.clone()], cx);
+    }
+
+    pub(super) fn stage_paths(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
+        self.run_paths_operation(false, paths, cx);
+    }
+
+    pub(super) fn unstage_paths(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
+        self.run_paths_operation(true, paths, cx);
+    }
+
+    fn run_paths_operation(
+        &mut self,
+        currently_staged: bool,
+        paths: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if paths.is_empty() || matches!(self.operation, OperationState::Running) {
+            return;
+        }
+        let desired = (paths.len() == 1).then(|| ChangeKey {
+            path: paths[0].clone(),
+            staged: !currently_staged,
+        });
+        let operation = if currently_staged {
+            GitOperation::Unstage(paths)
+        } else {
+            GitOperation::Stage(paths)
+        };
+        self.run_operation(operation, desired, false, cx);
+    }
+
+    pub(super) fn commit_changes(&mut self, cx: &mut Context<Self>) {
+        if !self.can_commit() {
+            return;
+        }
+        self.run_operation(
+            GitOperation::Commit(self.commit_editor.value.clone()),
+            None,
+            true,
+            cx,
+        );
+    }
+
+    fn run_operation(
+        &mut self,
+        operation: GitOperation,
+        desired_selection: Option<ChangeKey>,
+        clear_message: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.operation_generation = self.operation_generation.wrapping_add(1);
+        let generation = self.operation_generation;
+        let cwd = self.cwd.clone();
+        self.operation = OperationState::Running;
         cx.notify();
+
+        cx.spawn(async move |weak, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    match operation {
+                        GitOperation::Stage(paths) => stage(&cwd, &paths),
+                        GitOperation::Unstage(paths) => unstage(&cwd, &paths),
+                        GitOperation::Commit(message) => commit(&cwd, &message),
+                    }
+                })
+                .await;
+            let _ = weak.update(cx, |this, cx| {
+                if this.operation_generation != generation {
+                    return;
+                }
+                match result {
+                    Ok(()) => {
+                        this.operation = OperationState::Idle;
+                        this.selected = desired_selection;
+                        if clear_message {
+                            this.commit_editor.value.clear();
+                            this.commit_editor.cursor = 0;
+                            this.commit_editor.anchor = None;
+                        }
+                        this.refresh_list(cx);
+                    }
+                    Err(error) => {
+                        this.operation = OperationState::Error(error.to_string());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn staged_count(&self) -> usize {
+        self.changes.iter().filter(|change| change.staged).count()
+    }
+
+    pub(super) fn can_commit(&self) -> bool {
+        self.staged_count() > 0
+            && !self.commit_editor.value.trim().is_empty()
+            && !matches!(self.operation, OperationState::Running)
+    }
+
+    pub(super) fn selected_entry(&self) -> Option<&FileChange> {
+        selected_index(&self.changes, self.selected.as_ref())
+            .and_then(|index| self.changes.get(index))
+    }
+
+    pub(super) fn back_to_changes(&mut self, cx: &mut Context<Self>) {
+        if self.compact_layout && self.compact_page == CompactPage::Diff {
+            self.compact_page = CompactPage::Changes;
+            cx.notify();
+        }
     }
 }
 
@@ -165,502 +345,13 @@ fn inspect_status(cwd: &Path) -> Option<GitStatus> {
     crossh_core::project::inspect(cwd)
 }
 
-impl Render for GitWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let staged_count = self.changes.iter().filter(|entry| entry.staged).count();
-        let working_count = self.changes.len() - staged_count;
-
-        let (staged_entries, working_entries) = self.changes.iter().enumerate().fold(
-            (Vec::new(), Vec::new()),
-            |(mut staged, mut working), (index, entry)| {
-                if entry.staged {
-                    staged.push((index, entry));
-                } else {
-                    working.push((index, entry));
-                }
-                (staged, working)
-            },
-        );
-
-        let mut list = div().flex().flex_col();
-        if self.loading {
-            list = list.child(empty_hint(&i18n::text("git.loading")));
-        } else if self.changes.is_empty() {
-            list = list.child(empty_hint(&i18n::text("git.no_changes")));
-        } else {
-            list = list
-                .child(section_header(
-                    &format!("{} ({})", i18n::text("git.staged_changes"), staged_count),
-                    theme::accent(),
-                ))
-                .child(render_entries(&staged_entries, self.selected, cx))
-                .child(section_header(
-                    &format!("{} ({})", i18n::text("git.changes"), working_count),
-                    theme::text(),
-                ))
-                .child(render_entries(&working_entries, self.selected, cx));
-        }
-
-        let right = self.render_diff_pane();
-
-        div()
-            .id("git-window")
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(theme::canvas())
-            .child(self.render_header(cx))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .child(
-                        div()
-                            .w(px(300.))
-                            .flex_shrink_0()
-                            .flex()
-                            .flex_col()
-                            .border_r_1()
-                            .border_color(theme::border_strong())
-                            .bg(theme::sidebar())
-                            .child(
-                                div()
-                                    .id("git-changes-list")
-                                    .track_scroll(&self.changes_scroll)
-                                    .flex_1()
-                                    .min_h_0()
-                                    .overflow_y_scroll()
-                                    .child(list),
-                            ),
-                    )
-                    .child(right),
-            )
-    }
+fn directory_label(cwd: &Path) -> String {
+    cwd.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| cwd.to_string_lossy().into_owned())
 }
 
-impl GitWindow {
-    /// 顶部工具条：分支信息 + 暂存/工作区切换 + 刷新。
-    fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut branch_info = div()
-            .min_w_0()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(icons::icon(icons::IconName::GitBranch, 15.).text_color(theme::accent()))
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(theme::text())
-                    .child(SharedString::from(
-                        self.status
-                            .as_ref()
-                            .map(|status| status.branch.clone())
-                            .unwrap_or_else(|| self.label.clone()),
-                    )),
-            );
-        if let Some(status) = &self.status {
-            if status.ahead > 0 {
-                branch_info = branch_info.child(status_badge(format!("↑{}", status.ahead)));
-            }
-            if status.behind > 0 {
-                branch_info = branch_info.child(status_badge(format!("↓{}", status.behind)));
-            }
-        }
-
-        let staged = self.show_staged;
-        let toggle = div()
-            .flex()
-            .items_center()
-            .rounded(px(theme::RADIUS_SM))
-            .bg(theme::sidebar())
-            .border_1()
-            .border_color(theme::border())
-            .p(px(2.))
-            .child(
-                div()
-                    .id("git-toggle-working")
-                    .px_2()
-                    .py(px(2.))
-                    .text_xs()
-                    .rounded(px(theme::RADIUS_SM - 1.))
-                    .cursor_pointer()
-                    .text_color(if staged {
-                        theme::muted_text()
-                    } else {
-                        theme::accent()
-                    })
-                    .bg(if staged {
-                        theme::sidebar()
-                    } else {
-                        theme::accent_soft()
-                    })
-                    .child(SharedString::from(i18n::text("git.working")))
-                    .on_click(cx.listener(|this, _ev, _window, cx| {
-                        this.set_show_staged(false, cx);
-                    })),
-            )
-            .child(
-                div()
-                    .id("git-toggle-staged")
-                    .px_2()
-                    .py(px(2.))
-                    .text_xs()
-                    .rounded(px(theme::RADIUS_SM - 1.))
-                    .cursor_pointer()
-                    .text_color(if staged {
-                        theme::accent()
-                    } else {
-                        theme::muted_text()
-                    })
-                    .bg(if staged {
-                        theme::accent_soft()
-                    } else {
-                        theme::sidebar()
-                    })
-                    .child(SharedString::from(i18n::text("git.staged")))
-                    .on_click(cx.listener(|this, _ev, _window, cx| {
-                        this.set_show_staged(true, cx);
-                    })),
-            );
-
-        div()
-            .h(px(44.))
-            .flex_shrink_0()
-            .px_3()
-            .flex()
-            .items_center()
-            .gap_2()
-            .bg(theme::surface())
-            .border_b_1()
-            .border_color(theme::border())
-            .child(branch_info)
-            .child(div().flex_1())
-            .child(toggle)
-            .child(
-                div()
-                    .id("git-refresh")
-                    .w(px(28.))
-                    .h(px(28.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(theme::RADIUS_SM))
-                    .cursor_pointer()
-                    .text_color(theme::muted_text())
-                    .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
-                    .tooltip(|_window, cx| {
-                        cx.new(|_| LocalPathTooltip {
-                            path: SharedString::from(i18n::text("git.refresh")),
-                        })
-                        .into()
-                    })
-                    .child(
-                        icons::icon(icons::IconName::RefreshCw, 14.)
-                            .text_color(theme::muted_text())
-                            .hover(|s| s.text_color(theme::text())),
-                    )
-                    .on_click(cx.listener(|this, _ev, _window, cx| {
-                        this.diff_scroll
-                            .set_offset(gpui::Point::new(px(0.), px(0.)));
-                        this.refresh_list(cx);
-                        cx.notify();
-                    })),
-            )
-            .into_any_element()
-    }
-
-    /// 右侧 diff 面板。
-    fn render_diff_pane(&self) -> AnyElement {
-        let Some(index) = self.selected else {
-            return div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(empty_hint(&i18n::text("git.no_selection")))
-                .into_any_element();
-        };
-        let Some(entry) = self.changes.get(index) else {
-            return div().flex_1().into_any_element();
-        };
-
-        let header = div()
-            .h(px(34.))
-            .flex_shrink_0()
-            .px_3()
-            .flex()
-            .items_center()
-            .gap_2()
-            .bg(theme::surface())
-            .border_b_1()
-            .border_color(theme::border())
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .text_sm()
-                    .text_color(theme::text())
-                    .child(SharedString::from(entry.path.clone())),
-            )
-            .child(status_glyph(entry.status))
-            .child(div().flex_1())
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme::muted_text())
-                    .child(SharedString::from(format!(
-                        "+{} −{}",
-                        entry.insertions, entry.deletions
-                    ))),
-            );
-
-        let body = match &self.diff {
-            None => div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(empty_hint(&i18n::text("git.loading")))
-                .into_any_element(),
-            Some(Some(file_diff)) if file_diff.binary => div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(empty_hint(&i18n::text("git.binary")))
-                .into_any_element(),
-            Some(Some(file_diff)) if file_diff.lines.is_empty() => div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(empty_hint(&i18n::text("git.no_diff")))
-                .into_any_element(),
-            Some(Some(file_diff)) => {
-                let mut lines = div().min_w_0().flex().flex_col();
-                for line in &file_diff.lines {
-                    lines = lines.child(render_diff_line(line));
-                }
-                div()
-                    .id("git-diff-scroll")
-                    .track_scroll(&self.diff_scroll)
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_y_scroll()
-                    .overflow_x_scroll()
-                    .child(lines)
-                    .into_any_element()
-            }
-            Some(None) => div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(empty_hint(&i18n::text("git.no_diff")))
-                .into_any_element(),
-        };
-
-        div()
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .child(header)
-            .child(body)
-            .into_any_element()
-    }
-}
-
-/// 文件行列表。
-fn render_entries(
-    entries: &[(usize, &FileChange)],
-    selected: Option<usize>,
-    cx: &mut Context<GitWindow>,
-) -> AnyElement {
-    let mut list = div().flex().flex_col().py(px(2.));
-    for (index, entry) in entries {
-        let is_selected = selected == Some(*index);
-        let row_index = *index;
-        let row = div()
-            .id(gpui::SharedString::from(format!("git-entry-{row_index}")))
-            .w_full()
-            .h(px(28.))
-            .px_2()
-            .flex()
-            .items_center()
-            .gap_2()
-            .cursor_pointer()
-            .text_xs()
-            .text_color(if is_selected {
-                theme::text()
-            } else {
-                theme::muted_text()
-            })
-            .border_l_2()
-            .border_color(if is_selected {
-                theme::accent()
-            } else {
-                theme::sidebar()
-            })
-            .bg(if is_selected {
-                theme::accent_soft()
-            } else {
-                theme::sidebar()
-            })
-            .hover(|s| s.bg(theme::raised()))
-            .child(status_glyph(entry.status))
-            .child(
-                div()
-                    .min_w_0()
-                    .flex_1()
-                    .truncate()
-                    .text_color(if is_selected {
-                        theme::text()
-                    } else {
-                        theme::muted_text()
-                    })
-                    .child(SharedString::from(entry.path.clone())),
-            );
-        let row = if entry.insertions > 0 || entry.deletions > 0 {
-            row.child(
-                div()
-                    .flex_none()
-                    .text_xs()
-                    .text_color(theme::muted_text())
-                    .child(SharedString::from(format!(
-                        "+{} −{}",
-                        entry.insertions, entry.deletions
-                    ))),
-            )
-        } else {
-            row
-        };
-        list = list.child(row.on_click(cx.listener(move |this, _ev, _window, cx| {
-            this.select(row_index, cx);
-        })));
-    }
-    list.into_any_element()
-}
-
-/// VS Code 风格的分组标题。
-fn section_header(label: &str, color: gpui::Rgba) -> AnyElement {
-    div()
-        .px_3()
-        .py(px(6.))
-        .flex()
-        .items_center()
-        .text_xs()
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(color)
-        .child(SharedString::from(label))
-        .into_any_element()
-}
-
-/// 状态字形（M/A/D/R/!/?）。
-fn status_glyph(status: ChangeStatus) -> AnyElement {
-    let color = match status {
-        ChangeStatus::Modified => theme::warning(),
-        ChangeStatus::Added | ChangeStatus::Renamed => theme::accent(),
-        ChangeStatus::Deleted | ChangeStatus::Conflict => theme::danger(),
-        ChangeStatus::Untracked => theme::faint_text(),
-    };
-    div()
-        .w(px(14.))
-        .flex_none()
-        .text_xs()
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(color)
-        .child(SharedString::from(status.glyph()))
-        .into_any_element()
-}
-
-/// 顶部的小徽章（↑n / ↓n）。
-fn status_badge(text: String) -> AnyElement {
-    Badge::new(text).tone(BadgeTone::Info).into_any_element()
-}
-
-/// 单个 diff 行：旧行号 | 新行号 | 内容。
-fn render_diff_line(line: &crossh_core::git::DiffLine) -> AnyElement {
-    let (bg, fg) = match line.kind {
-        DiffLineKind::Hunk => (theme::surface(), theme::muted_text()),
-        DiffLineKind::Added => (theme::diff_add_bg(), theme::diff_add_fg()),
-        DiffLineKind::Removed => (theme::diff_del_bg(), theme::diff_del_fg()),
-        DiffLineKind::Context => (theme::canvas(), theme::text()),
-    };
-
-    if line.kind == DiffLineKind::Hunk {
-        return div()
-            .px_2()
-            .py(px(2.))
-            .bg(bg)
-            .text_xs()
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(fg)
-            .child(SharedString::from(line.text.clone()))
-            .into_any_element();
-    }
-
-    let old_number = line
-        .old_ln
-        .map(|number| format!("{number}"))
-        .unwrap_or_default();
-    let new_number = line
-        .new_ln
-        .map(|number| format!("{number}"))
-        .unwrap_or_default();
-
-    div()
-        .flex()
-        .flex_row()
-        .bg(bg)
-        .child(
-            div()
-                .w(px(44.))
-                .flex_none()
-                .px(px(6.))
-                .flex()
-                .justify_end()
-                .text_xs()
-                .text_color(fg)
-                .child(SharedString::from(old_number)),
-        )
-        .child(
-            div()
-                .w(px(44.))
-                .flex_none()
-                .px(px(6.))
-                .flex()
-                .justify_end()
-                .text_xs()
-                .text_color(fg)
-                .child(SharedString::from(new_number)),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .px(px(6.))
-                .overflow_x_hidden()
-                .text_xs()
-                .text_color(fg)
-                .child(SharedString::from(line.text.clone())),
-        )
-        .into_any_element()
-}
-
-fn empty_hint(text: &str) -> AnyElement {
-    div()
-        .p_4()
-        .text_xs()
-        .text_color(theme::faint_text())
-        .child(SharedString::from(text))
-        .into_any_element()
-}
-
-/// 打开（或复用来聚焦）Git 窗口；目录不同则重新指向。
-/// 借鉴 Zed：窗口复用 + `cx.defer` 延迟到当前帧结束再开窗。
+/// 打开或聚焦 Git 窗口；切换目录时复用现有窗口。
 pub fn open_git_window(cwd: PathBuf, cx: &mut App) {
     if let Some(window) = cx
         .windows()
@@ -669,15 +360,19 @@ pub fn open_git_window(cwd: PathBuf, cx: &mut App) {
     {
         let _ = window.update(cx, |this, window, cx| {
             if this.cwd != cwd {
+                this.list_generation = this.list_generation.wrapping_add(1);
+                this.diff_generation = this.diff_generation.wrapping_add(1);
+                this.operation_generation = this.operation_generation.wrapping_add(1);
                 this.cwd = cwd;
-                this.label = this
-                    .cwd
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| this.cwd.to_string_lossy().into_owned());
-                this.changes = Vec::new();
+                this.label = directory_label(&this.cwd);
+                this.changes.clear();
                 this.selected = None;
-                this.diff = None;
+                this.diff = DiffState::Idle;
+                this.compact_page = CompactPage::Changes;
+                this.operation = OperationState::Idle;
+                this.commit_editor.value.clear();
+                this.commit_editor.cursor = 0;
+                this.commit_editor.anchor = None;
                 this.refresh_list(cx);
             }
             window.activate_window();
@@ -698,11 +393,7 @@ pub fn open_git_window(cwd: PathBuf, cx: &mut App) {
         cx.open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
-                    title: Some(SharedString::from(
-                        cwd.file_name()
-                            .map(|name| name.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| cwd.to_string_lossy().into_owned()),
-                    )),
+                    title: Some(directory_label(&cwd).into()),
                     ..Default::default()
                 }),
                 window_bounds: Some(WindowBounds::Windowed(bounds)),

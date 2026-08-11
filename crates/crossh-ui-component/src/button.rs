@@ -132,6 +132,7 @@ pub struct Button {
     selected: bool,
     disabled: bool,
     loading: bool,
+    full_width: bool,
     tooltip: Option<SharedString>,
     on_click: Option<ClickHandler>,
 }
@@ -147,6 +148,7 @@ impl Button {
             selected: false,
             disabled: false,
             loading: false,
+            full_width: false,
             tooltip: None,
             on_click: None,
         }
@@ -184,6 +186,11 @@ impl Button {
 
     pub fn loading(mut self, loading: bool) -> Self {
         self.loading = loading;
+        self
+    }
+
+    pub fn full_width(mut self) -> Self {
+        self.full_width = true;
         self
     }
 
@@ -262,6 +269,9 @@ impl RenderOnce for Button {
             ButtonSize::Large => button.h(px(36.)).px_4().text_sm(),
             ButtonSize::Icon(size) => button.w(size).h(size).px_0().text_xs(),
         };
+        if self.full_width {
+            button = button.w_full();
+        }
         if !has_label {
             button = button.gap_0();
         }
@@ -324,6 +334,7 @@ mod tests {
             .selected(true)
             .disabled(true)
             .loading(true)
+            .full_width()
             .tooltip("Save changes")
             .on_click(|_, _, _| {});
 
@@ -334,6 +345,7 @@ mod tests {
         assert!(button.selected);
         assert!(button.disabled);
         assert!(button.loading);
+        assert!(button.full_width);
         assert!(button.tooltip.is_some());
         assert!(button.on_click.is_some());
     }

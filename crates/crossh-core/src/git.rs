@@ -7,6 +7,14 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
+#[derive(Debug, thiserror::Error)]
+pub enum GitError {
+    #[error("无法执行 git：{0}")]
+    Spawn(#[from] std::io::Error),
+    #[error("{0}")]
+    CommandFailed(String),
+}
+
 /// 单个文件在索引（已暂存）或工作区（未暂存）中的变更状态。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChangeStatus {
@@ -217,6 +225,70 @@ pub fn diff(cwd: &Path, entry: &FileChange, staged: bool) -> Option<FileDiff> {
     args.push(&entry.path);
     let output = git(cwd, &args)?;
     parse_diff(&output)
+}
+
+/// 将指定工作区路径加入暂存区。
+pub fn stage(cwd: &Path, paths: &[String]) -> Result<(), GitError> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    run_git_paths(cwd, &["add", "-A", "--"], paths)
+}
+
+/// 将指定路径从暂存区移回工作区。
+pub fn unstage(cwd: &Path, paths: &[String]) -> Result<(), GitError> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let has_head = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .output()?
+        .status
+        .success();
+    if has_head {
+        run_git_paths(cwd, &["restore", "--staged", "--"], paths)
+    } else {
+        run_git_paths(cwd, &["rm", "--cached", "-r", "--"], paths)
+    }
+}
+
+/// 提交当前暂存区。
+pub fn commit(cwd: &Path, message: &str) -> Result<(), GitError> {
+    let message = message.trim();
+    if message.is_empty() {
+        return Err(GitError::CommandFailed("提交信息不能为空".to_string()));
+    }
+    run_git(cwd, &["commit", "-m", message])
+}
+
+fn run_git_paths(cwd: &Path, args: &[&str], paths: &[String]) -> Result<(), GitError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .args(paths)
+        .output()?;
+    git_result(output)
+}
+
+fn run_git(cwd: &Path, args: &[&str]) -> Result<(), GitError> {
+    let output = Command::new("git").arg("-C").arg(cwd).args(args).output()?;
+    git_result(output)
+}
+
+fn git_result(output: std::process::Output) -> Result<(), GitError> {
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let message = if stderr.is_empty() {
+        format!("git 命令失败：{}", output.status)
+    } else {
+        stderr
+    };
+    Err(GitError::CommandFailed(message))
 }
 
 /// 未跟踪文件没有可 diff 的基线：把整个文件内容当作新增行呈现。
@@ -572,5 +644,59 @@ mod tests {
         assert_eq!(added_diff.old_path, None);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stages_unstages_and_commits_real_changes() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}: {:?}", output.stderr);
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "test@crossh.local"]);
+        run(&["config", "user.name", "Crossh Test"]);
+
+        fs::write(dir.path().join("note.txt"), "first\n").unwrap();
+        stage(dir.path(), &["note.txt".to_string()]).unwrap();
+        assert!(
+            list_changes(dir.path())
+                .iter()
+                .any(|change| change.path == "note.txt" && change.staged)
+        );
+
+        unstage(dir.path(), &["note.txt".to_string()]).unwrap();
+        assert!(
+            list_changes(dir.path())
+                .iter()
+                .any(|change| change.path == "note.txt" && !change.staged)
+        );
+
+        stage(dir.path(), &["note.txt".to_string()]).unwrap();
+        commit(dir.path(), "add note").unwrap();
+        assert!(list_changes(dir.path()).is_empty());
+
+        fs::write(dir.path().join("note.txt"), "first\nsecond\n").unwrap();
+        stage(dir.path(), &["note.txt".to_string()]).unwrap();
+        unstage(dir.path(), &["note.txt".to_string()]).unwrap();
+        assert!(
+            list_changes(dir.path())
+                .iter()
+                .any(|change| change.path == "note.txt" && !change.staged)
+        );
+
+        fs::remove_file(dir.path().join("note.txt")).unwrap();
+        stage(dir.path(), &["note.txt".to_string()]).unwrap();
+        assert!(list_changes(dir.path()).iter().any(|change| {
+            change.path == "note.txt" && change.staged && change.status == ChangeStatus::Deleted
+        }));
+        assert!(commit(dir.path(), "   ").is_err());
     }
 }

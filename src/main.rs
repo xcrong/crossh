@@ -112,6 +112,7 @@ fn main() {
             .load_fonts(cx)
             .expect("Zed embedded fonts should load");
         features::settings::init(cx);
+        features::git::init(cx);
         features::terminal::init(cx);
         infrastructure::app_menu::install(cx);
         app::open_main_window(cx);

@@ -218,6 +218,13 @@ git:
   no_diff: No text changes
   binary: Binary file
   loading: Loading…
+  stage: Stage file
+  unstage: Unstage file
+  stage_all: Stage all changes
+  unstage_all: Unstage all changes
+  back_to_changes: Back to changes
+  commit_message_placeholder: Commit message
+  commit_files: "Commit %{count} files"
 
 connection:
   connecting_with_separator: "Connecting · "
