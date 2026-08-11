@@ -65,3 +65,13 @@ engine remains in `crossh-ssh`.
 The crate graph is the enforcement mechanism. A logic change that attempts to
 reach into GPUI fails at dependency resolution or compilation instead of
 relying only on directory conventions.
+Each crate README records its responsibility, boundary, public entry points,
+and quick verification command for focused validation.
+
+## 决策记录
+
+- [0001: Zed revision and terminal fork](adr/0001-zed-revision-and-terminal-fork.md)
+- [0002: Logic/UI layering](adr/0002-logic-ui-layering.md)
+- [0003: Agent logic and view split](adr/0003-agent-logic-and-view-split.md)
+- [0004: Feature-owned settings](adr/0004-feature-owned-settings.md)
+- [0005: Standalone updater](adr/0005-standalone-updater.md)

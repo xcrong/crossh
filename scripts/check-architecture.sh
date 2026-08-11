@@ -6,6 +6,21 @@ set -eu
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 failure=0
 
+# Keep exceptions explicit and local to this check. This file is a 2129-line
+# local fork of Zed's terminal_view code, so it remains maintained as upstream
+# third-party code rather than being split locally.
+size_whitelist='src/features/terminal/zed_view/terminal_element.rs'
+
+is_size_whitelisted() {
+    path=$1
+    for allowed_path in $size_whitelist; do
+        if [ "$path" = "$allowed_path" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 check_absent() {
     label=$1
     pattern=$2
@@ -56,6 +71,16 @@ check_absent \
     "standalone updater includes application source with #[path]" \
     '#\[path' \
     "$repo_root/src/bin/crossh-updater.rs"
+
+size_files=$(find "$repo_root/src" "$repo_root"/crates/*/src -type f -name '*.rs' -print 2>/dev/null || true)
+for file in $size_files; do
+    line_count=$(wc -l < "$file")
+    relative_path=${file#"$repo_root"/}
+    if [ "$line_count" -gt 2000 ] && ! is_size_whitelisted "$relative_path"; then
+        printf '%s\n' "architecture violation: file exceeds 2000 lines: $relative_path"
+        failure=1
+    fi
+done
 
 if [ "$failure" -ne 0 ]; then
     exit 1

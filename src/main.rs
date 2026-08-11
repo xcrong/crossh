@@ -2,7 +2,7 @@
 //!
 //! 常驻开发工具：复用 `~/.ssh/config`（只读），提供基于 Zed 官方 PTY
 //! 和 Crossh 本地 renderer 的交互式终端。
-//! SFTP 与端口转发为后续阶段（见 .kilo/plans）。
+//! SFTP 与端口转发已经作为独立 feature 接入工作区。
 
 mod agent_cli;
 mod app;

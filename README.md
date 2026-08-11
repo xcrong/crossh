@@ -89,7 +89,7 @@ UI 图标统一放在 `crates/crossh-assets/assets/icons/`，由 `crossh-assets`
 
 ## 路线图
 
-见 [ROADMAP.md](ROADMAP.md) 和 [.kilo/plans/](.kilo/plans/)。已实现的规划外补强：设置面板、i18n、连接池生命周期。
+见 [ROADMAP.md](ROADMAP.md) 和 [docs/archived/](docs/archived/)。已实现的规划外补强：设置面板、i18n、连接池生命周期。
 未落地的 stretch 项：
 
 - 命令生命周期事件和其他 Crossh 终端附加层

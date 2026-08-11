@@ -1,0 +1,678 @@
+use super::*;
+
+fn configured_settings() -> AgentSettings {
+    let provider = AgentProvider {
+        id: "local".into(),
+        name: "Local".into(),
+        protocol: AgentProtocol::OpenAiChat,
+        url: "http://127.0.0.1:11434/v1/chat/completions".into(),
+        api_key_env: String::new(),
+        api_key: String::new(),
+        models: vec![AgentModel {
+            id: "qwen3-coder".into(),
+            name: "qwen3-coder".into(),
+            reasoning: true,
+            context_window: 128_000,
+            max_tokens: 32_000,
+        }],
+    };
+    AgentSettings {
+        providers: vec![provider],
+        active_model: AgentModelRef {
+            provider: "local".into(),
+            model: "qwen3-coder".into(),
+        },
+        reviewer_model: AgentModelRef {
+            provider: "local".into(),
+            model: "qwen3-coder".into(),
+        },
+        ..AgentSettings::default()
+    }
+}
+
+fn messages() -> Vec<AgentMessage> {
+    vec![
+        AgentMessage::new(AgentRole::System, "be useful"),
+        AgentMessage::new(AgentRole::User, "hello"),
+    ]
+}
+
+#[test]
+fn reviewer_denials_preserve_a_reason() {
+    assert_eq!(
+        parse_review_result(r#"{"decision":"DENY","reason":"shell command deletes data"}"#),
+        AgentReviewResult {
+            approved: false,
+            reason: "shell command deletes data".into(),
+        }
+    );
+    assert_eq!(
+        parse_review_result("DENY: path is outside the workspace"),
+        AgentReviewResult {
+            approved: false,
+            reason: "path is outside the workspace".into(),
+        }
+    );
+    assert!(parse_review_result(r#"{"decision":"ALLOW","reason":"scoped read"}"#).approved);
+}
+
+#[test]
+fn protocol_ids_match_the_public_api_format_names() {
+    assert_eq!(
+        serde_json::to_string(&AgentProtocol::OpenAiChat).unwrap(),
+        r#""openai-chat""#
+    );
+    assert_eq!(
+        serde_json::to_string(&AgentProtocol::OpenAiResponses).unwrap(),
+        r#""openai-responses""#
+    );
+    assert_eq!(
+        serde_json::to_string(&AgentProtocol::AnthropicMessages).unwrap(),
+        r#""anthropic-messages""#
+    );
+}
+
+#[test]
+fn empty_default_settings_are_valid_without_model_references() {
+    let settings = AgentSettings::default();
+    assert!(settings.providers.is_empty());
+    assert_eq!(settings.active_model, AgentModelRef::default());
+    assert_eq!(settings.reviewer_model, AgentModelRef::default());
+    assert_eq!(settings.validate(), Ok(()));
+    assert!(matches!(
+        settings.resolve(&settings.active_model),
+        Err("Provider not found")
+    ));
+}
+
+#[test]
+fn multi_provider_models_resolve_independently() {
+    let mut settings = configured_settings();
+    settings.providers.push(AgentProvider {
+        id: "reviewer".into(),
+        name: "Reviewer".into(),
+        protocol: AgentProtocol::AnthropicMessages,
+        url: "https://example.test/messages".into(),
+        api_key_env: "REVIEWER_API_KEY".into(),
+        api_key: String::new(),
+        models: vec![AgentModel {
+            id: "review-model".into(),
+            name: "Review Model".into(),
+            reasoning: true,
+            context_window: 200_000,
+            max_tokens: 8_000,
+        }],
+    });
+    settings.reviewer_model = AgentModelRef {
+        provider: "reviewer".into(),
+        model: "review-model".into(),
+    };
+
+    settings.validate().unwrap();
+    let active = settings.resolve(&settings.active_model).unwrap();
+    let reviewer = settings.resolve(&settings.reviewer_model).unwrap();
+    assert_eq!(active.provider.id, "local");
+    assert_eq!(reviewer.provider.id, "reviewer");
+    assert_eq!(reviewer.model.max_tokens, 8_000);
+}
+
+#[test]
+fn provider_and_model_ids_must_be_unique() {
+    let mut settings = configured_settings();
+    settings.providers.push(settings.providers[0].clone());
+    assert_eq!(settings.validate(), Err("Provider IDs must be unique"));
+
+    let mut settings = configured_settings();
+    let duplicate = settings.providers[0].models[0].clone();
+    settings.providers[0].models.push(duplicate);
+    assert_eq!(
+        settings.validate(),
+        Err("Model IDs must be unique within a provider")
+    );
+}
+
+#[test]
+fn model_output_limit_maps_to_each_protocol() {
+    let model = AgentModel {
+        id: "m".into(),
+        name: "M".into(),
+        reasoning: false,
+        context_window: 10_000,
+        max_tokens: 1_234,
+    };
+    for (protocol, key) in [
+        (AgentProtocol::OpenAiChat, "max_tokens"),
+        (AgentProtocol::OpenAiResponses, "max_output_tokens"),
+        (AgentProtocol::AnthropicMessages, "max_tokens"),
+    ] {
+        let mut wire = encode_request(protocol, &model.id, &messages());
+        apply_model_options(&mut wire.body, protocol, &model);
+        assert_eq!(wire.body[key], 1_234);
+    }
+}
+
+#[test]
+fn adapters_encode_the_same_canonical_messages() {
+    let chat = encode_request(AgentProtocol::OpenAiChat, "model", &messages());
+    let responses = encode_request(AgentProtocol::OpenAiResponses, "model", &messages());
+    let anthropic = encode_request(AgentProtocol::AnthropicMessages, "model", &messages());
+    assert_eq!(chat.body["messages"][1]["content"], "hello");
+    assert_eq!(responses.body["input"][1]["content"], "hello");
+    assert_eq!(anthropic.body["system"], "be useful");
+    assert_eq!(anthropic.body["messages"][0]["content"], "hello");
+}
+
+#[test]
+fn strict_tool_schemas_require_every_declared_property() {
+    for tool in builtin_tools() {
+        let properties = tool.input_schema["properties"]
+            .as_object()
+            .expect("tool schema properties");
+        let required = tool.input_schema["required"]
+            .as_array()
+            .expect("strict tool schema required list");
+        assert_eq!(required.len(), properties.len(), "{}", tool.name);
+        assert_eq!(tool.input_schema["additionalProperties"], false);
+    }
+}
+
+#[test]
+fn responses_replay_original_output_items() {
+    let raw = vec![
+        json!({"type":"reasoning","summary":[{"type":"summary_text","text":"think"}],"id":"rs_1"}),
+        json!({"type":"function_call","call_id":"call_1","name":"read","arguments":"{\"path\":\"README.md\"}"}),
+    ];
+    let message = AgentMessage {
+        role: AgentRole::Assistant,
+        text: "".into(),
+        tool_calls: vec![],
+        tool_result: None,
+        protocol_items: raw.clone(),
+    };
+    assert_eq!(
+        wire_messages(AgentProtocol::OpenAiResponses, &[message]),
+        raw
+    );
+}
+
+#[test]
+fn streamed_responses_capture_completed_output_items() {
+    let mut accumulator = StreamAccumulator::default();
+    let item = json!({
+        "id":"rs_1",
+        "type":"reasoning",
+        "summary":[{"type":"summary_text","text":"think"}]
+    });
+    accumulator.capture_protocol_event(
+        AgentProtocol::OpenAiResponses,
+        &json!({"type":"response.output_item.done","output_index":0,"item":item}),
+    );
+    accumulator.push(&AgentEvent::ReasoningDelta("think".into()));
+    let response = accumulator.finish(AgentProtocol::OpenAiResponses).unwrap();
+    assert_eq!(response.protocol_items, vec![item]);
+}
+
+#[test]
+fn responses_tool_events_keep_the_final_call_and_arguments() {
+    let mut accumulator = StreamAccumulator::default();
+    let events = [
+        json!({
+            "type":"response.output_item.added",
+            "output_index":0,
+            "item":{
+                "type":"function_call",
+                "id":"fc_1",
+                "call_id":"call_1",
+                "name":"read",
+                "arguments":""
+            }
+        }),
+        json!({
+            "type":"response.function_call_arguments.delta",
+            "output_index":0,
+            "delta":"{\"path\":\"README.md\"}"
+        }),
+        json!({
+            "type":"response.function_call_arguments.done",
+            "output_index":0,
+            "arguments":"{\"path\":\"README.md\"}"
+        }),
+        json!({
+            "type":"response.output_item.done",
+            "output_index":0,
+            "item":{
+                "type":"function_call",
+                "id":"fc_1",
+                "call_id":"call_1",
+                "name":"read",
+                "arguments":"{\"path\":\"README.md\"}"
+            }
+        }),
+    ];
+    for event in events {
+        accumulator.capture_protocol_event(AgentProtocol::OpenAiResponses, &event);
+        for decoded in decode_stream_event(AgentProtocol::OpenAiResponses, &event) {
+            accumulator.push(&decoded);
+        }
+    }
+
+    let response = accumulator.finish(AgentProtocol::OpenAiResponses).unwrap();
+    assert_eq!(
+        response.content,
+        vec![AgentContentBlock::ToolCall(AgentToolCall {
+            id: "call_1".into(),
+            name: "read".into(),
+            arguments: r#"{"path":"README.md"}"#.into(),
+        })]
+    );
+}
+
+#[test]
+fn responses_output_item_done_can_create_a_tool_call() {
+    let mut accumulator = StreamAccumulator::default();
+    let event = json!({
+        "type":"response.output_item.done",
+        "output_index":2,
+        "item":{
+            "type":"function_call",
+            "id":"fc_2",
+            "call_id":"call_2",
+            "name":"ls",
+            "arguments":"{\"path\":null}"
+        }
+    });
+    accumulator.capture_protocol_event(AgentProtocol::OpenAiResponses, &event);
+
+    let response = accumulator.finish(AgentProtocol::OpenAiResponses).unwrap();
+    assert_eq!(
+        response.content,
+        vec![AgentContentBlock::ToolCall(AgentToolCall {
+            id: "call_2".into(),
+            name: "ls".into(),
+            arguments: r#"{"path":null}"#.into(),
+        })]
+    );
+}
+
+#[test]
+fn adapters_decode_protocol_responses() {
+    assert_eq!(
+        decode_response(
+            AgentProtocol::OpenAiChat,
+            &json!({"choices":[{"message":{"content":"a"}}]})
+        ),
+        Ok(AgentResponse {
+            content: vec![AgentContentBlock::Text("a".into())],
+            protocol_items: Vec::new()
+        })
+    );
+    assert_eq!(
+        decode_response(
+            AgentProtocol::OpenAiResponses,
+            &json!({"output":[
+                {"type":"reasoning","summary":[{"type":"summary_text","text":"think b"}]},
+                {"type":"message","content":[{"type":"output_text","text":"b"}]}
+            ]})
+        ),
+        Ok(AgentResponse {
+            content: vec![
+                AgentContentBlock::Reasoning("think b".into()),
+                AgentContentBlock::Text("b".into())
+            ],
+            protocol_items: vec![
+                json!({"type":"reasoning","summary":[{"type":"summary_text","text":"think b"}]}),
+                json!({"type":"message","content":[{"type":"output_text","text":"b"}]})
+            ]
+        })
+    );
+    assert_eq!(
+        decode_response(
+            AgentProtocol::AnthropicMessages,
+            &json!({"content":[
+                {"type":"thinking","thinking":"think c","signature":"sig"},
+                {"type":"text","text":"c"}
+            ]})
+        ),
+        Ok(AgentResponse {
+            content: vec![
+                AgentContentBlock::Reasoning("think c".into()),
+                AgentContentBlock::Text("c".into())
+            ],
+            protocol_items: Vec::new()
+        })
+    );
+}
+
+#[test]
+fn chat_reasoning_content_is_separate_from_visible_text() {
+    let response = decode_response(
+        AgentProtocol::OpenAiChat,
+        &json!({"choices":[{"message":{"reasoning_content":"think a","content":"a"}}]}),
+    )
+    .unwrap();
+    assert_eq!(response.reasoning(), "think a");
+    assert_eq!(response.text(), "a");
+}
+
+#[test]
+fn stream_events_normalize_text_reasoning_and_tool_arguments() {
+    assert_eq!(
+        decode_stream_event(
+            AgentProtocol::OpenAiChat,
+            &json!({"choices":[{"delta":{"reasoning_content":"think","content":"answer","tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{\"path\":"}}]}}]})
+        ),
+        vec![
+            AgentEvent::ReasoningDelta("think".into()),
+            AgentEvent::TextDelta("answer".into()),
+            AgentEvent::ToolCallStart {
+                index: 0,
+                id: "call_1".into(),
+                name: "read".into()
+            },
+            AgentEvent::ToolCallArgumentsDelta {
+                index: 0,
+                delta: "{\"path\":".into()
+            },
+        ]
+    );
+    assert_eq!(
+        decode_stream_event(
+            AgentProtocol::OpenAiResponses,
+            &json!({"type":"response.reasoning_summary_text.delta","delta":"summary","output_index":0})
+        ),
+        vec![AgentEvent::ReasoningDelta("summary".into())]
+    );
+    assert_eq!(
+        decode_stream_event(
+            AgentProtocol::AnthropicMessages,
+            &json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}})
+        ),
+        vec![AgentEvent::ToolCallArgumentsDelta {
+            index: 2,
+            delta: "{\"path\":".into()
+        }]
+    );
+}
+
+#[test]
+fn tool_results_encode_for_each_protocol() {
+    let message = AgentMessage::tool_result(AgentToolResult {
+        call_id: "call_1".into(),
+        output: "done".into(),
+        is_error: false,
+    });
+    assert_eq!(
+        wire_messages(AgentProtocol::OpenAiChat, std::slice::from_ref(&message))[0]["role"],
+        "tool"
+    );
+    assert_eq!(
+        wire_messages(
+            AgentProtocol::OpenAiResponses,
+            std::slice::from_ref(&message)
+        )[0]["type"],
+        "function_call_output"
+    );
+    assert_eq!(
+        wire_messages(AgentProtocol::AnthropicMessages, &[message])[0]["content"][0]["type"],
+        "tool_result"
+    );
+}
+
+#[test]
+fn read_tool_is_workspace_scoped() {
+    let workspace = tempfile::tempdir().unwrap();
+    fs::write(workspace.path().join("notes.txt"), "one\ntwo\nthree\n").unwrap();
+    let result = execute_tool(
+        &AgentToolCall {
+            id: "1".into(),
+            name: "read".into(),
+            arguments: r#"{"path":"notes.txt","offset":2,"limit":1}"#.into(),
+        },
+        workspace.path(),
+    );
+    assert!(!result.is_error);
+    assert_eq!(result.output, "2: two");
+
+    let absolute = execute_tool(
+        &AgentToolCall {
+            id: "absolute".into(),
+            name: "read".into(),
+            arguments: json!({
+                "path": workspace.path().join("notes.txt").to_string_lossy()
+            })
+            .to_string(),
+        },
+        workspace.path(),
+    );
+    assert!(!absolute.is_error);
+    assert_eq!(absolute.output, "1: one\n2: two\n3: three");
+
+    let escaped = execute_tool(
+        &AgentToolCall {
+            id: "2".into(),
+            name: "read".into(),
+            arguments: r#"{"path":"../secret"}"#.into(),
+        },
+        workspace.path(),
+    );
+    assert!(escaped.is_error);
+}
+
+#[test]
+fn patch_tool_applies_unified_hunks_and_keeps_failed_patches_atomic() {
+    let workspace = tempfile::tempdir().unwrap();
+    let path = workspace.path().join("notes.txt");
+    fs::write(&path, "one\ntwo\nthree\n").unwrap();
+    let patch = json!({
+        "path": "notes.txt",
+        "patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+updated\n three\n"
+    });
+    let result = execute_tool(
+        &AgentToolCall {
+            id: "patch".into(),
+            name: "patch".into(),
+            arguments: patch.to_string(),
+        },
+        workspace.path(),
+    );
+    assert!(!result.is_error);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "one\nupdated\nthree\n");
+
+    let failed_patch = json!({
+        "path": "notes.txt",
+        "patch": "@@ -1,3 +1,3 @@\n one\n-missing\n+broken\n three\n"
+    });
+    let result = execute_tool(
+        &AgentToolCall {
+            id: "patch-failed".into(),
+            name: "patch".into(),
+            arguments: failed_patch.to_string(),
+        },
+        workspace.path(),
+    );
+    assert!(result.is_error);
+    assert!(result.output.contains("patch context mismatch"));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "one\nupdated\nthree\n");
+}
+
+#[test]
+fn discovery_tools_search_and_list_without_leaving_workspace() {
+    let workspace = tempfile::tempdir().unwrap();
+    fs::create_dir(workspace.path().join("src")).unwrap();
+    fs::write(
+        workspace.path().join("src/main.rs"),
+        "fn main() {\n    println!(\"needle\");\n}\n",
+    )
+    .unwrap();
+    fs::write(workspace.path().join("README.md"), "needle\n").unwrap();
+
+    let grep = execute_tool(
+        &AgentToolCall {
+            id: "grep".into(),
+            name: "grep".into(),
+            arguments: r#"{"pattern":"needle"}"#.into(),
+        },
+        workspace.path(),
+    );
+    assert!(!grep.is_error);
+    assert!(grep.output.contains("README.md"));
+    assert!(grep.output.contains("main.rs"));
+
+    let find = execute_tool(
+        &AgentToolCall {
+            id: "find".into(),
+            name: "find".into(),
+            arguments: r#"{"pattern":"main"}"#.into(),
+        },
+        workspace.path(),
+    );
+    assert!(!find.is_error);
+    assert!(find.output.contains("main.rs"));
+
+    let listing = execute_tool(
+        &AgentToolCall {
+            id: "ls".into(),
+            name: "ls".into(),
+            arguments: r#"{"path":"src"}"#.into(),
+        },
+        workspace.path(),
+    );
+    assert!(!listing.is_error);
+    assert!(listing.output.contains("main.rs"));
+}
+
+#[test]
+fn explicit_thinking_options_map_to_provider_wire_fields() {
+    let model = AgentModel {
+        id: "reasoning".into(),
+        name: "Reasoning".into(),
+        reasoning: true,
+        context_window: 10_000,
+        max_tokens: 4_000,
+    };
+    let mut chat = encode_request(AgentProtocol::OpenAiChat, &model.id, &messages()).body;
+    apply_thinking_option(
+        &mut chat,
+        AgentProtocol::OpenAiChat,
+        &model,
+        AgentThinkingLevel::High,
+    );
+    assert_eq!(chat["reasoning_effort"], "high");
+
+    let mut responses = encode_request(AgentProtocol::OpenAiResponses, &model.id, &messages()).body;
+    apply_thinking_option(
+        &mut responses,
+        AgentProtocol::OpenAiResponses,
+        &model,
+        AgentThinkingLevel::High,
+    );
+    assert_eq!(responses["reasoning"]["effort"], "high");
+    assert!(responses.get("reasoning_effort").is_none());
+
+    let mut anthropic =
+        encode_request(AgentProtocol::AnthropicMessages, &model.id, &messages()).body;
+    apply_thinking_option(
+        &mut anthropic,
+        AgentProtocol::AnthropicMessages,
+        &model,
+        AgentThinkingLevel::Low,
+    );
+    assert_eq!(anthropic["thinking"]["type"], "enabled");
+    assert!(
+        anthropic["thinking"]["budget_tokens"]
+            .as_u64()
+            .is_some_and(|budget| budget < model.max_tokens as u64)
+    );
+}
+
+#[test]
+fn utf8_stream_decoder_waits_for_split_codepoints() {
+    let mut decoder = Utf8StreamDecoder::default();
+    let bytes = "中".as_bytes();
+    assert_eq!(decoder.push(&bytes[..1]), "");
+    assert_eq!(decoder.push(&bytes[1..]), "中");
+    assert_eq!(decoder.finish(), "");
+}
+
+#[test]
+fn fallback_grep_uses_regular_expressions() {
+    let workspace = tempfile::tempdir().unwrap();
+    fs::write(
+        workspace.path().join("notes.txt"),
+        "foo and bar\nfoo only\n",
+    )
+    .unwrap();
+    fs::write(
+        workspace.path().join("zz-large.txt"),
+        format!("foo{}bar\n", "x".repeat(MAX_TOOL_OUTPUT_BYTES)),
+    )
+    .unwrap();
+    let cancel = AtomicBool::new(false);
+    let control = ToolControl::new(&cancel);
+    let result =
+        grep_without_rg("foo.*bar", workspace.path(), workspace.path(), 10, &control).unwrap();
+    assert!(result.contains("foo and bar"));
+    assert!(!result.contains("foo only"));
+    assert!(result.len() <= MAX_TOOL_OUTPUT_BYTES);
+    assert!(result.contains("output truncated"));
+}
+
+#[test]
+fn cancelled_tool_does_not_start_a_shell() {
+    let workspace = tempfile::tempdir().unwrap();
+    let cancel = AtomicBool::new(true);
+    let result = execute_tool_with_cancel(
+        &AgentToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: r#"{"command":"sleep 60"}"#.into(),
+        },
+        workspace.path(),
+        &cancel,
+    );
+    assert!(result.is_error);
+    assert!(result.output.contains("cancelled"));
+}
+
+#[cfg(unix)]
+#[test]
+fn cancelling_running_shell_terminates_the_process_group() {
+    let workspace = tempfile::tempdir().unwrap();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let worker_cancel = cancel.clone();
+    let worker = std::thread::spawn(move || {
+        execute_tool_with_cancel(
+            &AgentToolCall {
+                id: "1".into(),
+                name: "bash".into(),
+                arguments: r#"{"command":"sleep 60"}"#.into(),
+            },
+            workspace.path(),
+            &worker_cancel,
+        )
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    cancel.store(true, Ordering::Relaxed);
+    let result = worker.join().unwrap();
+    assert!(result.is_error);
+    assert!(result.output.contains("cancelled"));
+}
+
+#[cfg(unix)]
+#[test]
+fn discovery_does_not_follow_symlink_cycles() {
+    use std::os::unix::fs::symlink;
+    let workspace = tempfile::tempdir().unwrap();
+    fs::write(workspace.path().join("file.txt"), "content").unwrap();
+    symlink(".", workspace.path().join("loop")).unwrap();
+    let result = execute_tool(
+        &AgentToolCall {
+            id: "find".into(),
+            name: "find".into(),
+            arguments: r#"{"pattern":"file"}"#.into(),
+        },
+        workspace.path(),
+    );
+    assert!(!result.is_error);
+    assert!(result.output.contains("file.txt"));
+}

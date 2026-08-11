@@ -1,0 +1,373 @@
+use super::messages::{AgentMessage, AgentRole, AgentToolCall};
+use super::providers::complete_target_with_timeout;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::path::Path;
+use std::time::Duration;
+
+fn default_max_tool_rounds() -> u32 {
+    200
+}
+
+pub(super) const MAX_TOOL_ARGUMENT_BYTES: usize = 256 * 1024;
+pub(super) const MAX_TOOL_OUTPUT_BYTES: usize = 64 * 1024;
+pub(super) const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
+pub(super) const MAX_FILE_SCAN_BYTES: u64 = 64 * 1024 * 1024;
+pub(super) const MAX_LINE_BYTES: usize = 1024 * 1024;
+pub(super) const MAX_DIRECTORY_ENTRIES: usize = 20_000;
+pub(super) const MAX_DISCOVERED_PATHS: usize = 100_000;
+pub(super) const TOOL_TIMEOUT: Duration = Duration::from_secs(120);
+pub(super) const MODEL_REQUEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+pub(super) const REVIEWER_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub enum AgentProtocol {
+    #[default]
+    #[serde(rename = "openai-chat")]
+    OpenAiChat,
+    #[serde(rename = "openai-responses")]
+    OpenAiResponses,
+    #[serde(rename = "anthropic-messages")]
+    AnthropicMessages,
+}
+
+impl AgentProtocol {
+    pub const ALL: [Self; 3] = [
+        Self::OpenAiChat,
+        Self::OpenAiResponses,
+        Self::AnthropicMessages,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::OpenAiChat => "openai-chat",
+            Self::OpenAiResponses => "openai-responses",
+            Self::AnthropicMessages => "anthropic-messages",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub enum AgentThinkingLevel {
+    Off,
+    Minimal,
+    Low,
+    #[default]
+    Medium,
+    High,
+    XHigh,
+}
+
+impl AgentThinkingLevel {
+    pub const ALL: [Self; 6] = [
+        Self::Off,
+        Self::Minimal,
+        Self::Low,
+        Self::Medium,
+        Self::High,
+        Self::XHigh,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn budget(self, max_tokens: u32) -> u32 {
+        let fraction = match self {
+            Self::Off => 0.0,
+            Self::Minimal => 0.05,
+            Self::Low => 0.15,
+            Self::Medium => 0.3,
+            Self::High => 0.5,
+            Self::XHigh => 0.75,
+        };
+        ((max_tokens as f32 * fraction) as u32)
+            .max(1_024)
+            .min(max_tokens.saturating_sub(1).max(1))
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AgentProvider {
+    pub id: String,
+    pub name: String,
+    pub protocol: AgentProtocol,
+    pub url: String,
+    #[serde(default)]
+    pub api_key_env: String,
+    #[serde(default)]
+    pub api_key: String,
+    pub models: Vec<AgentModel>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AgentModel {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub reasoning: bool,
+    #[serde(default = "default_context_window")]
+    pub context_window: u32,
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
+}
+
+fn default_context_window() -> u32 {
+    128_000
+}
+fn default_max_tokens() -> u32 {
+    32_000
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AgentModelRef {
+    pub provider: String,
+    pub model: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AgentSettings {
+    pub providers: Vec<AgentProvider>,
+    pub active_model: AgentModelRef,
+    pub reviewer_model: AgentModelRef,
+    #[serde(default = "default_max_tool_rounds")]
+    pub max_tool_rounds: u32,
+}
+
+impl Default for AgentSettings {
+    fn default() -> Self {
+        Self {
+            providers: Vec::new(),
+            active_model: AgentModelRef::default(),
+            reviewer_model: AgentModelRef::default(),
+            max_tool_rounds: default_max_tool_rounds(),
+        }
+    }
+}
+
+impl AgentSettings {
+    pub fn normalized(mut self) -> Self {
+        self.active_model.provider = self.active_model.provider.trim().into();
+        self.active_model.model = self.active_model.model.trim().into();
+        self.reviewer_model.provider = self.reviewer_model.provider.trim().into();
+        self.reviewer_model.model = self.reviewer_model.model.trim().into();
+        for provider in &mut self.providers {
+            provider.id = provider.id.trim().into();
+            provider.name = provider.name.trim().into();
+            provider.url = provider.url.trim().into();
+            provider.api_key_env = provider.api_key_env.trim().into();
+            for model in &mut provider.models {
+                model.id = model.id.trim().into();
+                model.name = model.name.trim().into();
+            }
+        }
+        self
+    }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.providers.is_empty() {
+            if self.active_model == AgentModelRef::default()
+                && self.reviewer_model == AgentModelRef::default()
+            {
+                if !(1..=1000).contains(&self.max_tool_rounds) {
+                    return Err("Tool rounds must be between 1 and 1000");
+                }
+                return Ok(());
+            }
+            return Err("Model references require a configured provider");
+        }
+        let mut provider_ids = std::collections::BTreeSet::new();
+        for provider in &self.providers {
+            if provider.id.is_empty() || provider.name.is_empty() || provider.models.is_empty() {
+                return Err("Provider ID, name, and models are required");
+            }
+            if !provider_ids.insert(provider.id.as_str()) {
+                return Err("Provider IDs must be unique");
+            }
+            if !(provider.url.starts_with("http://") || provider.url.starts_with("https://")) {
+                return Err("API URL must start with http:// or https://");
+            }
+            if !provider.api_key_env.is_empty()
+                && !provider.api_key_env.chars().enumerate().all(|(index, ch)| {
+                    ch == '_' || ch.is_ascii_alphanumeric() && (index > 0 || !ch.is_ascii_digit())
+                })
+            {
+                return Err("Credential environment variable name is invalid");
+            }
+            let mut model_ids = std::collections::BTreeSet::new();
+            for model in &provider.models {
+                if model.id.is_empty() || model.name.is_empty() {
+                    return Err("Model ID and name are required");
+                }
+                if !model_ids.insert(model.id.as_str()) {
+                    return Err("Model IDs must be unique within a provider");
+                }
+                if model.context_window == 0 || model.max_tokens == 0 {
+                    return Err("Model token limits must be greater than zero");
+                }
+                if model.max_tokens >= model.context_window {
+                    return Err("Maximum output tokens must be smaller than the context window");
+                }
+                if model.context_window.saturating_sub(model.max_tokens) < 1_024 {
+                    return Err("Model context must leave at least 1024 input tokens");
+                }
+            }
+        }
+        let has_models = self
+            .providers
+            .iter()
+            .any(|provider| !provider.models.is_empty());
+        if has_models {
+            self.resolve(&self.active_model)?;
+            self.resolve(&self.reviewer_model)?;
+        } else if self.active_model != AgentModelRef::default()
+            || self.reviewer_model != AgentModelRef::default()
+        {
+            return Err("Model references require a configured model");
+        }
+        if !(1..=1000).contains(&self.max_tool_rounds) {
+            return Err("Tool rounds must be between 1 and 1000");
+        }
+        Ok(())
+    }
+
+    pub fn resolve(&self, reference: &AgentModelRef) -> Result<ResolvedModel<'_>, &'static str> {
+        let provider = self
+            .providers
+            .iter()
+            .find(|p| p.id == reference.provider)
+            .ok_or("Provider not found")?;
+        let model = provider
+            .models
+            .iter()
+            .find(|m| m.id == reference.model)
+            .ok_or("Model not found")?;
+        Ok(ResolvedModel { provider, model })
+    }
+}
+
+pub struct ResolvedModel<'a> {
+    pub provider: &'a AgentProvider,
+    pub model: &'a AgentModel,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentReviewResult {
+    pub approved: bool,
+    pub reason: String,
+}
+
+pub async fn review_tool(
+    settings: &AgentSettings,
+    api_key: Option<&str>,
+    call: &AgentToolCall,
+    workspace: &Path,
+    user_request: &str,
+) -> Result<AgentReviewResult, String> {
+    let reviewer = settings
+        .resolve(&settings.reviewer_model)
+        .map_err(str::to_string)?;
+    let messages = vec![
+        AgentMessage::new(
+            AgentRole::System,
+            "You are a tool execution reviewer. Reply with exactly one JSON object and no markdown: {\"decision\":\"ALLOW\"|\"DENY\",\"reason\":\"brief explanation\"}. Allow only actions that are necessary, scoped to the stated workspace, and consistent with the user's request. A DENY response must explain the concrete safety or scope problem.",
+        ),
+        AgentMessage::new(
+            AgentRole::User,
+            format!(
+                "User request:\n{}\n\nWorkspace: {}\nTool: {}\nArguments: {}",
+                user_request,
+                workspace.display(),
+                call.name,
+                call.arguments
+            ),
+        ),
+    ];
+    let response = complete_target_with_timeout(
+        reviewer,
+        api_key,
+        &messages,
+        false,
+        REVIEWER_REQUEST_TIMEOUT,
+    )
+    .await?;
+    Ok(parse_review_result(&response.text()))
+}
+
+pub(super) fn parse_review_result(text: &str) -> AgentReviewResult {
+    let text = text.trim();
+    if let Some(value) = parse_review_json(text)
+        && let Some(decision) = value.get("decision").and_then(Value::as_str)
+    {
+        let reason = value
+            .get("reason")
+            .or_else(|| value.get("message"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|reason| !reason.is_empty())
+            .unwrap_or_else(|| {
+                if decision.eq_ignore_ascii_case("ALLOW") {
+                    "Approved by the language-model reviewer"
+                } else {
+                    "The language-model reviewer denied this request without a reason"
+                }
+            });
+        return AgentReviewResult {
+            approved: decision.eq_ignore_ascii_case("ALLOW"),
+            reason: reason.into(),
+        };
+    }
+
+    let bytes = text.as_bytes();
+    if bytes.len() >= 5
+        && bytes[..5].eq_ignore_ascii_case(b"ALLOW")
+        && (bytes.len() == 5 || !bytes[5].is_ascii_alphanumeric())
+    {
+        return AgentReviewResult {
+            approved: true,
+            reason: text[5..]
+                .trim()
+                .trim_start_matches([':', '-'])
+                .trim()
+                .into(),
+        };
+    }
+    if bytes.len() >= 4
+        && bytes[..4].eq_ignore_ascii_case(b"DENY")
+        && (bytes.len() == 4 || !bytes[4].is_ascii_alphanumeric())
+    {
+        let reason = text[4..].trim().trim_start_matches([':', '-']).trim();
+        return AgentReviewResult {
+            approved: false,
+            reason: if reason.is_empty() {
+                "The language-model reviewer denied this request without a reason".into()
+            } else {
+                reason.into()
+            },
+        };
+    }
+
+    AgentReviewResult {
+        approved: false,
+        reason: if text.is_empty() {
+            "The language-model reviewer returned an empty decision".into()
+        } else {
+            format!("Invalid reviewer response: {text}")
+        },
+    }
+}
+
+fn parse_review_json(text: &str) -> Option<Value> {
+    serde_json::from_str(text).ok().or_else(|| {
+        let start = text.find('{')?;
+        let end = text.rfind('}')?;
+        serde_json::from_str(&text[start..=end]).ok()
+    })
+}
