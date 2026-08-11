@@ -1309,4 +1309,17 @@ mod tests {
         );
         assert_eq!(shell_quote_remote("/srv/app"), "'/srv/app'");
     }
+
+    #[test]
+    fn remote_command_output_keeps_the_newest_complete_utf8() {
+        let mut output = "x".repeat(MAX_REMOTE_COMMAND_OUTPUT - 1);
+        append_remote_output(&mut output, "中".as_bytes());
+        assert!(output.is_char_boundary(0));
+        assert!(output.len() <= MAX_REMOTE_COMMAND_OUTPUT);
+        assert!(output.ends_with('中'));
+
+        append_remote_output(&mut output, b"tail");
+        assert!(output.len() <= MAX_REMOTE_COMMAND_OUTPUT);
+        assert!(output.ends_with("tail"));
+    }
 }

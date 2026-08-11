@@ -123,46 +123,103 @@ async fn write_and_verify(
     expected_size: u64,
 ) -> Result<(), UpdateError> {
     let mut file = tokio::fs::File::create(temporary).await?;
-    let mut hasher = Sha256::new();
-    let mut downloaded = 0u64;
+    let mut verifier = DownloadVerifier::new(expected_checksum, expected_size);
 
     while let Some(chunk) = response.chunk().await? {
-        downloaded = downloaded
-            .checked_add(chunk.len() as u64)
-            .ok_or(UpdateError::TooLarge)?;
-        if downloaded > MAX_DOWNLOAD_BYTES {
-            return Err(UpdateError::TooLarge);
-        }
-        hasher.update(&chunk);
+        verifier.push(&chunk)?;
         file.write_all(&chunk).await?;
-    }
-    if downloaded != expected_size {
-        return Err(UpdateError::SizeMismatch {
-            expected: expected_size,
-            actual: downloaded,
-        });
     }
     file.flush().await?;
     file.sync_all().await?;
+    verifier.finish()
+}
 
-    let actual = hex::encode(hasher.finalize());
-    if !actual.eq_ignore_ascii_case(expected_checksum) {
-        return Err(UpdateError::ChecksumMismatch {
-            expected: expected_checksum.to_owned(),
-            actual,
-        });
+struct DownloadVerifier<'a> {
+    hasher: Sha256,
+    downloaded: u64,
+    expected_checksum: &'a str,
+    expected_size: u64,
+}
+
+impl<'a> DownloadVerifier<'a> {
+    fn new(expected_checksum: &'a str, expected_size: u64) -> Self {
+        Self {
+            hasher: Sha256::new(),
+            downloaded: 0,
+            expected_checksum,
+            expected_size,
+        }
     }
-    Ok(())
+
+    fn push(&mut self, chunk: &[u8]) -> Result<(), UpdateError> {
+        self.downloaded = self
+            .downloaded
+            .checked_add(chunk.len() as u64)
+            .ok_or(UpdateError::TooLarge)?;
+        if self.downloaded > MAX_DOWNLOAD_BYTES {
+            return Err(UpdateError::TooLarge);
+        }
+        self.hasher.update(chunk);
+        Ok(())
+    }
+
+    fn finish(self) -> Result<(), UpdateError> {
+        if self.downloaded != self.expected_size {
+            return Err(UpdateError::SizeMismatch {
+                expected: self.expected_size,
+                actual: self.downloaded,
+            });
+        }
+        let actual = hex::encode(self.hasher.finalize());
+        if !actual.eq_ignore_ascii_case(self.expected_checksum) {
+            return Err(UpdateError::ChecksumMismatch {
+                expected: self.expected_checksum.to_owned(),
+                actual,
+            });
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use sha2::{Digest, Sha256};
+    use super::*;
+
+    fn checksum(bytes: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        hex::encode(hasher.finalize())
+    }
 
     #[test]
-    fn checksum_fixture_is_sha256_hex() {
-        let mut hasher = Sha256::new();
-        hasher.update(b"crossh");
-        assert_eq!(hex::encode(hasher.finalize()).len(), 64);
+    fn verifier_accepts_arbitrary_chunk_boundaries() {
+        let bytes = "crossh-update".as_bytes();
+        let expected = checksum(bytes);
+        let mut verifier = DownloadVerifier::new(&expected, bytes.len() as u64);
+        for chunk in bytes.chunks(2) {
+            verifier.push(chunk).unwrap();
+        }
+        verifier.finish().unwrap();
+    }
+
+    #[test]
+    fn verifier_rejects_size_and_checksum_mismatches() {
+        let expected = checksum(b"crossh");
+        let mut short = DownloadVerifier::new(&expected, 7);
+        short.push(b"crossh").unwrap();
+        assert!(matches!(
+            short.finish(),
+            Err(UpdateError::SizeMismatch {
+                expected: 7,
+                actual: 6
+            })
+        ));
+
+        let mut corrupt = DownloadVerifier::new(&expected, 6);
+        corrupt.push(b"crosSh").unwrap();
+        assert!(matches!(
+            corrupt.finish(),
+            Err(UpdateError::ChecksumMismatch { .. })
+        ));
     }
 }

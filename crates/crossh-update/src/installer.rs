@@ -467,6 +467,53 @@ fn launch(path: &Path) -> Result<(), InstallerError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(label: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "crossh-update-test-{label}-{}-{}",
+                std::process::id(),
+                NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn create_zip(path: &Path, name: &str, contents: &[u8]) {
+        let file = File::create(path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        archive
+            .start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(contents).unwrap();
+        archive.finish().unwrap();
+    }
+
+    fn create_tar_gz(path: &Path, name: &str, contents: &[u8]) {
+        let file = File::create(path).unwrap();
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(contents.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        archive.append_data(&mut header, name, contents).unwrap();
+        archive.into_inner().unwrap().finish().unwrap();
+    }
 
     #[test]
     fn updater_arguments_require_all_fields() {
@@ -479,5 +526,88 @@ mod tests {
         assert!(is_safe_relative_path(Path::new("crossh/bin")));
         assert!(!is_safe_relative_path(Path::new("../crossh")));
         assert!(!is_safe_relative_path(Path::new("/tmp/crossh")));
+    }
+
+    #[test]
+    fn valid_updater_arguments_are_parsed() {
+        let arguments = parse_arguments(
+            [
+                "--package",
+                "update.zip",
+                "--format",
+                "zip",
+                "--pid",
+                "42",
+                "--target",
+                "crossh",
+                "--launch",
+                "crossh",
+            ]
+            .map(OsString::from),
+        )
+        .unwrap();
+        assert_eq!(arguments.package, PathBuf::from("update.zip"));
+        assert_eq!(arguments.format, ArtifactFormat::Zip);
+        assert_eq!(arguments.pid, 42);
+        assert_eq!(arguments.target, PathBuf::from("crossh"));
+    }
+
+    #[test]
+    fn real_zip_and_tar_archives_extract_into_staging() {
+        let root = TestDir::new("extract");
+        let zip = root.0.join("update.zip");
+        let tar = root.0.join("update.tar.gz");
+        create_zip(&zip, "bundle/crossh", b"zip-payload");
+        create_tar_gz(&tar, "bundle/crossh", b"tar-payload");
+
+        let zip_out = root.0.join("zip-out");
+        let tar_out = root.0.join("tar-out");
+        fs::create_dir_all(&zip_out).unwrap();
+        fs::create_dir_all(&tar_out).unwrap();
+        extract_zip(&zip, &zip_out).unwrap();
+        extract_tar_gz(&tar, &tar_out).unwrap();
+
+        assert_eq!(
+            fs::read(zip_out.join("bundle/crossh")).unwrap(),
+            b"zip-payload"
+        );
+        assert_eq!(
+            fs::read(tar_out.join("bundle/crossh")).unwrap(),
+            b"tar-payload"
+        );
+    }
+
+    #[test]
+    fn zip_traversal_is_rejected_without_writing_outside_staging() {
+        let root = TestDir::new("zip-slip");
+        let package = root.0.join("unsafe.zip");
+        create_zip(&package, "../escaped", b"bad");
+        let staging = root.0.join("staging");
+        fs::create_dir_all(&staging).unwrap();
+
+        assert!(matches!(
+            extract_zip(&package, &staging),
+            Err(InstallerError::UnsafeArchivePath(_))
+        ));
+        assert!(!root.0.join("escaped").exists());
+    }
+
+    #[test]
+    fn file_replacement_keeps_new_payload_and_removes_backup() {
+        let root = TestDir::new("replace");
+        let source = root.0.join("source");
+        let target = root.0.join("crossh");
+        fs::write(&source, b"new-version").unwrap();
+        fs::write(&target, b"old-version").unwrap();
+
+        replace_file(&source, &target).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"new-version");
+        assert!(!root.0.join(".crossh.crossh-old").exists());
+        assert!(
+            !root
+                .0
+                .join(format!(".crossh.crossh-new-{}", std::process::id()))
+                .exists()
+        );
     }
 }

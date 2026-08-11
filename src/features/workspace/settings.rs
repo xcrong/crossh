@@ -54,3 +54,32 @@ fn default_show_host_sidebar() -> bool {
 fn default_show_quick_commands() -> bool {
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalization_clamps_limits_and_truncates_in_order() {
+        let paths = (0..60)
+            .map(|index| PathBuf::from(format!("/project-{index}")))
+            .collect::<Vec<_>>();
+        let low = WorkspaceSettings {
+            recent_dirs: paths.clone(),
+            recent_dirs_max: 0,
+            ..WorkspaceSettings::default()
+        }
+        .normalized();
+        assert_eq!(low.recent_dirs_max, MIN_RECENT_DIRS_MAX);
+        assert_eq!(low.recent_dirs, paths[..1]);
+
+        let high = WorkspaceSettings {
+            recent_dirs: paths.clone(),
+            recent_dirs_max: usize::MAX,
+            ..WorkspaceSettings::default()
+        }
+        .normalized();
+        assert_eq!(high.recent_dirs_max, MAX_RECENT_DIRS_MAX);
+        assert_eq!(high.recent_dirs, paths[..MAX_RECENT_DIRS_MAX]);
+    }
+}

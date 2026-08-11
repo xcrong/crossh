@@ -35,7 +35,7 @@ jobs:
         run: cargo test --release
 
   terminal-compat:
-    name: terminal replay / smoke (${{ matrix.os }})
+    name: terminal replay / platform smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -63,10 +63,8 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Run terminal replay tests
-        run: "cargo test --release terminal_replay::tests:: -- --test-threads=1"
+      - name: Run workspace library tests
+        run: cargo test --release --workspace --lib
 
-      - name: Run Windows ConPTY smoke test
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: cargo test --release windows_conpty_smoke_round_trip -- --nocapture
+      - name: Run terminal replay tests
+        run: cargo test --release --test terminal_replay -- --test-threads=1

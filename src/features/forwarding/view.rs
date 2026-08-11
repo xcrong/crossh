@@ -20,14 +20,71 @@ use crossh_ui::{icons, theme};
 
 type ForwardKey = (ForwardKind, ForwardSpec);
 
+#[derive(Default)]
+struct ForwardTracker {
+    active: HashSet<ForwardKey>,
+    pending: HashMap<ForwardKey, u64>,
+    next_request_id: u64,
+}
+
+enum ForwardToggle {
+    Start { request_id: u64 },
+    Stop,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ForwardCompletion {
+    Started,
+    Failed,
+    Stale,
+}
+
+impl ForwardTracker {
+    fn count(&self) -> usize {
+        self.active.len() + self.pending.len()
+    }
+
+    fn toggle(&mut self, key: ForwardKey) -> ForwardToggle {
+        if self.active.remove(&key) || self.pending.remove(&key).is_some() {
+            return ForwardToggle::Stop;
+        }
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1);
+        self.pending.insert(key, request_id);
+        ForwardToggle::Start { request_id }
+    }
+
+    fn complete(
+        &mut self,
+        key: &ForwardKey,
+        request_id: u64,
+        succeeded: bool,
+    ) -> ForwardCompletion {
+        if self.pending.get(key).copied() != Some(request_id) {
+            return ForwardCompletion::Stale;
+        }
+        self.pending.remove(key);
+        if succeeded {
+            self.active.insert(key.clone());
+            ForwardCompletion::Started
+        } else {
+            ForwardCompletion::Failed
+        }
+    }
+
+    fn take_all(&mut self) -> Vec<ForwardKey> {
+        let mut forwards = std::mem::take(&mut self.active);
+        forwards.extend(std::mem::take(&mut self.pending).into_keys());
+        forwards.into_iter().collect()
+    }
+}
+
 pub struct ForwardPane {
     conn: Entity<Connection>,
     local: Vec<ForwardSpec>,
     remote: Vec<ForwardSpec>,
     dynamic: Vec<ForwardSpec>,
-    active: HashSet<(ForwardKind, ForwardSpec)>,
-    pending: HashMap<ForwardKey, u64>,
-    next_request_id: u64,
+    tracker: ForwardTracker,
     messages: Vec<String>,
     focus: FocusHandle,
     focus_requested: bool,
@@ -104,13 +161,11 @@ impl WorkspacePane for ForwardWorkspacePane {
 
 impl ForwardPane {
     pub(crate) fn active_count(&self) -> usize {
-        self.active.len() + self.pending.len()
+        self.tracker.count()
     }
 
     pub(crate) fn stop_all(&mut self, cx: &mut Context<Self>) {
-        let mut forwards = std::mem::take(&mut self.active);
-        forwards.extend(std::mem::take(&mut self.pending).into_keys());
-        for (kind, spec) in forwards {
+        for (kind, spec) in self.tracker.take_all() {
             self.conn.read(cx).stop_forward(spec, kind);
         }
         cx.notify();
@@ -132,9 +187,7 @@ impl ForwardPane {
             local: forwards.local_forwards.clone(),
             remote: forwards.remote_forwards.clone(),
             dynamic: forwards.dynamic_forwards.clone(),
-            active: HashSet::new(),
-            pending: HashMap::new(),
-            next_request_id: 0,
+            tracker: ForwardTracker::default(),
             messages: Vec::new(),
             focus,
             focus_requested: false,
@@ -143,84 +196,71 @@ impl ForwardPane {
 
     fn toggle(&mut self, kind: ForwardKind, spec: ForwardSpec, cx: &mut Context<Self>) {
         let key = (kind, spec.clone());
-        if self.active.remove(&key) {
-            // 关闭。
-            let listen = spec.listen.clone();
-            self.conn.read(cx).stop_forward(spec, kind);
-            self.push_msg(
-                cx,
-                rust_i18n::t!(
-                    "forward.stopping",
-                    kind = forward_kind_label(kind),
-                    listen = listen
-                )
-                .to_string(),
-            );
-        } else if self.pending.remove(&key).is_some() {
-            // 启动尚未回执时也必须发送停止命令；连接层会按队列顺序
-            // 在 StartForward 完成后处理它，避免遗留一个无 UI 控制的 listener。
-            let listen = spec.listen.clone();
-            self.conn.read(cx).stop_forward(spec, kind);
-            self.push_msg(
-                cx,
-                rust_i18n::t!(
-                    "forward.stopping",
-                    kind = forward_kind_label(kind),
-                    listen = listen
-                )
-                .to_string(),
-            );
-        } else {
-            // 启动：发命令并等回执。
-            let rx = self.conn.read(cx).start_forward(spec.clone(), kind);
-            let request_id = self.next_request_id;
-            self.next_request_id = self.next_request_id.wrapping_add(1);
-            self.pending.insert(key.clone(), request_id);
-            cx.spawn(async move |weak, cx| {
-                let res = rx.await;
-                let _ = weak.update(cx, |this, cx| match res {
-                    Ok(Ok(())) => {
-                        if this.pending.get(&key).copied() != Some(request_id) {
-                            return;
+        match self.tracker.toggle(key.clone()) {
+            ForwardToggle::Stop => {
+                // pending 启动也发送停止；连接层按队列顺序处理，避免遗留 listener。
+                let listen = spec.listen.clone();
+                self.conn.read(cx).stop_forward(spec, kind);
+                self.push_msg(
+                    cx,
+                    rust_i18n::t!(
+                        "forward.stopping",
+                        kind = forward_kind_label(kind),
+                        listen = listen
+                    )
+                    .to_string(),
+                );
+            }
+            ForwardToggle::Start { request_id } => {
+                let rx = self.conn.read(cx).start_forward(spec.clone(), kind);
+                cx.spawn(async move |weak, cx| {
+                    let res = rx.await;
+                    let _ = weak.update(cx, |this, cx| match res {
+                        Ok(Ok(())) => {
+                            if this.tracker.complete(&key, request_id, true)
+                                != ForwardCompletion::Started
+                            {
+                                return;
+                            }
+                            this.push_msg(
+                                cx,
+                                rust_i18n::t!(
+                                    "forward.started",
+                                    kind = forward_kind_label(key.0),
+                                    listen = key.1.listen
+                                )
+                                .to_string(),
+                            );
                         }
-                        this.pending.remove(&key);
-                        this.active.insert(key.clone());
-                        this.push_msg(
-                            cx,
-                            rust_i18n::t!(
-                                "forward.started",
-                                kind = forward_kind_label(key.0),
-                                listen = key.1.listen
-                            )
-                            .to_string(),
-                        );
-                    }
-                    Ok(Err(e)) => {
-                        if this.pending.get(&key).copied() != Some(request_id) {
-                            return;
+                        Ok(Err(e)) => {
+                            if this.tracker.complete(&key, request_id, false)
+                                != ForwardCompletion::Failed
+                            {
+                                return;
+                            }
+                            this.push_msg(
+                                cx,
+                                rust_i18n::t!(
+                                    "forward.start_failed",
+                                    kind = forward_kind_label(key.0),
+                                    listen = key.1.listen,
+                                    error = e
+                                )
+                                .to_string(),
+                            );
                         }
-                        this.pending.remove(&key);
-                        this.push_msg(
-                            cx,
-                            rust_i18n::t!(
-                                "forward.start_failed",
-                                kind = forward_kind_label(key.0),
-                                listen = key.1.listen,
-                                error = e
-                            )
-                            .to_string(),
-                        );
-                    }
-                    Err(_) => {
-                        if this.pending.get(&key).copied() != Some(request_id) {
-                            return;
+                        Err(_) => {
+                            if this.tracker.complete(&key, request_id, false)
+                                != ForwardCompletion::Failed
+                            {
+                                return;
+                            }
+                            this.push_msg(cx, i18n::text("forward.connection_closed"));
                         }
-                        this.pending.remove(&key);
-                        this.push_msg(cx, i18n::text("forward.connection_closed"));
-                    }
-                });
-            })
-            .detach();
+                    });
+                })
+                .detach();
+            }
         }
         cx.notify();
     }
@@ -300,8 +340,8 @@ impl Render for ForwardPane {
             i18n::text("forward.local"),
             ForwardKind::Local,
             &self.local,
-            &self.active,
-            &self.pending,
+            &self.tracker.active,
+            &self.tracker.pending,
             cx,
         );
         col = render_section(
@@ -309,8 +349,8 @@ impl Render for ForwardPane {
             i18n::text("forward.remote"),
             ForwardKind::Remote,
             &self.remote,
-            &self.active,
-            &self.pending,
+            &self.tracker.active,
+            &self.tracker.pending,
             cx,
         );
         col = render_section(
@@ -318,8 +358,8 @@ impl Render for ForwardPane {
             i18n::text("forward.dynamic"),
             ForwardKind::Dynamic,
             &self.dynamic,
-            &self.active,
-            &self.pending,
+            &self.tracker.active,
+            &self.tracker.pending,
             cx,
         );
 
@@ -440,4 +480,82 @@ fn render_section(
     }
     col = col.child(section);
     col
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(port: u16) -> ForwardKey {
+        (
+            ForwardKind::Local,
+            ForwardSpec {
+                listen: port.to_string(),
+                remote: "service.internal:80".into(),
+            },
+        )
+    }
+
+    #[test]
+    fn stopped_pending_forward_ignores_its_late_success() {
+        let mut tracker = ForwardTracker::default();
+        let key = key(8080);
+        let ForwardToggle::Start { request_id } = tracker.toggle(key.clone()) else {
+            panic!("first toggle must start");
+        };
+        assert_eq!(tracker.count(), 1);
+        assert!(matches!(tracker.toggle(key.clone()), ForwardToggle::Stop));
+        assert_eq!(tracker.count(), 0);
+
+        assert_eq!(
+            tracker.complete(&key, request_id, true),
+            ForwardCompletion::Stale
+        );
+        assert_eq!(tracker.count(), 0);
+        assert!(!tracker.active.contains(&key));
+    }
+
+    #[test]
+    fn stale_request_cannot_replace_a_newer_pending_start() {
+        let mut tracker = ForwardTracker::default();
+        let key = key(9090);
+        let ForwardToggle::Start { request_id: first } = tracker.toggle(key.clone()) else {
+            panic!("first toggle must start");
+        };
+        tracker.toggle(key.clone());
+        let ForwardToggle::Start { request_id: second } = tracker.toggle(key.clone()) else {
+            panic!("third toggle must start again");
+        };
+
+        assert_eq!(
+            tracker.complete(&key, first, true),
+            ForwardCompletion::Stale
+        );
+        assert_eq!(
+            tracker.complete(&key, second, true),
+            ForwardCompletion::Started
+        );
+        assert!(tracker.active.contains(&key));
+    }
+
+    #[test]
+    fn take_all_clears_active_and_pending_forwards() {
+        let mut tracker = ForwardTracker::default();
+        let active = key(7000);
+        let pending = key(7001);
+        let ForwardToggle::Start { request_id } = tracker.toggle(active.clone()) else {
+            panic!("start");
+        };
+        assert_eq!(
+            tracker.complete(&active, request_id, true),
+            ForwardCompletion::Started
+        );
+        tracker.toggle(pending.clone());
+
+        let all = tracker.take_all();
+        assert_eq!(all.len(), 2);
+        assert!(all.contains(&active));
+        assert!(all.contains(&pending));
+        assert_eq!(tracker.count(), 0);
+    }
 }

@@ -75,3 +75,4 @@ and quick verification command for focused validation.
 - [0003: Agent logic and view split](adr/0003-agent-logic-and-view-split.md)
 - [0004: Feature-owned settings](adr/0004-feature-owned-settings.md)
 - [0005: Standalone updater](adr/0005-standalone-updater.md)
+- [0006: Executable testing contracts](adr/0006-executable-testing-contracts.md)

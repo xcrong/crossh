@@ -120,3 +120,52 @@ pub(crate) fn selection_bounds(anchor: Option<usize>, cursor: usize) -> Option<(
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    fn editor(value: &str, cx: &mut TestAppContext) -> QuickCommandEditor {
+        QuickCommandEditor {
+            scope: "local".into(),
+            original: value.into(),
+            value: value.into(),
+            cursor: value.len(),
+            anchor: None,
+            scroll: ScrollHandle::new(),
+            focus: cx.update(|cx| cx.focus_handle()),
+            ime_marked_text: String::new(),
+            ime_replacement: None,
+        }
+    }
+
+    #[gpui::test]
+    fn unicode_edits_always_leave_cursor_on_a_character_boundary(cx: &mut TestAppContext) {
+        let mut editor = editor("a中😀b", cx);
+        for expected in ["a中😀", "a中", "a", ""] {
+            editor.backspace();
+            assert_eq!(editor.value, expected);
+            assert!(editor.value.is_char_boundary(editor.cursor));
+        }
+
+        editor.replace_selection("中😀");
+        editor.move_to_boundary(false, false);
+        editor.delete();
+        assert_eq!(editor.value, "😀");
+        assert!(editor.value.is_char_boundary(editor.cursor));
+    }
+
+    #[gpui::test]
+    fn reversed_selection_replacement_collapses_at_inserted_text_end(cx: &mut TestAppContext) {
+        let mut editor = editor("alpha中omega", cx);
+        editor.cursor = 5;
+        editor.anchor = Some("alpha中".len());
+        assert_eq!(editor.selected_text().as_deref(), Some("中"));
+
+        editor.replace_selection("😀");
+        assert_eq!(editor.value, "alpha😀omega");
+        assert_eq!(editor.cursor, "alpha😀".len());
+        assert_eq!(editor.anchor, None);
+    }
+}

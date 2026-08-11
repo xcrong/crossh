@@ -35,19 +35,26 @@ pub(crate) fn parse_listen(s: &str) -> (String, u16) {
     if let Ok(port) = s.parse::<u16>() {
         return ("127.0.0.1".to_string(), port);
     }
-    if let Some((h, p)) = s.rsplit_once(':')
-        && let Ok(port) = p.parse::<u16>()
-    {
-        return (h.to_string(), port);
+    if let Some((host, port)) = parse_host_port(s) {
+        return (host, port);
     }
     ("127.0.0.1".to_string(), 0)
 }
 
 /// 解析远端目标 `host:port`。
 pub(crate) fn parse_remote(s: &str) -> Option<(String, u16)> {
-    let (h, p) = s.rsplit_once(':')?;
-    let port = p.parse::<u16>().ok()?;
-    Some((h.to_string(), port))
+    parse_host_port(s)
+}
+
+fn parse_host_port(value: &str) -> Option<(String, u16)> {
+    if let Some(bracketed) = value.strip_prefix('[') {
+        let (host, suffix) = bracketed.split_once(']')?;
+        let port = suffix.strip_prefix(':')?.parse().ok()?;
+        return (!host.is_empty()).then(|| (host.to_string(), port));
+    }
+    let (host, port) = value.rsplit_once(':')?;
+    let port = port.parse().ok()?;
+    (!host.is_empty()).then(|| (host.to_string(), port))
 }
 
 /// -L：本地 listener → direct_tcpip 到 spec.remote。
@@ -289,4 +296,33 @@ async fn relay_channel_tcp(channel: Channel<Msg>, tcp: TcpStream) -> anyhow::Res
     };
     let _ = tokio::try_join!(c2s, s2c);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forward_endpoints_cover_defaults_names_and_ipv6() {
+        assert_eq!(parse_listen("8080"), ("127.0.0.1".into(), 8080));
+        assert_eq!(parse_listen("localhost:0"), ("localhost".into(), 0));
+        assert_eq!(parse_listen("[::1]:2200"), ("::1".into(), 2200));
+        assert_eq!(
+            parse_remote("db.internal:5432"),
+            Some(("db.internal".into(), 5432))
+        );
+        assert_eq!(
+            parse_remote("[2001:db8::1]:443"),
+            Some(("2001:db8::1".into(), 443))
+        );
+    }
+
+    #[test]
+    fn malformed_forward_endpoints_are_rejected() {
+        assert_eq!(parse_remote("missing-port"), None);
+        assert_eq!(parse_remote(":22"), None);
+        assert_eq!(parse_remote("[::1]"), None);
+        assert_eq!(parse_remote("host:not-a-port"), None);
+        assert_eq!(parse_listen("invalid"), ("127.0.0.1".into(), 0));
+    }
 }

@@ -42,6 +42,13 @@
 - Use the project's default `target/` directory for Cargo builds, tests, checks, and releases. Do not set `CARGO_TARGET_DIR` or create an independent compiler cache unless the user explicitly requests it.
 - If the default target is locked by another Cargo process, wait for it or report the condition; do not switch to a separate target as a workaround.
 
+## Local Workspace and Platform Responsibility
+
+- Work directly in the current checkout. Do not create Git worktrees, duplicate the repository, or copy the build cache unless the user explicitly requests that isolation strategy.
+- The local development machine is responsible for macOS behavior and platform-independent logic only. Do not install emulators, cross-compile toolchains, or local compatibility layers merely to claim Linux or Windows verification.
+- Linux- and Windows-specific behavior is verified by GitHub Actions. Changes that affect those platforms must add or update the corresponding CI coverage, and must not be reported as platform-verified until the relevant Actions jobs pass.
+- Local verification should still run all cached, platform-independent tests that are available on macOS. A platform-specific test skipped locally must be named explicitly in the handoff together with the CI job that owns it.
+
 ## Sandbox-Aware Command Execution
 
 - The workspace sandbox may permit source changes while denying writes to `.git` and external network access.

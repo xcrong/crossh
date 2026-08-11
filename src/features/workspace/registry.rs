@@ -50,3 +50,29 @@ impl WorkspaceState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_ids_are_monotonic_and_state_starts_inactive() {
+        let remembered = BTreeMap::from([(
+            PathBuf::from("/workspace"),
+            LocalDir {
+                project_dir: PathBuf::from("/workspace"),
+                sessions: Vec::new(),
+                active_session: None,
+            },
+        )]);
+        let mut workspace = WorkspaceState::new(remembered);
+
+        assert_eq!(workspace.active_view, None);
+        assert!(workspace.sessions.remote_tabs.is_empty());
+        assert!(workspace.sessions.local_sessions.is_empty());
+        assert_eq!(workspace.sessions.local_dirs.len(), 1);
+        assert_eq!(workspace.sessions.allocate_local_session_id(), 1);
+        assert_eq!(workspace.sessions.allocate_local_session_id(), 2);
+        assert_eq!(workspace.sessions.allocate_local_session_id(), 3);
+    }
+}

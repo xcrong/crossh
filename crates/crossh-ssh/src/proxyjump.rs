@@ -19,36 +19,7 @@ use super::session::default_auth_for;
 
 /// 解析 ProxyJump 值：若是 config 中已知别名则 resolve；否则按 `[user@]host[:port]` 解析。
 pub(crate) fn resolve_jump(config: &SshConfig, alias: &str) -> HostConfig {
-    let known = config.hosts().iter().any(|h| h.matches(alias));
-    if known {
-        config.resolve(alias)
-    } else {
-        parse_explicit(alias)
-    }
-}
-
-/// 解析显式 `[user@]host[:port]`。
-fn parse_explicit(s: &str) -> HostConfig {
-    let (user, rest) = match s.split_once('@') {
-        Some((u, r)) => (Some(u.to_string()), r),
-        None => (None, s),
-    };
-    let (host, port) = match rest.rsplit_once(':') {
-        Some((h, p)) if p.parse::<u16>().is_ok() => (h.to_string(), p.parse::<u16>().ok()),
-        _ => (rest.to_string(), None),
-    };
-    HostConfig {
-        aliases: vec![s.to_string()],
-        host_name: Some(host),
-        user,
-        port,
-        identity_files: Vec::new(),
-        identities_only: None,
-        proxy_jump: None,
-        local_forwards: Vec::new(),
-        remote_forwards: Vec::new(),
-        dynamic_forwards: Vec::new(),
-    }
+    config.resolve(alias)
 }
 
 /// 经跳板打开到目标的未认证 Handle，并返回需保活的跳板 Handle。
@@ -93,4 +64,45 @@ pub(crate) async fn open_target_via_jump(
     let target_handler = ClientHandler::new(target_host, target_port, event_tx.clone(), registry);
     let target_handle = connect_stream(target_cfg, stream, target_handler).await?;
     Ok((target_handle, jump_handle))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_jump_targets_share_the_main_ssh_target_parser() {
+        let config = SshConfig::default();
+        let jump = resolve_jump(&config, "alice@jump.example:2222");
+        assert_eq!(jump.user.as_deref(), Some("alice"));
+        assert_eq!(jump.effective_host(), "jump.example");
+        assert_eq!(jump.effective_port(), 2222);
+
+        let ipv6 = resolve_jump(&config, "ops@[2001:db8::7]:2200");
+        assert_eq!(ipv6.user.as_deref(), Some("ops"));
+        assert_eq!(ipv6.effective_host(), "2001:db8::7");
+        assert_eq!(ipv6.effective_port(), 2200);
+    }
+
+    #[test]
+    fn configured_jump_alias_uses_resolved_values() {
+        let config = SshConfig {
+            hosts: vec![HostConfig {
+                aliases: vec!["jump".into()],
+                host_name: Some("10.0.0.5".into()),
+                user: Some("deploy".into()),
+                port: Some(2022),
+                identity_files: Vec::new(),
+                identities_only: None,
+                proxy_jump: None,
+                local_forwards: Vec::new(),
+                remote_forwards: Vec::new(),
+                dynamic_forwards: Vec::new(),
+            }],
+        };
+        let jump = resolve_jump(&config, "jump");
+        assert_eq!(jump.effective_host(), "10.0.0.5");
+        assert_eq!(jump.user.as_deref(), Some("deploy"));
+        assert_eq!(jump.effective_port(), 2022);
+    }
 }

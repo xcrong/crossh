@@ -69,39 +69,7 @@ impl Connection {
     }
 
     fn apply_event(&mut self, event: ConnEvent) {
-        match event {
-            ConnEvent::Connected => self.state = ConnectionState::Connected,
-            ConnEvent::Error(error) => self.state = ConnectionState::Error(error),
-            ConnEvent::Closed => self.state = ConnectionState::Closed,
-            ConnEvent::NeedHostKey {
-                host,
-                port,
-                key_type,
-                fingerprint,
-                changed,
-                reply,
-            } => {
-                self.pending_prompt = Some(PendingPrompt::HostKey {
-                    host,
-                    port,
-                    key_type,
-                    fingerprint,
-                    changed,
-                    reply: Some(reply),
-                });
-            }
-            ConnEvent::NeedCredential {
-                kind,
-                prompt,
-                reply,
-            } => {
-                self.pending_prompt = Some(PendingPrompt::Credential {
-                    kind,
-                    prompt,
-                    reply: Some(reply),
-                });
-            }
-        }
+        apply_event(&mut self.state, &mut self.pending_prompt, event);
     }
 
     pub(crate) fn open_command(
@@ -138,26 +106,139 @@ impl Connection {
     }
 
     pub(crate) fn resolve_host_key(&mut self, decision: HostKeyDecision) {
-        if let Some(PendingPrompt::HostKey { reply, .. }) = &mut self.pending_prompt
-            && let Some(reply) = reply.take()
-        {
-            let _ = reply.send(decision);
-        }
-        self.pending_prompt = None;
+        resolve_host_key(&mut self.pending_prompt, decision);
     }
 
     pub(crate) fn resolve_credential(&mut self, value: Option<String>) {
-        if let Some(PendingPrompt::Credential { reply, .. }) = &mut self.pending_prompt
-            && let Some(reply) = reply.take()
-        {
-            let _ = reply.send(value);
-        }
-        self.pending_prompt = None;
+        resolve_credential(&mut self.pending_prompt, value);
     }
+}
+
+fn apply_event(
+    state: &mut ConnectionState,
+    pending_prompt: &mut Option<PendingPrompt>,
+    event: ConnEvent,
+) {
+    match event {
+        ConnEvent::Connected => *state = ConnectionState::Connected,
+        ConnEvent::Error(error) => *state = ConnectionState::Error(error),
+        ConnEvent::Closed => *state = ConnectionState::Closed,
+        ConnEvent::NeedHostKey {
+            host,
+            port,
+            key_type,
+            fingerprint,
+            changed,
+            reply,
+        } => {
+            *pending_prompt = Some(PendingPrompt::HostKey {
+                host,
+                port,
+                key_type,
+                fingerprint,
+                changed,
+                reply: Some(reply),
+            });
+        }
+        ConnEvent::NeedCredential {
+            kind,
+            prompt,
+            reply,
+        } => {
+            *pending_prompt = Some(PendingPrompt::Credential {
+                kind,
+                prompt,
+                reply: Some(reply),
+            });
+        }
+    }
+}
+
+fn resolve_host_key(pending_prompt: &mut Option<PendingPrompt>, decision: HostKeyDecision) {
+    if let Some(PendingPrompt::HostKey { reply, .. }) = pending_prompt
+        && let Some(reply) = reply.take()
+    {
+        let _ = reply.send(decision);
+    }
+    *pending_prompt = None;
+}
+
+fn resolve_credential(pending_prompt: &mut Option<PendingPrompt>, value: Option<String>) {
+    if let Some(PendingPrompt::Credential { reply, .. }) = pending_prompt
+        && let Some(reply) = reply.take()
+    {
+        let _ = reply.send(value);
+    }
+    *pending_prompt = None;
 }
 
 impl Drop for Connection {
     fn drop(&mut self) {
         self.handle.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connection_events_drive_state_without_a_real_transport() {
+        let mut state = ConnectionState::Connecting;
+        let mut prompt = None;
+        apply_event(&mut state, &mut prompt, ConnEvent::Connected);
+        assert_eq!(state, ConnectionState::Connected);
+
+        apply_event(&mut state, &mut prompt, ConnEvent::Error("denied".into()));
+        assert_eq!(state, ConnectionState::Error("denied".into()));
+
+        apply_event(&mut state, &mut prompt, ConnEvent::Closed);
+        assert_eq!(state, ConnectionState::Closed);
+    }
+
+    #[test]
+    fn host_key_prompt_reply_is_consumed_once() {
+        let mut state = ConnectionState::Connecting;
+        let mut prompt = None;
+        let (reply, mut response) = oneshot::channel();
+        apply_event(
+            &mut state,
+            &mut prompt,
+            ConnEvent::NeedHostKey {
+                host: "example.com".into(),
+                port: 22,
+                key_type: "ssh-ed25519".into(),
+                fingerprint: "SHA256:test".into(),
+                changed: false,
+                reply,
+            },
+        );
+        assert!(matches!(prompt, Some(PendingPrompt::HostKey { .. })));
+
+        resolve_host_key(&mut prompt, HostKeyDecision::AcceptOnce);
+        assert_eq!(response.try_recv(), Ok(HostKeyDecision::AcceptOnce));
+        assert!(prompt.is_none());
+        resolve_host_key(&mut prompt, HostKeyDecision::Reject);
+        assert!(response.try_recv().is_err());
+    }
+
+    #[test]
+    fn credential_prompt_can_be_cancelled() {
+        let mut state = ConnectionState::Connecting;
+        let mut prompt = None;
+        let (reply, mut response) = oneshot::channel();
+        apply_event(
+            &mut state,
+            &mut prompt,
+            ConnEvent::NeedCredential {
+                kind: CredentialKind::Password,
+                prompt: "Password:".into(),
+                reply,
+            },
+        );
+        assert!(matches!(prompt, Some(PendingPrompt::Credential { .. })));
+        resolve_credential(&mut prompt, None);
+        assert_eq!(response.try_recv(), Ok(None));
+        assert!(prompt.is_none());
     }
 }
