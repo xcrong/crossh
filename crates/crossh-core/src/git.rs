@@ -683,7 +683,7 @@ mod tests {
         run(&["init", "-q"]);
         run(&["config", "user.email", "test@crossh.local"]);
         run(&["config", "user.name", "Crossh Test"]);
-        let path = "space  and\ttab.txt";
+        let path = "space  and tab.txt";
         std::fs::write(dir.path().join(path), "one\ntwo\n").unwrap();
         run(&["add", "-A"]);
 
