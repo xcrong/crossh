@@ -1527,10 +1527,11 @@ impl Render for AppShell {
                 }),
             None => None,
         };
-        let quick_commands = match quick_commands_panel_mode(
+        let quick_commands_panel_mode = quick_commands_panel_mode(
             quick_context.is_some(),
             self.workspace_settings.show_quick_commands,
-        ) {
+        );
+        let quick_commands = match quick_commands_panel_mode {
             Some(QuickCommandsPanelMode::Expanded) => {
                 let (scope, cwd) =
                     quick_context.expect("expanded panel requires a command context");
@@ -1552,8 +1553,19 @@ impl Render for AppShell {
         } else {
             theme::SIDEBAR_RAIL_WIDTH
         };
-        let available_main_width =
-            px((window.viewport_size().width.as_f32() - sidebar_width).max(0.));
+        let quick_commands_width = match quick_commands_panel_mode {
+            Some(QuickCommandsPanelMode::Expanded) => self.quick_commands_width.get().clamp(
+                theme::QUICK_COMMANDS_MIN_WIDTH,
+                theme::QUICK_COMMANDS_MAX_WIDTH,
+            ),
+            Some(QuickCommandsPanelMode::Rail) => theme::QUICK_COMMANDS_RAIL_WIDTH,
+            None => 0.,
+        };
+        let available_main_width = available_main_width(
+            window.viewport_size().width,
+            sidebar_width,
+            quick_commands_width,
+        );
         let main = render_main(self, available_main_width, cx);
         let sidebar = if self.workspace_settings.show_host_sidebar {
             render_sidebar(self, window, cx)
@@ -1641,6 +1653,14 @@ fn quick_commands_panel_mode(
     })
 }
 
+fn available_main_width(
+    viewport_width: Pixels,
+    sidebar_width: f32,
+    quick_commands_width: f32,
+) -> Pixels {
+    px((viewport_width.as_f32() - sidebar_width - quick_commands_width).max(0.))
+}
+
 fn current_local_cwd() -> PathBuf {
     normalize_local_cwd(std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")))
 }
@@ -1719,9 +1739,10 @@ pub fn open_main_window(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::{
-        QuickCommandsPanelMode, find_remote_terminal_index, next_char_boundary,
-        previous_char_boundary, quick_commands_panel_mode, selection_bounds,
+        QuickCommandsPanelMode, available_main_width, find_remote_terminal_index,
+        next_char_boundary, previous_char_boundary, quick_commands_panel_mode, selection_bounds,
     };
+    use gpui::px;
 
     #[test]
     fn sidebar_host_reuse_selects_latest_matching_terminal() {
@@ -1759,5 +1780,13 @@ mod tests {
         );
         assert_eq!(quick_commands_panel_mode(false, true), None);
         assert_eq!(quick_commands_panel_mode(false, false), None);
+    }
+
+    #[test]
+    fn main_width_excludes_both_workspace_side_panels() {
+        assert_eq!(available_main_width(px(700.), 216., 240.), px(244.));
+        assert_eq!(available_main_width(px(700.), 44., 40.), px(616.));
+        assert_eq!(available_main_width(px(700.), 216., 0.), px(484.));
+        assert_eq!(available_main_width(px(400.), 216., 240.), px(0.));
     }
 }

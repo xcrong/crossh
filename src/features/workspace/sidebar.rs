@@ -297,7 +297,10 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
                     let container = container.clone();
                     let width_cell = width_cell.clone();
                     let dragging = dragging.clone();
-                    move |ev: &MouseMoveEvent, _phase, window, _cx| {
+                    move |ev: &MouseMoveEvent, phase, window, _cx| {
+                        if !matches!(phase, gpui::DispatchPhase::Bubble) {
+                            return;
+                        }
                         if !dragging.get() {
                             return;
                         }
@@ -313,7 +316,10 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
                 });
                 window.on_mouse_event({
                     let dragging = dragging.clone();
-                    move |_ev: &MouseUpEvent, _phase, window, _cx| {
+                    move |_ev: &MouseUpEvent, phase, window, _cx| {
+                        if !matches!(phase, gpui::DispatchPhase::Bubble) {
+                            return;
+                        }
                         if dragging.replace(false) {
                             window.refresh();
                         }

@@ -212,7 +212,10 @@ impl SettingsWindow {
                     window.on_mouse_event({
                         let bounds = bounds.clone();
                         let entity = entity.clone();
-                        move |event: &MouseMoveEvent, _phase, window, cx| {
+                        move |event: &MouseMoveEvent, phase, window, cx| {
+                            if !matches!(phase, gpui::DispatchPhase::Bubble) {
+                                return;
+                            }
                             let Some(input_bounds) = bounds.get() else {
                                 return;
                             };
@@ -238,7 +241,10 @@ impl SettingsWindow {
                     });
                     window.on_mouse_event({
                         let entity = entity.clone();
-                        move |_event: &MouseUpEvent, _phase, _window, cx| {
+                        move |_event: &MouseUpEvent, phase, _window, cx| {
+                            if !matches!(phase, gpui::DispatchPhase::Bubble) {
+                                return;
+                            }
                             if entity.read(cx).agent_dragging {
                                 entity.update(cx, |this, _cx| this.agent_dragging = false);
                             }

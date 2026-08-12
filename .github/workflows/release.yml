@@ -36,6 +36,32 @@ jobs:
       - name: Architecture checks
         run: scripts/check-architecture.sh
 
+      - name: Verify release metadata
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            tag_version="${GITHUB_REF_NAME#v}"
+            for manifest in Cargo.toml crates/*/Cargo.toml; do
+              manifest_version="$(awk '
+                /^\[package\][[:space:]]*$/ { in_package = 1; next }
+                /^\[/ { in_package = 0 }
+                in_package && /^version[[:space:]]*=/ {
+                  value = $0
+                  sub(/^[^\"]*\"/, "", value)
+                  sub(/\".*$/, "", value)
+                  print value
+                  exit
+                }
+              ' "$manifest")"
+              test "$manifest_version" = "$tag_version" || {
+                echo "$manifest has version $manifest_version; expected $tag_version" >&2
+                exit 1
+              }
+            done
+          fi
+          cargo metadata --format-version 1 --no-deps >/dev/null
+          git diff --exit-code -- Cargo.lock
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 

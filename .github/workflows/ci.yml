@@ -28,6 +28,12 @@ jobs:
       - name: Architecture checks
         run: scripts/check-architecture.sh
 
+      - name: Verify Cargo.lock is synchronized
+        shell: bash
+        run: |
+          cargo metadata --format-version 1 --no-deps >/dev/null
+          git diff --exit-code -- Cargo.lock
+
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 

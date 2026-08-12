@@ -8,8 +8,8 @@ use gpui::{
     AnyElement, App, AppContext, Bounds, ClickEvent, ClipboardEntry, Context, Entity, FocusHandle,
     FontWeight, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, SharedString, Size,
-    StatefulInteractiveElement, Styled, TitlebarOptions, WeakEntity, Window, WindowBounds,
-    WindowOptions, canvas, div, px,
+    StatefulInteractiveElement, Styled, Subscription, TitlebarOptions, WeakEntity, Window,
+    WindowBounds, WindowOptions, canvas, div, px,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -40,6 +40,13 @@ fn uses_compact_settings_layout(width: Pixels) -> bool {
     width < px(SETTINGS_COMPACT_WIDTH)
 }
 
+fn observe_update_status<T>(updates: &Entity<UpdateController>, cx: &mut Context<T>) -> Subscription
+where
+    T: 'static,
+{
+    cx.observe(updates, |_, _, cx| cx.notify())
+}
+
 /// 设置窗口的根视图。窗口关闭即释放。
 pub struct SettingsWindow {
     /// 主窗口 AppShell 的弱引用：设置值读写都委托给它。
@@ -47,6 +54,7 @@ pub struct SettingsWindow {
     section: SettingsSection,
     scroll: gpui::ScrollHandle,
     updates: Entity<UpdateController>,
+    _updates_subscription: Subscription,
     agent_draft: AgentSettings,
     agent_draft_initialized: bool,
     agent_provider_index: usize,
@@ -92,11 +100,13 @@ impl SettingsWindow {
             .upgrade()
             .map(|shell| shell.read(cx).updates.clone())
             .unwrap_or_else(|| cx.new(|_| UpdateController::new(loaded.updates.clone())));
+        let updates_subscription = observe_update_status(&updates, cx);
         Self {
             shell,
             section: SettingsSection::General,
             scroll: gpui::ScrollHandle::new(),
             updates,
+            _updates_subscription: updates_subscription,
             agent_draft: loaded.agent,
             agent_draft_initialized: false,
             agent_provider_index: 0,
@@ -1824,6 +1834,14 @@ pub fn open_settings_section(shell: WeakEntity<AppShell>, section: SettingsSecti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use crate::features::updates::UpdateSettings;
+
+    struct UpdateStatusObserver {
+        _subscription: Subscription,
+    }
 
     #[test]
     fn settings_layout_switches_at_compact_width() {
@@ -1836,5 +1854,29 @@ mod tests {
         assert_eq!(clamp_char_boundary("model", 99), 5);
         assert_eq!(clamp_char_boundary("模型", 2), 0);
         assert_eq!(clamp_char_boundary("模型", 3), 3);
+    }
+
+    #[gpui::test]
+    fn update_notifications_redraw_the_observing_view(cx: &mut gpui::TestAppContext) {
+        let redraws = Rc::new(Cell::new(0));
+        let (updates, observer) = cx.update(|cx| {
+            let updates = cx.new(|_| UpdateController::new(UpdateSettings::default()));
+            let observer = cx.new(|cx| UpdateStatusObserver {
+                _subscription: observe_update_status(&updates, cx),
+            });
+            let redraws_for_observer = redraws.clone();
+            cx.observe(&observer, move |_, _| {
+                redraws_for_observer.set(redraws_for_observer.get() + 1);
+            })
+            .detach();
+
+            (updates, observer)
+        });
+        cx.update(|cx| {
+            updates.update(cx, |_, cx| cx.notify());
+        });
+
+        assert_eq!(redraws.get(), 1);
+        drop(observer);
     }
 }

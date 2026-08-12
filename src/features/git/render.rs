@@ -80,7 +80,10 @@ impl GitWindow {
                         let container = container.clone();
                         let width_cell = width_cell.clone();
                         let dragging = dragging.clone();
-                        move |event: &MouseMoveEvent, _phase, window, _cx| {
+                        move |event: &MouseMoveEvent, phase, window, _cx| {
+                            if !matches!(phase, gpui::DispatchPhase::Bubble) {
+                                return;
+                            }
                             if !dragging.get() {
                                 return;
                             }
@@ -95,7 +98,10 @@ impl GitWindow {
                     });
                     window.on_mouse_event({
                         let dragging = dragging.clone();
-                        move |_event: &MouseUpEvent, _phase, window, _cx| {
+                        move |_event: &MouseUpEvent, phase, window, _cx| {
+                            if !matches!(phase, gpui::DispatchPhase::Bubble) {
+                                return;
+                            }
                             if dragging.replace(false) {
                                 window.refresh();
                             }
