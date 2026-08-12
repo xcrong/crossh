@@ -59,7 +59,7 @@ jobs:
               }
             done
           fi
-          cargo metadata --format-version 1 --no-deps >/dev/null
+          cargo check --workspace
           git diff --exit-code -- Cargo.lock
 
       - name: Clippy

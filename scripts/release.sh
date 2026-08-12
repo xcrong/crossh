@@ -134,7 +134,7 @@ done
 ensure_versions_match
 
 echo "==> sync Cargo.lock"
-cargo metadata --format-version 1 --no-deps >/dev/null
+cargo check --workspace
 
 check_worktree_paths
 git diff --check
