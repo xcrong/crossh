@@ -4,8 +4,14 @@
 //! `--porcelain=v2` status, `--numstat` counters, and unified diff output.
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+
+use crate::project::{GitStatus, parse_status};
+
+const MAX_DIFF_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_DIFF_LINES: usize = 10_000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GitError {
@@ -13,6 +19,8 @@ pub enum GitError {
     Spawn(#[from] std::io::Error),
     #[error("{0}")]
     CommandFailed(String),
+    #[error("差异内容超过 {MAX_DIFF_BYTES} 字节，未加载以保持界面可用")]
+    DiffTooLarge,
 }
 
 /// 单个文件在索引（已暂存）或工作区（未暂存）中的变更状态。
@@ -94,26 +102,41 @@ pub struct FileDiff {
     pub binary: bool,
 }
 
+/// 一次工作区扫描的变更列表与分支状态。
+///
+/// 两者来自同一份 porcelain 输出，避免界面层为状态栏额外启动一次 `git status`。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChangeScan {
+    pub changes: Vec<FileChange>,
+    pub status: Option<GitStatus>,
+}
+
 /// 扫描目录下的全部改动（已暂存 + 未暂存），每个（路径，暂存态）一条。
-pub fn list_changes(cwd: &Path) -> Vec<FileChange> {
-    let Some(output) = git(
+pub fn list_changes(cwd: &Path) -> Result<Vec<FileChange>, GitError> {
+    Ok(scan_changes(cwd)?.changes)
+}
+
+/// 扫描目录下的变更与分支状态。
+pub fn scan_changes(cwd: &Path) -> Result<ChangeScan, GitError> {
+    let output = git_output(
         cwd,
         // 逐个列出未追踪文件（而非折叠成 `dir/`），使其真正可见。
-        &["status", "--porcelain=v2", "-z", "--untracked-files=all"],
-    ) else {
-        return Vec::new();
-    };
-    let staged_counts = numstat_map(&git(cwd, &["diff", "--cached", "--numstat"]));
-    let working_counts = numstat_map(&git(cwd, &["diff", "--numstat"]));
+        &[
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "-z",
+            "--untracked-files=all",
+        ],
+    )?;
+    let staged_counts = numstat_map(&git_output(cwd, &["diff", "--cached", "--numstat", "-z"])?);
+    let working_counts = numstat_map(&git_output(cwd, &["diff", "--numstat", "-z"])?);
 
     let mut changes = Vec::new();
-    let records: Vec<Vec<u8>> = output
-        .split(|byte| *byte == 0)
-        .map(|slice| slice.to_vec())
-        .collect();
+    let records = output.split(|byte| *byte == 0).collect::<Vec<_>>();
     let mut index = 0;
     while index < records.len() {
-        let record = records[index].to_vec();
+        let record = records[index];
         index += 1;
         if record.is_empty() || record.first() == Some(&b'#') {
             continue;
@@ -121,35 +144,28 @@ pub fn list_changes(cwd: &Path) -> Vec<FileChange> {
 
         match record.first().copied() {
             Some(b'1' | b'2') => {
-                let fields = whitespace_fields(&record);
-                if fields.len() < 8 {
+                let field_count = if record[0] == b'2' { 9 } else { 8 };
+                let Some((prefix, path)) = split_after_spaces(record, field_count) else {
                     continue;
-                }
-                let xy = fields[1].to_string();
-                // type 2（重命名/复制）记录在 hH hI 之后多一个 `R<score>` 字段。
-                let path_start = if record[0] == b'2' && (xy.contains('R') || xy.contains('C')) {
-                    9
-                } else {
-                    8
                 };
-                if fields.len() < path_start {
+                let mut fields = prefix.split(|byte| *byte == b' ');
+                let _kind = fields.next();
+                let Some(xy) = fields.next() else {
                     continue;
-                }
-                let path = fields[path_start..].join(" ");
+                };
+                let path = String::from_utf8_lossy(path).into_owned();
                 let mut orig_path = None;
-                if xy.contains('R') || xy.contains('C') {
+                if record[0] == b'2' {
                     // -z 模式下源路径是记录后的下一个 NUL 片段。
                     if let Some(extra) = records.get(index)
                         && !extra.is_empty()
-                        && !matches!(extra[0], b'1' | b'2' | b'u' | b'?')
                     {
                         orig_path = Some(String::from_utf8_lossy(extra).into_owned());
                         index += 1;
                     }
                 }
-                let bytes = xy.as_bytes();
-                let index_status = bytes.first().copied().unwrap_or(b'.');
-                let worktree_status = bytes.get(1).copied().unwrap_or(b'.');
+                let index_status = xy.first().copied().unwrap_or(b'.');
+                let worktree_status = xy.get(1).copied().unwrap_or(b'.');
                 if index_status != b'.' {
                     changes.push(file_change(
                         &path,
@@ -174,12 +190,11 @@ pub fn list_changes(cwd: &Path) -> Vec<FileChange> {
                 }
             }
             Some(b'u') => {
-                let fields = whitespace_fields(&record);
-                if fields.len() < 10 {
+                let Some((_, path)) = split_after_spaces(record, 10) else {
                     continue;
-                }
+                };
                 changes.push(FileChange {
-                    path: fields[10..].join(" "),
+                    path: String::from_utf8_lossy(path).into_owned(),
                     orig_path: None,
                     status: ChangeStatus::Conflict,
                     staged: false,
@@ -205,11 +220,14 @@ pub fn list_changes(cwd: &Path) -> Vec<FileChange> {
     }
 
     changes.sort_by_key(|entry| (entry.staged, entry.status.rank(), entry.path.clone()));
-    changes
+    Ok(ChangeScan {
+        changes,
+        status: parse_status(&output),
+    })
 }
 
 /// 读取某个文件（按暂存态）的统一 diff。
-pub fn diff(cwd: &Path, entry: &FileChange, staged: bool) -> Option<FileDiff> {
+pub fn diff(cwd: &Path, entry: &FileChange, staged: bool) -> Result<Option<FileDiff>, GitError> {
     if entry.status == ChangeStatus::Untracked {
         return untracked_diff(cwd, entry);
     }
@@ -223,7 +241,7 @@ pub fn diff(cwd: &Path, entry: &FileChange, staged: bool) -> Option<FileDiff> {
         args.push(orig);
     }
     args.push(&entry.path);
-    let output = git(cwd, &args)?;
+    let output = git_output_limited(cwd, &args, MAX_DIFF_BYTES)?;
     parse_diff(&output)
 }
 
@@ -292,23 +310,29 @@ fn git_result(output: std::process::Output) -> Result<(), GitError> {
 }
 
 /// 未跟踪文件没有可 diff 的基线：把整个文件内容当作新增行呈现。
-fn untracked_diff(cwd: &Path, entry: &FileChange) -> Option<FileDiff> {
+fn untracked_diff(cwd: &Path, entry: &FileChange) -> Result<Option<FileDiff>, GitError> {
     let path = cwd.join(&entry.path);
     if !path.is_file() {
-        return None;
+        return Ok(None);
     }
-    let bytes = std::fs::read(&path).ok()?;
+    if std::fs::metadata(&path)?.len() > MAX_DIFF_BYTES {
+        return Err(GitError::DiffTooLarge);
+    }
+    let bytes = std::fs::read(&path)?;
     let Ok(text) = String::from_utf8(bytes) else {
-        return Some(FileDiff {
+        return Ok(Some(FileDiff {
             binary: true,
             ..FileDiff::default()
-        });
+        }));
     };
     let mut lines: Vec<&str> = text.split('\n').collect();
     if text.ends_with('\n') {
         lines.pop();
     }
     let mut produced = Vec::new();
+    if lines.len() > MAX_DIFF_LINES {
+        return Err(GitError::DiffTooLarge);
+    }
     for (index, line) in lines.into_iter().enumerate() {
         produced.push(DiffLine {
             kind: DiffLineKind::Added,
@@ -317,63 +341,125 @@ fn untracked_diff(cwd: &Path, entry: &FileChange) -> Option<FileDiff> {
             text: line.to_string(),
         });
     }
-    Some(FileDiff {
+    Ok(Some(FileDiff {
         old_path: None,
         new_path: Some(entry.path.clone()),
         lines: produced,
         ..FileDiff::default()
-    })
+    }))
 }
 
-/// 运行 git 命令并返回 stdout（失败时返回 None）。
-fn git(cwd: &Path, args: &[&str]) -> Option<Vec<u8>> {
+/// 运行只读 Git 命令并返回 stdout，保留失败原因供界面显示。
+fn git_output(cwd: &Path, args: &[&str]) -> Result<Vec<u8>, GitError> {
     let output = Command::new("git")
         .arg("-C")
         .arg(cwd)
         .args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()
-        .ok()?;
-    output.status.success().then_some(output.stdout)
+        .output()?;
+    git_stdout(output)
 }
 
 /// 解析 `--numstat` 输出为 path -> (insertions, deletions)。
-fn numstat_map(output: &Option<Vec<u8>>) -> HashMap<String, (usize, usize)> {
+fn numstat_map(output: &[u8]) -> HashMap<String, (usize, usize)> {
     let mut map = HashMap::new();
-    let Some(output) = output else {
-        return map;
-    };
-    let text = String::from_utf8_lossy(output);
-    for line in text.lines() {
-        if line.is_empty() {
+    let records = output.split(|byte| *byte == 0).collect::<Vec<_>>();
+    let mut index = 0;
+    while let Some(record) = records.get(index) {
+        index += 1;
+        if record.is_empty() {
             continue;
         }
-        let mut parts = line.splitn(3, '\t');
+        let mut parts = record.splitn(3, |byte| *byte == b'\t');
         let Some(added) = parts.next() else { continue };
         let Some(deleted) = parts.next() else {
             continue;
         };
-        // 重命名显示为 `old => new`；按新路径索引（与条目 path 对齐）。
-        let path = parts.next().unwrap_or("");
-        let key = path
-            .split_once(" => ")
-            .map(|(_, new)| new.to_string())
-            .unwrap_or_else(|| path.to_string());
-        let insertions = added.parse().unwrap_or(0);
-        let deletions = deleted.parse().unwrap_or(0);
+        let path = parts.next().unwrap_or_default();
+        // `--numstat -z` encodes renamed paths as an empty third field followed
+        // by old and new path records. The current path is the last record.
+        let path = if path.is_empty() {
+            let _old = records.get(index);
+            let Some(new) = records.get(index + 1) else {
+                continue;
+            };
+            index += 2;
+            *new
+        } else {
+            path
+        };
+        let key = String::from_utf8_lossy(path).into_owned();
+        let insertions = std::str::from_utf8(added)
+            .ok()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0);
+        let deletions = std::str::from_utf8(deleted)
+            .ok()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0);
         map.insert(key, (insertions, deletions));
     }
     map
 }
 
+fn git_output_limited(cwd: &Path, args: &[&str], limit: u64) -> Result<Vec<u8>, GitError> {
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stderr = child.stderr.take().expect("piped stderr must exist");
+    let stderr_reader = std::thread::spawn(move || {
+        let mut stderr_bytes = Vec::new();
+        let _ = stderr.take(64 * 1024).read_to_end(&mut stderr_bytes);
+        stderr_bytes
+    });
+    let mut stdout = child.stdout.take().expect("piped stdout must exist");
+    let mut bytes = Vec::new();
+    stdout.by_ref().take(limit + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = stderr_reader.join();
+        return Err(GitError::DiffTooLarge);
+    }
+    let status = child.wait()?;
+    let stderr_bytes = stderr_reader.join().unwrap_or_default();
+    if status.success() {
+        Ok(bytes)
+    } else {
+        Err(command_error(status, &stderr_bytes))
+    }
+}
+
+fn git_stdout(output: std::process::Output) -> Result<Vec<u8>, GitError> {
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(command_error(output.status, &output.stderr))
+    }
+}
+
+fn command_error(status: std::process::ExitStatus, stderr: &[u8]) -> GitError {
+    let stderr = String::from_utf8_lossy(stderr).trim().to_string();
+    GitError::CommandFailed(if stderr.is_empty() {
+        format!("git 命令失败：{status}")
+    } else {
+        stderr
+    })
+}
+
 /// 解析统一 diff 输出为逐行结构。
-fn parse_diff(output: &[u8]) -> Option<FileDiff> {
+fn parse_diff(output: &[u8]) -> Result<Option<FileDiff>, GitError> {
     let text = String::from_utf8_lossy(output);
     if text.contains("Binary files") && !text.contains("@@ ") {
-        return Some(FileDiff {
+        return Ok(Some(FileDiff {
             binary: true,
             ..FileDiff::default()
-        });
+        }));
     }
     let mut diff = FileDiff::default();
     let mut old_ln = 0u32;
@@ -388,6 +474,9 @@ fn parse_diff(output: &[u8]) -> Option<FileDiff> {
                 new_ln: None,
                 text: line.to_string(),
             });
+            if diff.lines.len() > MAX_DIFF_LINES {
+                return Err(GitError::DiffTooLarge);
+            }
             continue;
         }
         // 头部行只可能在第一个 hunk 之前出现：之后以 `---`/`+++` 开头的内容行
@@ -432,11 +521,14 @@ fn parse_diff(output: &[u8]) -> Option<FileDiff> {
             old_ln += 1;
             new_ln += 1;
         }
+        if diff.lines.len() > MAX_DIFF_LINES {
+            return Err(GitError::DiffTooLarge);
+        }
     }
     if diff.lines.is_empty() && !diff.binary {
-        return None;
+        return Ok(None);
     }
-    Some(diff)
+    Ok(Some(diff))
 }
 
 /// `@@ -a[,b] +c[,d] @@` → (old_start, new_start)。失败返回 None。
@@ -455,11 +547,17 @@ fn parse_count(spec: &str) -> u32 {
 }
 
 /// 拆出 v2 状态记录的所有空白字段。
-fn whitespace_fields(record: &[u8]) -> Vec<String> {
-    String::from_utf8_lossy(record)
-        .split_whitespace()
-        .map(str::to_string)
-        .collect()
+fn split_after_spaces(record: &[u8], spaces: usize) -> Option<(&[u8], &[u8])> {
+    let mut seen = 0;
+    for (index, byte) in record.iter().enumerate() {
+        if *byte == b' ' {
+            seen += 1;
+            if seen == spaces {
+                return Some((&record[..index], &record[index + 1..]));
+            }
+        }
+    }
+    None
 }
 
 fn is_rename(status: u8) -> bool {
@@ -496,11 +594,10 @@ mod tests {
 
     #[test]
     fn parses_numstat_with_renames_and_binaries() {
-        let bytes = String::from("2\t1\trenamed.txt\n0\t0\tmvsim.txt => moved.txt\n-\t-\tb.bin\n")
-            .into_bytes();
-        let map = numstat_map(&Some(bytes));
+        let bytes = b"2\t1\trenamed.txt\0-\t-\tb.bin\x000\t0\t\0old name\0new name\0";
+        let map = numstat_map(bytes);
         assert_eq!(map.get("renamed.txt"), Some(&(2, 1)));
-        assert_eq!(map.get("moved.txt"), Some(&(0, 0)));
+        assert_eq!(map.get("new name"), Some(&(0, 0)));
         assert_eq!(map.get("b.bin"), Some(&(0, 0)));
         assert_eq!(map.get("mvsim.txt"), None);
     }
@@ -509,7 +606,7 @@ mod tests {
     fn parses_unified_diff_into_typed_lines() {
         let text = b"diff --git a/sample.txt b/sample.txt\nindex 111..222 100644\n\
 --- a/sample.txt\n+++ b/sample.txt\n@@ -1,4 +1,4 @@\n a\n-b\n+B\n c\n";
-        let diff = parse_diff(text).unwrap();
+        let diff = parse_diff(text).unwrap().unwrap();
         assert_eq!(diff.new_path.as_deref(), Some("sample.txt"));
         let kinds: Vec<DiffLineKind> = diff.lines.iter().map(|line| line.kind).collect();
         assert_eq!(
@@ -530,7 +627,7 @@ mod tests {
     #[test]
     fn parses_new_file_hunk_headers() {
         let text = b"--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1,2 @@\n+x\n+y\n";
-        let diff = parse_diff(text).unwrap();
+        let diff = parse_diff(text).unwrap().unwrap();
         assert_eq!(diff.old_path, None);
         assert_eq!(diff.lines[1].kind, DiffLineKind::Added);
         assert_eq!(diff.lines[1].new_ln, Some(1));
@@ -538,7 +635,9 @@ mod tests {
 
     #[test]
     fn detects_binary_diffs() {
-        let diff = parse_diff(b"Binary files a/x and b/y differ\n").unwrap();
+        let diff = parse_diff(b"Binary files a/x and b/y differ\n")
+            .unwrap()
+            .unwrap();
         assert!(diff.binary);
         assert!(diff.lines.is_empty());
     }
@@ -546,7 +645,105 @@ mod tests {
     #[test]
     fn drops_metadata_only_diffs() {
         let text = b"diff --git a/mv.txt b/mv.txt\nsimilarity index 100%\nrename from mv.txt\nrename to moved.txt\n";
-        assert_eq!(parse_diff(text), None);
+        assert!(parse_diff(text).unwrap().is_none());
+    }
+
+    #[test]
+    fn oversized_text_diff_is_rejected_before_rendering() {
+        let mut text = String::from("@@ -1 +1 @@\n");
+        for _ in 0..=MAX_DIFF_LINES {
+            text.push_str(" line\n");
+        }
+
+        assert!(matches!(
+            parse_diff(text.as_bytes()),
+            Err(GitError::DiffTooLarge)
+        ));
+    }
+
+    #[test]
+    fn invalid_git_directory_returns_an_error_instead_of_an_empty_change_list() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert!(list_changes(dir.path()).is_err());
+    }
+
+    #[test]
+    fn real_status_preserves_whitespace_paths_and_numstat_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}: {:?}", output.stderr);
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "test@crossh.local"]);
+        run(&["config", "user.name", "Crossh Test"]);
+        let path = "space  and\ttab.txt";
+        std::fs::write(dir.path().join(path), "one\ntwo\n").unwrap();
+        run(&["add", "-A"]);
+
+        let changes = list_changes(dir.path()).expect("status should load");
+        let change = changes
+            .iter()
+            .find(|change| change.path == path)
+            .expect("whitespace path should be preserved");
+        assert_eq!(change.insertions, 2);
+        assert!(change.staged);
+    }
+
+    #[test]
+    fn combined_scan_includes_branch_status_without_a_second_status_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}: {:?}", output.stderr);
+        };
+        run(&["init", "-q"]);
+        run(&["checkout", "-qb", "scan-status"]);
+        std::fs::write(dir.path().join("pending.txt"), "pending\n").unwrap();
+
+        let scan = scan_changes(dir.path()).expect("scan should load");
+
+        assert_eq!(
+            scan.status.as_ref().map(|status| status.branch.as_str()),
+            Some("scan-status")
+        );
+        assert!(
+            scan.changes
+                .iter()
+                .any(|change| change.path == "pending.txt" && !change.staged)
+        );
+    }
+
+    #[test]
+    fn oversized_untracked_file_is_rejected_before_reading() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.txt");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_DIFF_BYTES + 1).unwrap();
+        let entry = FileChange {
+            path: "large.txt".into(),
+            orig_path: None,
+            status: ChangeStatus::Untracked,
+            staged: false,
+            insertions: 0,
+            deletions: 0,
+        };
+
+        assert!(matches!(
+            diff(dir.path(), &entry, false),
+            Err(GitError::DiffTooLarge)
+        ));
     }
 
     #[test]
@@ -588,7 +785,7 @@ mod tests {
         fs::create_dir_all(dir.join("untracked")).unwrap();
         fs::write(dir.join("untracked/note.txt"), "hello\nworld\n").unwrap();
 
-        let changes = list_changes(&dir);
+        let changes = list_changes(&dir).expect("status should load");
         assert!(changes.iter().any(|entry| entry.path == "renamed.txt"));
         assert!(changes.iter().any(|entry| entry.path == "staged-only.txt"));
 
@@ -598,7 +795,9 @@ mod tests {
             .expect("untracked file should be listed individually");
         assert_eq!(untracked.status, ChangeStatus::Untracked);
         assert!(!untracked.staged);
-        let untracked_diff = diff(&dir, untracked, false).expect("untracked content diff");
+        let untracked_diff = diff(&dir, untracked, false)
+            .expect("untracked diff should load")
+            .expect("untracked file should have a diff");
         assert!(!untracked_diff.binary);
         assert_eq!(
             untracked_diff.new_path.as_deref(),
@@ -624,7 +823,9 @@ mod tests {
             .find(|entry| entry.path == "renamed.txt" && entry.staged)
             .expect("staged rename entry");
         assert_eq!(renamed.orig_path.as_deref(), Some("a.txt"));
-        let rename_diff = diff(&dir, renamed, renamed.staged).expect("rename diff");
+        let rename_diff = diff(&dir, renamed, renamed.staged)
+            .expect("rename diff should load")
+            .expect("rename should have a diff");
         assert!(
             rename_diff
                 .lines
@@ -639,7 +840,9 @@ mod tests {
         assert_eq!(added.status, ChangeStatus::Added);
         assert!(added.staged);
         assert_eq!(added.insertions, 2);
-        let added_diff = diff(&dir, added, true).expect("staged add diff");
+        let added_diff = diff(&dir, added, true)
+            .expect("staged add diff should load")
+            .expect("staged file should have a diff");
         assert!(added_diff.lines.iter().any(|line| line.text == "x"));
         assert_eq!(added_diff.old_path, None);
 
@@ -668,6 +871,7 @@ mod tests {
         stage(dir.path(), &["note.txt".to_string()]).unwrap();
         assert!(
             list_changes(dir.path())
+                .expect("status should load")
                 .iter()
                 .any(|change| change.path == "note.txt" && change.staged)
         );
@@ -675,28 +879,41 @@ mod tests {
         unstage(dir.path(), &["note.txt".to_string()]).unwrap();
         assert!(
             list_changes(dir.path())
+                .expect("status should load")
                 .iter()
                 .any(|change| change.path == "note.txt" && !change.staged)
         );
 
         stage(dir.path(), &["note.txt".to_string()]).unwrap();
         commit(dir.path(), "add note").unwrap();
-        assert!(list_changes(dir.path()).is_empty());
+        assert!(
+            list_changes(dir.path())
+                .expect("status should load")
+                .is_empty()
+        );
 
         fs::write(dir.path().join("note.txt"), "first\nsecond\n").unwrap();
         stage(dir.path(), &["note.txt".to_string()]).unwrap();
         unstage(dir.path(), &["note.txt".to_string()]).unwrap();
         assert!(
             list_changes(dir.path())
+                .expect("status should load")
                 .iter()
                 .any(|change| change.path == "note.txt" && !change.staged)
         );
 
         fs::remove_file(dir.path().join("note.txt")).unwrap();
         stage(dir.path(), &["note.txt".to_string()]).unwrap();
-        assert!(list_changes(dir.path()).iter().any(|change| {
-            change.path == "note.txt" && change.staged && change.status == ChangeStatus::Deleted
-        }));
+        assert!(
+            list_changes(dir.path())
+                .expect("status should load")
+                .iter()
+                .any(|change| {
+                    change.path == "note.txt"
+                        && change.staged
+                        && change.status == ChangeStatus::Deleted
+                })
+        );
         assert!(commit(dir.path(), "   ").is_err());
     }
 }

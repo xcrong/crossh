@@ -8,3 +8,5 @@
 | --- | --- | --- | --- |
 | GPUI 首窗口与 CLI 生命周期 | Dock 有图标但没有窗口；GUI 命令阻塞终端；关闭隐藏窗口后命令才退出 | `GPUI`, `open_window`, `defer`, `Dock`, `CLI`, `detached process`, `cold start` | [GPUI 窗口启动生命周期](gpui-window-startup.md) |
 | GPUI Flex 滚动容器 | 设置 `max_h` 和 `overflow_y_scroll` 后滚轮仍无效；长列表被压缩 | `GPUI`, `flex_shrink_0`, `overflow_y_scroll`, `max_h`, 滚轮无效 | [GPUI Flex 滚动容器](gpui-flex-scroll.md) |
+| GPUI 轮询与大列表性能 | Git 视图静止时周期性卡顿；多终端持续启动 Git；长 diff 滚动变慢 | `GPUI`, `Git`, `polling`, `notify`, `UniformList`, `diff`, 卡顿 | [GPUI 轮询与大列表性能](gpui-polling-performance.md) |
+| Git NUL 协议路径解析 | 含连续空格或 Tab 的文件无法暂存；重命名文件的变更计数为零 | `Git`, `porcelain v2`, `numstat`, `-z`, `NUL`, 文件名空格 | [Git NUL 协议路径](git-nul-paths.md) |

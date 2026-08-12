@@ -37,10 +37,10 @@ jobs:
         run: scripts/check-architecture.sh
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --release
+        run: cargo test --workspace --release
 
   build:
     name: ${{ matrix.name }}

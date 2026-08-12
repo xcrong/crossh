@@ -6,17 +6,17 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext, Bounds, Context, FocusHandle, Size, Task, TitlebarOptions, WindowBounds,
-    WindowOptions, px,
+    App, AppContext, Bounds, Context, FocusHandle, Size, Task, TitlebarOptions,
+    UniformListScrollHandle, WindowBounds, WindowOptions, px,
 };
 
-use crossh_core::git::{FileChange, commit, diff, list_changes, stage, unstage};
+use crossh_core::git::{FileChange, commit, diff, scan_changes, stage, unstage};
 use crossh_core::project::GitStatus;
 
 use super::editor::CommitEditor;
 use super::model::{
-    CHANGES_PANE_DEFAULT_WIDTH, ChangeKey, CompactPage, DiffState, OperationState,
-    diff_uses_staged_baseline, reconcile_selection, selected_index,
+    CHANGES_PANE_DEFAULT_WIDTH, ChangeKey, CompactPage, DiffState, OperationState, RefreshState,
+    diff_uses_staged_baseline, reconcile_selection, selected_index, should_refresh_diff,
 };
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
@@ -35,7 +35,8 @@ pub struct GitWindow {
     pub(super) selected: Option<ChangeKey>,
     pub(super) diff: DiffState,
     pub(super) initial_loading: bool,
-    pub(super) refreshing: bool,
+    pub(super) refresh: RefreshState,
+    pub(super) load_error: Option<String>,
     pub(super) operation: OperationState,
     pub(super) compact_layout: bool,
     pub(super) compact_page: CompactPage,
@@ -48,7 +49,8 @@ pub struct GitWindow {
     pub(super) operation_generation: u64,
     pub(super) _refresh_task: Option<Task<()>>,
     pub(super) changes_scroll: gpui::ScrollHandle,
-    pub(super) diff_scroll: gpui::ScrollHandle,
+    pub(super) diff_scroll: UniformListScrollHandle,
+    force_diff_refresh_pending: bool,
     pub(super) changes_pane_width: Rc<Cell<f32>>,
     pub(super) changes_pane_dragging: Rc<Cell<bool>>,
 }
@@ -64,7 +66,8 @@ impl GitWindow {
             selected: None,
             diff: DiffState::Idle,
             initial_loading: true,
-            refreshing: false,
+            refresh: RefreshState::default(),
+            load_error: None,
             operation: OperationState::Idle,
             compact_layout: false,
             compact_page: CompactPage::Changes,
@@ -77,7 +80,8 @@ impl GitWindow {
             operation_generation: 0,
             _refresh_task: None,
             changes_scroll: gpui::ScrollHandle::new(),
-            diff_scroll: gpui::ScrollHandle::new(),
+            diff_scroll: UniformListScrollHandle::new(),
+            force_diff_refresh_pending: false,
             changes_pane_width: Rc::new(Cell::new(CHANGES_PANE_DEFAULT_WIDTH)),
             changes_pane_dragging: Rc::new(Cell::new(false)),
         };
@@ -110,30 +114,80 @@ impl GitWindow {
     }
 
     pub(super) fn refresh_list(&mut self, cx: &mut Context<Self>) {
+        self.refresh_list_with_diff_reload(false, cx);
+    }
+
+    pub(super) fn force_refresh_list(&mut self, cx: &mut Context<Self>) {
+        self.refresh_list_with_diff_reload(true, cx);
+    }
+
+    fn refresh_list_with_diff_reload(&mut self, force_diff_reload: bool, cx: &mut Context<Self>) {
+        self.force_diff_refresh_pending |= force_diff_reload;
+        if !self.refresh.request() {
+            return;
+        }
+        let force_diff_reload = std::mem::take(&mut self.force_diff_refresh_pending);
         self.list_generation = self.list_generation.wrapping_add(1);
         let generation = self.list_generation;
         let cwd = self.cwd.clone();
         let previous_index = selected_index(&self.changes, self.selected.as_ref());
-        self.refreshing = true;
+        let previous_changes = self.changes.clone();
+        let previous_selected = self.selected.clone();
+        let was_initial_loading = self.initial_loading;
         self.initial_loading = self.changes.is_empty();
 
         cx.spawn(async move |weak, cx| {
-            let (changes, status) = cx
+            let scan = cx
                 .background_executor()
-                .spawn(async move { (list_changes(&cwd), inspect_status(&cwd)) })
+                .spawn(async move { scan_changes(&cwd) })
                 .await;
             let _ = weak.update(cx, |this, cx| {
+                let refresh_again = this.refresh.finish();
                 if this.list_generation != generation {
+                    if refresh_again {
+                        this.refresh_list(cx);
+                    }
                     return;
                 }
-                this.selected =
-                    reconcile_selection(&changes, this.selected.as_ref(), previous_index);
-                this.changes = changes;
-                this.status = status;
+                let mut state_changed = was_initial_loading;
+                match scan {
+                    Ok(scan) => {
+                        let next_selected = reconcile_selection(
+                            &scan.changes,
+                            this.selected.as_ref(),
+                            previous_index,
+                        );
+                        let reload_diff = should_refresh_diff(
+                            force_diff_reload,
+                            &previous_changes,
+                            &scan.changes,
+                            previous_selected.as_ref(),
+                            next_selected.as_ref(),
+                        );
+                        state_changed |= this.changes != scan.changes;
+                        state_changed |= this.selected != next_selected;
+                        state_changed |= this.status != scan.status;
+                        state_changed |= this.load_error.take().is_some();
+                        this.changes = scan.changes;
+                        this.selected = next_selected;
+                        this.status = scan.status;
+                        if reload_diff {
+                            this.refresh_diff(cx);
+                        }
+                    }
+                    Err(error) => {
+                        let error = error.to_string();
+                        state_changed |= this.load_error.as_deref() != Some(error.as_str());
+                        this.load_error = Some(error);
+                    }
+                }
                 this.initial_loading = false;
-                this.refreshing = false;
-                this.refresh_diff(cx);
-                cx.notify();
+                if refresh_again {
+                    this.refresh_list(cx);
+                }
+                if state_changed {
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -172,7 +226,10 @@ impl GitWindow {
                 if this.diff_generation != generation || this.selected.as_ref() != Some(&result.0) {
                     return;
                 }
-                this.diff = DiffState::Ready(result.0, result.1);
+                this.diff = match result.1 {
+                    Ok(file_diff) => DiffState::Ready(result.0, file_diff),
+                    Err(error) => DiffState::Error(result.0, error.to_string()),
+                };
                 cx.notify();
             });
         })
@@ -201,7 +258,7 @@ impl GitWindow {
         }
         if changed {
             self.diff_scroll
-                .set_offset(gpui::Point::new(px(0.), px(0.)));
+                .scroll_to_item_strict(0, gpui::ScrollStrategy::Top);
             self.refresh_diff(cx);
         }
         cx.notify();
@@ -341,10 +398,6 @@ impl GitWindow {
     }
 }
 
-fn inspect_status(cwd: &Path) -> Option<GitStatus> {
-    crossh_core::project::inspect(cwd)
-}
-
 fn directory_label(cwd: &Path) -> String {
     cwd.file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -370,6 +423,7 @@ pub fn open_git_window(cwd: PathBuf, cx: &mut App) {
                 this.diff = DiffState::Idle;
                 this.compact_page = CompactPage::Changes;
                 this.operation = OperationState::Idle;
+                this.load_error = None;
                 this.commit_editor.value.clear();
                 this.commit_editor.cursor = 0;
                 this.commit_editor.anchor = None;

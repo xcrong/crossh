@@ -51,7 +51,31 @@ pub struct LocalSession {
     pub cwd: PathBuf,
     pub terminal: Entity<TerminalView>,
     pub git_status: Option<GitStatus>,
-    pub git_refresh_generation: u64,
+    pub git_refresh: GitStatusRefresh,
+}
+
+/// 每个本地会话最多运行一个 Git 状态查询；期间的刷新请求只合并为一次后续检查。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GitStatusRefresh {
+    in_flight: bool,
+    pending: bool,
+}
+
+impl GitStatusRefresh {
+    pub fn request(&mut self) -> bool {
+        if self.in_flight {
+            self.pending = true;
+            false
+        } else {
+            self.in_flight = true;
+            true
+        }
+    }
+
+    pub fn finish(&mut self) -> bool {
+        self.in_flight = false;
+        std::mem::take(&mut self.pending)
+    }
 }
 
 pub struct LocalDir {
@@ -1599,6 +1623,18 @@ fn state_priority(state: &ConnState) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_status_refresh_coalesces_overlapping_requests() {
+        let mut refresh = GitStatusRefresh::default();
+
+        assert!(refresh.request());
+        assert!(!refresh.request());
+        assert!(!refresh.request());
+        assert!(refresh.finish());
+        assert!(refresh.request());
+        assert!(!refresh.finish());
+    }
 
     #[test]
     fn project_directories_keep_sessions_isolated() {

@@ -5,9 +5,7 @@ use gpui::{
     ParentElement, SharedString, StatefulInteractiveElement, Styled, div, px,
 };
 
-use crossh_core::commands::{
-    BackgroundTask, BackgroundTaskManager, BackgroundTaskStatus, CommandRecord,
-};
+use crossh_core::commands::{BackgroundTask, BackgroundTaskManager, BackgroundTaskStatus};
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::theme;
 use crossh_ui::widgets::{CommandTooltip, LocalPathTooltip};
@@ -33,7 +31,6 @@ pub(crate) fn render_quick_commands_rail(
 ) -> AnyElement {
     let tasks = rail_background_tasks(&shell.background_tasks, scope);
     let pinned = shell.command_history.pinned(scope);
-    let unpinned_tasks = unpinned_background_tasks(&tasks, &pinned);
     let mut contents = div()
         .w_full()
         .h_full()
@@ -49,13 +46,13 @@ pub(crate) fn render_quick_commands_rail(
         contents = contents.child(render_pinned_command(
             scope,
             record.command.clone(),
-            tasks.iter().find(|task| task.command == record.command),
+            tasks.iter().any(|task| task.command == record.command),
             index,
             cx,
         ));
     }
 
-    if !pinned.is_empty() && !unpinned_tasks.is_empty() {
+    if !pinned.is_empty() && !tasks.is_empty() {
         contents = contents.child(
             div()
                 .w(px(20.))
@@ -65,7 +62,7 @@ pub(crate) fn render_quick_commands_rail(
                 .bg(theme::border()),
         );
     }
-    for task in unpinned_tasks {
+    for task in tasks {
         contents = contents.child(render_background_task(task, cx));
     }
 
@@ -84,21 +81,10 @@ pub(crate) fn render_quick_commands_rail(
         .into_any_element()
 }
 
-fn unpinned_background_tasks(
-    tasks: &[BackgroundTask],
-    pinned: &[CommandRecord],
-) -> Vec<BackgroundTask> {
-    tasks
-        .iter()
-        .filter(|task| !pinned.iter().any(|record| record.command == task.command))
-        .cloned()
-        .collect()
-}
-
 fn render_pinned_command(
     scope: &str,
     command: String,
-    active_task: Option<&BackgroundTask>,
+    has_active_task: bool,
     index: usize,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
@@ -106,7 +92,6 @@ fn render_pinned_command(
     let menu_scope = scope.to_string();
     let menu_command = command.clone();
     let tooltip_command = command.clone();
-    let active_task_id = active_task.map(|task| task.id);
     let mut item = div()
         .id(SharedString::from(format!("quick-command-rail-{index}")))
         .relative()
@@ -135,7 +120,7 @@ fn render_pinned_command(
         )
         .on_mouse_down(MouseButton::Right, {
             cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
-                let mut entries = vec![
+                let entries = vec![
                     MenuEntry::Item(MenuItem {
                         id: "quick-run-background".into(),
                         label: i18n::text("quick_commands.run_background"),
@@ -193,22 +178,11 @@ fn render_pinned_command(
                         },
                     }),
                 ];
-                if let Some(id) = active_task_id {
-                    entries.push(MenuEntry::Separator);
-                    entries.push(MenuEntry::Item(MenuItem {
-                        id: format!("quick-stop-background-{id}"),
-                        label: i18n::text("quick_commands.stop"),
-                        shortcut_hint: None,
-                        disabled: false,
-                        danger: true,
-                        action: ShellMenuAction::StopBackgroundTask(id),
-                    }));
-                }
                 this.open_context_menu(ev.position, entries, cx);
             })
         });
-    if let Some(task) = active_task {
-        item = item.child(background_task_badge(task.status));
+    if has_active_task {
+        item = item.child(background_task_badge(BackgroundTaskStatus::Running));
     }
     item.into_any_element()
 }
@@ -299,11 +273,9 @@ const fn quick_commands_rail_item_pitch() -> f32 {
 mod tests {
     use std::path::PathBuf;
 
-    use crossh_core::commands::{
-        BackgroundTaskEvent, BackgroundTaskManager, BackgroundTaskStatus, CommandRecord,
-    };
+    use crossh_core::commands::{BackgroundTaskEvent, BackgroundTaskManager, BackgroundTaskStatus};
 
-    use super::{rail_background_tasks, unpinned_background_tasks};
+    use super::rail_background_tasks;
 
     #[test]
     fn rail_shows_active_background_tasks_for_the_current_scope() {
@@ -359,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn rail_reuses_pinned_command_avatar_for_its_background_task() {
+    fn rail_keeps_each_concurrent_task_visible_even_when_its_command_is_pinned() {
         let mut tasks = BackgroundTaskManager::default();
         let pinned_task = tasks.start_remote(
             "local:/work".into(),
@@ -367,27 +339,19 @@ mod tests {
             "cargo test".into(),
             "local:1".into(),
         );
-        let unpinned_task = tasks.start_remote(
+        let second_pinned_task = tasks.start_remote(
             "local:/work".into(),
             PathBuf::from("/work"),
-            "cargo check".into(),
+            "cargo test".into(),
             "local:1".into(),
         );
-        let pinned = vec![CommandRecord {
-            command: "cargo test".into(),
-            pinned: true,
-            count: 1,
-            last_used: 1,
-        }];
-
-        let visible =
-            unpinned_background_tasks(&rail_background_tasks(&tasks, "local:/work"), &pinned);
-
         assert_eq!(
-            visible.iter().map(|task| task.id).collect::<Vec<_>>(),
-            vec![unpinned_task]
+            rail_background_tasks(&tasks, "local:/work")
+                .iter()
+                .map(|task| task.id)
+                .collect::<Vec<_>>(),
+            vec![second_pinned_task, pinned_task]
         );
-        assert_ne!(pinned_task, unpinned_task);
     }
 
     #[test]

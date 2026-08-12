@@ -5,9 +5,10 @@ use std::path::Path;
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, Bounds, Context, FontWeight, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, SharedString,
-    StatefulInteractiveElement, Styled, Window, canvas, div, prelude::FluentBuilder, px,
+    AnyElement, Bounds, Context, FontWeight, InteractiveElement, IntoElement,
+    ListHorizontalSizingBehavior, ListSizingBehavior, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled,
+    Window, canvas, div, prelude::FluentBuilder, px, uniform_list,
 };
 
 use crate::shared::i18n;
@@ -33,7 +34,7 @@ impl Render for GitWindow {
         let body = if self.compact_layout {
             match self.compact_page {
                 CompactPage::Changes => self.render_changes_pane(true, window, cx),
-                CompactPage::Diff => self.render_diff_pane(true, cx),
+                CompactPage::Diff => self.render_diff_pane(true, window, cx),
             }
         } else {
             self.render_standard_body(window, cx)
@@ -50,7 +51,7 @@ impl Render for GitWindow {
                 this.commit_changes(cx);
             }))
             .on_action(cx.listener(|this, _: &RefreshChanges, _window, cx| {
-                this.refresh_list(cx);
+                this.force_refresh_list(cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &BackToChanges, _window, cx| {
@@ -138,7 +139,7 @@ impl GitWindow {
                     .child(self.render_changes_pane(false, window, cx))
                     .child(resize_handle),
             )
-            .child(self.render_diff_pane(false, cx))
+            .child(self.render_diff_pane(false, window, cx))
             .into_any_element()
     }
 
@@ -203,14 +204,14 @@ impl GitWindow {
                 Button::new("git-refresh")
                     .size(ButtonSize::Icon(px(30.)))
                     .variant(ButtonVariant::Ghost)
-                    .loading(self.refreshing)
+                    .loading(self.refresh.in_flight())
                     .tooltip(i18n::text("git.refresh"))
                     .icon(
                         icons::icon(icons::IconName::RefreshCw, 14.)
                             .text_color(theme::muted_text()),
                     )
                     .on_click(cx.listener(|this, _event, _window, cx| {
-                        this.refresh_list(cx);
+                        this.force_refresh_list(cx);
                         cx.notify();
                     })),
             )
@@ -240,6 +241,8 @@ impl GitWindow {
         let mut content = div().flex().flex_col().pb_2();
         if self.initial_loading {
             content = content.child(sidebar_empty_hint(&i18n::text("git.loading")));
+        } else if let Some(error) = &self.load_error {
+            content = content.child(sidebar_empty_hint(error));
         } else if self.changes.is_empty() {
             content = content.child(sidebar_empty_hint(&i18n::text("git.no_changes")));
         } else {
@@ -515,7 +518,12 @@ impl GitWindow {
             .into_any_element()
     }
 
-    fn render_diff_pane(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn render_diff_pane(
+        &mut self,
+        compact: bool,
+        _window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(entry) = self.selected_entry() else {
             return div()
                 .flex_1()
@@ -602,26 +610,40 @@ impl GitWindow {
                 centered_hint(&i18n::text("git.no_diff"))
             }
             DiffState::Ready(ready_key, Some(file_diff)) if ready_key == &key => {
-                let mut lines = div().min_w_full().flex().flex_col().font_family("Zed Mono");
-                for line in &file_diff.lines {
-                    lines = lines.child(render_diff_line(line));
-                }
-                div()
-                    .id(if compact {
+                let content_width = diff_content_width(file_diff);
+                let key = key.clone();
+                uniform_list(
+                    if compact {
                         "git-diff-scroll-compact"
                     } else {
                         "git-diff-scroll"
-                    })
-                    .track_scroll(&self.diff_scroll)
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_scroll()
-                    .child(lines)
-                    .into_any_element()
+                    },
+                    file_diff.lines.len(),
+                    cx.processor(move |this, range: std::ops::Range<usize>, _window, _cx| {
+                        match &this.diff {
+                            DiffState::Ready(ready_key, Some(file_diff)) if ready_key == &key => {
+                                file_diff.lines[range]
+                                    .iter()
+                                    .map(|line| render_diff_line(line, content_width))
+                                    .collect::<Vec<_>>()
+                            }
+                            _ => Vec::new(),
+                        }
+                    }),
+                )
+                .track_scroll(&self.diff_scroll)
+                .flex_1()
+                .size_full()
+                .min_w_0()
+                .font_family("Zed Mono")
+                .with_sizing_behavior(ListSizingBehavior::Auto)
+                .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
+                .into_any_element()
             }
             DiffState::Ready(ready_key, None) if ready_key == &key => {
                 centered_hint(&i18n::text("git.no_diff"))
             }
+            DiffState::Error(error_key, message) if error_key == &key => centered_hint(message),
             _ => centered_hint(&i18n::text("git.loading")),
         };
 
@@ -799,7 +821,23 @@ fn marked_text(text: &str) -> AnyElement {
         .into_any_element()
 }
 
-fn render_diff_line(line: &DiffLine) -> AnyElement {
+const DIFF_GUTTER_WIDTH: f32 = 112.;
+const DIFF_CHARACTER_WIDTH: f32 = 12.;
+const DIFF_ROW_HEIGHT: f32 = 20.;
+
+/// 单等宽字符按 12px 预留宽度，避免为每一行调用文本布局系统。
+/// 这个上界覆盖中日韩全角字符；横向滚动范围略宽于实际文本是可接受的。
+fn diff_content_width(file_diff: &crossh_core::git::FileDiff) -> Pixels {
+    let widest_chars = file_diff
+        .lines
+        .iter()
+        .map(|line| line.text.chars().count())
+        .max()
+        .unwrap_or_default();
+    px(DIFF_GUTTER_WIDTH + widest_chars as f32 * DIFF_CHARACTER_WIDTH)
+}
+
+fn render_diff_line(line: &DiffLine, content_width: Pixels) -> AnyElement {
     let (background, foreground, rail) = match line.kind {
         DiffLineKind::Hunk => (theme::surface(), theme::muted_text(), theme::info()),
         DiffLineKind::Added => (theme::diff_add_bg(), theme::diff_add_fg(), theme::accent()),
@@ -808,14 +846,16 @@ fn render_diff_line(line: &DiffLine) -> AnyElement {
     };
     if line.kind == DiffLineKind::Hunk {
         return div()
-            .min_w_full()
+            .min_w(content_width)
+            .h(px(DIFF_ROW_HEIGHT))
+            .flex_none()
             .flex()
+            .items_center()
             .bg(background)
             .child(div().w(px(2.)).flex_shrink_0().bg(rail))
             .child(
                 div()
                     .px_2()
-                    .py(px(3.))
                     .flex_shrink_0()
                     .whitespace_nowrap()
                     .text_xs()
@@ -827,8 +867,11 @@ fn render_diff_line(line: &DiffLine) -> AnyElement {
     }
     let number = |value: Option<u32>| value.map(|n| n.to_string()).unwrap_or_default();
     div()
-        .min_w_full()
+        .min_w(content_width)
+        .h(px(DIFF_ROW_HEIGHT))
+        .flex_none()
         .flex()
+        .items_center()
         .bg(background)
         .child(div().w(px(2.)).flex_shrink_0().bg(rail))
         .child(line_number(number(line.old_ln), foreground))
@@ -837,7 +880,6 @@ fn render_diff_line(line: &DiffLine) -> AnyElement {
             div()
                 .flex_shrink_0()
                 .px_2()
-                .py(px(1.))
                 .whitespace_nowrap()
                 .text_xs()
                 .text_color(foreground)
@@ -917,4 +959,65 @@ fn centered_hint(text: &str) -> AnyElement {
         .justify_center()
         .child(empty_hint(text))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use crossh_core::git::{DiffLine, FileDiff};
+    use gpui::{
+        ListHorizontalSizingBehavior, ListSizingBehavior, Render, TestAppContext,
+        UniformListScrollHandle, px, size, uniform_list,
+    };
+
+    use super::*;
+
+    struct DiffScrollTestView {
+        diff: FileDiff,
+        scroll: UniformListScrollHandle,
+    }
+
+    impl Render for DiffScrollTestView {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let content_width = diff_content_width(&self.diff);
+            let lines = self.diff.lines.clone();
+            uniform_list(
+                "git-diff-scroll-test",
+                lines.len(),
+                move |range: std::ops::Range<usize>, _window, _cx| {
+                    lines[range]
+                        .iter()
+                        .map(|line| render_diff_line(line, content_width))
+                        .collect::<Vec<_>>()
+                },
+            )
+            .track_scroll(&self.scroll)
+            .size_full()
+            .with_sizing_behavior(ListSizingBehavior::Auto)
+            .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
+        }
+    }
+
+    #[gpui::test]
+    fn long_diff_line_has_horizontal_scroll_range(cx: &mut TestAppContext) {
+        let diff = FileDiff {
+            lines: vec![DiffLine {
+                kind: DiffLineKind::Context,
+                old_ln: Some(1),
+                new_ln: Some(1),
+                text: "x".repeat(240),
+            }],
+            ..Default::default()
+        };
+        let scroll = UniformListScrollHandle::new();
+        cx.open_window(size(px(480.), px(320.)), {
+            let scroll = scroll.clone();
+            move |_, _| DiffScrollTestView { diff, scroll }
+        });
+        cx.run_until_parked();
+
+        assert!(
+            scroll.0.borrow().base_handle.max_offset().x > px(0.),
+            "a long diff line must create horizontal scroll range"
+        );
+    }
 }

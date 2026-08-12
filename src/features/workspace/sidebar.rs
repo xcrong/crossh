@@ -413,7 +413,16 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
 
 /// 收起主机栏时保留活跃项目与连接主机，便于直接切换工作目标。
 pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
-    let mut activity = div().flex().flex_col().items_center().gap_1();
+    let mut activity = div()
+        .id("sidebar-rail-activity")
+        .w_full()
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap_1()
+        .overflow_y_scroll();
     for dir in shell
         .workspace
         .sessions
@@ -423,12 +432,16 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
     {
         let project_dir = dir.project_dir.clone();
         let label = local_dir_name(&project_dir);
+        let project_id = project_dir.to_string_lossy().to_string();
         let avatar = Avatar::new(&label).kind(AvatarKind::Project);
         activity = activity.child(
             div()
-                .id(SharedString::from(format!("sidebar-rail-project-{label}")))
+                .id(SharedString::from(format!(
+                    "sidebar-rail-project-{project_id}"
+                )))
                 .w(px(30.))
                 .h(px(30.))
+                .flex_shrink_0()
                 .flex()
                 .items_center()
                 .justify_center()
@@ -458,6 +471,7 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
                 .id(("sidebar-rail-host", index))
                 .w(px(30.))
                 .h(px(30.))
+                .flex_shrink_0()
                 .flex()
                 .items_center()
                 .justify_center()
@@ -525,6 +539,7 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
                 .w(px(30.))
                 .h(px(30.))
                 .mt_1()
+                .flex_shrink_0()
                 .flex()
                 .items_center()
                 .justify_center()
@@ -553,7 +568,6 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
                     }),
                 ),
         )
-        .child(div().flex_1())
         .into_any_element()
 }
 

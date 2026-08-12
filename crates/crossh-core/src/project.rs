@@ -34,18 +34,10 @@ pub fn inspect(cwd: &Path) -> Option<GitStatus> {
     parse_status(&output)
 }
 
-fn git(cwd: &Path, args: &[&str]) -> Option<Vec<u8>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()
-        .ok()?;
-    output.status.success().then_some(output.stdout)
-}
-
-fn parse_status(output: &[u8]) -> Option<GitStatus> {
+/// 解析 `git status --porcelain=v2 --branch -z` 输出。
+///
+/// Git 变更列表与状态栏共用这一协议；公开解析器避免为了同一次扫描重复启动 Git。
+pub fn parse_status(output: &[u8]) -> Option<GitStatus> {
     let mut status = GitStatus::default();
     let mut oid = None;
 
@@ -88,6 +80,17 @@ fn parse_status(output: &[u8]) -> Option<GitStatus> {
         status.branch = format!("detached@{}", &oid[..oid.len().min(7)]);
     }
     Some(status)
+}
+
+fn git(cwd: &Path, args: &[&str]) -> Option<Vec<u8>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .output()
+        .ok()?;
+    output.status.success().then_some(output.stdout)
 }
 
 fn count_xy(status: &mut GitStatus, xy: Option<&[u8]>) {

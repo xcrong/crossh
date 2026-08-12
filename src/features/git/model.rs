@@ -28,11 +28,12 @@ pub enum CompactPage {
     Diff,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DiffState {
     Idle,
     Loading(ChangeKey),
     Ready(ChangeKey, Option<FileDiff>),
+    Error(ChangeKey, String),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -41,6 +42,34 @@ pub enum OperationState {
     Idle,
     Running,
     Error(String),
+}
+
+/// Git 扫描只允许一个在途请求；重复请求合并为完成后的下一次扫描。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RefreshState {
+    in_flight: bool,
+    pending: bool,
+}
+
+impl RefreshState {
+    pub fn request(&mut self) -> bool {
+        if self.in_flight {
+            self.pending = true;
+            false
+        } else {
+            self.in_flight = true;
+            true
+        }
+    }
+
+    pub fn finish(&mut self) -> bool {
+        self.in_flight = false;
+        std::mem::take(&mut self.pending)
+    }
+
+    pub fn in_flight(self) -> bool {
+        self.in_flight
+    }
 }
 
 pub fn uses_compact_git_layout(width: Pixels) -> bool {
@@ -74,6 +103,30 @@ pub fn reconcile_selection(
 
 pub fn diff_uses_staged_baseline(change: &FileChange) -> bool {
     change.staged
+}
+
+/// 决定一次变更扫描是否需要重新读取当前 diff。
+///
+/// 路径、暂存态和变更计数均未变化时，后台轮询不应让完整 diff 重新解析和渲染。
+pub fn should_refresh_diff(
+    force: bool,
+    previous_changes: &[FileChange],
+    next_changes: &[FileChange],
+    previous_selected: Option<&ChangeKey>,
+    next_selected: Option<&ChangeKey>,
+) -> bool {
+    if force {
+        return true;
+    }
+    selected_change(previous_changes, previous_selected)
+        != selected_change(next_changes, next_selected)
+}
+
+fn selected_change<'a>(
+    changes: &'a [FileChange],
+    selected: Option<&ChangeKey>,
+) -> Option<&'a FileChange> {
+    selected_index(changes, selected).and_then(|index| changes.get(index))
 }
 
 #[cfg(test)]
@@ -135,5 +188,43 @@ mod tests {
     fn staged_and_working_entries_choose_their_own_diff_baseline() {
         assert!(diff_uses_staged_baseline(&change("both.rs", true)));
         assert!(!diff_uses_staged_baseline(&change("both.rs", false)));
+    }
+
+    #[test]
+    fn unchanged_scan_does_not_reload_the_selected_diff() {
+        let selected = ChangeKey {
+            path: "same.rs".to_string(),
+            staged: false,
+        };
+        let changes = vec![change("same.rs", false)];
+
+        assert!(!should_refresh_diff(
+            false,
+            &changes,
+            &changes,
+            Some(&selected),
+            Some(&selected),
+        ));
+        assert!(should_refresh_diff(
+            true,
+            &changes,
+            &changes,
+            Some(&selected),
+            Some(&selected),
+        ));
+    }
+
+    #[test]
+    fn refresh_state_never_starts_overlapping_scans_and_coalesces_requests() {
+        let mut state = RefreshState::default();
+
+        assert!(state.request());
+        assert!(!state.request());
+        assert!(!state.request());
+        assert!(state.in_flight());
+        assert!(state.finish());
+        assert!(!state.in_flight());
+        assert!(state.request());
+        assert!(!state.finish());
     }
 }

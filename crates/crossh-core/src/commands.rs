@@ -555,7 +555,6 @@ impl BackgroundTaskManager {
             .filter(|task| task.scope == scope)
             .cloned()
             .rev()
-            .take(8)
             .collect()
     }
 
@@ -985,6 +984,30 @@ mod tests {
         });
         assert!(manager.active_for_owner("local-session:1").is_empty());
         assert_eq!(manager.active_for_owner("local-session:2"), vec![second]);
+    }
+
+    #[test]
+    fn task_listing_keeps_every_running_task_in_a_scope() {
+        let mut manager = BackgroundTaskManager::default();
+        let ids = (0..12)
+            .map(|index| {
+                manager.start_remote(
+                    "local:/tmp/project".into(),
+                    PathBuf::from("/tmp/project"),
+                    format!("task-{index}"),
+                    "local-session:1".into(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            manager
+                .tasks_for_scope("local:/tmp/project")
+                .iter()
+                .map(|task| task.id)
+                .collect::<Vec<_>>(),
+            ids.into_iter().rev().collect::<Vec<_>>()
+        );
     }
 
     #[cfg(unix)]

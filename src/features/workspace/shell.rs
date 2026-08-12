@@ -65,7 +65,7 @@ mod shell_input;
 #[path = "tabs.rs"]
 mod tabs;
 
-const GIT_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const GIT_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 struct ActiveCommandContext {
     scope: String,
@@ -360,7 +360,7 @@ impl AppShell {
                 cwd,
                 terminal,
                 git_status: None,
-                git_refresh_generation: 0,
+                git_refresh: Default::default(),
             },
         );
         self.ensure_git_status_refresh_task(cx);
@@ -1238,10 +1238,15 @@ impl AppShell {
         let Some(session) = self.workspace.sessions.local_sessions.get_mut(&session_id) else {
             return;
         };
-        session.git_refresh_generation = session.git_refresh_generation.wrapping_add(1);
-        let generation = session.git_refresh_generation;
         let cwd = session.cwd.clone();
-        if clear_stale {
+        let status_cleared = clear_stale && session.git_status.take().is_some();
+        if !session.git_refresh.request() {
+            if status_cleared {
+                cx.notify();
+            }
+            return;
+        }
+        if status_cleared {
             session.git_status = None;
         }
 
@@ -1265,11 +1270,18 @@ impl AppShell {
                 else {
                     return;
                 };
-                if session.git_refresh_generation != generation {
-                    return;
+                let cwd_unchanged = session.cwd == cwd_for_log;
+                let status_changed = cwd_unchanged && session.git_status != status;
+                if status_changed {
+                    session.git_status = status;
                 }
-                session.git_status = status;
-                cx.notify();
+                let refresh_again = session.git_refresh.finish();
+                if refresh_again {
+                    this.refresh_git_status(session_id, !cwd_unchanged, cx);
+                }
+                if status_changed {
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -1293,14 +1305,9 @@ impl AppShell {
 
                 if weak
                     .update(cx, |this, cx| {
-                        let session_ids = this
-                            .workspace
-                            .sessions
-                            .local_sessions
-                            .keys()
-                            .copied()
-                            .collect::<Vec<_>>();
-                        for session_id in session_ids {
+                        if let Some(ActiveView::LocalSession(session_id)) =
+                            this.workspace.active_view
+                        {
                             this.refresh_git_status(session_id, false, cx);
                         }
                     })
