@@ -78,11 +78,17 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "==> signing app bundle"
+echo "==> signing nested executable"
 # A stable ad-hoc signature binds the bundle identifier to the executable.
 # Without it, macOS can treat every rebuilt development bundle as a different
 # notification client even though Info.plist still declares io.crossh.app.
+codesign --force --sign - --identifier "$BUNDLE_ID.updater" "$MACOS/crossh-updater"
+
+echo "==> signing app bundle"
 codesign --force --sign - --identifier "$BUNDLE_ID" "$APP_DIR"
+
+echo "==> verifying app bundle signature"
+codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 
 echo "==> zipping"
 ZIP="$DIST/$APP_NAME-$VERSION-$ARCH-macos.zip"
