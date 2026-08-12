@@ -340,6 +340,7 @@ quick_commands:
   empty: Commands from this directory will appear here.
   run: Run in terminal
   run_background: Run in background
+  restart: Restart
   edit: Edit command
   edit_title: Edit quick command
   command_placeholder: Enter a command

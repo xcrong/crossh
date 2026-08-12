@@ -573,6 +573,18 @@ impl BackgroundTaskManager {
             .collect()
     }
 
+    pub fn running_for_command(&self, scope: &str, command: &str) -> Vec<u64> {
+        self.tasks
+            .values()
+            .filter(|task| {
+                task.scope == scope
+                    && task.command == command
+                    && task.status == BackgroundTaskStatus::Running
+            })
+            .map(|task| task.id)
+            .collect()
+    }
+
     pub fn active_for_owner(&self, owner: &str) -> Vec<u64> {
         self.tasks
             .values()
@@ -1007,6 +1019,28 @@ mod tests {
                 .map(|task| task.id)
                 .collect::<Vec<_>>(),
             ids.into_iter().rev().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn running_for_command_excludes_stopping_tasks() {
+        let mut manager = BackgroundTaskManager::default();
+        let id = manager.start_remote(
+            "local:/tmp/project".into(),
+            PathBuf::from("/tmp/project"),
+            "make".into(),
+            "local-session:1".into(),
+        );
+
+        assert_eq!(
+            manager.running_for_command("local:/tmp/project", "make"),
+            vec![id]
+        );
+        manager.mark_stopping(id);
+        assert!(
+            manager
+                .running_for_command("local:/tmp/project", "make")
+                .is_empty()
         );
     }
 

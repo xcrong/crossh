@@ -44,6 +44,7 @@ pub(crate) fn render_quick_commands_rail(
 
     for (index, record) in pinned.iter().enumerate() {
         contents = contents.child(render_pinned_command(
+            shell,
             scope,
             record.command.clone(),
             tasks.iter().any(|task| task.command == record.command),
@@ -82,6 +83,7 @@ pub(crate) fn render_quick_commands_rail(
 }
 
 fn render_pinned_command(
+    shell: &AppShell,
     scope: &str,
     command: String,
     has_active_task: bool,
@@ -91,6 +93,11 @@ fn render_pinned_command(
     let run_scope = scope.to_string();
     let menu_scope = scope.to_string();
     let menu_command = command.clone();
+    let running_id = shell
+        .background_tasks
+        .running_for_command(scope, &command)
+        .first()
+        .copied();
     let tooltip_command = command.clone();
     let mut item = div()
         .id(SharedString::from(format!("quick-command-rail-{index}")))
@@ -120,8 +127,18 @@ fn render_pinned_command(
         )
         .on_mouse_down(MouseButton::Right, {
             cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
-                let entries = vec![
-                    MenuEntry::Item(MenuItem {
+                let mut entries = Vec::new();
+                if let Some(id) = running_id {
+                    entries.push(MenuEntry::Item(MenuItem {
+                        id: "quick-restart-background".into(),
+                        label: i18n::text("quick_commands.restart"),
+                        shortcut_hint: None,
+                        disabled: false,
+                        danger: false,
+                        action: ShellMenuAction::RestartBackgroundTask(id),
+                    }));
+                } else if !has_active_task {
+                    entries.push(MenuEntry::Item(MenuItem {
                         id: "quick-run-background".into(),
                         label: i18n::text("quick_commands.run_background"),
                         shortcut_hint: None,
@@ -132,7 +149,10 @@ fn render_pinned_command(
                             command: menu_command.clone(),
                             background: true,
                         },
-                    }),
+                    }));
+                }
+                entries.push(MenuEntry::Separator);
+                entries.extend([
                     MenuEntry::Item(MenuItem {
                         id: "quick-edit".into(),
                         label: i18n::text("quick_commands.edit"),
@@ -177,7 +197,7 @@ fn render_pinned_command(
                             command: menu_command.clone(),
                         },
                     }),
-                ];
+                ]);
                 this.open_context_menu(ev.position, entries, cx);
             })
         });
@@ -189,6 +209,7 @@ fn render_pinned_command(
 
 fn render_background_task(task: BackgroundTask, cx: &mut Context<AppShell>) -> AnyElement {
     let id = task.id;
+    let is_running = task.status == BackgroundTaskStatus::Running;
     let status = background_task_label(task.status);
     let tooltip = format!("{status}\n{}\n{}", task.command, task.cwd.to_string_lossy());
     div()
@@ -215,18 +236,26 @@ fn render_background_task(task: BackgroundTask, cx: &mut Context<AppShell>) -> A
         .on_mouse_down(
             MouseButton::Right,
             cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
-                this.open_context_menu(
-                    ev.position,
-                    vec![MenuEntry::Item(MenuItem {
-                        id: format!("quick-stop-background-{id}"),
-                        label: i18n::text("quick_commands.stop"),
+                let mut entries = Vec::new();
+                if is_running {
+                    entries.push(MenuEntry::Item(MenuItem {
+                        id: format!("quick-restart-background-{id}"),
+                        label: i18n::text("quick_commands.restart"),
                         shortcut_hint: None,
                         disabled: false,
-                        danger: true,
-                        action: ShellMenuAction::StopBackgroundTask(id),
-                    })],
-                    cx,
-                );
+                        danger: false,
+                        action: ShellMenuAction::RestartBackgroundTask(id),
+                    }));
+                }
+                entries.push(MenuEntry::Item(MenuItem {
+                    id: format!("quick-stop-background-{id}"),
+                    label: i18n::text("quick_commands.stop"),
+                    shortcut_hint: None,
+                    disabled: false,
+                    danger: true,
+                    action: ShellMenuAction::StopBackgroundTask(id),
+                }));
+                this.open_context_menu(ev.position, entries, cx);
             }),
         )
         .into_any_element()

@@ -573,15 +573,22 @@ fn render_quick_command_row(
 ) -> AnyElement {
     let command = record.command.clone();
     let active_ids = shell.background_tasks.active_for_command(scope, &command);
+    let running_id = shell
+        .background_tasks
+        .running_for_command(scope, &command)
+        .first()
+        .copied();
     let command_for_click = command.clone();
     let scope_for_click = scope.to_string();
     let run_scope = scope.to_string();
     let run_command = command.clone();
     let background_scope = scope.to_string();
     let background_command = command.clone();
+    let background_restart_id = running_id;
+    let background_can_start = active_ids.is_empty();
     let pin_scope = scope.to_string();
     let pin_command = command.clone();
-    let mut row = div()
+    let row = div()
         .id(SharedString::from(format!("quick-command-row-{index}")))
         .min_h(px(32.))
         .flex_shrink_0()
@@ -606,21 +613,31 @@ fn render_quick_command_row(
             let menu_scope = scope.to_string();
             let menu_command = command.clone();
             let menu_active_id = active_ids.first().copied();
+            let menu_running_id = running_id;
             cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
-                let mut entries = vec![
-                    MenuEntry::Item(MenuItem {
-                        id: "quick-run".into(),
-                        label: i18n::text("quick_commands.run"),
+                let mut entries = vec![MenuEntry::Item(MenuItem {
+                    id: "quick-run".into(),
+                    label: i18n::text("quick_commands.run"),
+                    shortcut_hint: None,
+                    disabled: false,
+                    danger: false,
+                    action: ShellMenuAction::RunQuickCommand {
+                        scope: menu_scope.clone(),
+                        command: menu_command.clone(),
+                        background: false,
+                    },
+                })];
+                if let Some(id) = menu_running_id {
+                    entries.push(MenuEntry::Item(MenuItem {
+                        id: "quick-restart".into(),
+                        label: i18n::text("quick_commands.restart"),
                         shortcut_hint: None,
                         disabled: false,
                         danger: false,
-                        action: ShellMenuAction::RunQuickCommand {
-                            scope: menu_scope.clone(),
-                            command: menu_command.clone(),
-                            background: false,
-                        },
-                    }),
-                    MenuEntry::Item(MenuItem {
+                        action: ShellMenuAction::RestartBackgroundTask(id),
+                    }));
+                } else if menu_active_id.is_none() {
+                    entries.push(MenuEntry::Item(MenuItem {
                         id: "quick-background".into(),
                         label: i18n::text("quick_commands.run_background"),
                         shortcut_hint: None,
@@ -631,8 +648,10 @@ fn render_quick_command_row(
                             command: menu_command.clone(),
                             background: true,
                         },
-                    }),
-                    MenuEntry::Separator,
+                    }));
+                }
+                entries.push(MenuEntry::Separator);
+                entries.extend([
                     MenuEntry::Item(MenuItem {
                         id: "quick-edit".into(),
                         label: i18n::text("quick_commands.edit"),
@@ -674,7 +693,7 @@ fn render_quick_command_row(
                             command: menu_command.clone(),
                         },
                     }),
-                ];
+                ]);
                 if let Some(id) = menu_active_id {
                     entries.push(MenuEntry::Separator);
                     entries.push(MenuEntry::Item(MenuItem {
@@ -731,20 +750,42 @@ fn render_quick_command_row(
                 .rounded(px(theme::RADIUS_SM))
                 .cursor_pointer()
                 .hover(|style| style.bg(theme::raised()))
-                .tooltip(|_window, cx| {
+                .tooltip(move |_window, cx| {
                     cx.new(|_| LocalPathTooltip {
-                        path: SharedString::from(i18n::text("quick_commands.run_background")),
+                        path: SharedString::from(i18n::text(if background_restart_id.is_some() {
+                            "quick_commands.restart"
+                        } else {
+                            "quick_commands.run_background"
+                        })),
                     })
                     .into()
                 })
-                .child(icons::icon(icons::IconName::Clock, 12.).text_color(theme::faint_text()))
+                .child(
+                    icons::icon(
+                        if background_restart_id.is_some() {
+                            icons::IconName::RefreshCw
+                        } else {
+                            icons::IconName::Clock
+                        },
+                        12.,
+                    )
+                    .text_color(if background_restart_id.is_some() {
+                        theme::warning()
+                    } else {
+                        theme::faint_text()
+                    }),
+                )
                 .on_click(cx.listener(move |this, _ev, _window, cx| {
-                    this.run_quick_command(
-                        background_scope.clone(),
-                        background_command.clone(),
-                        true,
-                        cx,
-                    );
+                    if let Some(id) = background_restart_id {
+                        this.restart_background_task(id, cx);
+                    } else if background_can_start {
+                        this.run_quick_command(
+                            background_scope.clone(),
+                            background_command.clone(),
+                            true,
+                            cx,
+                        );
+                    }
                     cx.stop_propagation();
                 })),
         )
@@ -786,38 +827,6 @@ fn render_quick_command_row(
                 .child(SharedString::from(format!("x{}", record.count))),
         );
 
-    if let Some(id) = active_ids.first().copied() {
-        row = row.child(
-            div()
-                .w(px(6.))
-                .h(px(6.))
-                .rounded_full()
-                .bg(theme::warning()),
-        );
-        row = row.child(
-            div()
-                .id(SharedString::from(format!("quick-stop-{id}")))
-                .w(px(20.))
-                .h(px(20.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(theme::RADIUS_SM))
-                .cursor_pointer()
-                .hover(|style| style.bg(theme::accent_soft()))
-                .tooltip(|_window, cx| {
-                    cx.new(|_| crossh_ui::widgets::LocalPathTooltip {
-                        path: SharedString::from(i18n::text("quick_commands.stop")),
-                    })
-                    .into()
-                })
-                .child(icons::icon(icons::IconName::CircleX, 12.).text_color(theme::warning()))
-                .on_click(cx.listener(move |this, _ev, _window, cx| {
-                    this.stop_background_task(id, cx);
-                    cx.stop_propagation();
-                })),
-        );
-    }
     row.into_any_element()
 }
 

@@ -77,6 +77,11 @@ struct ActiveCommandContext {
     local_session: Option<LocalSessionId>,
 }
 
+struct PendingBackgroundRestart {
+    task: crossh_core::commands::BackgroundTask,
+    connection: Option<Entity<Connection>>,
+}
+
 fn local_background_owner(session_id: LocalSessionId) -> String {
     format!("local-session:{session_id}")
 }
@@ -134,6 +139,7 @@ pub struct AppShell {
     pub(crate) command_history: CommandHistory,
     pub(crate) background_tasks: BackgroundTaskManager,
     remote_background_controls: BTreeMap<u64, (Entity<Connection>, u64)>,
+    pending_background_restarts: BTreeMap<u64, PendingBackgroundRestart>,
     pub(crate) quick_command_editor: Option<QuickCommandEditor>,
     /// 周期性刷新本地会话的 Git 状态，覆盖 shell 空闲时的外部文件变更。
     _git_status_refresh_task: Option<Task<()>>,
@@ -208,6 +214,7 @@ impl AppShell {
             command_history: CommandHistory::load(),
             background_tasks: BackgroundTaskManager::default(),
             remote_background_controls: BTreeMap::new(),
+            pending_background_restarts: BTreeMap::new(),
             quick_command_editor: None,
             _git_status_refresh_task: None,
             quit_confirmation_open: false,
@@ -581,7 +588,7 @@ impl AppShell {
                         return;
                     };
                     let _ = weak.update(cx, |this, cx| {
-                        this.apply_background_event(event);
+                        this.apply_background_event(event, cx);
                         cx.notify();
                     });
                 })
@@ -645,7 +652,7 @@ impl AppShell {
                 },
             };
             let _ = weak.update(cx, |this, cx| {
-                this.apply_background_event(event);
+                this.apply_background_event(event, cx);
                 cx.notify();
             });
         })
@@ -653,14 +660,18 @@ impl AppShell {
         log::info!("started remote background command {task_id}");
     }
 
-    fn apply_background_event(&mut self, event: BackgroundTaskEvent) {
+    fn apply_background_event(&mut self, event: BackgroundTaskEvent, cx: &mut Context<Self>) {
+        let event_id = event.id;
         log::info!(
             "background command {} finished as {:?}",
             event.id,
             event.status
         );
-        self.remote_background_controls.remove(&event.id);
+        self.remote_background_controls.remove(&event_id);
         self.background_tasks.apply_event(event);
+        if let Some(restart) = self.pending_background_restarts.remove(&event_id) {
+            self.start_background_restart(restart, cx);
+        }
     }
 
     pub(crate) fn stop_background_task(&mut self, id: u64, cx: &mut Context<Self>) {
@@ -671,9 +682,59 @@ impl AppShell {
         cx.notify();
     }
 
+    pub(crate) fn restart_background_task(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(task) = self.background_tasks.tasks.get(&id).cloned() else {
+            return;
+        };
+        if task.status != BackgroundTaskStatus::Running {
+            return;
+        }
+        let connection = self
+            .remote_background_controls
+            .get(&id)
+            .map(|(connection, _)| connection.clone());
+        self.pending_background_restarts
+            .insert(id, PendingBackgroundRestart { task, connection });
+        self.stop_background_task(id, cx);
+    }
+
+    fn start_background_restart(
+        &mut self,
+        restart: PendingBackgroundRestart,
+        cx: &mut Context<Self>,
+    ) {
+        let task = restart.task;
+        if let Some(connection) = restart.connection {
+            self.start_remote_background(
+                connection,
+                task.owner,
+                task.scope,
+                task.cwd.to_string_lossy().into_owned(),
+                task.command,
+                cx,
+            );
+        } else {
+            let (id, event_rx) =
+                self.background_tasks
+                    .start(task.scope, task.cwd, task.command, task.owner);
+            cx.spawn(async move |weak, cx| {
+                let Ok(event) = event_rx.recv().await else {
+                    return;
+                };
+                let _ = weak.update(cx, |this, cx| {
+                    this.apply_background_event(event, cx);
+                    cx.notify();
+                });
+            })
+            .detach();
+            log::info!("restarted background command {id}");
+        }
+    }
+
     fn stop_background_tasks_for_owner(&mut self, owner: &str, cx: &mut Context<Self>) {
         let ids = self.background_tasks.active_for_owner(owner);
         for id in ids {
+            self.pending_background_restarts.remove(&id);
             self.stop_background_task(id, cx);
         }
     }
@@ -1056,6 +1117,7 @@ impl AppShell {
                 cx.notify();
             }
             ShellMenuAction::StopBackgroundTask(id) => self.stop_background_task(id, cx),
+            ShellMenuAction::RestartBackgroundTask(id) => self.restart_background_task(id, cx),
         }
         self.close_context_menu(cx);
     }

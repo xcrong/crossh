@@ -79,6 +79,8 @@ pub enum ShellMenuAction {
     IgnoreQuickCommand { scope: String, command: String },
     /// Stop one background command task.
     StopBackgroundTask(u64),
+    /// Stop one running background command and start it again in the background.
+    RestartBackgroundTask(u64),
 }
 
 /// SFTP 面板菜单动作（由 SftpPane 自持分发）。

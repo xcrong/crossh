@@ -340,6 +340,7 @@ quick_commands:
   empty: 在此目录执行过的命令会显示在这里。
   run: 在终端运行
   run_background: 在后台运行
+  restart: 重启
   edit: 编辑命令
   edit_title: 编辑快捷命令
   command_placeholder: 输入命令
