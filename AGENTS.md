@@ -57,7 +57,7 @@
 ## Local Workspace and Platform Responsibility
 
 - Work directly in the current checkout. Do not create Git worktrees, duplicate the repository, or copy the build cache unless the user explicitly requests that isolation strategy.
-- The local development machine is responsible for macOS behavior and platform-independent logic only. Do not install emulators, cross-compile toolchains, or local compatibility layers merely to claim Linux or Windows verification.
+- The local development machine is responsible for macOS behavior and platform-independent logic only. Never run local Cargo builds, checks, tests, or clippy commands with a Linux or Windows target. Do not install emulators, cross-compile toolchains, local compatibility layers, or target-specific dependencies merely to investigate or claim Linux or Windows verification; these consume local disk and compute without providing authoritative platform validation.
 - Linux- and Windows-specific behavior is verified by GitHub Actions. Changes that affect those platforms must add or update the corresponding CI coverage, and must not be reported as platform-verified until the relevant Actions jobs pass.
 - Local verification should still run all cached, platform-independent tests that are available on macOS. A platform-specific test skipped locally must be named explicitly in the handoff together with the CI job that owns it.
 

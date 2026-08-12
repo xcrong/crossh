@@ -117,27 +117,29 @@ fn real_vim_and_tmux_mode_fixtures_replay_consistently(cx: &mut TestAppContext) 
 #[gpui::test]
 async fn windows_conpty_smoke_round_trip(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
-    let builder = TerminalBuilder::new(
-        None,
-        None,
-        Shell::WithArguments {
-            program: "cmd.exe".into(),
-            args: vec!["/d".into(), "/c".into(), "echo crossh-conpty-smoke".into()],
-            title_override: None,
-        },
-        Default::default(),
-        CursorShape::default(),
-        AlternateScroll::On,
-        Some(64),
-        Vec::new(),
-        0,
-        false,
-        0,
-        None,
-        cx,
-        Vec::new(),
-        util::paths::PathStyle::local(),
-    );
+    let builder = cx.update(|app| {
+        TerminalBuilder::new(
+            None,
+            None,
+            Shell::WithArguments {
+                program: "cmd.exe".into(),
+                args: vec!["/d".into(), "/c".into(), "echo crossh-conpty-smoke".into()],
+                title_override: None,
+            },
+            Default::default(),
+            CursorShape::default(),
+            AlternateScroll::On,
+            Some(64),
+            Vec::new(),
+            0,
+            false,
+            0,
+            None,
+            app,
+            Vec::new(),
+            util::paths::PathStyle::local(),
+        )
+    });
     let builder = builder.await.expect("ConPTY terminal should start");
     let terminal = cx.new(|cx| builder.subscribe(cx));
 
@@ -148,7 +150,7 @@ async fn windows_conpty_smoke_round_trip(cx: &mut TestAppContext) {
         {
             return;
         }
-        cx.background_executor()
+        cx.executor()
             .timer(std::time::Duration::from_millis(10))
             .await;
     }
