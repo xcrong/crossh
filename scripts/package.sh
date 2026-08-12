@@ -78,7 +78,11 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "==> skipping Apple code signing (Developer ID is not configured)"
+echo "==> signing app bundle"
+# A stable ad-hoc signature binds the bundle identifier to the executable.
+# Without it, macOS can treat every rebuilt development bundle as a different
+# notification client even though Info.plist still declares io.crossh.app.
+codesign --force --sign - --identifier "$BUNDLE_ID" "$APP_DIR"
 
 echo "==> zipping"
 ZIP="$DIST/$APP_NAME-$VERSION-$ARCH-macos.zip"
