@@ -162,6 +162,7 @@ tooltip:
   open_sftp: 打开 SFTP
   port_forwarding: 端口转发
   new_project: 新建项目
+  open_target: 打开项目或主机
   close_tab: 关闭标签
   host_sidebar: 显示或隐藏主机栏
   timestamps: 显示或隐藏行时间戳
@@ -199,6 +200,10 @@ context_menu:
   file: 文件
   delete_title: "删除%{kind}？"
   delete_body: "%{name} 将被永久删除，此操作不可撤销。"
+
+rail_add:
+  open_project: 打开项目
+  open_local_project: 打开本地项目…
 
 project:
   choose_directory: 选择项目目录

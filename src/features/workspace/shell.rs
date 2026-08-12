@@ -1005,6 +1005,8 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         match action {
+            ShellMenuAction::ChooseLocalProject => self.choose_project_directory(cx),
+            ShellMenuAction::ActivateLocalProject(path) => self.activate_local_dir(path, cx),
             ShellMenuAction::OpenHost(idx) => self.open_host(idx, cx),
             ShellMenuAction::OpenSftp(idx) => self.open_sftp(idx, cx),
             ShellMenuAction::OpenForward(idx) => self.open_forward(idx, cx),

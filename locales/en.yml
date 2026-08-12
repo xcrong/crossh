@@ -162,6 +162,7 @@ tooltip:
   open_sftp: Open SFTP
   port_forwarding: Port forwarding
   new_project: New project
+  open_target: Open project or host
   close_tab: Close tab
   host_sidebar: Show or hide the host sidebar
   timestamps: Show or hide line timestamps
@@ -199,6 +200,10 @@ context_menu:
   file: file
   delete_title: "Delete %{kind}?"
   delete_body: "%{name} will be permanently deleted. This cannot be undone."
+
+rail_add:
+  open_project: Open
+  open_local_project: Open Local Project…
 
 project:
   choose_directory: Choose project directory

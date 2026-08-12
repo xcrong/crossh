@@ -21,12 +21,18 @@ pub const CONTEXT_MENU_WIDTH: f32 = 216.0;
 const ITEM_HEIGHT: f32 = 28.0;
 /// 分隔线行高。
 const SEPARATOR_HEIGHT: f32 = 8.0;
+/// 分组标题高度。
+const SECTION_HEADER_HEIGHT: f32 = 24.0;
 /// 菜单上下内边距。
 const MENU_PADDING: f32 = 8.0;
 
 /// 外壳级（侧栏/标签条/终端/SFTP 由各自模块自持）菜单动作。
 #[derive(Clone, Debug)]
 pub enum ShellMenuAction {
+    /// 通过系统目录选择器打开本地项目。
+    ChooseLocalProject,
+    /// 恢复或切换到记住的本地项目。
+    ActivateLocalProject(PathBuf),
     /// 打开远程主机终端。
     OpenHost(usize),
     /// 打开远程主机 SFTP。
@@ -112,6 +118,8 @@ pub struct MenuItem<A> {
 /// 菜单条目：项或分隔线。
 #[derive(Clone)]
 pub enum MenuEntry<A> {
+    /// 不可点击的视觉分组标题。
+    SectionHeader(String),
     Item(MenuItem<A>),
     /// A menu item with a persistent on/off check mark.
     CheckedItem {
@@ -137,6 +145,7 @@ pub fn estimate_menu_height<A>(entries: &[MenuEntry<A>]) -> f32 {
             .map(|entry| match entry {
                 MenuEntry::Item(_) | MenuEntry::CheckedItem { .. } => ITEM_HEIGHT,
                 MenuEntry::Separator => SEPARATOR_HEIGHT,
+                MenuEntry::SectionHeader(_) => SECTION_HEADER_HEIGHT,
             })
             .sum::<f32>()
 }
@@ -153,7 +162,8 @@ pub fn clamp_menu_position<A>(
     if x + CONTEXT_MENU_WIDTH > bounds.right().as_f32() {
         x = (x - CONTEXT_MENU_WIDTH).max(0.0);
     }
-    let height = estimate_menu_height(entries);
+    let height = estimate_menu_height(entries)
+        .min((bounds.size.height.as_f32() - MENU_PADDING * 2.0).max(ITEM_HEIGHT));
     if y + height > bounds.bottom().as_f32() {
         y = (y - height).max(0.0);
     }
@@ -174,6 +184,7 @@ pub fn render_context_menu<A: Clone + 'static, T: 'static>(
 ) -> AnyElement {
     let position = clamp_menu_position(state.position, window, &state.entries);
     let relative = Point::new(position.x - anchor.x, position.y - anchor.y);
+    let max_height = (window.bounds().size.height.as_f32() - MENU_PADDING * 2.0).max(ITEM_HEIGHT);
     let on_action = Rc::new(on_action);
     let on_dismiss = Rc::new(on_dismiss);
 
@@ -200,14 +211,17 @@ pub fn render_context_menu<A: Clone + 'static, T: 'static>(
         });
 
     let mut menu = div()
+        .id("ctx-menu")
         .absolute()
         .left(px(relative.x.as_f32()))
         .top(px(relative.y.as_f32()))
         .w(px(CONTEXT_MENU_WIDTH))
+        .max_h(px(max_height))
         .p_1()
         .flex()
         .flex_col()
         .gap_1()
+        .overflow_y_scroll()
         .bg(theme::overlay())
         .border_1()
         .border_color(theme::border_strong())
@@ -216,8 +230,29 @@ pub fn render_context_menu<A: Clone + 'static, T: 'static>(
 
     for entry in &state.entries {
         let (item, checked, checkable) = match entry {
+            MenuEntry::SectionHeader(label) => {
+                menu = menu.child(
+                    div()
+                        .h(px(SECTION_HEADER_HEIGHT))
+                        .flex_shrink_0()
+                        .px_2()
+                        .flex()
+                        .items_center()
+                        .text_xs()
+                        .text_color(theme::faint_text())
+                        .child(SharedString::from(label.clone())),
+                );
+                continue;
+            }
             MenuEntry::Separator => {
-                menu = menu.child(div().h(px(1.)).mx_2().my_1().bg(theme::border()));
+                menu = menu.child(
+                    div()
+                        .h(px(1.))
+                        .flex_shrink_0()
+                        .mx_2()
+                        .my_1()
+                        .bg(theme::border()),
+                );
                 continue;
             }
             MenuEntry::Item(item) => (item, false, false),
@@ -233,6 +268,7 @@ pub fn render_context_menu<A: Clone + 'static, T: 'static>(
         let mut row = div()
             .id(SharedString::from(format!("ctx-item-{id}")))
             .h(px(ITEM_HEIGHT))
+            .flex_shrink_0()
             .px_2()
             .flex()
             .items_center()

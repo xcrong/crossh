@@ -477,6 +477,21 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
         );
     }
 
+    let add_entries = rail_add_menu_entries(
+        shell
+            .workspace_settings
+            .recent_dirs
+            .iter()
+            .filter(|path| shell.workspace.sessions.local_dirs.contains_key(*path))
+            .map(std::path::PathBuf::as_path),
+        shell
+            .connections
+            .entries()
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (index, entry.alias.as_str())),
+    );
+
     div()
         .id("sidebar-rail")
         .w(px(theme::SIDEBAR_RAIL_WIDTH))
@@ -504,8 +519,94 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
                 .child(icons::logo(19.)),
         )
         .child(activity)
+        .child(
+            div()
+                .id("sidebar-rail-add")
+                .w(px(30.))
+                .h(px(30.))
+                .mt_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(theme::RADIUS_SM))
+                .cursor_pointer()
+                .text_color(theme::muted_text())
+                .border_1()
+                .border_color(theme::border_strong())
+                .hover(|style| style.bg(theme::surface()).text_color(theme::text()))
+                .tooltip(|_window, cx| {
+                    cx.new(|_| LocalPathTooltip {
+                        path: SharedString::from(i18n::text("tooltip.open_target")),
+                    })
+                    .into()
+                })
+                .child(
+                    icons::icon(icons::IconName::Plus, 15.)
+                        .text_color(theme::muted_text())
+                        .hover(|style| style.text_color(theme::text())),
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
+                        cx.stop_propagation();
+                        this.open_context_menu(ev.position, add_entries.clone(), cx);
+                    }),
+                ),
+        )
         .child(div().flex_1())
         .into_any_element()
+}
+
+fn rail_add_menu_entries<'a>(
+    recent_dirs: impl IntoIterator<Item = &'a Path>,
+    hosts: impl IntoIterator<Item = (usize, &'a str)>,
+) -> Vec<MenuEntry<ShellMenuAction>> {
+    let recent_dirs = recent_dirs.into_iter().collect::<Vec<_>>();
+    let hosts = hosts.into_iter().collect::<Vec<_>>();
+    let mut entries = vec![MenuEntry::SectionHeader(i18n::text(
+        "rail_add.open_project",
+    ))];
+    entries.push(MenuEntry::Item(MenuItem {
+        id: "rail-open-local-project".into(),
+        label: i18n::text("rail_add.open_local_project"),
+        shortcut_hint: Some("⌘O".into()),
+        disabled: false,
+        danger: false,
+        action: ShellMenuAction::ChooseLocalProject,
+    }));
+    if !recent_dirs.is_empty() {
+        entries.extend([
+            MenuEntry::Separator,
+            MenuEntry::SectionHeader(i18n::text("empty_state.recent_projects")),
+        ]);
+    }
+    entries.extend(recent_dirs.into_iter().enumerate().map(|(index, path)| {
+        MenuEntry::Item(MenuItem {
+            id: format!("rail-open-project-{index}"),
+            label: local_dir_name(path),
+            shortcut_hint: None,
+            disabled: false,
+            danger: false,
+            action: ShellMenuAction::ActivateLocalProject(path.to_path_buf()),
+        })
+    }));
+    if !hosts.is_empty() {
+        entries.extend([
+            MenuEntry::Separator,
+            MenuEntry::SectionHeader(i18n::text("empty_state.saved_hosts")),
+        ]);
+    }
+    entries.extend(hosts.into_iter().map(|(index, alias)| {
+        MenuEntry::Item(MenuItem {
+            id: format!("rail-open-host-{index}"),
+            label: alias.to_owned(),
+            shortcut_hint: None,
+            disabled: false,
+            danger: false,
+            action: ShellMenuAction::OpenHost(index),
+        })
+    }));
+    entries
 }
 
 fn local_dir_name(path: &Path) -> String {
@@ -518,6 +619,93 @@ fn local_dir_name(path: &Path) -> String {
 
 fn local_dir_name_key(path: &Path) -> String {
     local_dir_name(path).to_ascii_lowercase()
+}
+
+#[cfg(test)]
+mod rail_add_menu_tests {
+    use super::rail_add_menu_entries;
+    use crossh_ui::context_menu::{MenuEntry, ShellMenuAction};
+    use std::path::Path;
+
+    #[test]
+    fn add_menu_matches_empty_state_resource_groups() {
+        let projects = [Path::new("/workspace/alpha"), Path::new("/workspace/beta")];
+        let entries = rail_add_menu_entries(projects, [(3, "staging"), (7, "production")]);
+
+        assert!(matches!(
+            &entries[4],
+            MenuEntry::Item(item) if item.label == "alpha" && matches!(item.action, ShellMenuAction::ActivateLocalProject(_))
+        ));
+        assert!(matches!(
+            &entries[5],
+            MenuEntry::Item(item) if item.label == "beta" && matches!(item.action, ShellMenuAction::ActivateLocalProject(_))
+        ));
+        assert!(matches!(entries[0], MenuEntry::SectionHeader(_)));
+        assert!(matches!(
+            &entries[1],
+            MenuEntry::Item(item) if matches!(item.action, ShellMenuAction::ChooseLocalProject)
+        ));
+        assert!(matches!(entries[2], MenuEntry::Separator));
+        assert!(matches!(entries[3], MenuEntry::SectionHeader(_)));
+        assert!(matches!(entries[6], MenuEntry::Separator));
+        assert!(matches!(entries[7], MenuEntry::SectionHeader(_)));
+        assert!(matches!(
+            &entries[8],
+            MenuEntry::Item(item) if item.label == "staging" && matches!(item.action, ShellMenuAction::OpenHost(3))
+        ));
+        assert!(matches!(
+            &entries[9],
+            MenuEntry::Item(item) if item.label == "production" && matches!(item.action, ShellMenuAction::OpenHost(7))
+        ));
+    }
+
+    #[test]
+    fn add_menu_keeps_all_hosts_for_the_scrollable_popover() {
+        let hosts = (0..12)
+            .map(|index| (index, format!("host-{index}")))
+            .collect::<Vec<_>>();
+        let entries = rail_add_menu_entries(
+            std::iter::empty(),
+            hosts.iter().map(|(index, alias)| (*index, alias.as_str())),
+        );
+
+        let host_actions = entries
+            .iter()
+            .filter(|entry| {
+                matches!(entry, MenuEntry::Item(item) if matches!(item.action, ShellMenuAction::OpenHost(_)))
+            })
+            .count();
+        assert_eq!(host_actions, 12);
+    }
+
+    #[test]
+    fn add_menu_keeps_all_recent_projects_for_the_scrollable_popover() {
+        let projects = (0..12)
+            .map(|index| std::path::PathBuf::from(format!("/workspace/project-{index}")))
+            .collect::<Vec<_>>();
+        let entries = rail_add_menu_entries(
+            projects.iter().map(std::path::PathBuf::as_path),
+            std::iter::empty(),
+        );
+
+        let project_actions = entries
+            .iter()
+            .filter(|entry| {
+                matches!(entry, MenuEntry::Item(item) if matches!(item.action, ShellMenuAction::ActivateLocalProject(_)))
+            })
+            .count();
+        assert_eq!(project_actions, 12);
+    }
+
+    #[test]
+    fn add_menu_has_no_trailing_separator_without_saved_hosts() {
+        let entries = rail_add_menu_entries([Path::new("/workspace/alpha")], std::iter::empty());
+
+        assert!(matches!(
+            entries.last(),
+            Some(MenuEntry::Item(item)) if matches!(item.action, ShellMenuAction::ActivateLocalProject(_))
+        ));
+    }
 }
 
 fn local_dir_label(path: &Path, duplicate_name: bool) -> String {
