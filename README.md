@@ -39,7 +39,7 @@ open dist/crossh.app
 
 三平台发布产物由 [.github/workflows/release.yml](.github/workflows/release.yml) 构建：macOS `.app` zip（aarch64/x86_64）、Linux `tar.gz` + AppImage（x86_64/aarch64）、Windows zip（x86_64）。每个 release 同时生成 `stable.json`，由 [scripts/generate-update-manifest.sh](scripts/generate-update-manifest.sh) 根据实际产物的大小和 SHA-256 自动生成。更新设计、平台替换策略和后续 Ed25519 签名计划见 [docs/remote-update-plan.md](docs/remote-update-plan.md)。
 
-版本发布使用 `scripts/release.sh <version> --push`：统一 workspace 版本、同步 lockfile、执行 release 检查、提交、打 tag 并推送。
+版本发布使用 `scripts/release.sh <version> --push`：统一 workspace 版本、同步 lockfile、提交、打 tag 并推送。格式、架构、Clippy 和测试检查由 tag 触发的 GitHub Actions 在构建发布产物前执行。
 
 当前版本的 macOS 包不做 Apple 签名，不承诺绕过 Gatekeeper 或提供公证；远程更新只负责验证 HTTPS、目标平台、版本、文件大小和 SHA-256。
 

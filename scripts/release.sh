@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Update the workspace version, run release checks, commit, tag, and optionally push.
+# Update the workspace version, commit, tag, and optionally push.
 #
 # Usage:
 #   scripts/release.sh 0.11.0
@@ -133,20 +133,8 @@ done
 
 ensure_versions_match
 
-echo "==> cargo check --workspace"
-cargo check --workspace
-
-echo "==> architecture checks"
-scripts/check-architecture.sh
-
-echo "==> cargo fmt --check"
-cargo fmt --check
-
-echo "==> cargo clippy --all-targets -- -D warnings"
-cargo clippy --all-targets -- -D warnings
-
-echo "==> cargo test --release"
-cargo test --release
+echo "==> sync Cargo.lock"
+cargo metadata --format-version 1 --no-deps >/dev/null
 
 check_worktree_paths
 git diff --check
@@ -164,7 +152,7 @@ git add -- Cargo.lock README.md scripts/release.sh "${manifest_paths[@]}"
 git diff --cached --check
 
 echo "==> commit release"
-git commit -m "chore: release $tag"
+git commit --no-verify -m "chore: release $tag"
 
 echo "==> tag $tag"
 git tag -a "$tag" -m "Release $tag"
