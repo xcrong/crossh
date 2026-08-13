@@ -36,12 +36,23 @@ New-Item -ItemType Directory -Force -Path (Join-Path $AssetDestination "brand"),
     (Join-Path $AssetDestination "icons") | Out-Null
 $ZedRevision = (Select-String -Path Cargo.toml -Pattern '^assets = .*rev = "([^"]+)"' |
     Select-Object -First 1).Matches.Groups[1].Value
+# cargo 的 git 依赖 checkout 目录名是 short ID（7 位起，歧义时更长），
+# 而不是完整 rev（见 copy-shared-assets.sh 同款前缀匹配），所以这里
+# 用前 7 位前缀匹配。
+$ZedPrefix = $ZedRevision.Substring(0, [Math]::Min(7, $ZedRevision.Length))
 $ZedRoot = Get-ChildItem (Join-Path $env:USERPROFILE ".cargo/git/checkouts") -Directory -Filter "zed-*" |
-    ForEach-Object {
-        $candidate = Join-Path $_.FullName $ZedRevision
-        if (Test-Path (Join-Path $candidate "assets")) { $candidate; break }
-    }
-if (-not $ZedRoot) { throw "unable to locate cached Zed assets for revision $ZedRevision" }
+    ForEach-Object { Get-ChildItem $_.FullName -Directory } |
+    Where-Object { $_.Name.StartsWith($ZedPrefix) } |
+    Where-Object { Test-Path (Join-Path $_.FullName "assets") } |
+    Select-Object -First 1
+if (-not $ZedRoot) {
+    Write-Host "cached Zed checkouts:"
+    Get-ChildItem (Join-Path $env:USERPROFILE ".cargo/git/checkouts") -Directory -Filter "zed-*" |
+        ForEach-Object { Get-ChildItem $_.FullName -Directory } |
+        ForEach-Object { Write-Host "  $($_.Name)" }
+    throw "unable to locate cached Zed assets for revision $ZedRevision"
+}
+$ZedRoot = $ZedRoot.FullName
 Copy-Item "crates/crossh-assets/assets/icons/*.svg" (Join-Path $AssetDestination "icons")
 Copy-Item "assets/appicon/icon-master.svg" (Join-Path $AssetDestination "brand/crossh-logo.svg")
 Copy-Item (Join-Path $ZedRoot "assets/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf") (Join-Path $AssetDestination "fonts/ibm-plex-sans")
