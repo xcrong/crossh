@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crossh_ssh::ssh_runtime;
 use crossh_update::{
     DEFAULT_MANIFEST_URL, UpdateCandidate, UpdateError, UpdateTarget, download_artifact,
-    fetch_manifest, spawn_updater,
+    fetch_manifest, spawn_updater, take_update_result,
 };
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -53,10 +53,20 @@ pub(crate) struct UpdateController {
 
 impl UpdateController {
     pub(crate) fn new(settings: UpdateSettings) -> Self {
-        let startup_check_pending = settings.check_on_startup;
+        // 上次安装（updater 子进程）失败时，把结果带到本次启动的状态里，
+        // 否则失败被 null 掉的 stdout/stderr 吞掉，用户看到的是「应用
+        // 重启成了旧版本」而没有任何说明。有失败结果时跳过自动检查，
+        // 优先展示失败原因，避免立刻被「检查中…」覆盖。
+        let (status, startup_check_pending) = match take_update_result() {
+            Some(result) if !result.success => (
+                UpdateStatus::Failed(result.error.unwrap_or_else(|| "update failed".to_string())),
+                false,
+            ),
+            _ => (UpdateStatus::Idle, settings.check_on_startup),
+        };
         Self {
             settings,
-            status: UpdateStatus::Idle,
+            status,
             task: None,
             startup_check_pending,
         }

@@ -13,6 +13,6 @@ pub const DEFAULT_MANIFEST_URL: &str =
 pub use client::{UpdateError, download_artifact, fetch_manifest};
 pub use installer::{InstallerError, run_from_args, spawn_updater};
 pub use model::{
-    ArtifactFormat, ManifestError, UpdateArtifact, UpdateCandidate, UpdateManifest, UpdateTarget,
-    parse_manifest,
+    ArtifactFormat, ManifestError, UpdateArtifact, UpdateCandidate, UpdateManifest, UpdateResult,
+    UpdateTarget, parse_manifest, record_update_result, take_update_result, update_result_path,
 };

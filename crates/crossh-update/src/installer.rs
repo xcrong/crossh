@@ -15,7 +15,7 @@ use std::time::Duration;
 use flate2::read::GzDecoder;
 use thiserror::Error;
 
-use super::model::{ArtifactFormat, MAX_DOWNLOAD_BYTES};
+use super::model::{ArtifactFormat, MAX_DOWNLOAD_BYTES, UpdateResult, record_update_result};
 
 const UPDATE_WAIT: Duration = Duration::from_millis(250);
 const UPDATE_WAIT_ATTEMPTS: usize = 480;
@@ -119,7 +119,28 @@ fn install_paths(current_exe: &Path) -> Result<(PathBuf, PathBuf), InstallerErro
 }
 
 /// Entry point used by `src/bin/crossh-updater.rs`.
+///
+/// 无论成败都把结果落盘（`UpdateResult`），因为 updater 的 stdout/stderr
+/// 被父进程重定向到 null；主应用下次启动时读取并展示失败原因。
 pub fn run_from_args<I>(args: I) -> Result<(), InstallerError>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    let outcome = install_from_args(args);
+    match &outcome {
+        Ok(()) => record_update_result(&UpdateResult {
+            success: true,
+            error: None,
+        }),
+        Err(error) => record_update_result(&UpdateResult {
+            success: false,
+            error: Some(error.to_string()),
+        }),
+    }
+    outcome
+}
+
+fn install_from_args<I>(args: I) -> Result<(), InstallerError>
 where
     I: IntoIterator<Item = OsString>,
 {

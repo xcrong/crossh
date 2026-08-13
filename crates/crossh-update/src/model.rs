@@ -1,7 +1,8 @@
 //! Machine-readable release metadata shared by the updater and the UI.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -198,6 +199,54 @@ impl UpdateManifest {
     }
 }
 
+/// 一次安装尝试的结果，由 updater 进程落盘、主应用下次启动时读取展示。
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct UpdateResult {
+    pub success: bool,
+    pub error: Option<String>,
+}
+
+/// 结果文件路径（缓存目录，跨平台由 `dirs` 解析）。
+pub fn update_result_path() -> PathBuf {
+    let cache = dirs::cache_dir().unwrap_or_else(std::env::temp_dir);
+    update_result_path_in(&cache)
+}
+
+pub(crate) fn update_result_path_in(cache_root: &Path) -> PathBuf {
+    cache_root.join("crossh").join("update-result.json")
+}
+
+/// 记录这次安装的结果（updater 进程侧）。
+pub fn record_update_result(result: &UpdateResult) {
+    let cache = dirs::cache_dir().unwrap_or_else(std::env::temp_dir);
+    record_update_result_in(&cache, result);
+}
+
+pub(crate) fn record_update_result_in(cache_root: &Path, result: &UpdateResult) {
+    let path = update_result_path_in(cache_root);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string(result) {
+        let _ = fs::write(&path, json);
+    }
+}
+
+/// 读取并移除上次安装的结果（主应用启动时调用；成功后无需再展示）。
+pub fn take_update_result() -> Option<UpdateResult> {
+    let cache = dirs::cache_dir().unwrap_or_else(std::env::temp_dir);
+    take_update_result_in(&cache)
+}
+
+pub(crate) fn take_update_result_in(cache_root: &Path) -> Option<UpdateResult> {
+    let path = update_result_path_in(cache_root);
+    let json = fs::read_to_string(&path).ok()?;
+    // 先解析再删除：文件损坏时保留现场而不是把失败细节一并清掉。
+    let result = serde_json::from_str(&json).ok()?;
+    let _ = fs::remove_file(&path);
+    Some(result)
+}
+
 impl UpdateArtifact {
     pub fn validate(&self) -> Result<(), ManifestError> {
         validate_https_url(&self.url)?;
@@ -313,5 +362,48 @@ mod tests {
         let mut item = manifest("1.0.1");
         item.release_url = Some("http://example.com/crossh".into());
         assert!(matches!(item.validate(), Err(ManifestError::InsecureUrl)));
+    }
+
+    #[test]
+    fn update_result_roundtrips_and_is_consumed_once() {
+        use std::fs;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
+        let cache_root = std::env::temp_dir().join(format!(
+            "crossh-update-result-test-{}-{}",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&cache_root);
+        fs::create_dir_all(&cache_root).unwrap();
+
+        let failed = UpdateResult {
+            success: false,
+            error: Some("checksum mismatch".into()),
+        };
+        record_update_result_in(&cache_root, &failed);
+        assert_eq!(
+            take_update_result_in(&cache_root),
+            Some(failed.clone()),
+            "failed install must be readable by the next launch"
+        );
+        assert_eq!(
+            take_update_result_in(&cache_root),
+            None,
+            "a consumed result must not resurface"
+        );
+        assert!(
+            !update_result_path_in(&cache_root).exists(),
+            "the result file must be removed after reading"
+        );
+
+        let ok = UpdateResult {
+            success: true,
+            error: None,
+        };
+        record_update_result_in(&cache_root, &ok);
+        assert_eq!(take_update_result_in(&cache_root), Some(ok));
+        let _ = fs::remove_dir_all(&cache_root);
     }
 }
