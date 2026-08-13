@@ -15,6 +15,11 @@ crossh (application + feature views)
   -> crossh-update
   -> crossh-core
 
+crossh-git (standalone Git Viewer)
+  -> crossh-ui -> crossh-assets
+  -> crossh-theme
+  -> crossh-core
+
 crossh-core       -> no GPUI, no application crate
 crossh-agent      -> no GPUI, agent loop, tools, sessions, and policy
 crossh-ai-sdk     -> no GPUI, provider-neutral messages, HTTP/SSE, and wire adapters
@@ -24,6 +29,7 @@ crossh-update     -> no GPUI, release/download/install implementation
 crossh-theme      -> no GPUI, renderer-independent color tokens
 crossh-assets     -> no GPUI, embedded Crossh icon assets and icon identifiers
 crossh-ui         -> GPUI primitives and the asset-source adapter
+shared resources  -> external `crossh-assets` directory loaded by every binary
 ```
 
 ## Crate Ownership
@@ -35,9 +41,10 @@ crossh-ui         -> GPUI primitives and the asset-source adapter
 - `crossh-ssh`: `russh` authentication and channels, connection pooling, SFTP, port forwarding, ProxyJump, and the Tokio runtime. Its public API is re-exported from the crate root; implementation modules stay private.
 - `crossh-terminal`: terminal-owned settings and events. It is the model boundary consumed by the GPUI terminal view.
 - `crossh-update`: release manifest validation, HTTPS downloads, checksum verification, archive installation, and the standalone updater hand-off.
-- `crossh-assets`: UI-neutral Lucide SVG storage, `rust-embed` loading, shared icon identifiers, and the whole-directory asset integrity test. Its files live under `crates/crossh-assets/assets/icons/`.
-- `crossh-ui`: reusable GPUI widgets, context menus, the GPUI adapter for `crossh-theme`, icon rendering, and the `AssetSource` adapter backed by `crossh-assets`.
-- `crossh`: process startup plus user-facing feature views and GPUI adapters. `features/terminal/view.rs` is the `terminal_view`-style host around Zed's terminal foundation; `features/connections/entity.rs` is the adapter around `crossh-ssh::ConnectionHandle`.
+- `crossh-assets`: UI-neutral Lucide SVG storage, shared external-resource discovery, debug embedded fallback, shared icon identifiers, and asset integrity tests. Its files live under `crates/crossh-assets/assets/icons/`.
+- `crossh-ui`: reusable GPUI widgets, context menus, the GPUI adapter for `crossh-theme`, icon rendering, and the `AssetSource` adapter backed by the shared external resource directory.
+- `crossh`: process startup plus user-facing feature views and GPUI adapters. `crossh git` delegates to the sibling `crossh-git` binary; `features/terminal/view.rs` is the `terminal_view`-style host around Zed's terminal foundation; `features/connections/entity.rs` is the adapter around `crossh-ssh::ConnectionHandle`.
+- `crossh-git`: standalone Git Viewer entry point. It reuses the Git feature source through the same GPUI and UI dependencies but does not initialize SSH, terminal, agent, workspace, or settings features.
 
 Within the application crate:
 
@@ -61,6 +68,7 @@ engine remains in `crossh-ssh`.
 4. Feature settings stay next to the feature that owns their behavior; the persistence layer composes snapshots without becoming the settings owner.
 5. `main.rs` is assembly only: logging, runtime warm-up, platform setup, Zed global initialization, key bindings, and window boot.
 6. The updater binary depends on `crossh-update` directly. It must not include application source with `#[path]`.
+7. `crossh-git` is the only standalone entry point allowed to include the Git view modules with `#[path]`; it must keep its boot path limited to Git Viewer dependencies. Release packaging places all binaries beside one shared `crossh-assets` directory; non-arm64-macOS packaging is built and verified only by GitHub Actions.
 
 The crate graph is the enforcement mechanism. A logic change that attempts to
 reach into GPUI fails at dependency resolution or compilation instead of
@@ -77,3 +85,4 @@ and quick verification command for focused validation.
 - [0005: Standalone updater](adr/0005-standalone-updater.md)
 - [0006: Executable testing contracts](adr/0006-executable-testing-contracts.md)
 - [0007: Workspace panel composition](adr/0007-workspace-panel-composition.md)
+- [0008: Standalone Git Viewer binary](adr/0008-standalone-git-viewer.md)

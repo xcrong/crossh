@@ -1,8 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-pub(crate) const GIT_WINDOW_PROCESS_ENV: &str = "CROSSH_GIT_WINDOW_PROCESS";
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum GitCliCommand {
     Open(PathBuf),
@@ -16,32 +14,55 @@ pub(crate) fn parse(
     match args.next().as_deref() {
         None => current_dir.map(GitCliCommand::Open),
         Some("--help" | "-h" | "help") if args.next().is_none() => Ok(GitCliCommand::Help),
-        Some(argument) if args.next().is_none() => Ok(GitCliCommand::Open(PathBuf::from(argument))),
+        Some(argument) if args.next().is_none() => {
+            let path = PathBuf::from(argument);
+            if path.is_absolute() {
+                Ok(GitCliCommand::Open(path))
+            } else {
+                current_dir.map(|directory| GitCliCommand::Open(directory.join(path)))
+            }
+        }
         Some(argument) => Err(format!("unexpected argument: {argument}")),
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn print_help() {
+    print_help_for("crossh git");
+}
+
+#[allow(dead_code)]
+pub(crate) fn print_standalone_help() {
+    print_help_for("crossh-git");
+}
+
+fn print_help_for(command: &str) {
     println!(
-        "Usage: crossh git [DIRECTORY]\n\nOpen the Git Viewer for DIRECTORY, or the current directory when omitted."
+        "Usage: {command} [DIRECTORY]\n\nOpen the Git Viewer for DIRECTORY, or the current directory when omitted."
     );
 }
 
-pub(crate) fn running_as_window_process() -> bool {
-    std::env::var_os(GIT_WINDOW_PROCESS_ENV).is_some_and(|value| value == "1")
+#[allow(dead_code)]
+pub(crate) fn spawn_git_process(cwd: &Path) -> std::io::Result<()> {
+    git_process_command(cwd)?.spawn().map(|_| ())
 }
 
-pub(crate) fn spawn_window_process(cwd: &Path) -> std::io::Result<()> {
-    let executable = std::env::current_exe()?;
-    window_process_command(&executable, cwd).spawn().map(|_| ())
-}
-
-fn window_process_command(executable: &Path, cwd: &Path) -> Command {
+fn git_process_command(cwd: &Path) -> std::io::Result<Command> {
+    let executable = std::env::current_exe()?
+        .parent()
+        .map(|directory| {
+            directory.join(if cfg!(windows) {
+                "crossh-git.exe"
+            } else {
+                "crossh-git"
+            })
+        })
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| Path::new("crossh-git").to_path_buf());
     let mut command = Command::new(executable);
     command
-        .arg("git")
+        .arg(cwd)
         .current_dir(cwd)
-        .env(GIT_WINDOW_PROCESS_ENV, "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -61,15 +82,14 @@ fn window_process_command(executable: &Path, cwd: &Path) -> Command {
         command.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
     }
 
-    command
+    Ok(command)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
 
-    use super::{GIT_WINDOW_PROCESS_ENV, GitCliCommand, parse, window_process_command};
+    use super::{GitCliCommand, git_process_command, parse};
 
     #[test]
     fn no_arguments_open_the_current_directory() {
@@ -109,6 +129,17 @@ mod tests {
     }
 
     #[test]
+    fn relative_directory_argument_is_resolved_from_the_current_directory() {
+        assert_eq!(
+            parse(
+                ["other"].into_iter().map(str::to_string),
+                Ok(PathBuf::from("/repo"))
+            ),
+            Ok(GitCliCommand::Open(PathBuf::from("/repo/other")))
+        );
+    }
+
+    #[test]
     fn current_directory_errors_are_reported() {
         assert_eq!(
             parse(std::iter::empty(), Err("cwd unavailable".to_string())),
@@ -117,14 +148,13 @@ mod tests {
     }
 
     #[test]
-    fn detached_window_process_reenters_git_command_in_requested_directory() {
-        let command = window_process_command(Path::new("/bin/crossh"), Path::new("/repo"));
+    fn detached_git_process_receives_requested_directory() {
+        let command = git_process_command(Path::new("/repo")).expect("command should build");
 
-        assert_eq!(command.get_program(), OsStr::new("/bin/crossh"));
-        assert_eq!(command.get_args().collect::<Vec<_>>(), [OsStr::new("git")]);
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [Path::new("/repo").as_os_str()]
+        );
         assert_eq!(command.get_current_dir(), Some(Path::new("/repo")));
-        assert!(command.get_envs().any(|(name, value)| {
-            name == OsStr::new(GIT_WINDOW_PROCESS_ENV) && value == Some(OsStr::new("1"))
-        }));
     }
 }

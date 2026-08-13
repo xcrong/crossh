@@ -22,13 +22,14 @@ STAGE="$DIST/package-linux-$ARCH"
 APPDIR="$DIST/$APP_NAME.AppDir"
 APP_LIB="$APPDIR/usr/lib"
 BIN="target/$TARGET/release/$APP_NAME"
+GIT_BIN="target/$TARGET/release/crossh-git"
 UPDATER_BIN="target/$TARGET/release/crossh-updater"
 
 echo "==> rustup target add $TARGET"
 rustup target add "$TARGET"
 
 echo "==> cargo build --release --target $TARGET"
-cargo build --release --target "$TARGET" --bin crossh --bin crossh-updater
+cargo build --release --target "$TARGET" --bin crossh --bin crossh-git --bin crossh-updater
 
 mkdir -p "$DIST"
 
@@ -36,7 +37,8 @@ mkdir -p "$DIST"
 echo "==> tar.gz"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/$APP_NAME-$VERSION-linux-$ARCH"
-cp "$BIN" "$UPDATER_BIN" README.md LICENSE "$STAGE/$APP_NAME-$VERSION-linux-$ARCH/"
+cp "$BIN" "$GIT_BIN" "$UPDATER_BIN" README.md LICENSE "$STAGE/$APP_NAME-$VERSION-linux-$ARCH/"
+bash scripts/copy-shared-assets.sh "$STAGE/$APP_NAME-$VERSION-linux-$ARCH/resources/crossh-assets"
 TARBALL="$DIST/$APP_NAME-$VERSION-linux-$ARCH.tar.gz"
 rm -f "$TARBALL"
 tar -C "$STAGE" -czf "$TARBALL" "$APP_NAME-$VERSION-linux-$ARCH"
@@ -47,8 +49,10 @@ rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin" "$APP_LIB" \
     "$APPDIR/usr/share/applications" \
     "$APPDIR/usr/share/icons/hicolor/512x512/apps"
+bash scripts/copy-shared-assets.sh "$APPDIR/usr/bin/resources/crossh-assets"
 
 cp "$BIN" "$APPDIR/usr/bin/$APP_NAME"
+cp "$GIT_BIN" "$APPDIR/usr/bin/crossh-git"
 cp "$UPDATER_BIN" "$APPDIR/usr/bin/crossh-updater"
 cp README.md LICENSE "$APPDIR/"
 

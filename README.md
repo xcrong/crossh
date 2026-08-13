@@ -27,7 +27,15 @@ cargo run --release  # 发布模式
 # 交互式 coding agent
 cargo run -- agent
 cargo run -- agent --continue
+
+# 打开当前目录的 Git Viewer；也可以传入一个目录
+crossh git
+crossh git ~/Code/draw-backend
 ```
+
+发布包会同时包含 `crossh`、`crossh-git` 和共享的 `crossh-assets/` 资源目录。`crossh git`
+会优先启动安装目录旁边的 `crossh-git`，所有子程序共用同一份字体、图标和主题资源，
+因此 Git Viewer 不需要加载完整的 SSH、终端和工作区功能。
 
 打包为未签名 `.app`（当前没有 Developer ID）：
 

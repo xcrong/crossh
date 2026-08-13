@@ -10,7 +10,6 @@ mod features;
 mod infrastructure;
 mod shared;
 
-use assets::Assets as ZedAssets;
 use gpui::{App, actions};
 use release_channel as zed_release_channel;
 use settings as zed_settings;
@@ -79,14 +78,11 @@ fn main() {
             std::env::current_dir().map_err(|error| error.to_string()),
         ) {
             Ok(features::git::GitCliCommand::Open(cwd)) => {
-                if !features::git::running_as_window_process() {
-                    if let Err(error) = features::git::spawn_window_process(&cwd) {
-                        eprintln!("crossh git: failed to start Git Viewer: {error}");
-                        std::process::exit(1);
-                    }
-                    return;
+                if let Err(error) = features::git::spawn_git_process(&cwd) {
+                    eprintln!("crossh git: failed to start crossh-git: {error}");
+                    std::process::exit(1);
                 }
-                app::LaunchTarget::Git(cwd)
+                return;
             }
             Ok(features::git::GitCliCommand::Help) => {
                 features::git::print_cli_help();
@@ -110,7 +106,7 @@ fn main() {
     // 预热 tokio 运行时（单例，限 2 worker 线程，控内存）。
     let _rt = crossh_ssh::ssh_runtime();
 
-    let app = gpui_platform::application().with_assets(crossh_ui::assets::UiAssetSource);
+    let app = gpui_platform::application().with_assets(crossh_ui::assets::UiAssetSource::default());
     let reopen_target = launch_target.clone();
     app.on_reopen(move |cx| {
         // Reuse an existing window, including a hidden one. Only create a
@@ -133,9 +129,7 @@ fn main() {
         zed_settings::init(cx);
         zed_theme_settings::init(LoadThemes::JustBase, cx);
         infrastructure::theme::install_crossh_theme(cx);
-        ZedAssets
-            .load_fonts(cx)
-            .expect("Zed embedded fonts should load");
+        crossh_ui::assets::load_fonts(cx).expect("Crossh fonts should load");
         features::settings::init(cx);
         features::git::init(cx);
         features::terminal::init(cx);

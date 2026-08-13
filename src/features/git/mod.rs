@@ -36,9 +36,10 @@ mod model;
 mod render;
 mod window;
 
+#[allow(unused_imports)]
 pub(crate) use cli::{
-    GitCliCommand, parse as parse_cli, print_help as print_cli_help, running_as_window_process,
-    spawn_window_process,
+    GitCliCommand, parse as parse_cli, print_help as print_cli_help,
+    print_standalone_help as print_standalone_cli_help, spawn_git_process,
 };
 pub(crate) use window::open_git_window;
 
