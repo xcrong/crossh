@@ -577,12 +577,10 @@ mod tests {
     #[test]
     fn remote_bootstrap_selects_supported_shells() {
         let command = remote_shell_bootstrap_command();
-        assert!(command.starts_with("sh -c '") && command.ends_with('\''));
-        assert!(command.contains("bash --rcfile"));
-        assert!(command.contains("crossh-integration.zsh"));
-        assert!(command.contains("ZDOTDIR=\"$d\" zsh -i"));
-        assert!(command.contains("CROSSH_USER_ZDOTDIR"));
-        assert!(command.contains("fish --init-command"));
+        assert!(command.starts_with("d=$(mktemp -d "));
+        assert!(command.contains("base64 -d > \"$d/boot.sh\""));
+        assert!(command.contains(". \"$d/boot.sh\""));
+        assert!(command.contains("base64 -d"));
     }
 
     #[cfg(unix)]
