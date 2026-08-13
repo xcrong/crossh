@@ -346,42 +346,61 @@ if [[ -r "${ZDOTDIR:-$HOME}/.zshenv" ]]; then
 fi
 builtin source "$CROSSH_ZSH_INTEGRATION"
 builtin unset CROSSH_ZSH_INTEGRATION
-"#;
+    "#;
     let fish_setup = remote_shell_setup_script(RemoteShell::Fish);
+    let bash_rc_encoded = BASE64.encode(bash_rc.as_bytes());
+    let zsh_integration_encoded = BASE64.encode(zsh_integration.as_bytes());
+    let zshenv_encoded = BASE64.encode(zshenv.as_bytes());
+    let fish_setup_encoded = BASE64.encode(fish_setup.as_bytes());
     let selector = format!(
         "case \"${{SHELL##*/}}\" in\n\
 bash)\n\
     d=$(mktemp -d \"${{TMPDIR:-/tmp}}/crossh-shell.XXXXXX\") || exit 1\n\
     trap 'rm -rf \"$d\"' 0\n\
-    printf '%s\\n' {} > \"$d/.bashrc\"\n\
+    printf %s {} | base64 -d > \"$d/.bashrc\"\n\
     bash --rcfile \"$d/.bashrc\" -i\n\
     status=$?\n\
     exit \"$status\"\n\
+    ;;\n\
 zsh)\n\
     d=$(mktemp -d \"${{TMPDIR:-/tmp}}/crossh-shell.XXXXXX\") || exit 1\n\
     trap 'rm -rf \"$d\"' 0\n\
     if [ \"${{ZDOTDIR+x}}\" = x ]; then CROSSH_USER_ZDOTDIR_SET=1 CROSSH_USER_ZDOTDIR=$ZDOTDIR; else CROSSH_USER_ZDOTDIR_SET=0 CROSSH_USER_ZDOTDIR=; fi\n\
     export CROSSH_USER_ZDOTDIR_SET CROSSH_USER_ZDOTDIR\n\
-    printf '%s\\n' {} > \"$d/crossh-integration.zsh\"\n\
-    printf '%s\\n' {} > \"$d/.zshenv\"\n\
+    printf %s {} | base64 -d > \"$d/crossh-integration.zsh\"\n\
+    printf %s {} | base64 -d > \"$d/.zshenv\"\n\
     CROSSH_ZSH_INTEGRATION=\"$d/crossh-integration.zsh\" ZDOTDIR=\"$d\" zsh -i\n\
     status=$?\n\
     exit \"$status\"\n\
+    ;;\n\
 fish)\n\
-    fish --init-command {} -i\n\
+    d=$(mktemp -d \"${{TMPDIR:-/tmp}}/crossh-shell.XXXXXX\") || exit 1\n\
+    trap 'rm -rf \"$d\"' 0\n\
+    printf %s {} | base64 -d > \"$d/config.fish\"\n\
+    fish --init-command \"source $d/config.fish\" -i\n\
     status=$?\n\
     exit \"$status\"\n\
+    ;;\n\
 *)\n\
     \"${{SHELL:-/bin/sh}}\" -i\n\
     status=$?\n\
     exit \"$status\"\n\
+    ;;\n\
 esac",
-        shell_quote(&bash_rc),
-        shell_quote(&zsh_integration),
-        shell_quote(zshenv),
-        shell_quote(fish_setup),
+        bash_rc_encoded, zsh_integration_encoded, zshenv_encoded, fish_setup_encoded,
     );
-    format!("sh -c {}", shell_quote(&selector))
+    // SSH servers pass the remote command through the user's login shell. Do
+    // not embed the multi-line selector in another layer of shell quoting:
+    // OpenSSH joins command arguments before the server parses them, and the
+    // nested quotes can be interpreted differently by `/bin/sh` variants.
+    // The payload is shell-safe base64, so only a small, portable decoder is
+    // parsed remotely. Decode into a temporary script before sourcing it;
+    // piping directly into `sh` would steal the SSH PTY's stdin and make an
+    // interactive shell exit immediately on EOF.
+    let encoded = BASE64.encode(selector.as_bytes());
+    format!(
+        "d=$(mktemp -d \"${{TMPDIR:-/tmp}}/crossh-bootstrap.XXXXXX\") || exit 1; trap 'rm -rf \"$d\"' 0; printf %s {encoded} | base64 -d > \"$d/boot.sh\" || exit 1; . \"$d/boot.sh\""
+    )
 }
 
 fn shell_quote(value: &str) -> String {
@@ -763,6 +782,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn remote_bootstrap_is_valid_for_the_posix_launcher() {
+        let command = remote_shell_bootstrap_command();
         let output = Command::new("sh")
             .args(["-n", "-c", &remote_shell_bootstrap_command()])
             .output()
@@ -771,6 +791,24 @@ mod tests {
             output.status.success(),
             "remote shell bootstrap is invalid: {}",
             String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!command.contains('\n'));
+        let encoded = command
+            .split("printf %s ")
+            .nth(1)
+            .and_then(|value| value.split(" | base64 -d >").next())
+            .expect("bootstrap should use the encoded remote payload");
+        let decoded = String::from_utf8(BASE64.decode(encoded).unwrap()).unwrap();
+        assert!(decoded.contains("case \"${SHELL##*/}\" in"));
+        let decoded_check = Command::new("sh")
+            .args(["-n", "-c", &decoded])
+            .output()
+            .unwrap();
+        assert!(
+            decoded_check.status.success(),
+            "decoded bootstrap is invalid: {}\n{}",
+            decoded,
+            String::from_utf8_lossy(&decoded_check.stderr)
         );
     }
 
