@@ -131,6 +131,13 @@ fn apply_event(
             changed,
             reply,
         } => {
+            if let Some(previous) = pending_prompt.take() {
+                // 旧弹窗被新事件覆盖（如 host-key → 凭据连续确认）：显式通知
+                // engine 拒绝，而不是静默 drop —— 否则 UI 显示新输入框的同时
+                // 该连接实际已被引擎判为失败，行为完全不可见。
+                log::warn!("host key prompt replaced before it was answered");
+                reject_pending(previous);
+            }
             *pending_prompt = Some(PendingPrompt::HostKey {
                 host,
                 port,
@@ -145,11 +152,31 @@ fn apply_event(
             prompt,
             reply,
         } => {
+            if let Some(previous) = pending_prompt.take() {
+                log::warn!("credential prompt replaced before it was answered");
+                reject_pending(previous);
+            }
             *pending_prompt = Some(PendingPrompt::Credential {
                 kind,
                 prompt,
                 reply: Some(reply),
             });
+        }
+    }
+}
+
+/// 未决弹窗被替换/连接结束时，向引擎发送与用户取消等价的决定。
+fn reject_pending(prompt: PendingPrompt) {
+    match prompt {
+        PendingPrompt::HostKey { reply, .. } => {
+            if let Some(reply) = reply {
+                let _ = reply.send(HostKeyDecision::Reject);
+            }
+        }
+        PendingPrompt::Credential { reply, .. } => {
+            if let Some(reply) = reply {
+                let _ = reply.send(None);
+            }
         }
     }
 }
@@ -239,6 +266,43 @@ mod tests {
         assert!(matches!(prompt, Some(PendingPrompt::Credential { .. })));
         resolve_credential(&mut prompt, None);
         assert_eq!(response.try_recv(), Ok(None));
+        assert!(prompt.is_none());
+    }
+
+    #[test]
+    fn replaced_prompt_explicitly_rejects_the_previous_request() {
+        let mut state = ConnectionState::Connecting;
+        let mut prompt = None;
+        let (first_reply, mut first_response) = oneshot::channel();
+        apply_event(
+            &mut state,
+            &mut prompt,
+            ConnEvent::NeedHostKey {
+                host: "example.com".into(),
+                port: 22,
+                key_type: "ssh-ed25519".into(),
+                fingerprint: "SHA256:first".into(),
+                changed: false,
+                reply: first_reply,
+            },
+        );
+        let (second_reply, mut second_response) = oneshot::channel();
+        apply_event(
+            &mut state,
+            &mut prompt,
+            ConnEvent::NeedCredential {
+                kind: CredentialKind::Password,
+                prompt: "Password:".into(),
+                reply: second_reply,
+            },
+        );
+
+        // 旧弹窗的回复必须收到显式 Reject，而不是静默 drop。
+        assert_eq!(first_response.try_recv(), Ok(HostKeyDecision::Reject));
+        assert!(matches!(prompt, Some(PendingPrompt::Credential { .. })));
+
+        resolve_credential(&mut prompt, Some("secret".into()));
+        assert_eq!(second_response.try_recv(), Ok(Some("secret".into())));
         assert!(prompt.is_none());
     }
 }

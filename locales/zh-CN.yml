@@ -250,7 +250,7 @@ empty_state:
   saved_hosts: 已配置主机
 
 prompt:
-  changed_host_key_warning: "主机密钥已变更，可能存在中间人攻击。\n按计划默认拒绝连接。"
+  changed_host_key_warning: "主机密钥已变更，可能存在中间人攻击。仅在你确认服务器确实重装时接受本次连接；本次接受不会写入 known_hosts。"
   unknown_host_warning: 未知主机，请核对此指纹后决定。
   host_key_title: 主机密钥确认
   host_key_body: "%{warning}\n主机：%{host}:%{port}\n密钥类型：%{key_type}\n指纹：\n%{fingerprint}"

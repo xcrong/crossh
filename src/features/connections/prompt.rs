@@ -81,20 +81,21 @@ pub fn render_prompt_modal(
     let mut buttons = div().flex().flex_row().gap_2().mt_4();
     match prompt {
         PromptDisplay::HostKey { changed, .. } => {
+            // 变更密钥时只提供「本次接受」：引擎侧 AcceptOnce 不写 known_hosts，
+            // AcceptAlways 变更路径等同拒绝，因此不再展示该按钮。
+            let mut accept_once = div().child(host_key_button(
+                cx,
+                i18n::text("prompt.accept_once"),
+                HostKeyDecision::AcceptOnce,
+            ));
             if !changed {
-                buttons = buttons
-                    .child(host_key_button(
-                        cx,
-                        i18n::text("prompt.accept_once"),
-                        HostKeyDecision::AcceptOnce,
-                    ))
-                    .child(host_key_button(
-                        cx,
-                        i18n::text("prompt.accept_always"),
-                        HostKeyDecision::AcceptAlways,
-                    ));
+                accept_once = accept_once.child(host_key_button(
+                    cx,
+                    i18n::text("prompt.accept_always"),
+                    HostKeyDecision::AcceptAlways,
+                ));
             }
-            buttons = buttons.child(host_key_button(
+            buttons = accept_once.child(host_key_button(
                 cx,
                 i18n::text("prompt.reject"),
                 HostKeyDecision::Reject,

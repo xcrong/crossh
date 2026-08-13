@@ -250,7 +250,7 @@ empty_state:
   saved_hosts: Configured hosts
 
 prompt:
-  changed_host_key_warning: "The host key has changed, which may indicate a man-in-the-middle attack.\nThe connection will be rejected by default."
+  changed_host_key_warning: "The host key has changed, which may indicate a man-in-the-middle attack. Only accept the connection once if you really expect this change; accepting once does not update known_hosts."
   unknown_host_warning: Verify this unknown host's fingerprint before continuing.
   host_key_title: Confirm host key
   host_key_body: "%{warning}\nHost: %{host}:%{port}\nKey type: %{key_type}\nFingerprint:\n%{fingerprint}"

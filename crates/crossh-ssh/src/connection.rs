@@ -403,10 +403,52 @@ async fn run_connection(
                 }
                 Ok(ConnCmd::Shutdown) => break Ok(()),
                 Err(_) => {
-                    // gpui 释放了 Connection；等残留 channel 收尾或立即断开。
-                    if active == 0 {
-                        break Ok(());
+                    // gpui 释放了 Connection：cmd 通道已关闭（队列满时
+                    // Shutdown 可能根本没送达），任何命令都发不出去了。
+                    // 先主动停掉全部残留 channel 再进入纯等待收尾，否则
+                    // -R 转发的 active 只走 StopForward 递减（已不可达），
+                    // 等待会没有上界。主动停止还顺带消除了 select 因 cmd
+                    // 分支恒就绪而空转 CPU 的问题。
+                    for (kind, spec) in fw_state.keys().cloned().collect::<Vec<_>>() {
+                        if let Some(state) = fw_state.remove(&(kind, spec.clone())) {
+                            match kind {
+                                ForwardKind::Local | ForwardKind::Dynamic => {
+                                    if let Some(stop) = state.stop {
+                                        let _ = stop.send(());
+                                    }
+                                    // listener 任务结束会发 ended → active--。
+                                }
+                                ForwardKind::Remote => {
+                                    if let Some(alloc) = state.allocated {
+                                        stop_remote_forward(
+                                            &handle,
+                                            remote_registry.clone(),
+                                            &spec,
+                                            alloc,
+                                        )
+                                        .await;
+                                    }
+                                    // -R 无后台任务，直接 active--。
+                                    active = active.saturating_sub(1);
+                                }
+                            }
+                        }
                     }
+                    // 丢弃 stop sender：远程命令任务侧的 stop_rx 立即返回并
+                    // 关闭 channel，随即发送 ended（见 OpenCommand 的 wrapper）。
+                    for (_, stop) in remote_commands.drain() {
+                        drop(stop);
+                    }
+                    while let Some(ended) = ended_rx.recv().await {
+                        if let ChannelEnded::RemoteCommand(id) = ended {
+                            remote_commands.remove(&id);
+                        }
+                        active = active.saturating_sub(1);
+                        if active == 0 {
+                            break;
+                        }
+                    }
+                    break Ok(());
                 }
             }
         }
@@ -989,10 +1031,15 @@ impl client::Handler for ClientHandler {
                 }
             }
             Err(e) => {
-                // 已知但密钥变更（可能 MITM）：告知 UI 后拒绝（见计划）。
+                // 已知但密钥变更（可能 MITM）：允许「本次接受」以兼容服务器
+                // 重装后的合法换钥，但绝不把变更后的密钥写入 known_hosts
+                //（OpenSSH 同样要求手动处理变更密钥），因此 AcceptAlways
+                // 在此路径等同拒绝。
                 log::error!("host key changed for {}:{}: {}", self.host, self.port, e);
-                let _ = self.ask_host_key(server_public_key, true).await;
-                Ok(false)
+                match self.ask_host_key(server_public_key, true).await {
+                    HostKeyDecision::AcceptOnce => Ok(true),
+                    _ => Ok(false),
+                }
             }
         }
     }
