@@ -146,7 +146,7 @@ fn main() {
 
 fn print_help() {
     println!(
-        "Crossh {}\n\nUsage: crossh [COMMAND]\n\nCommands:\n  agent       Start the interactive coding agent\n  git         Open the Git Viewer for the current directory\n  help        Print help\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version",
+        "Crossh {}\n\nUsage: crossh [COMMAND]\n\nCommands:\n  agent       Start the interactive coding agent\n  git         Open the Git Viewer for a directory\n  help        Print help\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version",
         env!("CARGO_PKG_VERSION")
     );
 }

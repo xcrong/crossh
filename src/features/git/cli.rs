@@ -16,12 +16,15 @@ pub(crate) fn parse(
     match args.next().as_deref() {
         None => current_dir.map(GitCliCommand::Open),
         Some("--help" | "-h" | "help") if args.next().is_none() => Ok(GitCliCommand::Help),
+        Some(argument) if args.next().is_none() => Ok(GitCliCommand::Open(PathBuf::from(argument))),
         Some(argument) => Err(format!("unexpected argument: {argument}")),
     }
 }
 
 pub(crate) fn print_help() {
-    println!("Usage: crossh git\n\nOpen the Git Viewer for the current directory.");
+    println!(
+        "Usage: crossh git [DIRECTORY]\n\nOpen the Git Viewer for DIRECTORY, or the current directory when omitted."
+    );
 }
 
 pub(crate) fn running_as_window_process() -> bool {
@@ -87,10 +90,21 @@ mod tests {
         );
         assert_eq!(
             parse(
-                ["extra"].into_iter().map(str::to_string),
+                ["first", "second"].into_iter().map(str::to_string),
                 Ok(PathBuf::new())
             ),
-            Err("unexpected argument: extra".to_string())
+            Err("unexpected argument: first".to_string())
+        );
+    }
+
+    #[test]
+    fn one_directory_argument_opens_that_directory() {
+        assert_eq!(
+            parse(
+                ["/repo/other"].into_iter().map(str::to_string),
+                Ok(PathBuf::from("/repo"))
+            ),
+            Ok(GitCliCommand::Open(PathBuf::from("/repo/other")))
         );
     }
 
