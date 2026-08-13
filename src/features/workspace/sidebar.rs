@@ -21,6 +21,13 @@ use crossh_ui::widgets::{LocalPathTooltip, ime_input_canvas, text_caret};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{Avatar, AvatarKind};
 
+const TRANSPARENT: gpui::Rgba = gpui::Rgba {
+    r: 0.0,
+    g: 0.0,
+    b: 0.0,
+    a: 0.0,
+};
+
 fn host_entry_matches(entry: &HostEntry, query: &str) -> bool {
     entry.alias.to_ascii_lowercase().contains(query)
         || entry.detail.to_ascii_lowercase().contains(query)
@@ -419,6 +426,15 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
 
 /// 收起主机栏时保留活跃项目与连接主机，便于直接切换工作目标。
 pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
+    let active_remote_key = match shell.workspace.active_view {
+        Some(ActiveView::RemoteTab(idx)) => shell
+            .workspace
+            .sessions
+            .remote_tabs
+            .get(idx)
+            .map(|tab| tab.host_key.clone()),
+        _ => None,
+    };
     let mut activity = div()
         .id("sidebar-rail-activity")
         .w_full()
@@ -440,6 +456,7 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
         let label = local_dir_name(&project_dir);
         let project_id = project_dir.to_string_lossy().to_string();
         let avatar = Avatar::new(&label).kind(AvatarKind::Project);
+        let selected = is_active_local_dir(shell, dir);
         activity = activity.child(
             div()
                 .id(SharedString::from(format!(
@@ -453,7 +470,24 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
                 .justify_center()
                 .rounded(px(theme::RADIUS_SM))
                 .cursor_pointer()
-                .hover(|style| style.bg(theme::surface()))
+                .border_1()
+                .border_color(if selected {
+                    theme::accent()
+                } else {
+                    TRANSPARENT
+                })
+                .bg(if selected {
+                    theme::accent_soft()
+                } else {
+                    TRANSPARENT
+                })
+                .hover(move |style| {
+                    style.bg(if selected {
+                        theme::accent_soft()
+                    } else {
+                        theme::surface()
+                    })
+                })
                 .tooltip(move |_window, cx| {
                     cx.new(|_| LocalPathTooltip {
                         path: SharedString::from(label.clone()),
@@ -472,6 +506,7 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
         }
         let alias = entry.alias.clone();
         let avatar = Avatar::new(&alias).kind(AvatarKind::Host);
+        let selected = active_remote_key.as_deref() == Some(entry.key.as_str());
         activity = activity.child(
             div()
                 .id(("sidebar-rail-host", index))
@@ -483,7 +518,24 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
                 .justify_center()
                 .rounded(px(theme::RADIUS_SM))
                 .cursor_pointer()
-                .hover(|style| style.bg(theme::surface()))
+                .border_1()
+                .border_color(if selected {
+                    theme::accent()
+                } else {
+                    TRANSPARENT
+                })
+                .bg(if selected {
+                    theme::accent_soft()
+                } else {
+                    TRANSPARENT
+                })
+                .hover(move |style| {
+                    style.bg(if selected {
+                        theme::accent_soft()
+                    } else {
+                        theme::surface()
+                    })
+                })
                 .tooltip(move |_window, cx| {
                     cx.new(|_| LocalPathTooltip {
                         path: SharedString::from(alias.clone()),
