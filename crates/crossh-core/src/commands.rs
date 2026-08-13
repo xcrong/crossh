@@ -726,7 +726,10 @@ fn shell_command(command: &str, cwd: &Path) -> Command {
         let mut process = Command::new(shell);
         process.args(["/D", "/S", "/C", command]);
         process.current_dir(cwd);
-        process.stdout(Stdio::piped()).stderr(Stdio::piped());
+        process
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         return process;
     }
 
@@ -738,7 +741,11 @@ fn shell_command(command: &str, cwd: &Path) -> Command {
         let mut process = Command::new(shell);
         process.args(["-lc", command]);
         process.current_dir(cwd);
-        process.stdout(Stdio::piped()).stderr(Stdio::piped());
+        // stdin 置空：后台任务不得与前台终端抢读输入。
+        process
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         unsafe {
             process.pre_exec(|| {
                 libc::setpgid(0, 0);

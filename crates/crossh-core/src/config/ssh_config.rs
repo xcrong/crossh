@@ -87,7 +87,10 @@ impl SshConfig {
     /// 解析用户输入的目标名：跨块「首匹配胜出」合并有效配置。
     /// - 标量键（HostName/User/Port/ProxyJump）：首个命中块的值生效。
     /// - IdentityFile / 三类转发：所有命中块累加。
+    /// - 用户显式输入的 user/port 优先于配置块（OpenSSH 命令行语义），
+    ///   Host 模式只与目标的主机名部分匹配（不带 user/port）。
     pub fn resolve(&self, target: &str) -> HostConfig {
+        let (inline_user, inline_host, inline_port) = split_target(target);
         let mut merged = HostConfig {
             aliases: vec![target.to_string()],
             host_name: None,
@@ -102,7 +105,7 @@ impl SshConfig {
         };
 
         for h in &self.hosts {
-            if !h.matches(target) {
+            if !h.matches(inline_host) {
                 continue;
             }
             if merged.host_name.is_none() {
@@ -136,14 +139,16 @@ impl SshConfig {
                 .extend(h.dynamic_forwards.iter().cloned());
         }
 
-        // 用户直接输入 "host:port" 或 "user@host" 形式时也支持一下。
-        if merged.host_name.is_none() && merged.user.is_none() {
-            let (user, host, port) = split_target(target);
-            merged.host_name = Some(host.to_string());
-            merged.user = user.map(|u| u.to_string());
-            if let Some(p) = port {
-                merged.port = Some(p);
-            }
+        // 用户直接输入 "user@host[:port]" 时，显式给出的 user/port 优先于配置
+        // 块（OpenSSH 命令行语义）；host 名只在没有块提供 HostName 时采用。
+        if merged.host_name.is_none() {
+            merged.host_name = Some(inline_host.to_string());
+        }
+        if let Some(user) = inline_user {
+            merged.user = Some(user.to_string());
+        }
+        if let Some(port) = inline_port {
+            merged.port = Some(port);
         }
 
         merged
@@ -530,6 +535,40 @@ mod tests {
         assert_eq!(r.user.as_deref(), Some("root"));
         assert_eq!(r.host_name.as_deref(), Some("example.com"));
         assert_eq!(r.port, Some(2222));
+    }
+
+    #[test]
+    fn inline_user_and_port_override_matching_block() {
+        // 命令行显式给出的 user/port 必须覆盖配置块（OpenSSH 语义）。
+        let c = cfg("Host web\n  HostName 10.0.0.5\n  User deploy\n  Port 2222\n");
+        let r = c.resolve("root@web:2200");
+        assert_eq!(
+            r.user.as_deref(),
+            Some("root"),
+            "inline user overrides block user"
+        );
+        assert_eq!(r.port, Some(2200), "inline port overrides block port");
+        assert_eq!(
+            r.host_name.as_deref(),
+            Some("10.0.0.5"),
+            "block HostName still wins"
+        );
+    }
+
+    #[test]
+    fn inline_user_overrides_wildcard_block_user() {
+        // `Host *` 提供默认 User 时，QuickConnect 输入 `root@web` 不得被替换。
+        let c = cfg("Host *\n  User deploy\n");
+        let r = c.resolve("root@web");
+        assert_eq!(r.user.as_deref(), Some("root"));
+        assert_eq!(r.host_name.as_deref(), Some("web"));
+        assert_eq!(r.port, None, "no inline port, no block port");
+        let r2 = c.resolve("web");
+        assert_eq!(
+            r2.user.as_deref(),
+            Some("deploy"),
+            "bare target keeps block user"
+        );
     }
 
     #[test]
