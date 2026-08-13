@@ -6,7 +6,7 @@ set -eu
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 failure=0
 
-# Keep exceptions explicit and local to this check. This file is a 2129-line
+# Keep exceptions explicit and local to this check. This file is a 2186-line
 # local fork of Zed's terminal_view code, so it remains maintained as upstream
 # third-party code rather than being split locally.
 size_whitelist='src/features/terminal/zed_view/terminal_element.rs'
@@ -41,7 +41,10 @@ check_absent \
     "$repo_root/crates/crossh-assets" \
     "$repo_root/crates/crossh-ssh" \
     "$repo_root/crates/crossh-terminal" \
-    "$repo_root/crates/crossh-update"
+    "$repo_root/crates/crossh-update" \
+    "$repo_root/crates/crossh-agent" \
+    "$repo_root/crates/crossh-ai-sdk" \
+    "$repo_root/crates/crossh-theme"
 
 check_absent \
     "logic crates import the application or shared UI crate" \
@@ -50,7 +53,10 @@ check_absent \
     "$repo_root/crates/crossh-assets" \
     "$repo_root/crates/crossh-ssh" \
     "$repo_root/crates/crossh-terminal" \
-    "$repo_root/crates/crossh-update"
+    "$repo_root/crates/crossh-update" \
+    "$repo_root/crates/crossh-agent" \
+    "$repo_root/crates/crossh-ai-sdk" \
+    "$repo_root/crates/crossh-theme"
 
 check_absent \
     "main.rs contains infrastructure implementation details" \

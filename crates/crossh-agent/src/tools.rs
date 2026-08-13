@@ -5,6 +5,7 @@ use super::policy::{
 };
 use regex::Regex;
 use serde_json::{Value, json};
+use std::collections::VecDeque;
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
@@ -1044,19 +1045,94 @@ fn workspace_path(workspace: &Path, value: &str, allow_missing: bool) -> Result<
             .ancestors()
             .find(|path| path.exists())
             .ok_or("no existing parent")?;
-        if !existing
-            .canonicalize()
-            .map_err(|error| error.to_string())?
-            .starts_with(&workspace)
-        {
+        let existing = existing.canonicalize().map_err(|error| error.to_string())?;
+        if !existing.starts_with(&workspace) {
             return Err(
                 "path must stay inside the current workspace; use a workspace-relative path".into(),
             );
         }
-        Ok(path)
+        // 逐组件校验并解析路径中的所有符号链接：链接必须逐跳跟随（目标
+        // 内部可能还有链接，形成多跳链），每一跳的目标都必须落在工作区内，
+        // 悬空链按词法解析同样逐跳校验；否则写入会经由链接链逃逸出工作区。
+        let relative = path.strip_prefix(&existing).map_err(|_| {
+            "path must stay inside the current workspace; use a workspace-relative path".to_string()
+        })?;
+        let mut queue: VecDeque<PathBuf> = relative
+            .components()
+            .map(|component| PathBuf::from(component.as_os_str()))
+            .collect();
+        let mut cursor = existing;
+        let mut hops = 0usize;
+        const MAX_SYMLINK_HOPS: usize = 40;
+        while let Some(component) = queue.pop_front() {
+            let next = if component.is_absolute() {
+                // 链接目标为绝对路径（或根），游标落回该路径再继续。
+                component
+            } else {
+                cursor.join(&component)
+            };
+            match fs::symlink_metadata(&next) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    hops += 1;
+                    if hops > MAX_SYMLINK_HOPS {
+                        return Err("too many symlink hops while resolving path".into());
+                    }
+                    let target = fs::read_link(&next).map_err(|error| error.to_string())?;
+                    let resolved = if target.is_absolute() {
+                        target
+                    } else {
+                        next.parent().unwrap_or(&cursor).join(target)
+                    };
+                    let resolved = lexically_normalize(&resolved);
+                    if !resolved.starts_with(&workspace) {
+                        return Err(
+                            "path must stay inside the current workspace; use a workspace-relative path"
+                                .into(),
+                        );
+                    }
+                    if resolved == next {
+                        return Err("cyclic symlink while resolving path".into());
+                    }
+                    // 目标可能仍含链接组件，切回队列逐组件重新解析。
+                    for target_component in resolved.components().rev() {
+                        queue.push_front(PathBuf::from(target_component.as_os_str()));
+                    }
+                }
+                Ok(_) => {
+                    cursor = next;
+                }
+                Err(_) => {
+                    // 悬空（组件或链目标不存在）：剩余组件不可能再经由链接
+                    // 逃逸，原样保留即可。
+                    queue.push_front(next);
+                    break;
+                }
+            }
+        }
+        while let Some(component) = queue.pop_front() {
+            cursor = cursor.join(component);
+        }
+        Ok(cursor)
     } else {
         Err("path does not exist".into())
     }
+}
+
+/// 不访问文件系统的路径规范化：解析 `.` 与 `..`，供悬空链接目标校验。
+fn lexically_normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push(component.as_os_str());
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 fn truncate_output(text: &str) -> String {

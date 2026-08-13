@@ -132,6 +132,30 @@ fn provider_and_model_ids_must_be_unique() {
 }
 
 #[test]
+fn reviewer_model_must_differ_from_active_model() {
+    let mut settings = configured_settings();
+    settings.reviewer_model = settings.active_model.clone();
+    assert_eq!(
+        settings.validate(),
+        Err("Reviewer model must be different from the active model")
+    );
+
+    let mut settings = configured_settings();
+    settings.reviewer_model = AgentModelRef {
+        provider: "local".into(),
+        model: "other-model".into(),
+    };
+    settings.providers[0].models.push(AgentModel {
+        id: "other-model".into(),
+        name: "Other Model".into(),
+        reasoning: false,
+        context_window: 128_000,
+        max_tokens: 32_000,
+    });
+    assert_eq!(settings.validate(), Ok(()));
+}
+
+#[test]
 fn model_output_limit_maps_to_each_protocol() {
     let model = AgentModel {
         id: "m".into(),
@@ -675,4 +699,151 @@ fn discovery_does_not_follow_symlink_cycles() {
     );
     assert!(!result.is_error);
     assert!(result.output.contains("file.txt"));
+}
+
+#[cfg(unix)]
+#[test]
+fn write_rejects_dangling_symlink_escape() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("ws");
+    let outside = root.path().join("outside.txt");
+    fs::create_dir(&workspace).unwrap();
+    symlink(&outside, workspace.join("escape.txt")).unwrap();
+
+    let result = execute_tool(
+        &AgentToolCall {
+            id: "write".into(),
+            name: "write".into(),
+            arguments: json!({"path": "escape.txt", "content": "pwned"}).to_string(),
+        },
+        &workspace,
+    );
+    assert!(
+        result.is_error,
+        "write through a dangling symlink must be rejected, got {result:?}"
+    );
+    assert!(
+        !outside.exists(),
+        "write must not create a file outside the workspace via a symlink"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn write_rejects_symlink_pointing_outside_workspace() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("ws");
+    let outside = root.path().join("outside.txt");
+    fs::create_dir(&workspace).unwrap();
+    symlink(&outside, workspace.join("escape.txt")).unwrap();
+    fs::write(&outside, "original").unwrap();
+
+    let result = execute_tool(
+        &AgentToolCall {
+            id: "write".into(),
+            name: "write".into(),
+            arguments: json!({"path": "escape.txt", "content": "pwned"}).to_string(),
+        },
+        &workspace,
+    );
+    assert!(
+        result.is_error,
+        "write through an escaping symlink must be rejected"
+    );
+    assert_eq!(
+        fs::read_to_string(&outside).unwrap(),
+        "original",
+        "the target outside the workspace must stay untouched"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn write_rejects_dangling_two_hop_symlink_chain() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("ws");
+    let outside = root.path().join("outside.txt");
+    fs::create_dir(&workspace).unwrap();
+    // hop1 → "hop2"（工作区内相对链接），hop2 → 工作区外（悬空）。
+    // 写入 "hop1/x" 时 hop1 自身指向的工作区内，但链条终点在区外，
+    // 必须逐跳解析而不是只看第一跳。
+    symlink("hop2", workspace.join("hop1")).unwrap();
+    symlink(&outside, workspace.join("hop2")).unwrap();
+
+    let result = execute_tool(
+        &AgentToolCall {
+            id: "write".into(),
+            name: "write".into(),
+            arguments: json!({"path": "hop1/x", "content": "pwned"}).to_string(),
+        },
+        &workspace,
+    );
+    assert!(
+        result.is_error,
+        "write through a two-hop dangling chain must be rejected, got {result:?}"
+    );
+    assert!(
+        !outside.exists(),
+        "write must not create a file outside the workspace via a symlink chain"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn write_rejects_two_hop_symlink_chain_to_existing_outside_dir() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("ws");
+    let outside_dir = root.path().join("outside-dir");
+    fs::create_dir(&workspace).unwrap();
+    fs::create_dir(&outside_dir).unwrap();
+    // hop1 → "hop2"（工作区内相对链接），hop2 → 工作区外已存在的目录。
+    // 区外的目录存在、被写入的文件不存在，是更隐蔽的逃逸形态。
+    symlink("hop2", workspace.join("hop1")).unwrap();
+    symlink(&outside_dir, workspace.join("hop2")).unwrap();
+
+    let result = execute_tool(
+        &AgentToolCall {
+            id: "write".into(),
+            name: "write".into(),
+            arguments: json!({"path": "hop1/x", "content": "pwned"}).to_string(),
+        },
+        &workspace,
+    );
+    assert!(
+        result.is_error,
+        "write through a two-hop chain to an existing outside dir must be rejected, got {result:?}"
+    );
+    assert!(
+        !outside_dir.join("x").exists(),
+        "write must not create a file outside the workspace via a symlink chain"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn write_resolves_symlink_inside_workspace() {
+    use std::os::unix::fs::symlink;
+    let workspace = tempfile::tempdir().unwrap();
+    symlink("real.txt", workspace.path().join("alias.txt")).unwrap();
+
+    let result = execute_tool(
+        &AgentToolCall {
+            id: "write".into(),
+            name: "write".into(),
+            arguments: json!({"path": "alias.txt", "content": "hello"}).to_string(),
+        },
+        workspace.path(),
+    );
+    assert!(
+        !result.is_error,
+        "write through an inner symlink must work, got {result:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("real.txt")).unwrap(),
+        "hello"
+    );
 }
