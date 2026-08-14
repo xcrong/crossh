@@ -265,6 +265,16 @@ prompt:
   wrong_passphrase_retry: "Wrong passphrase, retry:"
   password_for: "Password for %{user}:"
 
+tab_close:
+  title: Close Tab?
+  running: A command is still running in this terminal.
+  transfers: "SFTP transfers or saves in progress: %{count}"
+  unsaved_editors: "Remote files with unsaved changes: %{count}"
+  forwards: "Active port forwards: %{count}"
+  consequence: Closing this tab will terminate the running session and its processes.
+  confirm: Close Anyway
+  cancel: Cancel
+
 quit:
   menu: Quit Crossh
   title: Quit Crossh?

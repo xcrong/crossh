@@ -1,10 +1,54 @@
 //! AppShell terminal tab and session navigation.
 
+use gpui::{PromptButton, PromptLevel};
+
 use task::Shell;
 
 use crossh_core::terminal::remote_shell_bootstrap_command;
 
 use super::*;
+
+/// 单个标签页关闭时可能被打断的活动；任何一项存在都需要确认。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct TabCloseRisk {
+    command_running: bool,
+    sftp_writes: usize,
+    unsaved_editors: usize,
+    active_forwards: usize,
+}
+
+impl TabCloseRisk {
+    fn needs_confirmation(&self) -> bool {
+        self.command_running
+            || self.sftp_writes > 0
+            || self.unsaved_editors > 0
+            || self.active_forwards > 0
+    }
+
+    fn detail(&self) -> String {
+        let mut lines = Vec::new();
+        if self.command_running {
+            lines.push(i18n::text("tab_close.running"));
+        }
+        if self.sftp_writes > 0 {
+            lines.push(rust_i18n::t!("tab_close.transfers", count = self.sftp_writes).to_string());
+        }
+        if self.unsaved_editors > 0 {
+            lines.push(
+                rust_i18n::t!("tab_close.unsaved_editors", count = self.unsaved_editors)
+                    .to_string(),
+            );
+        }
+        if self.active_forwards > 0 {
+            lines.push(
+                rust_i18n::t!("tab_close.forwards", count = self.active_forwards).to_string(),
+            );
+        }
+        lines.push(String::new());
+        lines.push(i18n::text("tab_close.consequence"));
+        lines.join("\n")
+    }
+}
 
 impl AppShell {
     pub(super) fn handle_new_terminal(
@@ -19,10 +63,10 @@ impl AppShell {
     pub(super) fn handle_close_active_tab(
         &mut self,
         _: &crate::CloseActiveTab,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.close_active_tab(cx);
+        self.request_close_active_tab(window, cx);
     }
 
     /// 按别名或 `user@host[:port]` 打开一个终端标签。
@@ -143,12 +187,113 @@ impl AppShell {
         self.close_remote_tab(idx, cx);
     }
 
-    pub(super) fn close_active_tab(&mut self, cx: &mut Context<Self>) {
+    /// 关闭活动标签；有命令运行等风险时先弹确认框。
+    pub(super) fn request_close_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.workspace.active_view {
-            Some(ActiveView::RemoteTab(idx)) => self.close_remote_tab(idx, cx),
-            Some(ActiveView::LocalSession(session_id)) => self.close_local_session(session_id, cx),
+            Some(ActiveView::RemoteTab(idx)) => self.request_close_remote_tab(idx, window, cx),
+            Some(ActiveView::LocalSession(session_id)) => {
+                self.request_close_local_session(session_id, window, cx)
+            }
             None => {}
         }
+    }
+
+    /// 关闭单个远程标签；存在活动风险时先请求确认。
+    pub(crate) fn request_close_remote_tab(
+        &mut self,
+        idx: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(risk) = self.remote_tab_close_risk(idx, cx) else {
+            return;
+        };
+        if !risk.needs_confirmation() {
+            self.close_remote_tab(idx, cx);
+            return;
+        }
+        self.prompt_close_tab(risk, window, cx, move |this, cx| {
+            this.close_remote_tab(idx, cx);
+        });
+    }
+
+    /// 关闭单个本地会话；存在活动风险时先请求确认。
+    pub(crate) fn request_close_local_session(
+        &mut self,
+        session_id: LocalSessionId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(risk) = self.local_session_close_risk(session_id, cx) else {
+            return;
+        };
+        if !risk.needs_confirmation() {
+            self.close_local_session(session_id, cx);
+            return;
+        }
+        self.prompt_close_tab(risk, window, cx, move |this, cx| {
+            this.close_local_session(session_id, cx);
+        });
+    }
+
+    fn remote_tab_close_risk(&self, idx: usize, cx: &Context<Self>) -> Option<TabCloseRisk> {
+        let tab = self.workspace.sessions.remote_tabs.get(idx)?;
+        let pane_risk = tab.pane.risk(cx);
+        Some(TabCloseRisk {
+            command_running: tab.pane.is_command_running(cx),
+            sftp_writes: pane_risk.sftp_writes,
+            unsaved_editors: pane_risk.unsaved_editors,
+            active_forwards: pane_risk.active_forwards,
+        })
+    }
+
+    fn local_session_close_risk(
+        &self,
+        session_id: LocalSessionId,
+        cx: &Context<Self>,
+    ) -> Option<TabCloseRisk> {
+        let session = self.workspace.sessions.local_sessions.get(&session_id)?;
+        Some(TabCloseRisk {
+            command_running: session.terminal.read(cx).is_command_running(cx),
+            ..TabCloseRisk::default()
+        })
+    }
+
+    fn prompt_close_tab(
+        &mut self,
+        risk: TabCloseRisk,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        on_confirm: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
+    ) {
+        if self.tab_close_confirmation_open
+            || self.quit_confirmation_open
+            || self.shutdown_in_progress
+        {
+            return;
+        }
+        self.tab_close_confirmation_open = true;
+        let answers = [
+            PromptButton::ok(i18n::text("tab_close.confirm")),
+            PromptButton::cancel(i18n::text("tab_close.cancel")),
+        ];
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &i18n::text("tab_close.title"),
+            Some(&risk.detail()),
+            &answers,
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            let confirmed = answer.await == Ok(0);
+            let _ = this.update(cx, |this, cx| {
+                this.tab_close_confirmation_open = false;
+                if confirmed {
+                    on_confirm(this, cx);
+                }
+            });
+        })
+        .detach();
     }
 
     pub(super) fn cycle_tab(&mut self, direction: isize, cx: &mut Context<Self>) {
@@ -328,5 +473,52 @@ fn zed_ssh_shell(target: &str, host: &HostConfig) -> Shell {
         program: "ssh".to_string(),
         args,
         title_override: Some(format!("{} - Crossh", target)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::shared::i18n;
+
+    use super::TabCloseRisk;
+
+    #[test]
+    fn close_confirmation_is_only_required_for_material_activity() {
+        assert!(!TabCloseRisk::default().needs_confirmation());
+
+        for risk in [
+            TabCloseRisk {
+                command_running: true,
+                ..Default::default()
+            },
+            TabCloseRisk {
+                sftp_writes: 1,
+                ..Default::default()
+            },
+            TabCloseRisk {
+                unsaved_editors: 1,
+                ..Default::default()
+            },
+            TabCloseRisk {
+                active_forwards: 1,
+                ..Default::default()
+            },
+        ] {
+            assert!(risk.needs_confirmation());
+        }
+    }
+
+    #[test]
+    fn close_risk_detail_describes_what_will_be_interrupted() {
+        let detail = TabCloseRisk {
+            command_running: true,
+            sftp_writes: 2,
+            unsaved_editors: 1,
+            active_forwards: 1,
+        }
+        .detail();
+        assert!(detail.contains("2"));
+        assert!(detail.contains(&i18n::text("tab_close.consequence")));
+        assert!(detail.contains(&i18n::text("tab_close.running")));
     }
 }

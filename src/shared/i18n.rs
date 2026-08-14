@@ -139,6 +139,19 @@ mod tests {
             text_for("quit.title", Locale::SimplifiedChinese),
             "要退出 Crossh 吗？"
         );
+        assert_eq!(text_for("tab_close.title", Locale::English), "Close Tab?");
+        assert_eq!(
+            text_for("tab_close.title", Locale::SimplifiedChinese),
+            "关闭标签页？"
+        );
+        assert_eq!(
+            text_for("tab_close.confirm", Locale::English),
+            "Close Anyway"
+        );
+        assert_eq!(
+            text_for("tab_close.confirm", Locale::SimplifiedChinese),
+            "仍然关闭"
+        );
         assert_eq!(
             text_for("settings.providers", Locale::English),
             "LLM Providers"

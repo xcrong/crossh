@@ -145,6 +145,8 @@ pub struct AppShell {
     _git_status_refresh_task: Option<Task<()>>,
     quit_confirmation_open: bool,
     shutdown_in_progress: bool,
+    /// 标签页关闭确认框是否已打开，防止重复弹出。
+    pub(crate) tab_close_confirmation_open: bool,
 }
 
 impl AppShell {
@@ -219,6 +221,7 @@ impl AppShell {
             _git_status_refresh_task: None,
             quit_confirmation_open: false,
             shutdown_in_progress: false,
+            tab_close_confirmation_open: false,
         });
         updates.update(cx, |updates, cx| updates.start_startup_check(cx));
         shell
@@ -1085,14 +1088,14 @@ impl AppShell {
             ShellMenuAction::ToggleLowLatencyShellInput(idx) => {
                 self.toggle_low_latency_shell_input(idx, cx)
             }
-            ShellMenuAction::CloseRemoteTab(idx) => self.close_remote_tab(idx, cx),
+            ShellMenuAction::CloseRemoteTab(idx) => self.request_close_remote_tab(idx, window, cx),
             ShellMenuAction::CloseOtherRemoteTabs(idx) => self.close_other_remote_tabs(idx, cx),
             ShellMenuAction::CloseAllRemoteTabs => self.close_all_remote_tabs(cx),
             ShellMenuAction::SelectLocalSession(session_id) => {
                 self.select_local_session(session_id, cx);
             }
             ShellMenuAction::CloseLocalSession(session_id) => {
-                self.close_local_session(session_id, cx);
+                self.request_close_local_session(session_id, window, cx);
             }
             ShellMenuAction::CloseOtherLocalSessions(session_id) => {
                 self.close_other_local_sessions(session_id, cx);

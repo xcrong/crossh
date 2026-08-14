@@ -265,6 +265,16 @@ prompt:
   wrong_passphrase_retry: "私钥口令错误，请重试："
   password_for: "请输入 %{user} 的密码："
 
+tab_close:
+  title: 关闭标签页？
+  running: 此终端中仍有命令在运行。
+  transfers: "正在进行的 SFTP 传输或保存：%{count}"
+  unsaved_editors: "有未保存修改的远程文件：%{count}"
+  forwards: "活动端口转发：%{count}"
+  consequence: 关闭标签页将终止正在运行的会话及其进程。
+  confirm: 仍然关闭
+  cancel: 取消
+
 quit:
   menu: 退出 Crossh
   title: 要退出 Crossh 吗？

@@ -1361,8 +1361,8 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                                     .text_color(theme::muted_text())
                                     .hover(|s| s.text_color(theme::danger())),
                             )
-                            .on_click(cx.listener(move |this, _ev, _w, cx| {
-                                this.close_remote_tab(idx, cx);
+                            .on_click(cx.listener(move |this, _ev, w, cx| {
+                                this.request_close_remote_tab(idx, w, cx);
                             })),
                     );
                 strip = strip.child(container);
@@ -1381,6 +1381,12 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                     .local_sessions
                     .get(&session_id)
                     .map(|session| session.terminal.read(cx).state.clone());
+                let command_running = shell
+                    .workspace
+                    .sessions
+                    .local_sessions
+                    .get(&session_id)
+                    .is_some_and(|session| session.terminal.read(cx).is_command_running(cx));
                 let fallback = format!("ses{}", idx + 1);
                 let label = match shell.workspace.sessions.local_sessions.get(&session_id) {
                     Some(session) => session.terminal.read(cx).tab_title(&fallback),
@@ -1484,7 +1490,7 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                                     .w(px(6.))
                                     .h(px(6.))
                                     .rounded_full()
-                                    .bg(tab_badge_color(&state)),
+                                    .bg(local_tab_badge_color(&state, command_running)),
                             )
                             .child(
                                 div()
@@ -1520,8 +1526,8 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                                     .text_color(theme::muted_text())
                                     .hover(|s| s.text_color(theme::danger())),
                             )
-                            .on_click(cx.listener(move |this, _ev, _w, cx| {
-                                this.close_local_session(session_id, cx);
+                            .on_click(cx.listener(move |this, _ev, w, cx| {
+                                this.request_close_local_session(session_id, w, cx);
                             })),
                     );
                 strip = strip.child(container);
@@ -1574,6 +1580,14 @@ fn tab_badge_color(state: &Option<ConnState>) -> gpui::Rgba {
         Some(ConnState::Error(_)) => theme::danger(),
         Some(ConnState::Closed) | None => theme::faint_text(),
     }
+}
+
+/// 本地会话标签状态点：有命令在运行时优先显示黄色警示（连接色不再生效）。
+fn local_tab_badge_color(state: &Option<ConnState>, command_running: bool) -> gpui::Rgba {
+    if command_running {
+        return theme::warning();
+    }
+    tab_badge_color(state)
 }
 
 fn tab_label(tab: &Tab, cx: &mut Context<AppShell>) -> String {
@@ -1749,5 +1763,24 @@ mod tests {
         assert!(tail.ends_with("release.tar.gz"));
         assert!(head.starts_with("deploy"));
         assert!(command_preview_parts("git status").is_none());
+    }
+
+    #[test]
+    fn local_tab_badge_turns_warning_while_a_command_runs() {
+        let connected = Some(ConnState::Connected);
+        let error = Some(ConnState::Error("failed".into()));
+
+        assert_eq!(local_tab_badge_color(&connected, true), theme::warning());
+        assert_eq!(local_tab_badge_color(&connected, false), theme::accent());
+        assert_eq!(local_tab_badge_color(&error, true), theme::warning());
+        assert_eq!(
+            local_tab_badge_color(&error, false),
+            tab_badge_color(&error)
+        );
+        assert_eq!(local_tab_badge_color(&None, false), tab_badge_color(&None));
+        assert_eq!(
+            local_tab_badge_color(&Some(ConnState::Closed), true),
+            theme::warning()
+        );
     }
 }
