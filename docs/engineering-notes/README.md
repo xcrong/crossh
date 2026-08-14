@@ -12,3 +12,4 @@
 | Git NUL 协议路径解析 | 含连续空格或 Tab 的文件无法暂存；重命名文件的变更计数为零 | `Git`, `porcelain v2`, `numstat`, `-z`, `NUL`, 文件名空格 | [Git NUL 协议路径](git-nul-paths.md) |
 | SSH 连接生命周期与路径逃逸 | 释放连接后 CPU 100%；关标签后服务器会话残留；agent write 写到工作区外；主机密钥变更后接受按钮无效 | `SSH`, `busy loop`, `select!`, `WeakEntity`, `symlink`, `allow_missing`, `host key changed`, `known_hosts` | [SSH 连接生命周期与路径逃逸](ssh-lifecycle-and-path-escape.md) |
 | Cargo 发布后 workspace 版本与锁文件不一致；tag 发布漏提交 `Cargo.lock` | `Cargo.lock`, `release.sh`, `cargo metadata`, 版本发布 | [Cargo 锁文件发布同步](cargo-lock-release-sync.md) |
+| 命令历史测试只在 windows-latest 上断言 2 vs 3 | `commands.rs`, `aggregates_commands_and_returns_top_thirty`, `last_used`, 秒级时间戳, 时间竞态 | [命令历史测试的时间精度竞态](command-history-test-timing.md) |

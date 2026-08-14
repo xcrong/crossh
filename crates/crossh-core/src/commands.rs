@@ -786,9 +786,10 @@ mod tests {
             std::process::id()
         ));
         let mut history = CommandHistory::from_path(path.clone());
-        for index in 0..MAX_HISTORY_ENTRIES + 20 {
+        for index in 1..MAX_HISTORY_ENTRIES + 21 {
             history.record("local:/tmp/project", &format!("command-{index}"));
         }
+        history.record("local:/tmp/project", "command-0");
         history.record("local:/tmp/project", "command-0");
         history.record("local:/tmp/project", "command-0");
 
