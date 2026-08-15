@@ -1556,39 +1556,6 @@ fn input_index_for_x(
     value.len()
 }
 
-fn clamp_char_boundary(value: &str, index: usize) -> usize {
-    let mut index = index.min(value.len());
-    while index > 0 && !value.is_char_boundary(index) {
-        index -= 1;
-    }
-    index
-}
-
-fn selection_bounds(anchor: Option<usize>, cursor: usize) -> Option<(usize, usize)> {
-    let anchor = anchor?;
-    (anchor != cursor).then_some(if anchor < cursor {
-        (anchor, cursor)
-    } else {
-        (cursor, anchor)
-    })
-}
-
-fn previous_char_boundary(value: &str, cursor: usize) -> usize {
-    value[..cursor]
-        .char_indices()
-        .next_back()
-        .map(|(index, _)| index)
-        .unwrap_or(0)
-}
-
-fn next_char_boundary(value: &str, cursor: usize) -> usize {
-    value[cursor..]
-        .chars()
-        .next()
-        .map(|character| cursor + character.len_utf8())
-        .unwrap_or(cursor)
-}
-
 fn settings_link_button(
     id: &'static str,
     label: String,
@@ -1725,6 +1692,7 @@ pub fn open_settings_section(shell: WeakEntity<AppShell>, section: SettingsSecti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::text_editing::clamp_char_boundary;
     use std::cell::Cell;
     use std::rc::Rc;
 

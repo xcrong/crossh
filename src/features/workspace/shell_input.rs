@@ -47,7 +47,7 @@ impl EntityInputHandler for AppShell {
         let text = match self.active_input_field(window)? {
             AppShellInputField::HostSearch => &self.host_query,
             AppShellInputField::Credential => &self.prompt_input,
-            AppShellInputField::QuickCommand => &self.quick_command_editor.as_ref()?.value,
+            AppShellInputField::QuickCommand => &self.quick_command_editor.as_ref()?.state.value,
         };
         Some(utf16_slice(text, range))
     }
@@ -75,11 +75,16 @@ impl EntityInputHandler for AppShell {
             }
             AppShellInputField::QuickCommand => {
                 let editor = self.quick_command_editor.as_ref()?;
-                let (start, end) = editor.selection().unwrap_or((editor.cursor, editor.cursor));
+                let (start, end) = editor
+                    .selection()
+                    .unwrap_or((editor.state.cursor, editor.state.cursor));
                 Some(UTF16Selection {
-                    range: utf16_offset_for_byte(&editor.value, start)
-                        ..utf16_offset_for_byte(&editor.value, end),
-                    reversed: editor.anchor.is_some_and(|anchor| anchor > editor.cursor),
+                    range: utf16_offset_for_byte(&editor.state.value, start)
+                        ..utf16_offset_for_byte(&editor.state.value, end),
+                    reversed: editor
+                        .state
+                        .anchor
+                        .is_some_and(|anchor| anchor > editor.state.cursor),
                 })
             }
         }
@@ -103,10 +108,10 @@ impl EntityInputHandler for AppShell {
             }
             AppShellInputField::QuickCommand => {
                 let editor = self.quick_command_editor.as_ref()?;
-                let (start, _) = editor.ime_replacement?;
-                (!editor.ime_marked_text.is_empty()).then(|| {
-                    let start = utf16_offset_for_byte(&editor.value, start);
-                    start..start + utf16_len(&editor.ime_marked_text)
+                let (start, _) = editor.state.ime_replacement?;
+                (!editor.state.ime_marked_text.is_empty()).then(|| {
+                    let start = utf16_offset_for_byte(&editor.state.value, start);
+                    start..start + utf16_len(&editor.state.ime_marked_text)
                 })
             }
         }
@@ -118,11 +123,11 @@ impl EntityInputHandler for AppShell {
             Some(AppShellInputField::Credential) => self.prompt_ime_marked_text.clear(),
             Some(AppShellInputField::QuickCommand) => {
                 if let Some(editor) = &mut self.quick_command_editor {
-                    if let Some((start, end)) = editor.ime_replacement.take() {
-                        editor.cursor = end;
-                        editor.anchor = (start != end).then_some(start);
+                    if let Some((start, end)) = editor.state.ime_replacement.take() {
+                        editor.state.cursor = end;
+                        editor.state.anchor = (start != end).then_some(start);
                     }
-                    editor.ime_marked_text.clear();
+                    editor.state.ime_marked_text.clear();
                 }
             }
             None => {}
@@ -159,20 +164,22 @@ impl EntityInputHandler for AppShell {
             }
             Some(AppShellInputField::QuickCommand) => {
                 if let Some(editor) = &mut self.quick_command_editor {
-                    let (start, end) = if let Some(range) = editor.ime_replacement.take() {
+                    let (start, end) = if let Some(range) = editor.state.ime_replacement.take() {
                         range
                     } else if let Some(range) = replacement_range {
                         (
-                            byte_index_for_utf16(&editor.value, range.start),
-                            byte_index_for_utf16(&editor.value, range.end),
+                            byte_index_for_utf16(&editor.state.value, range.start),
+                            byte_index_for_utf16(&editor.state.value, range.end),
                         )
                     } else {
-                        editor.selection().unwrap_or((editor.cursor, editor.cursor))
+                        editor
+                            .selection()
+                            .unwrap_or((editor.state.cursor, editor.state.cursor))
                     };
-                    editor.value.replace_range(start..end, text);
-                    editor.cursor = start + text.len();
-                    editor.anchor = None;
-                    editor.ime_marked_text.clear();
+                    editor.state.value.replace_range(start..end, text);
+                    editor.state.cursor = start + text.len();
+                    editor.state.anchor = None;
+                    editor.state.ime_marked_text.clear();
                 }
             }
             None => return,
@@ -200,15 +207,16 @@ impl EntityInputHandler for AppShell {
             }
             Some(AppShellInputField::QuickCommand) => {
                 if let Some(editor) = &mut self.quick_command_editor {
-                    if editor.ime_replacement.is_none() {
-                        let replacement =
-                            editor.selection().unwrap_or((editor.cursor, editor.cursor));
-                        editor.ime_replacement = Some(replacement);
-                        editor.cursor = replacement.0;
-                        editor.anchor = None;
+                    if editor.state.ime_replacement.is_none() {
+                        let replacement = editor
+                            .selection()
+                            .unwrap_or((editor.state.cursor, editor.state.cursor));
+                        editor.state.ime_replacement = Some(replacement);
+                        editor.state.cursor = replacement.0;
+                        editor.state.anchor = None;
                     }
-                    editor.ime_marked_text.clear();
-                    editor.ime_marked_text.push_str(new_text);
+                    editor.state.ime_marked_text.clear();
+                    editor.state.ime_marked_text.push_str(new_text);
                 }
             }
             None => return,
@@ -251,11 +259,11 @@ impl EntityInputHandler for AppShell {
             }
             AppShellInputField::QuickCommand => {
                 let editor = self.quick_command_editor.as_ref()?;
-                let cursor = byte_index_for_utf16(&editor.value, range.start);
+                let cursor = byte_index_for_utf16(&editor.state.value, range.start);
                 Some(ime_caret_bounds(
                     window,
                     element_bounds,
-                    &editor.value[..cursor],
+                    &editor.state.value[..cursor],
                     px(14.),
                     px(12.),
                     editor.scroll.offset().x,
@@ -280,7 +288,7 @@ impl EntityInputHandler for AppShell {
             AppShellInputField::QuickCommand => self
                 .quick_command_editor
                 .as_ref()
-                .map(|editor| utf16_len(&editor.value)),
+                .map(|editor| utf16_len(&editor.state.value)),
         }
     }
 }

@@ -1,5 +1,7 @@
 use gpui::FocusHandle;
 
+use crate::shared::text_editing::{next_char_boundary, previous_char_boundary, selection_bounds};
+
 pub(super) struct CommitEditor {
     pub(super) value: String,
     pub(super) cursor: usize,
@@ -98,31 +100,6 @@ impl CommitEditor {
         self.ime_marked_text.clear();
         self.ime_replacement = None;
     }
-}
-
-pub(super) fn previous_char_boundary(text: &str, cursor: usize) -> usize {
-    text[..cursor]
-        .char_indices()
-        .next_back()
-        .map(|(index, _)| index)
-        .unwrap_or(0)
-}
-
-pub(super) fn next_char_boundary(text: &str, cursor: usize) -> usize {
-    text[cursor..]
-        .chars()
-        .next()
-        .map(|character| cursor + character.len_utf8())
-        .unwrap_or(cursor)
-}
-
-pub(super) fn selection_bounds(anchor: Option<usize>, cursor: usize) -> Option<(usize, usize)> {
-    let anchor = anchor?;
-    (anchor != cursor).then_some(if anchor < cursor {
-        (anchor, cursor)
-    } else {
-        (cursor, anchor)
-    })
 }
 
 #[cfg(test)]

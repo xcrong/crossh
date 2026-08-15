@@ -3,6 +3,7 @@ use super::*;
 use gpui::{Bounds, Context, EntityInputHandler, Pixels, Point, UTF16Selection, Window, px};
 use std::ops::Range;
 
+use crate::shared::text_editing::{clamp_char_boundary, selection_bounds};
 use crossh_ui::widgets::{
     byte_index_for_utf16, ime_caret_bounds, replace_utf16_range, utf16_len, utf16_offset_for_byte,
     utf16_slice,

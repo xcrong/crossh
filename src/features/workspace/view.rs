@@ -939,10 +939,11 @@ pub fn render_quick_command_editor(
         return div().into_any_element();
     };
     let focus = editor.focus.clone();
-    let value = editor.value.clone();
-    let ime_marked_text = editor.ime_marked_text.clone();
+    let value = editor.state.value.clone();
+    let ime_marked_text = editor.state.ime_marked_text.clone();
     let selection = editor.selection();
-    let (selection_start, selection_end) = selection.unwrap_or((editor.cursor, editor.cursor));
+    let (selection_start, selection_end) =
+        selection.unwrap_or((editor.state.cursor, editor.state.cursor));
     let scroll = editor.scroll.clone();
     let focused = focus.is_focused(window);
     scroll.scroll_to_item(1);

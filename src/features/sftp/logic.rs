@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use async_channel::Sender;
 
+use crate::shared::text_editing::{next_char_boundary, previous_char_boundary};
 use crossh_ssh::SftpCmd;
 
 pub(crate) const SFTP_CHANNEL_UNAVAILABLE: &str = "sftp channel unavailable";
@@ -50,14 +51,6 @@ pub(crate) fn is_supported_text_file(name: &str) -> bool {
         .extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| SUPPORTED_TEXT_EXTENSIONS.contains(&extension))
-}
-
-pub(crate) fn previous_char_boundary(text: &str, cursor: usize) -> usize {
-    text[..cursor]
-        .char_indices()
-        .next_back()
-        .map(|(idx, _)| idx)
-        .unwrap_or(0)
 }
 
 /// 在光标处插入文本，返回是否发生了修改。
@@ -170,14 +163,6 @@ pub(crate) fn join(base: &str, name: &str) -> String {
     } else {
         format!("{base}/{name}")
     }
-}
-
-pub(crate) fn next_char_boundary(text: &str, cursor: usize) -> usize {
-    text[cursor..]
-        .chars()
-        .next()
-        .map(|ch| cursor + ch.len_utf8())
-        .unwrap_or(cursor)
 }
 
 pub(crate) fn line_bounds(text: &str, cursor: usize) -> (usize, usize) {

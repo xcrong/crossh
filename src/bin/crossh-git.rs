@@ -1,11 +1,16 @@
 //! Standalone Git Viewer entry point.
 
+#[path = "../shared/text_editing.rs"]
+pub mod text_editing;
+
 mod shared {
     pub mod i18n {
         pub fn text(key: &str) -> String {
             rust_i18n::t!(key).to_string()
         }
     }
+
+    pub use crate::text_editing;
 }
 
 rust_i18n::i18n!("locales", fallback = "en");

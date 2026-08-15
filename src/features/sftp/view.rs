@@ -1215,6 +1215,7 @@ fn printable_char(ks: &Keystroke) -> Option<char> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::text_editing::{next_char_boundary, previous_char_boundary};
     use gpui::TestAppContext;
     use std::path::Path;
 

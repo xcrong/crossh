@@ -12,8 +12,8 @@ use crossh_ui::widgets::{
     utf16_offset_for_byte, utf16_slice,
 };
 
-use super::editor::selection_bounds;
 use super::window::GitWindow;
+use crate::shared::text_editing::selection_bounds;
 
 impl GitWindow {
     pub(super) fn handle_commit_editor_key(

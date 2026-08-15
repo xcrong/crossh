@@ -17,9 +17,9 @@ use std::time::Duration;
 
 use gpui::{
     App, AppContext, ClipboardEntry, Context, Entity, EntityId, FocusHandle, InteractiveElement,
-    IntoElement, KeyDownEvent, ParentElement, PathPromptOptions, Pixels, Point, Render,
-    ScrollHandle, Styled, SystemNotificationResponse, Task, TitlebarOptions, Window, WindowBounds,
-    WindowOptions, div, px, size,
+    IntoElement, KeyDownEvent, ParentElement, PathPromptOptions, Pixels, Point, Render, Styled,
+    SystemNotificationResponse, Task, TitlebarOptions, Window, WindowBounds, WindowOptions, div,
+    px, size,
 };
 
 use crate::features::connections::{Connection, ConnectionManager, HostEntry, PendingPrompt};
@@ -57,7 +57,7 @@ use crossh_ui::widgets::printable_char;
 
 use super::command_editor::QuickCommandEditor;
 #[cfg(test)]
-use super::command_editor::{next_char_boundary, previous_char_boundary, selection_bounds};
+use crate::shared::text_editing::{next_char_boundary, previous_char_boundary, selection_bounds};
 
 #[path = "quit.rs"]
 mod quit;
@@ -770,18 +770,7 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         let focus = cx.focus_handle();
-        let cursor = command.len();
-        self.quick_command_editor = Some(QuickCommandEditor {
-            scope,
-            original: command.clone(),
-            value: command,
-            cursor,
-            anchor: None,
-            scroll: ScrollHandle::new(),
-            focus: focus.clone(),
-            ime_marked_text: String::new(),
-            ime_replacement: None,
-        });
+        self.quick_command_editor = Some(QuickCommandEditor::new(scope, command, focus.clone()));
         window.focus(&focus, cx);
         cx.notify();
     }
@@ -791,7 +780,7 @@ impl AppShell {
             return;
         };
         self.command_history
-            .edit(&editor.scope, &editor.original, &editor.value);
+            .edit(&editor.scope, &editor.original, &editor.state.value);
         cx.notify();
     }
 
@@ -813,8 +802,7 @@ impl AppShell {
 
         if primary && ks.key == "a" {
             if let Some(editor) = &mut self.quick_command_editor {
-                editor.ime_marked_text.clear();
-                editor.ime_replacement = None;
+                editor.state.clear_composition();
                 editor.select_all();
             }
             cx.notify();
@@ -827,8 +815,7 @@ impl AppShell {
             {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
                 if ks.key == "x" {
-                    editor.ime_marked_text.clear();
-                    editor.ime_replacement = None;
+                    editor.state.clear_composition();
                     editor.replace_selection("");
                 }
             }
@@ -846,8 +833,7 @@ impl AppShell {
             if let Some(editor) = &mut self.quick_command_editor
                 && let Some(text) = pasted
             {
-                editor.ime_marked_text.clear();
-                editor.ime_replacement = None;
+                editor.state.clear_composition();
                 editor.replace_selection(&text);
             }
             cx.notify();
@@ -859,48 +845,42 @@ impl AppShell {
             "escape" => self.cancel_quick_command_editor(cx),
             "backspace" => {
                 if let Some(editor) = &mut self.quick_command_editor {
-                    editor.ime_marked_text.clear();
-                    editor.ime_replacement = None;
+                    editor.state.clear_composition();
                     editor.backspace();
                 }
                 cx.notify();
             }
             "delete" => {
                 if let Some(editor) = &mut self.quick_command_editor {
-                    editor.ime_marked_text.clear();
-                    editor.ime_replacement = None;
+                    editor.state.clear_composition();
                     editor.delete();
                 }
                 cx.notify();
             }
             "left" => {
                 if let Some(editor) = &mut self.quick_command_editor {
-                    editor.ime_marked_text.clear();
-                    editor.ime_replacement = None;
+                    editor.state.clear_composition();
                     editor.move_horizontal(-1, extend);
                 }
                 cx.notify();
             }
             "right" => {
                 if let Some(editor) = &mut self.quick_command_editor {
-                    editor.ime_marked_text.clear();
-                    editor.ime_replacement = None;
+                    editor.state.clear_composition();
                     editor.move_horizontal(1, extend);
                 }
                 cx.notify();
             }
             "home" => {
                 if let Some(editor) = &mut self.quick_command_editor {
-                    editor.ime_marked_text.clear();
-                    editor.ime_replacement = None;
+                    editor.state.clear_composition();
                     editor.move_to_boundary(false, extend);
                 }
                 cx.notify();
             }
             "end" => {
                 if let Some(editor) = &mut self.quick_command_editor {
-                    editor.ime_marked_text.clear();
-                    editor.ime_replacement = None;
+                    editor.state.clear_composition();
                     editor.move_to_boundary(true, extend);
                 }
                 cx.notify();
@@ -909,8 +889,7 @@ impl AppShell {
                 if let Some(ch) = printable_char(ks)
                     && let Some(editor) = &mut self.quick_command_editor
                 {
-                    editor.ime_marked_text.clear();
-                    editor.ime_replacement = None;
+                    editor.state.clear_composition();
                     editor.replace_selection(&ch.to_string());
                     cx.notify();
                 }

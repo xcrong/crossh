@@ -1,5 +1,9 @@
 use super::*;
 
+use crate::shared::text_editing::{
+    clamp_char_boundary, next_char_boundary, previous_char_boundary, selection_bounds,
+};
+
 impl SettingsWindow {
     pub(super) fn render_agent_settings(
         &mut self,
