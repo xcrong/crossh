@@ -8,6 +8,7 @@
 pub mod avatar;
 pub mod badge;
 pub mod button;
+pub mod hint;
 pub mod layout;
 pub mod separator;
 pub mod split_resizer;
@@ -25,6 +26,7 @@ pub mod prelude {
     pub use crate::avatar::{Avatar, AvatarKind};
     pub use crate::badge::{Badge, BadgeTone};
     pub use crate::button::{Button, ButtonSize, ButtonVariant};
+    pub use crate::hint::Hint;
     pub use crate::layout::{h_flex, v_flex};
     pub use crate::separator::{Separator, SeparatorOrientation};
     pub use crate::split_resizer::{SplitHandleSide, SplitResizer};
@@ -37,6 +39,7 @@ pub mod prelude {
 pub use avatar::{Avatar, AvatarKind};
 pub use badge::{Badge, BadgeTone};
 pub use button::{Button, ButtonSize, ButtonVariant};
+pub use hint::Hint;
 pub use layout::{h_flex, v_flex};
 pub use separator::{Separator, SeparatorOrientation};
 pub use split_resizer::{SplitHandleSide, SplitResizer};

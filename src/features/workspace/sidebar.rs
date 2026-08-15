@@ -18,7 +18,7 @@ use crate::shared::i18n::{self};
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::widgets::{ime_input_canvas, text_caret};
 use crossh_ui::{icons, theme};
-use crossh_ui_component::{Avatar, AvatarKind, SplitResizer, StatusDot, Tooltip};
+use crossh_ui_component::{Avatar, AvatarKind, Hint, SplitResizer, StatusDot, Tooltip};
 
 const TRANSPARENT: gpui::Rgba = gpui::Rgba {
     r: 0.0,
@@ -96,9 +96,12 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
     let project_count = if show_projects { project_dirs.len() } else { 0 };
     let mut active_list = div().id("active-host-list").flex().flex_col().gap_1();
     if active_entries.is_empty() {
-        active_list = active_list.child(render_host_group_empty(i18n::text(
-            "sidebar.no_active_connections",
-        )));
+        active_list = active_list.child(
+            Hint::new(i18n::text("sidebar.no_active_connections"))
+                .padding_x(px(8.))
+                .padding_y(px(8.))
+                .radius(px(theme::RADIUS_SM)),
+        );
     } else {
         for (idx, entry, state) in active_entries {
             let selected = active_remote_key.as_deref() == Some(entry.key.as_str());
@@ -108,9 +111,12 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
 
     let mut bank_list = div().id("bank-host-list").flex().flex_col().gap_1();
     if bank_entries.is_empty() {
-        bank_list = bank_list.child(render_host_group_empty(i18n::text(
-            "sidebar.no_hosts_in_bank",
-        )));
+        bank_list = bank_list.child(
+            Hint::new(i18n::text("sidebar.no_hosts_in_bank"))
+                .padding_x(px(8.))
+                .padding_y(px(8.))
+                .radius(px(theme::RADIUS_SM)),
+        );
     } else {
         for (idx, entry, state) in bank_entries {
             let selected = active_remote_key.as_deref() == Some(entry.key.as_str());
@@ -120,8 +126,12 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
 
     let mut project_list = div().id("project-list").flex().flex_col().gap_1();
     if project_dirs.is_empty() {
-        project_list =
-            project_list.child(render_host_group_empty(i18n::text("sidebar.no_projects")));
+        project_list = project_list.child(
+            Hint::new(i18n::text("sidebar.no_projects"))
+                .padding_x(px(8.))
+                .padding_y(px(8.))
+                .radius(px(theme::RADIUS_SM)),
+        );
     } else {
         for (idx, dir) in project_dirs.iter().enumerate() {
             let selected = is_active_local_dir(shell, dir);
@@ -1169,17 +1179,6 @@ fn render_host_group(spec: HostGroupSpec, cx: &mut Context<AppShell>) -> AnyElem
         group = group.child(children);
     }
     group.into_any_element()
-}
-
-fn render_host_group_empty(label: String) -> AnyElement {
-    div()
-        .px_2()
-        .py_2()
-        .rounded(px(theme::RADIUS_SM))
-        .text_xs()
-        .text_color(theme::faint_text())
-        .child(SharedString::from(label))
-        .into_any_element()
 }
 
 fn is_active_connection(state: &Option<ConnState>) -> bool {

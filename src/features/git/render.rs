@@ -12,7 +12,9 @@ use crate::shared::i18n;
 use crossh_core::git::{ChangeStatus, DiffLine, DiffLineKind, FileChange};
 use crossh_ui::widgets::{ime_input_canvas, text_caret};
 use crossh_ui::{icons, theme};
-use crossh_ui_component::{Badge, BadgeTone, Button, ButtonSize, ButtonVariant, SplitResizer};
+use crossh_ui_component::{
+    Badge, BadgeTone, Button, ButtonSize, ButtonVariant, Hint, SplitResizer,
+};
 
 use super::editor::CommitEditor;
 use super::model::{
@@ -212,11 +214,23 @@ impl GitWindow {
 
         let mut content = div().flex().flex_col().pb_2();
         if self.initial_loading {
-            content = content.child(sidebar_empty_hint(&i18n::text("git.loading")));
+            content = content.child(
+                Hint::new(i18n::text("git.loading"))
+                    .padding_x(px(8.))
+                    .padding_y(px(16.)),
+            );
         } else if let Some(error) = &self.load_error {
-            content = content.child(sidebar_empty_hint(error));
+            content = content.child(
+                Hint::new(error.clone())
+                    .padding_x(px(8.))
+                    .padding_y(px(16.)),
+            );
         } else if self.changes.is_empty() {
-            content = content.child(sidebar_empty_hint(&i18n::text("git.no_changes")));
+            content = content.child(
+                Hint::new(i18n::text("git.no_changes"))
+                    .padding_x(px(8.))
+                    .padding_y(px(16.)),
+            );
         } else {
             content = content.child(self.render_section(true, &staged, self.staged_collapsed, cx));
             content =
@@ -503,7 +517,11 @@ impl GitWindow {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(empty_hint(&i18n::text("git.no_selection")))
+                .child(
+                    Hint::new(i18n::text("git.no_selection"))
+                        .padding_x(px(16.))
+                        .padding_y(px(16.)),
+                )
                 .into_any_element();
         };
         let key = ChangeKey::from(entry);
@@ -567,19 +585,27 @@ impl GitWindow {
             );
 
         let body = match &self.diff {
-            DiffState::Idle => centered_hint(&i18n::text("git.no_selection")),
+            DiffState::Idle => Hint::new(i18n::text("git.no_selection"))
+                .centered()
+                .into_any_element(),
             DiffState::Loading(loading_key) if loading_key == &key => {
-                centered_hint(&i18n::text("git.loading"))
+                Hint::new(i18n::text("git.loading"))
+                    .centered()
+                    .into_any_element()
             }
             DiffState::Ready(ready_key, Some(file_diff))
                 if ready_key == &key && file_diff.binary =>
             {
-                centered_hint(&i18n::text("git.binary"))
+                Hint::new(i18n::text("git.binary"))
+                    .centered()
+                    .into_any_element()
             }
             DiffState::Ready(ready_key, Some(file_diff))
                 if ready_key == &key && file_diff.lines.is_empty() =>
             {
-                centered_hint(&i18n::text("git.no_diff"))
+                Hint::new(i18n::text("git.no_diff"))
+                    .centered()
+                    .into_any_element()
             }
             DiffState::Ready(ready_key, Some(file_diff)) if ready_key == &key => {
                 let content_width = diff_content_width(file_diff);
@@ -613,10 +639,16 @@ impl GitWindow {
                 .into_any_element()
             }
             DiffState::Ready(ready_key, None) if ready_key == &key => {
-                centered_hint(&i18n::text("git.no_diff"))
+                Hint::new(i18n::text("git.no_diff"))
+                    .centered()
+                    .into_any_element()
             }
-            DiffState::Error(error_key, message) if error_key == &key => centered_hint(message),
-            _ => centered_hint(&i18n::text("git.loading")),
+            DiffState::Error(error_key, message) if error_key == &key => {
+                Hint::new(message.clone()).centered().into_any_element()
+            }
+            _ => Hint::new(i18n::text("git.loading"))
+                .centered()
+                .into_any_element(),
         };
 
         div()
@@ -902,35 +934,6 @@ fn status_glyph(status: ChangeStatus) -> AnyElement {
 
 fn status_badge(text: String) -> AnyElement {
     Badge::new(text).tone(BadgeTone::Info).into_any_element()
-}
-
-fn empty_hint(text: &str) -> AnyElement {
-    div()
-        .p_4()
-        .text_xs()
-        .text_color(theme::faint_text())
-        .child(SharedString::from(text.to_string()))
-        .into_any_element()
-}
-
-fn sidebar_empty_hint(text: &str) -> AnyElement {
-    div()
-        .px_2()
-        .py_4()
-        .text_xs()
-        .text_color(theme::faint_text())
-        .child(SharedString::from(text.to_string()))
-        .into_any_element()
-}
-
-fn centered_hint(text: &str) -> AnyElement {
-    div()
-        .flex_1()
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(empty_hint(text))
-        .into_any_element()
 }
 
 #[cfg(test)]
