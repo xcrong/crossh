@@ -231,6 +231,7 @@ git:
   commit_message_placeholder: 输入提交信息
   commit_files: "提交 %{count} 个文件"
   push: 推送
+  pull: 拉取
 
 connection:
   connecting_with_separator: "连接中 · "

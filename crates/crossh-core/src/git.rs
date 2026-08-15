@@ -290,6 +290,19 @@ pub fn push(cwd: &Path) -> Result<(), GitError> {
     }
 }
 
+/// 拉取上游变更并入当前分支；尚无上游时以 `origin` 的对应分支建立跟踪。
+pub fn pull(cwd: &Path) -> Result<(), GitError> {
+    if has_upstream(cwd)? {
+        run_git(cwd, &["pull"])
+    } else if let Some(branch) = current_branch(cwd)? {
+        run_git(cwd, &["pull", "--set-upstream", "origin", &branch])
+    } else {
+        Err(GitError::CommandFailed(
+            "当前不在任何分支上，无法拉取。请先切换到一个分支。".to_string(),
+        ))
+    }
+}
+
 fn has_upstream(cwd: &Path) -> Result<bool, GitError> {
     let output = Command::new("git")
         .arg("-C")
@@ -302,6 +315,20 @@ fn has_upstream(cwd: &Path) -> Result<bool, GitError> {
         ])
         .output()?;
     Ok(output.status.success())
+}
+
+/// 当前分支名；分离头指针或出错时返回 None。
+fn current_branch(cwd: &Path) -> Result<Option<String>, GitError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((branch != "HEAD").then_some(branch))
 }
 
 fn run_git_paths(cwd: &Path, args: &[&str], paths: &[String]) -> Result<(), GitError> {
@@ -1016,6 +1043,141 @@ mod tests {
             head(&local),
             head(&dir.path().join("remote.git")),
             "remote HEAD should reach the pushed commit"
+        );
+    }
+
+    #[test]
+    fn pulls_from_origin_and_sets_upstream_when_missing() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let run_in = |base: &Path, args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(base)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}: {:?}", output.stderr);
+        };
+        let head = |base: &Path| {
+            String::from_utf8_lossy(
+                &Command::new("git")
+                    .arg("-C")
+                    .arg(base)
+                    .args(["rev-parse", "HEAD"])
+                    .output()
+                    .unwrap()
+                    .stdout,
+            )
+            .trim()
+            .to_string()
+        };
+
+        let local = dir.path().join("local");
+        fs::create_dir_all(&local).unwrap();
+        run_in(&local, &["init", "-q"]);
+        let branch = String::from_utf8_lossy(
+            &Command::new("git")
+                .arg("-C")
+                .arg(&local)
+                .args(["symbolic-ref", "--short", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string();
+        run_in(
+            dir.path(),
+            &["init", "-q", "--bare", "-b", &branch, "remote.git"],
+        );
+        run_in(&local, &["config", "user.email", "test@crossh.local"]);
+        run_in(&local, &["config", "user.name", "Crossh Test"]);
+        run_in(&local, &["remote", "add", "origin", "../remote.git"]);
+        fs::write(local.join("base.txt"), "base\n").unwrap();
+        run_in(&local, &["add", "-A"]);
+        run_in(&local, &["commit", "-qm", "base"]);
+        run_in(&local, &["push", "-u", "origin", &branch]);
+
+        run_in(dir.path(), &["clone", "-q", "remote.git", "worker"]);
+        let worker = dir.path().join("worker");
+        run_in(&worker, &["config", "user.email", "test@crossh.local"]);
+        run_in(&worker, &["config", "user.name", "Crossh Test"]);
+        fs::write(worker.join("from-worker.txt"), "mine\n").unwrap();
+        run_in(&worker, &["add", "-A"]);
+        run_in(&worker, &["commit", "-qm", "worker change"]);
+        run_in(&worker, &["push"]);
+
+        pull(&local).expect("pull should merge the upstream commit");
+        assert_eq!(
+            head(&local),
+            head(&worker),
+            "local should reach worker's commit after pull"
+        );
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(&local)
+                .args(["rev-parse", "@{upstream}"])
+                .output()
+                .unwrap()
+                .status
+                .success(),
+            "upstream should still resolve after pull"
+        );
+
+        run_in(&worker, &["checkout", "-qb", "topic"]);
+        fs::write(worker.join("topic.txt"), "topic\n").unwrap();
+        run_in(&worker, &["add", "-A"]);
+        run_in(&worker, &["commit", "-qm", "topic change"]);
+        run_in(&worker, &["push", "-u", "origin", "topic"]);
+        run_in(&local, &["checkout", "-qb", "topic"]);
+
+        pull(&local).expect("pull without upstream should fetch origin/<branch> and track it");
+        assert_eq!(
+            head(&local),
+            head(&worker),
+            "local topic should reach the remote topic commit"
+        );
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(&local)
+                .args(["rev-parse", "@{upstream}"])
+                .output()
+                .unwrap()
+                .status
+                .success(),
+            "pull without upstream should record tracking"
+        );
+    }
+
+    #[test]
+    fn detached_head_refuses_to_pull() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let run_in = |base: &Path, args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(base)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}: {:?}", output.stderr);
+        };
+        run_in(dir.path(), &["init", "-q"]);
+        run_in(dir.path(), &["config", "user.email", "test@crossh.local"]);
+        run_in(dir.path(), &["config", "user.name", "Crossh Test"]);
+        fs::write(dir.path().join("x.txt"), "x\n").unwrap();
+        run_in(dir.path(), &["add", "-A"]);
+        run_in(dir.path(), &["commit", "-qm", "x"]);
+        run_in(dir.path(), &["checkout", "-q", "--detach"]);
+
+        assert!(
+            pull(dir.path()).is_err(),
+            "detached HEAD should refuse to pull"
         );
     }
 }

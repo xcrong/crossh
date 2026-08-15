@@ -16,13 +16,14 @@ use crate::features::settings::is_settings_window_open;
 use crate::features::terminal::{ConnState, TerminalView};
 use crate::features::workspace::empty_state;
 use crate::features::workspace::pane::WorkspacePane;
-use crate::features::workspace::shell::AppShell;
+use crate::features::workspace::shell::{AppShell, GitSyncOperation, GitSyncState};
 use crate::shared::i18n;
 use crossh_core::commands::{BackgroundTask, BackgroundTaskStatus, CommandRecord};
 use crossh_core::project::GitStatus;
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::widgets::{LocalPathTooltip, ime_input_canvas, text_caret};
 use crossh_ui::{icons, theme};
+use crossh_ui_component::{Button, ButtonSize, ButtonVariant};
 
 /// 一个远程终端/SFTP 标签。
 pub struct Tab {
@@ -213,7 +214,8 @@ pub(crate) fn render_workspace_status_bar(
                 .child(div().min_w_0().truncate().child(SharedString::from(cwd))),
         );
         if let Some(status) = &session.git_status {
-            left = left.child(render_git_status(status, session, cx));
+            let sync = shell.git_sync.get(&session_id);
+            left = left.child(render_git_status(status, session, session_id, sync, cx));
         }
     }
 
@@ -280,6 +282,8 @@ fn render_status_bar_toggle(
 fn render_git_status(
     status: &GitStatus,
     session: &LocalSession,
+    session_id: LocalSessionId,
+    sync: Option<&GitSyncState>,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
     let click_cwd = session.cwd.clone();
@@ -340,7 +344,68 @@ fn render_git_status(
     if status.is_clean() {
         git = git.child(status_badge(i18n::text("git.clean"), theme::accent()));
     }
+    if status.behind > 0 || status.ahead > 0 || sync.is_some() {
+        let mut actions = div().flex().items_center().gap_1();
+        if status.behind > 0 || sync.is_some_and(|state| state.operation == GitSyncOperation::Pull)
+        {
+            actions = actions.child(git_sync_button(
+                "status-git-pull",
+                icons::IconName::Download,
+                i18n::text("git.pull"),
+                GitSyncOperation::Pull,
+                sync,
+                session_id,
+                cx,
+            ));
+        }
+        if status.ahead > 0 || sync.is_some_and(|state| state.operation == GitSyncOperation::Push) {
+            actions = actions.child(git_sync_button(
+                "status-git-push",
+                icons::IconName::Upload,
+                i18n::text("git.push"),
+                GitSyncOperation::Push,
+                sync,
+                session_id,
+                cx,
+            ));
+        }
+        git = git.child(actions);
+    }
     git.into_any_element()
+}
+
+fn git_sync_button(
+    id: &'static str,
+    icon: icons::IconName,
+    tooltip: String,
+    operation: GitSyncOperation,
+    sync: Option<&GitSyncState>,
+    session_id: LocalSessionId,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    let state = sync.filter(|state| state.operation == operation);
+    let running = state.is_some_and(|state| state.running);
+    let error = state.and_then(|state| state.error.as_deref());
+    Button::new(id)
+        .size(ButtonSize::Icon(px(20.)))
+        .variant(ButtonVariant::Ghost)
+        .loading(running)
+        .disabled(running)
+        .tooltip(if let Some(error) = error {
+            SharedString::from(error)
+        } else {
+            SharedString::from(tooltip)
+        })
+        .icon(icons::icon(icon, 12.).text_color(if error.is_some() {
+            theme::danger()
+        } else {
+            theme::accent()
+        }))
+        .on_click(cx.listener(move |this, _event, _window, cx| {
+            this.run_git_sync(session_id, operation, cx);
+            cx.stop_propagation();
+        }))
+        .into_any_element()
 }
 
 pub(crate) fn render_quick_commands(

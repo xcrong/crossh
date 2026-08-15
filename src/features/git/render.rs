@@ -207,6 +207,20 @@ impl GitWindow {
                     ))),
             )
             .child(
+                Button::new("git-pull")
+                    .size(ButtonSize::Icon(px(30.)))
+                    .variant(ButtonVariant::Ghost)
+                    .loading(matches!(self.operation, OperationState::Running))
+                    .tooltip(i18n::text("git.pull"))
+                    .icon(
+                        icons::icon(icons::IconName::Download, 14.).text_color(theme::muted_text()),
+                    )
+                    .disabled(!self.can_pull())
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.pull_changes(cx);
+                    })),
+            )
+            .child(
                 Button::new("git-push")
                     .size(ButtonSize::Icon(px(30.)))
                     .variant(ButtonVariant::Ghost)

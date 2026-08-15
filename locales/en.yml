@@ -231,6 +231,7 @@ git:
   commit_message_placeholder: Commit message
   commit_files: "Commit %{count} files"
   push: Push
+  pull: Pull
 
 connection:
   connecting_with_separator: "Connecting · "

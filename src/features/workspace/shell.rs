@@ -45,6 +45,7 @@ use crossh_core::commands::{
     remote_scope,
 };
 use crossh_core::config::{HostConfig, SshConfig};
+use crossh_core::git::{pull, push};
 use crossh_core::project::inspect;
 use crossh_ssh::{HostKeyDecision, RemoteCommandStatus};
 use crossh_terminal::settings::{
@@ -66,6 +67,21 @@ mod shell_input;
 mod tabs;
 
 const GIT_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+
+/// 状态栏 Git 同步操作（push/pull）的一次进行/错误状态；按会话独立记录，
+/// 避免一个会话的在途结果被另一个会话覆盖。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GitSyncState {
+    pub operation: GitSyncOperation,
+    pub running: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GitSyncOperation {
+    Push,
+    Pull,
+}
 
 struct ActiveCommandContext {
     scope: String,
@@ -143,6 +159,8 @@ pub struct AppShell {
     pub(crate) quick_command_editor: Option<QuickCommandEditor>,
     /// 周期性刷新本地会话的 Git 状态，覆盖 shell 空闲时的外部文件变更。
     _git_status_refresh_task: Option<Task<()>>,
+    /// 最近一次状态栏 Git 同步操作的进行/错误状态，按会话独立记录。
+    pub(crate) git_sync: BTreeMap<LocalSessionId, GitSyncState>,
     quit_confirmation_open: bool,
     shutdown_in_progress: bool,
     /// 标签页关闭确认框是否已打开，防止重复弹出。
@@ -219,6 +237,7 @@ impl AppShell {
             pending_background_restarts: BTreeMap::new(),
             quick_command_editor: None,
             _git_status_refresh_task: None,
+            git_sync: BTreeMap::new(),
             quit_confirmation_open: false,
             shutdown_in_progress: false,
             tab_close_confirmation_open: false,
@@ -449,6 +468,7 @@ impl AppShell {
             false
         };
         self.workspace.sessions.local_sessions.remove(&session_id);
+        self.git_sync.remove(&session_id);
         if self.workspace.sessions.local_sessions.is_empty() {
             self._git_status_refresh_task.take();
         }
@@ -1341,6 +1361,7 @@ impl AppShell {
                     session.git_status = status;
                 }
                 let refresh_again = session.git_refresh.finish();
+                this.reconcile_git_sync_error(session_id);
                 if refresh_again {
                     this.refresh_git_status(session_id, !cwd_unchanged, cx);
                 }
@@ -1350,6 +1371,91 @@ impl AppShell {
             });
         })
         .detach();
+    }
+
+    /// 在状态栏对本地会话执行 git push/pull；同一会话同时只允许一个在途操作。
+    pub(crate) fn run_git_sync(
+        &mut self,
+        session_id: LocalSessionId,
+        operation: GitSyncOperation,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) else {
+            return;
+        };
+        if self
+            .git_sync
+            .get(&session_id)
+            .is_some_and(|state| state.running)
+        {
+            return;
+        }
+        let cwd = session.cwd.clone();
+        self.git_sync.insert(
+            session_id,
+            GitSyncState {
+                operation,
+                running: true,
+                error: None,
+            },
+        );
+        cx.notify();
+
+        cx.spawn(async move |weak, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    match operation {
+                        GitSyncOperation::Push => push(&cwd),
+                        GitSyncOperation::Pull => pull(&cwd),
+                    }
+                })
+                .await;
+            let _ = weak.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => {
+                        // 成功后清除状态，按钮是否保留由 ahead/behind 徽章决定。
+                        this.git_sync.remove(&session_id);
+                    }
+                    Err(error) => {
+                        let Some(state) = this.git_sync.get_mut(&session_id) else {
+                            return;
+                        };
+                        state.running = false;
+                        state.error = Some(error.to_string());
+                    }
+                }
+                this.refresh_git_status(session_id, false, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 同步错误只在触发它的条件（behind/ahead 计数）消失时清除，避免残留过期错误。
+    fn reconcile_git_sync_error(&mut self, session_id: LocalSessionId) {
+        let Some(state) = self.git_sync.get(&session_id) else {
+            return;
+        };
+        if state.error.is_none() {
+            return;
+        }
+        let Some(status) = self
+            .workspace
+            .sessions
+            .local_sessions
+            .get(&session_id)
+            .and_then(|session| session.git_status.as_ref())
+        else {
+            return;
+        };
+        let resolved = match state.operation {
+            GitSyncOperation::Pull => status.behind == 0,
+            GitSyncOperation::Push => status.ahead == 0,
+        };
+        if resolved {
+            self.git_sync.remove(&session_id);
+        }
     }
 
     fn ensure_git_status_refresh_task(&mut self, cx: &mut Context<Self>) {
