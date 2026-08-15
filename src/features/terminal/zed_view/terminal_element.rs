@@ -1306,6 +1306,16 @@ impl TerminalElement {
             let focus = focus.clone();
             move |event, window, cx| {
                 let forward_to_terminal = forwards_right_click && !event.modifiers.shift;
+                if !forward_to_terminal {
+                    // Mirror Zed: select the clicked word before opening the
+                    // context menu so the Copy entry is available.
+                    let had_selection = terminal.read(cx).last_content().selection.is_some();
+                    if !had_selection {
+                        terminal.update(cx, |terminal, _| {
+                            terminal.select_word_at_event_position(event);
+                        });
+                    }
+                }
                 terminal_view.update(cx, |terminal_view, terminal_cx| {
                     terminal_view.begin_right_mouse_down(
                         event.position,

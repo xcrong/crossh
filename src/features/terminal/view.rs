@@ -11,11 +11,14 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, App, AppContext, Bounds, Context, Entity, EntityId, EventEmitter, FocusHandle,
-    InteractiveElement, IntoElement, KeyDownEvent, Keystroke, MouseDownEvent, ParentElement,
-    Pixels, Render, SharedString, StatefulInteractiveElement, Styled, Subscription,
-    SystemNotification, SystemNotificationResponse, Task, Window, canvas, div, point, px, size,
+    Action, AnyElement, App, AppContext, Bounds, ClipboardEntry, Context, Entity, EntityId,
+    EventEmitter, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent, Keystroke,
+    MouseDownEvent, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement,
+    Styled, Subscription, SystemNotification, SystemNotificationResponse, Task, Window, canvas,
+    div, point, px, size,
 };
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use settings::Settings as _;
 use task::Shell;
 use terminal as zed_terminal;
@@ -45,6 +48,22 @@ use super::context_menu::{TerminalMenuAction, menu_entries};
 #[path = "zed_view/terminal_element.rs"]
 mod terminal_element;
 use terminal_element::TerminalElement;
+
+/// Sends the specified text directly to the terminal.
+///
+/// Mirrors Zed's `terminal::SendText` action, which its default keymap uses
+/// for word-wise navigation and word deletion (e.g. `alt-left` sends `\x1bb`).
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Action)]
+#[action(namespace = terminal)]
+pub struct SendText(pub String);
+
+/// Sends a keystroke sequence to the terminal.
+///
+/// Mirrors Zed's `terminal::SendKeystroke` action used by its default keymap
+/// for line editing conveniences (e.g. `cmd-backspace` sends `ctrl-u`).
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Action)]
+#[action(namespace = terminal)]
+pub struct SendKeystroke(pub String);
 
 const INITIAL_COLUMNS: usize = 100;
 const INITIAL_ROWS: usize = 30;
@@ -149,6 +168,9 @@ pub struct TerminalView {
     title: Option<String>,
     is_local: bool,
     ime_marked_text: String,
+    /// Set when the terminal emitted a bell since the last frame; consumed by
+    /// the renderer so the system bell fires exactly once per event.
+    bell_pending: bool,
     context_menu: Option<ContextMenuState<TerminalMenuAction>>,
     /// Whether the current right-button press was forwarded to the PTY.
     right_mouse_down: bool,
@@ -304,6 +326,7 @@ impl TerminalView {
                 title: None,
                 is_local: !is_remote_terminal,
                 ime_marked_text: String::new(),
+                bell_pending: false,
                 context_menu: None,
                 right_mouse_down: false,
                 anchor_bounds: Rc::new(Cell::new(None)),
@@ -422,7 +445,10 @@ impl TerminalView {
                         cx.emit(TerminalEvent::Closed);
                     }
                 }
-                zed_terminal::Event::Bell => this.notify_bell(cx),
+                zed_terminal::Event::Bell => {
+                    this.bell_pending = true;
+                    this.notify_bell(cx);
+                }
                 zed_terminal::Event::TitleChanged | zed_terminal::Event::BreadcrumbsChanged => {
                     if !internal_marker {
                         cx.emit(TerminalEvent::TitleChanged);
@@ -485,7 +511,7 @@ impl TerminalView {
     }
 
     fn paste_text(&mut self, _: &zed_terminal::PasteText, _: &mut Window, cx: &mut Context<Self>) {
-        self.paste_clipboard(cx);
+        self.paste_text_clipboard(cx);
     }
 
     fn select_all(&mut self, _: &zed_terminal::SelectAll, _: &mut Window, cx: &mut Context<Self>) {
@@ -502,9 +528,59 @@ impl TerminalView {
         let Some(clipboard) = cx.read_from_clipboard() else {
             return;
         };
+
+        match clipboard.entries().first() {
+            Some(ClipboardEntry::Image(image)) if !image.bytes.is_empty() => {
+                self.forward_ctrl_v(cx);
+            }
+            Some(ClipboardEntry::ExternalPaths(paths)) => {
+                self.add_paths_to_terminal(paths.paths(), cx);
+            }
+            _ => {
+                self.paste_text_clipboard(cx);
+            }
+        }
+    }
+
+    /// Pastes only the textual representation of the clipboard, mirroring
+    /// Zed's `PasteText` action. Unlike `paste_clipboard`, images and
+    /// external paths are ignored.
+    fn paste_text_clipboard(&mut self, cx: &mut Context<Self>) {
+        let Some(clipboard) = cx.read_from_clipboard() else {
+            return;
+        };
         if let Some(text) = clipboard.text() {
             self.zed_terminal
                 .update(cx, |terminal, _| terminal.paste(&text));
+        }
+    }
+
+    /// Emits a raw Ctrl+V so TUI agents can read the OS clipboard directly
+    /// and attach images using their native workflows.
+    fn forward_ctrl_v(&mut self, cx: &mut Context<Self>) {
+        self.zed_terminal
+            .update(cx, |terminal, _| terminal.input(vec![0x16]));
+    }
+
+    /// Pastes external file paths as shell-quoted arguments, mirroring Zed's
+    /// terminal view behavior.
+    fn add_paths_to_terminal(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        let mut text = paths
+            .iter()
+            .filter_map(|path| Some(format!(" {}", shlex::try_quote(path.to_str()?).ok()?)))
+            .collect::<String>();
+        text.push(' ');
+        self.zed_terminal
+            .update(cx, |terminal, _| terminal.paste(&text));
+    }
+
+    fn send_text(&mut self, text: &SendText, _: &mut Window, cx: &mut Context<Self>) {
+        self.send_input(text.0.clone().into_bytes(), cx);
+    }
+
+    fn send_keystroke(&mut self, text: &SendKeystroke, _: &mut Window, cx: &mut Context<Self>) {
+        if let Ok(keystroke) = Keystroke::parse(&text.0) {
+            self.process_keystroke(&keystroke, cx);
         }
     }
 
@@ -767,8 +843,16 @@ impl TerminalView {
         let (has_selection, hovered_word) = {
             let terminal = self.zed_terminal.read(cx);
             let content = terminal.last_content();
+            let had_selection = content.selection.is_some();
             (
-                content.selection.is_some(),
+                // A word is selected by the element's right-click handler
+                // before this menu opens; treat that as having a selection so
+                // the Copy entry is enabled, mirroring Zed.
+                !had_selection
+                    || content
+                        .selection_text
+                        .as_ref()
+                        .is_some_and(|text| !text.is_empty()),
                 content
                     .last_hovered_word
                     .as_ref()
@@ -939,6 +1023,16 @@ impl WorkspacePane for TerminalWorkspacePane {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.bell_pending {
+            self.bell_pending = false;
+            if matches!(
+                ZedTerminalSettings::get_global(cx).bell,
+                settings::TerminalBell::System
+            ) {
+                window.play_system_bell();
+            }
+        }
+
         if let Some(builder) = self.pending_builder.take() {
             if self.state == ConnState::Closed {
                 self.builder_task = None;
@@ -1067,6 +1161,8 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::scroll_to_bottom))
             .on_action(cx.listener(Self::toggle_vi_mode))
             .on_action(cx.listener(Self::select_all))
+            .on_action(cx.listener(Self::send_text))
+            .on_action(cx.listener(Self::send_keystroke))
             .on_key_down(cx.listener(Self::key_down))
             .on_click({
                 let focus = focus.clone();
