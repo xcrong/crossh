@@ -751,12 +751,12 @@ impl GitWindow {
 }
 
 fn render_commit_editor_text(editor: &CommitEditor, focused: bool) -> AnyElement {
-    if editor.value.is_empty() {
+    if editor.state.value.is_empty() {
         let mut row = div().h(px(18.)).flex().items_center();
         if focused {
             row = row.child(text_caret(px(15.)));
         }
-        if editor.ime_marked_text.is_empty() {
+        if editor.state.ime_marked_text.is_empty() {
             row = row.child(
                 div()
                     .text_color(theme::faint_text())
@@ -765,7 +765,7 @@ fn render_commit_editor_text(editor: &CommitEditor, focused: bool) -> AnyElement
                     ))),
             );
         } else {
-            row = row.child(marked_text(&editor.ime_marked_text));
+            row = row.child(marked_text(&editor.state.ime_marked_text));
         }
         return row.into_any_element();
     }
@@ -773,29 +773,35 @@ fn render_commit_editor_text(editor: &CommitEditor, focused: bool) -> AnyElement
     let selection = editor.selection();
     let mut content = div().flex().flex_col();
     let mut line_start = 0;
-    for line in editor.value.split('\n') {
+    for line in editor.state.value.split('\n') {
         let line_end = line_start + line.len();
         let mut row = div().h(px(18.)).flex().items_center();
         if let Some((selection_start, selection_end)) = selection {
             let selected_start = selection_start.clamp(line_start, line_end);
             let selected_end = selection_end.clamp(line_start, line_end);
             row = row
-                .child(text_part(&editor.value[line_start..selected_start]))
+                .child(text_part(&editor.state.value[line_start..selected_start]))
                 .when(selected_start < selected_end, |row| {
                     row.child(div().flex_shrink_0().bg(theme::accent_soft()).child(
-                        SharedString::from(editor.value[selected_start..selected_end].to_string()),
+                        SharedString::from(
+                            editor.state.value[selected_start..selected_end].to_string(),
+                        ),
                     ))
                 })
-                .child(text_part(&editor.value[selected_end..line_end]));
-        } else if (line_start..=line_end).contains(&editor.cursor) {
-            row = row.child(text_part(&editor.value[line_start..editor.cursor]));
+                .child(text_part(&editor.state.value[selected_end..line_end]));
+        } else if (line_start..=line_end).contains(&editor.state.cursor) {
+            row = row.child(text_part(
+                &editor.state.value[line_start..editor.state.cursor],
+            ));
             if focused {
                 row = row.child(text_caret(px(15.)));
             }
-            if !editor.ime_marked_text.is_empty() {
-                row = row.child(marked_text(&editor.ime_marked_text));
+            if !editor.state.ime_marked_text.is_empty() {
+                row = row.child(marked_text(&editor.state.ime_marked_text));
             }
-            row = row.child(text_part(&editor.value[editor.cursor..line_end]));
+            row = row.child(text_part(
+                &editor.state.value[editor.state.cursor..line_end],
+            ));
         } else {
             row = row.child(text_part(line));
         }

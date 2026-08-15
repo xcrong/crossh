@@ -94,7 +94,7 @@ impl EntityInputHandler for GitWindow {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<String> {
-        Some(utf16_slice(&self.commit_editor.value, range))
+        Some(utf16_slice(&self.commit_editor.state.value, range))
     }
 
     fn selected_text_range(
@@ -103,17 +103,18 @@ impl EntityInputHandler for GitWindow {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
-        let (start, end) = self
-            .commit_editor
-            .selection()
-            .unwrap_or((self.commit_editor.cursor, self.commit_editor.cursor));
+        let (start, end) = self.commit_editor.selection().unwrap_or((
+            self.commit_editor.state.cursor,
+            self.commit_editor.state.cursor,
+        ));
         Some(UTF16Selection {
-            range: utf16_offset_for_byte(&self.commit_editor.value, start)
-                ..utf16_offset_for_byte(&self.commit_editor.value, end),
+            range: utf16_offset_for_byte(&self.commit_editor.state.value, start)
+                ..utf16_offset_for_byte(&self.commit_editor.state.value, end),
             reversed: self
                 .commit_editor
+                .state
                 .anchor
-                .is_some_and(|anchor| anchor > self.commit_editor.cursor),
+                .is_some_and(|anchor| anchor > self.commit_editor.state.cursor),
         })
     }
 
@@ -122,24 +123,25 @@ impl EntityInputHandler for GitWindow {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
-        if self.commit_editor.ime_marked_text.is_empty() {
+        if self.commit_editor.state.ime_marked_text.is_empty() {
             return None;
         }
         let start = self
             .commit_editor
+            .state
             .ime_replacement
             .map(|(start, _)| start)
-            .unwrap_or(self.commit_editor.cursor);
-        let start = utf16_offset_for_byte(&self.commit_editor.value, start);
-        Some(start..start + utf16_len(&self.commit_editor.ime_marked_text))
+            .unwrap_or(self.commit_editor.state.cursor);
+        let start = utf16_offset_for_byte(&self.commit_editor.state.value, start);
+        Some(start..start + utf16_len(&self.commit_editor.state.ime_marked_text))
     }
 
     fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some((start, end)) = self.commit_editor.ime_replacement.take() {
-            self.commit_editor.cursor = end;
-            self.commit_editor.anchor = (start != end).then_some(start);
+        if let Some((start, end)) = self.commit_editor.state.ime_replacement.take() {
+            self.commit_editor.state.cursor = end;
+            self.commit_editor.state.anchor = (start != end).then_some(start);
         }
-        self.commit_editor.ime_marked_text.clear();
+        self.commit_editor.state.ime_marked_text.clear();
         window.invalidate_character_coordinates();
         cx.notify();
     }
@@ -153,23 +155,33 @@ impl EntityInputHandler for GitWindow {
     ) {
         let (start, end) = self
             .commit_editor
+            .state
             .ime_replacement
             .take()
             .or_else(|| {
                 replacement_range.map(|range| {
                     (
-                        byte_index_for_utf16(&self.commit_editor.value, range.start),
-                        byte_index_for_utf16(&self.commit_editor.value, range.end),
+                        byte_index_for_utf16(&self.commit_editor.state.value, range.start),
+                        byte_index_for_utf16(&self.commit_editor.state.value, range.end),
                     )
                 })
             })
-            .or_else(|| selection_bounds(self.commit_editor.anchor, self.commit_editor.cursor))
-            .unwrap_or((self.commit_editor.cursor, self.commit_editor.cursor));
-        let range = utf16_offset_for_byte(&self.commit_editor.value, start)
-            ..utf16_offset_for_byte(&self.commit_editor.value, end);
-        self.commit_editor.cursor = replace_utf16_range(&mut self.commit_editor.value, range, text);
-        self.commit_editor.anchor = None;
-        self.commit_editor.ime_marked_text.clear();
+            .or_else(|| {
+                selection_bounds(
+                    self.commit_editor.state.anchor,
+                    self.commit_editor.state.cursor,
+                )
+            })
+            .unwrap_or((
+                self.commit_editor.state.cursor,
+                self.commit_editor.state.cursor,
+            ));
+        let range = utf16_offset_for_byte(&self.commit_editor.state.value, start)
+            ..utf16_offset_for_byte(&self.commit_editor.state.value, end);
+        self.commit_editor.state.cursor =
+            replace_utf16_range(&mut self.commit_editor.state.value, range, text);
+        self.commit_editor.state.anchor = None;
+        self.commit_editor.state.ime_marked_text.clear();
         window.invalidate_character_coordinates();
         cx.notify();
     }
@@ -184,21 +196,25 @@ impl EntityInputHandler for GitWindow {
     ) {
         let replacement = self
             .commit_editor
+            .state
             .ime_replacement
             .or_else(|| {
                 range.map(|range| {
                     (
-                        byte_index_for_utf16(&self.commit_editor.value, range.start),
-                        byte_index_for_utf16(&self.commit_editor.value, range.end),
+                        byte_index_for_utf16(&self.commit_editor.state.value, range.start),
+                        byte_index_for_utf16(&self.commit_editor.state.value, range.end),
                     )
                 })
             })
             .or_else(|| self.commit_editor.selection())
-            .unwrap_or((self.commit_editor.cursor, self.commit_editor.cursor));
-        self.commit_editor.ime_replacement = Some(replacement);
-        self.commit_editor.cursor = replacement.0;
-        self.commit_editor.anchor = None;
-        self.commit_editor.ime_marked_text = new_text.to_string();
+            .unwrap_or((
+                self.commit_editor.state.cursor,
+                self.commit_editor.state.cursor,
+            ));
+        self.commit_editor.state.ime_replacement = Some(replacement);
+        self.commit_editor.state.cursor = replacement.0;
+        self.commit_editor.state.anchor = None;
+        self.commit_editor.state.ime_marked_text = new_text.to_string();
         window.invalidate_character_coordinates();
         cx.notify();
     }
@@ -210,8 +226,8 @@ impl EntityInputHandler for GitWindow {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        let cursor = byte_index_for_utf16(&self.commit_editor.value, range.start);
-        let before_cursor = &self.commit_editor.value[..cursor];
+        let cursor = byte_index_for_utf16(&self.commit_editor.state.value, range.start);
+        let before_cursor = &self.commit_editor.state.value[..cursor];
         let current_line = before_cursor.rsplit('\n').next().unwrap_or("");
         let line_index = before_cursor.bytes().filter(|byte| *byte == b'\n').count();
         Some(Bounds {
@@ -237,6 +253,6 @@ impl EntityInputHandler for GitWindow {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
-        Some(utf16_len(&self.commit_editor.value))
+        Some(utf16_len(&self.commit_editor.state.value))
     }
 }

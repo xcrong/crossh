@@ -1,104 +1,54 @@
 use gpui::FocusHandle;
 
-use crate::shared::text_editing::{next_char_boundary, previous_char_boundary, selection_bounds};
+use crate::shared::text_editing::TextEditingState;
 
 pub(super) struct CommitEditor {
-    pub(super) value: String,
-    pub(super) cursor: usize,
-    pub(super) anchor: Option<usize>,
+    pub(super) state: TextEditingState,
     pub(super) focus: FocusHandle,
-    pub(super) ime_marked_text: String,
-    pub(super) ime_replacement: Option<(usize, usize)>,
 }
 
 impl CommitEditor {
     pub(super) fn new(focus: FocusHandle) -> Self {
         Self {
-            value: String::new(),
-            cursor: 0,
-            anchor: None,
+            state: TextEditingState::new(String::new()),
             focus,
-            ime_marked_text: String::new(),
-            ime_replacement: None,
         }
     }
 
     pub(super) fn selection(&self) -> Option<(usize, usize)> {
-        selection_bounds(self.anchor, self.cursor)
+        self.state.selection()
     }
 
     pub(super) fn replace_selection(&mut self, text: &str) {
-        let (start, end) = self.selection().unwrap_or((self.cursor, self.cursor));
-        self.value.replace_range(start..end, text);
-        self.cursor = start + text.len();
-        self.anchor = None;
+        self.state.replace_selection(text);
     }
 
     pub(super) fn backspace(&mut self) {
-        if let Some((start, end)) = self.selection() {
-            self.value.replace_range(start..end, "");
-            self.cursor = start;
-            self.anchor = None;
-            return;
-        }
-        let start = previous_char_boundary(&self.value, self.cursor);
-        self.value.replace_range(start..self.cursor, "");
-        self.cursor = start;
+        self.state.backspace();
     }
 
     pub(super) fn delete(&mut self) {
-        if let Some((start, end)) = self.selection() {
-            self.value.replace_range(start..end, "");
-            self.cursor = start;
-            self.anchor = None;
-            return;
-        }
-        let end = next_char_boundary(&self.value, self.cursor);
-        self.value.replace_range(self.cursor..end, "");
+        self.state.delete();
     }
 
     pub(super) fn move_horizontal(&mut self, direction: i8, extend: bool) {
-        if !extend && let Some((start, end)) = self.selection() {
-            self.cursor = if direction < 0 { start } else { end };
-            self.anchor = None;
-            return;
-        }
-        if extend && self.anchor.is_none() {
-            self.anchor = Some(self.cursor);
-        }
-        self.cursor = if direction < 0 {
-            previous_char_boundary(&self.value, self.cursor)
-        } else {
-            next_char_boundary(&self.value, self.cursor)
-        };
-        if !extend {
-            self.anchor = None;
-        }
+        self.state.move_horizontal(direction, extend);
     }
 
     pub(super) fn move_to_boundary(&mut self, end: bool, extend: bool) {
-        if extend && self.anchor.is_none() {
-            self.anchor = Some(self.cursor);
-        }
-        self.cursor = if end { self.value.len() } else { 0 };
-        if !extend {
-            self.anchor = None;
-        }
+        self.state.move_to_boundary(end, extend);
     }
 
     pub(super) fn select_all(&mut self) {
-        self.anchor = Some(0);
-        self.cursor = self.value.len();
+        self.state.select_all();
     }
 
     pub(super) fn selected_text(&self) -> Option<String> {
-        self.selection()
-            .map(|(start, end)| self.value[start..end].to_string())
+        self.state.selected_text()
     }
 
     pub(super) fn clear_composition(&mut self) {
-        self.ime_marked_text.clear();
-        self.ime_replacement = None;
+        self.state.clear_composition();
     }
 }
 
@@ -113,8 +63,8 @@ mod tests {
         let mut editor = CommitEditor::new(focus);
         editor.replace_selection("提交😀");
         editor.backspace();
-        assert_eq!(editor.value, "提交");
-        assert!(editor.value.is_char_boundary(editor.cursor));
+        assert_eq!(editor.state.value, "提交");
+        assert!(editor.state.value.is_char_boundary(editor.state.cursor));
         editor.move_horizontal(-1, true);
         assert_eq!(editor.selected_text().as_deref(), Some("交"));
     }

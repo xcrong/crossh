@@ -101,8 +101,8 @@ impl GitWindow {
     ) -> gpui::Entity<Self> {
         cx.new(|cx| {
             let mut git_window = Self::new(cwd, cx);
-            git_window.commit_editor.value = "完善 Git 窗口\n保持紧凑布局可用".to_string();
-            git_window.commit_editor.cursor = git_window.commit_editor.value.len();
+            git_window.commit_editor.state.value = "完善 Git 窗口\n保持紧凑布局可用".to_string();
+            git_window.commit_editor.state.cursor = git_window.commit_editor.state.value.len();
             if show_compact_diff {
                 git_window.compact_page = CompactPage::Diff;
             }
@@ -321,7 +321,7 @@ impl GitWindow {
             return;
         }
         self.run_operation(
-            GitOperation::Commit(self.commit_editor.value.clone()),
+            GitOperation::Commit(self.commit_editor.state.value.clone()),
             None,
             true,
             cx,
@@ -377,9 +377,7 @@ impl GitWindow {
                         this.operation = OperationState::Idle;
                         this.selected = desired_selection;
                         if clear_message {
-                            this.commit_editor.value.clear();
-                            this.commit_editor.cursor = 0;
-                            this.commit_editor.anchor = None;
+                            this.commit_editor.state.clear();
                         }
                         this.refresh_list(cx);
                     }
@@ -399,7 +397,7 @@ impl GitWindow {
 
     pub(super) fn can_commit(&self) -> bool {
         self.staged_count() > 0
-            && !self.commit_editor.value.trim().is_empty()
+            && !self.commit_editor.state.value.trim().is_empty()
             && !matches!(self.operation, OperationState::Running)
     }
 
@@ -450,9 +448,7 @@ pub fn open_git_window(cwd: PathBuf, cx: &mut App) {
                 this.compact_page = CompactPage::Changes;
                 this.operation = OperationState::Idle;
                 this.load_error = None;
-                this.commit_editor.value.clear();
-                this.commit_editor.cursor = 0;
-                this.commit_editor.anchor = None;
+                this.commit_editor.state.clear();
                 this.refresh_list(cx);
             }
             window.activate_window();
