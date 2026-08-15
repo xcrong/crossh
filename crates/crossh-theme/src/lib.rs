@@ -21,31 +21,31 @@ impl Rgb {
 }
 
 pub const fn canvas() -> Rgb {
-    Rgb::from_hex(0x0d1014)
+    Rgb::from_hex(0x23272e)
 }
 
 pub const fn sidebar() -> Rgb {
-    Rgb::from_hex(0x12171c)
+    Rgb::from_hex(0x282e36)
 }
 
 pub const fn surface() -> Rgb {
-    Rgb::from_hex(0x171d23)
+    Rgb::from_hex(0x2d343d)
 }
 
 pub const fn raised() -> Rgb {
-    Rgb::from_hex(0x202930)
+    Rgb::from_hex(0x36404a)
 }
 
 pub const fn border() -> Rgb {
-    Rgb::from_hex(0x28323a)
+    Rgb::from_hex(0x3e4954)
 }
 
 pub const fn border_strong() -> Rgb {
-    Rgb::from_hex(0x3a4854)
+    Rgb::from_hex(0x505f6e)
 }
 
 pub const fn overlay() -> Rgb {
-    Rgb::from_hex(0x262f38)
+    Rgb::from_hex(0x3c4652)
 }
 
 pub const fn text() -> Rgb {
@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn palette_tokens_expose_expected_channels() {
-        assert_eq!(canvas().channels(), (13, 16, 20));
+        assert_eq!(canvas().channels(), (35, 39, 46));
         assert_eq!(accent().channels(), (125, 224, 189));
         assert_eq!(danger().hex(), 0xf28b8b);
     }
