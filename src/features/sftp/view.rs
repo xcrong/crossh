@@ -846,7 +846,7 @@ impl SftpPane {
         }
         input_el = input_el.child(ime_input_canvas(focus, cx.entity()));
 
-        let mut buttons = div().flex().flex_row().gap_2().mt_4();
+        let mut buttons = div().flex().flex_row().gap_2();
         buttons = buttons
             .child(
                 Button::new("sftp-path-confirm")
@@ -881,7 +881,7 @@ impl SftpPane {
             this.cancel_path_input(cx);
         }))
         .child(input_el)
-        .child(buttons)
+        .actions(buttons)
         .into_any_element()
     }
 
@@ -896,7 +896,7 @@ impl SftpPane {
         } else {
             i18n::text("context_menu.file")
         };
-        let mut buttons = div().flex().flex_row().gap_2().mt_4();
+        let mut buttons = div().flex().flex_row().gap_2();
         buttons = buttons
             .child(
                 Button::new("sftp-delete-confirm")
@@ -927,7 +927,7 @@ impl SftpPane {
             this.cancel_delete(cx);
         }))
         .body(rust_i18n::t!("context_menu.delete_body", name = name))
-        .child(buttons)
+        .actions(buttons)
         .into_any_element()
     }
 

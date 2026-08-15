@@ -15,6 +15,7 @@ use crate::features::workspace::shell::AppShell;
 use crate::features::workspace::status::conn_state_dot_color;
 use crate::features::workspace::view::{ActiveView, LocalDir};
 use crate::shared::i18n::{self};
+use crossh_core::terminal::path_display_name;
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
@@ -556,11 +557,7 @@ fn rail_add_menu_entries<'a>(
 }
 
 fn local_dir_name(path: &Path) -> String {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| path.to_string_lossy().to_string())
+    path_display_name(path)
 }
 
 fn local_dir_name_key(path: &Path) -> String {

@@ -12,6 +12,7 @@ use gpui::{
 
 use crossh_core::git::{FileChange, commit, diff, pull, push, scan_changes, stage, unstage};
 use crossh_core::project::GitStatus;
+use crossh_core::terminal::path_display_name;
 
 use super::editor::CommitEditor;
 use super::model::{
@@ -423,9 +424,7 @@ impl GitWindow {
 }
 
 fn directory_label(cwd: &Path) -> String {
-    cwd.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| cwd.to_string_lossy().into_owned())
+    path_display_name(cwd)
 }
 
 /// 打开或聚焦 Git 窗口；切换目录时复用现有窗口。

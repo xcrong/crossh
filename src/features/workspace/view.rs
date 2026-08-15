@@ -997,9 +997,8 @@ pub fn render_quick_command_editor(
 
     let buttons = div()
         .flex()
-        .items_center()
+        .flex_row()
         .gap_2()
-        .mt_4()
         .child(
             Button::new("quick-command-editor-save")
                 .size(ButtonSize::Medium)
@@ -1033,7 +1032,7 @@ pub fn render_quick_command_editor(
         this.cancel_quick_command_editor(cx);
     }))
     .child(input)
-    .child(buttons)
+    .actions(buttons)
     .into_any_element()
 }
 

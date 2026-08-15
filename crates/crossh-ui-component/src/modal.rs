@@ -28,6 +28,7 @@ pub struct ModalDialog {
     on_backdrop_click: Option<ClickHandler>,
     blocks_card_clicks: bool,
     children: Vec<AnyElement>,
+    actions: Option<AnyElement>,
 }
 
 impl ModalDialog {
@@ -42,6 +43,7 @@ impl ModalDialog {
             on_backdrop_click: None,
             blocks_card_clicks: false,
             children: Vec::new(),
+            actions: None,
         }
     }
 
@@ -91,6 +93,12 @@ impl ModalDialog {
         self.children.push(child.into_any_element());
         self
     }
+
+    /// 尾部按钮行;渲染在 children 之后的统一 `flex_row + items_center + gap_2 + mt_4` 骨架上。
+    pub fn actions(mut self, actions: impl IntoElement) -> Self {
+        self.actions = Some(actions.into_any_element());
+        self
+    }
 }
 
 impl RenderOnce for ModalDialog {
@@ -113,6 +121,7 @@ impl RenderOnce for ModalDialog {
             on_backdrop_click,
             blocks_card_clicks,
             children,
+            actions,
         } = self;
 
         let mut card = div()
@@ -147,6 +156,17 @@ impl RenderOnce for ModalDialog {
         }
         for child in children {
             card = card.child(child);
+        }
+        if let Some(actions) = actions {
+            card = card.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .mt_4()
+                    .child(actions),
+            );
         }
 
         let card: AnyElement = if let Some(card_id) = card_id {
@@ -213,6 +233,7 @@ mod tests {
         assert!(modal.on_backdrop_click.is_none());
         assert!(!modal.blocks_card_clicks);
         assert!(modal.children.is_empty());
+        assert!(modal.actions.is_none());
     }
 
     #[test]
@@ -225,7 +246,8 @@ mod tests {
             .on_backdrop_click(|_, _, _| {})
             .blocks_card_clicks()
             .child(div())
-            .child(div());
+            .child(div())
+            .actions(div());
         assert_eq!(modal.width, px(500.));
         assert_eq!(modal.body.as_deref(), Some("Body text"));
         assert_eq!(modal.scrim_id.as_deref(), Some("scrim"));
@@ -233,6 +255,7 @@ mod tests {
         assert!(modal.on_backdrop_click.is_some());
         assert!(modal.blocks_card_clicks);
         assert_eq!(modal.children.len(), 2);
+        assert!(modal.actions.is_some());
     }
 
     #[test]

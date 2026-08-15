@@ -32,13 +32,13 @@ pub fn local_terminal_title(
         .filter(|cwd| !cwd.trim().is_empty());
     let directory = process_cwd
         .or_else(|| cwd.filter(|cwd| !cwd.trim().is_empty()))
-        .map(path_display_name)
+        .map(|cwd| path_display_name(Path::new(cwd)))
         .unwrap_or_default();
 
     let process_name = process
         .map(process_display_name)
         .filter(|name| !name.is_empty())
-        .or_else(|| fallback_process.map(path_display_name))
+        .or_else(|| fallback_process.map(|path| path_display_name(Path::new(path))))
         .unwrap_or_default();
 
     let directory = truncate_title(&directory);
@@ -215,13 +215,12 @@ fn shorten_path_components(value: &str) -> String {
     shortened
 }
 
-fn path_display_name(path: &str) -> String {
-    Path::new(path)
-        .file_name()
+/// 提取路径最后一个分量作为显示名;无可用文件名(根目录、`..` 等)时回退为完整路径。
+pub fn path_display_name(path: &Path) -> String {
+    path.file_name()
         .filter(|name| !name.is_empty())
         .map(|name| name.to_string_lossy().into_owned())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| path.to_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
 fn process_display_name(process: &TerminalProcessInfo) -> String {
@@ -304,6 +303,24 @@ mod tests {
             ),
             "~/Code/crossh"
         );
+    }
+
+    #[test]
+    fn path_display_name_extracts_the_final_component() {
+        assert_eq!(path_display_name(Path::new("proj.txt")), "proj.txt");
+        assert_eq!(path_display_name(Path::new("/a/b.txt")), "b.txt");
+        assert_eq!(path_display_name(Path::new("/a/b/")), "b");
+        assert_eq!(
+            path_display_name(Path::new("C:/Users/me/proj.txt")),
+            "proj.txt"
+        );
+    }
+
+    #[test]
+    fn path_display_name_falls_back_when_there_is_no_file_name() {
+        assert_eq!(path_display_name(Path::new("/")), "/");
+        assert_eq!(path_display_name(Path::new(".")), ".");
+        assert_eq!(path_display_name(Path::new("..")), "..");
     }
 
     #[test]

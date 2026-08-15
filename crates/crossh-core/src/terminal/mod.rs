@@ -11,6 +11,6 @@ pub use shell::{
     remote_shell_from_path, remote_shell_setup_script,
 };
 pub use title::{
-    local_terminal_tab_title, local_terminal_title, remote_pane_title, remote_terminal_title,
-    strip_shell_host_prefix, truncate_path_title, truncate_title,
+    local_terminal_tab_title, local_terminal_title, path_display_name, remote_pane_title,
+    remote_terminal_title, strip_shell_host_prefix, truncate_path_title, truncate_title,
 };

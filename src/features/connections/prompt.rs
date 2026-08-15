@@ -79,7 +79,7 @@ pub fn render_prompt_modal(
         PromptDisplay::None => unreachable!(),
     };
 
-    let mut buttons = div().flex().flex_row().gap_2().mt_4();
+    let mut buttons = div().flex().flex_row().gap_2();
     match prompt {
         PromptDisplay::HostKey { changed, .. } => {
             // 变更密钥时只提供「本次接受」：引擎侧 AcceptOnce 不写 known_hosts，
@@ -136,7 +136,7 @@ pub fn render_prompt_modal(
             .on_key_down(cx.listener(handle_credential_key));
         modal = modal.child(div().mt_2().child(input));
     }
-    modal = modal.child(buttons);
+    modal = modal.actions(buttons);
 
     modal.into_any_element()
 }
