@@ -33,6 +33,9 @@ use crossh_ui_component::{Button, ButtonSize, ButtonVariant, ModalDialog, TextIn
 
 use super::logic::*;
 
+#[path = "end_caret.rs"]
+mod end_caret;
+use self::end_caret::EndCaretInput;
 #[path = "render.rs"]
 mod render;
 #[path = "view_input.rs"]
@@ -114,8 +117,7 @@ impl RemoteEditor {
 struct PendingPathInput {
     /// Some(旧名) = 重命名；None = 新建目录。
     rename_from: Option<String>,
-    value: String,
-    ime_marked_text: String,
+    state: EndCaretInput,
     focus: FocusHandle,
 }
 
@@ -131,8 +133,7 @@ pub struct SftpPane {
     entries: Vec<RemoteEntry>,
     message: Option<String>,
     loading: bool,
-    upload_input: String,
-    upload_ime_marked_text: String,
+    upload_input: EndCaretInput,
     progress: Option<Progress>,
     editor: Option<RemoteEditor>,
     focus: FocusHandle,
@@ -248,8 +249,7 @@ impl SftpPane {
             entries: Vec::new(),
             message: (!initial_list_ok).then(sftp_channel_unavailable),
             loading: initial_list_ok,
-            upload_input: String::new(),
-            upload_ime_marked_text: String::new(),
+            upload_input: EndCaretInput::new(String::new()),
             progress: None,
             editor: None,
             focus: cx.focus_handle(),
@@ -440,8 +440,7 @@ impl SftpPane {
                 return;
             };
             let _ = weak.update(cx, |this, cx| {
-                this.upload_input = path.to_string_lossy().to_string();
-                this.upload_ime_marked_text.clear();
+                this.upload_input = EndCaretInput::new(path.to_string_lossy().to_string());
                 this.message = None;
                 cx.notify();
             });
@@ -450,7 +449,7 @@ impl SftpPane {
     }
 
     fn do_upload(&mut self, cx: &mut Context<Self>) {
-        let input = self.upload_input.trim();
+        let input = self.upload_input.value.trim();
         if input.is_empty() {
             self.message = Some(i18n::text("sftp.enter_local_path"));
             cx.notify();
@@ -473,7 +472,6 @@ impl SftpPane {
         } else {
             self.message = Some(rust_i18n::t!("sftp.prepare_upload", name = basename).to_string());
             self.upload_input.clear();
-            self.upload_ime_marked_text.clear();
         }
         cx.notify();
     }
@@ -606,18 +604,17 @@ impl SftpPane {
             "enter" | "return" => self.do_upload(cx),
             "escape" => {
                 self.upload_input.clear();
-                self.upload_ime_marked_text.clear();
                 cx.notify();
             }
             "backspace" => {
-                self.upload_input.pop();
-                self.upload_ime_marked_text.clear();
+                self.upload_input.value.pop();
+                self.upload_input.unmark();
                 cx.notify();
             }
             _ => {
                 if let Some(ch) = printable_char(ks) {
-                    self.upload_input.push(ch);
-                    self.upload_ime_marked_text.clear();
+                    self.upload_input.value.push(ch);
+                    self.upload_input.unmark();
                     cx.notify();
                 }
             }
@@ -663,8 +660,7 @@ impl SftpPane {
                 let focus = cx.focus_handle();
                 self.pending_path_input = Some(PendingPathInput {
                     rename_from: Some(name.clone()),
-                    value: name,
-                    ime_marked_text: String::new(),
+                    state: EndCaretInput::new(name),
                     focus: focus.clone(),
                 });
                 window.focus(&focus, cx);
@@ -674,8 +670,7 @@ impl SftpPane {
                 let focus = cx.focus_handle();
                 self.pending_path_input = Some(PendingPathInput {
                     rename_from: None,
-                    value: String::new(),
-                    ime_marked_text: String::new(),
+                    state: EndCaretInput::new(String::new()),
                     focus: focus.clone(),
                 });
                 window.focus(&focus, cx);
@@ -694,7 +689,7 @@ impl SftpPane {
         let Some(input) = &self.pending_path_input else {
             return;
         };
-        let value = input.value.trim().to_string();
+        let value = input.state.value.trim().to_string();
         if value.is_empty() {
             self.pending_path_input = None;
             cx.notify();
@@ -728,8 +723,8 @@ impl SftpPane {
             "escape" => self.cancel_path_input(cx),
             "backspace" => {
                 if let Some(input) = &mut self.pending_path_input {
-                    input.value.pop();
-                    input.ime_marked_text.clear();
+                    input.state.value.pop();
+                    input.state.unmark();
                 }
                 cx.notify();
             }
@@ -737,8 +732,8 @@ impl SftpPane {
                 if let Some(ch) = printable_char(ks)
                     && let Some(input) = &mut self.pending_path_input
                 {
-                    input.value.push(ch);
-                    input.ime_marked_text.clear();
+                    input.state.value.push(ch);
+                    input.state.unmark();
                     cx.notify();
                 }
             }
@@ -782,7 +777,7 @@ impl SftpPane {
             return div().into_any_element();
         };
         let focus = input.focus.clone();
-        let value = input.value.clone();
+        let value = input.state.value.clone();
         let input_focused = focus.is_focused(window);
         let is_rename = input.rename_from.is_some();
         let title = if is_rename {
@@ -818,7 +813,7 @@ impl SftpPane {
             if input_focused {
                 input_el = input_el.child(text_caret(px(16.)));
             }
-            if input.ime_marked_text.is_empty() {
+            if input.state.ime_marked_text.is_empty() {
                 input_el = input_el.child(
                     div()
                         .min_w_0()
@@ -839,14 +834,14 @@ impl SftpPane {
                 input_el = input_el.child(text_caret(px(16.)));
             }
         }
-        if !input.ime_marked_text.is_empty() {
+        if !input.state.ime_marked_text.is_empty() {
             input_el = input_el.child(
                 div()
                     .flex_shrink_0()
                     .whitespace_nowrap()
                     .underline()
                     .text_decoration_color(theme::accent())
-                    .child(SharedString::from(input.ime_marked_text.clone())),
+                    .child(SharedString::from(input.state.ime_marked_text.clone())),
             );
         }
         input_el = input_el.child(ime_input_canvas(focus, cx.entity()));
@@ -1281,8 +1276,7 @@ mod tests {
                 entries: Vec::new(),
                 message: None,
                 loading: false,
-                upload_input: String::new(),
-                upload_ime_marked_text: String::new(),
+                upload_input: EndCaretInput::new(String::new()),
                 progress: None,
                 editor: None,
                 focus: cx.focus_handle(),

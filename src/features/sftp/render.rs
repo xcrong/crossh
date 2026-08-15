@@ -235,9 +235,9 @@ impl Render for SftpPane {
         // 底部：上传输入 + 进度/消息。
         let input = TextInput::new("sftp-upload-input", self.focus.clone())
             .flex_1()
-            .value(self.upload_input.clone())
+            .value(self.upload_input.value.clone())
             .placeholder(i18n::text("sftp.local_path_placeholder"))
-            .ime_marked_text(self.upload_ime_marked_text.clone())
+            .ime_marked_text(self.upload_input.ime_marked_text.clone())
             .caret_height(px(15.))
             .text_xs()
             .text_color(theme::text())

@@ -29,6 +29,26 @@ impl SftpPane {
             None
         }
     }
+
+    /// 当前活动输入为 Path / Upload 时对应的 [`EndCaretInput`]；Editor 返回 `None`。
+    fn active_end_caret_input(&self, field: SftpInputField) -> Option<&EndCaretInput> {
+        match field {
+            SftpInputField::Path => self.pending_path_input.as_ref().map(|input| &input.state),
+            SftpInputField::Upload => Some(&self.upload_input),
+            SftpInputField::Editor => None,
+        }
+    }
+
+    fn active_end_caret_input_mut(&mut self, field: SftpInputField) -> Option<&mut EndCaretInput> {
+        match field {
+            SftpInputField::Path => self
+                .pending_path_input
+                .as_mut()
+                .map(|input| &mut input.state),
+            SftpInputField::Upload => Some(&mut self.upload_input),
+            SftpInputField::Editor => None,
+        }
+    }
 }
 
 impl EntityInputHandler for SftpPane {
@@ -39,12 +59,10 @@ impl EntityInputHandler for SftpPane {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<String> {
-        let text = match self.active_input_field(window)? {
-            SftpInputField::Path => &self.pending_path_input.as_ref()?.value,
-            SftpInputField::Editor => &self.editor.as_ref()?.content,
-            SftpInputField::Upload => &self.upload_input,
-        };
-        Some(utf16_slice(text, range))
+        match self.active_input_field(window)? {
+            SftpInputField::Editor => Some(utf16_slice(&self.editor.as_ref()?.content, range)),
+            field => Some(self.active_end_caret_input(field)?.text_for_range(range)),
+        }
     }
 
     fn selected_text_range(
@@ -53,23 +71,17 @@ impl EntityInputHandler for SftpPane {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
-        let text = match self.active_input_field(window)? {
-            SftpInputField::Path => &self.pending_path_input.as_ref()?.value,
+        match self.active_input_field(window)? {
             SftpInputField::Editor => {
                 let editor = self.editor.as_ref()?;
                 let position = utf16_offset_for_byte(&editor.content, editor.cursor);
-                return Some(UTF16Selection {
+                Some(UTF16Selection {
                     range: position..position,
                     reversed: false,
-                });
+                })
             }
-            SftpInputField::Upload => &self.upload_input,
-        };
-        let position = utf16_len(text);
-        Some(UTF16Selection {
-            range: position..position,
-            reversed: false,
-        })
+            field => Some(self.active_end_caret_input(field)?.selection_range()),
+        }
     }
 
     fn marked_text_range(
@@ -78,13 +90,6 @@ impl EntityInputHandler for SftpPane {
         _cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
         match self.active_input_field(window)? {
-            SftpInputField::Path => {
-                let input = self.pending_path_input.as_ref()?;
-                (!input.ime_marked_text.is_empty()).then(|| {
-                    let start = utf16_len(&input.value);
-                    start..start + utf16_len(&input.ime_marked_text)
-                })
-            }
             SftpInputField::Editor => {
                 let editor = self.editor.as_ref()?;
                 let (start, _) = editor
@@ -95,20 +100,12 @@ impl EntityInputHandler for SftpPane {
                     start..start + utf16_len(&editor.ime_marked_text)
                 })
             }
-            SftpInputField::Upload => (!self.upload_ime_marked_text.is_empty()).then(|| {
-                let start = utf16_len(&self.upload_input);
-                start..start + utf16_len(&self.upload_ime_marked_text)
-            }),
+            field => self.active_end_caret_input(field)?.marked_range(),
         }
     }
 
     fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.active_input_field(window) {
-            Some(SftpInputField::Path) => {
-                if let Some(input) = &mut self.pending_path_input {
-                    input.ime_marked_text.clear();
-                }
-            }
             Some(SftpInputField::Editor) => {
                 if let Some(editor) = &mut self.editor {
                     if let Some((_, end)) = editor.ime_replacement.take() {
@@ -117,8 +114,11 @@ impl EntityInputHandler for SftpPane {
                     editor.ime_marked_text.clear();
                 }
             }
-            Some(SftpInputField::Upload) => self.upload_ime_marked_text.clear(),
-            None => {}
+            field => {
+                if let Some(input) = field.and_then(|f| self.active_end_caret_input_mut(f)) {
+                    input.unmark();
+                }
+            }
         }
         window.invalidate_character_coordinates();
         cx.notify();
@@ -132,17 +132,6 @@ impl EntityInputHandler for SftpPane {
         cx: &mut Context<Self>,
     ) {
         match self.active_input_field(window) {
-            Some(SftpInputField::Path) => {
-                if let Some(input) = &mut self.pending_path_input {
-                    let position = utf16_len(&input.value);
-                    replace_utf16_range(
-                        &mut input.value,
-                        replacement_range.unwrap_or(position..position),
-                        text,
-                    );
-                    input.ime_marked_text.clear();
-                }
-            }
             Some(SftpInputField::Editor) => {
                 if let Some(editor) = &mut self.editor {
                     let range = editor
@@ -162,16 +151,12 @@ impl EntityInputHandler for SftpPane {
                     editor.dirty = true;
                 }
             }
-            Some(SftpInputField::Upload) => {
-                let position = utf16_len(&self.upload_input);
-                replace_utf16_range(
-                    &mut self.upload_input,
-                    replacement_range.unwrap_or(position..position),
-                    text,
-                );
-                self.upload_ime_marked_text.clear();
+            field => {
+                let Some(input) = field.and_then(|f| self.active_end_caret_input_mut(f)) else {
+                    return;
+                };
+                input.replace_at_end(replacement_range, text);
             }
-            None => return,
         }
         window.invalidate_character_coordinates();
         cx.notify();
@@ -186,12 +171,6 @@ impl EntityInputHandler for SftpPane {
         cx: &mut Context<Self>,
     ) {
         match self.active_input_field(window) {
-            Some(SftpInputField::Path) => {
-                if let Some(input) = &mut self.pending_path_input {
-                    input.ime_marked_text.clear();
-                    input.ime_marked_text.push_str(new_text);
-                }
-            }
             Some(SftpInputField::Editor) => {
                 if let Some(editor) = &mut self.editor {
                     let replacement = editor
@@ -212,11 +191,12 @@ impl EntityInputHandler for SftpPane {
                     editor.ime_marked_text.push_str(new_text);
                 }
             }
-            Some(SftpInputField::Upload) => {
-                self.upload_ime_marked_text.clear();
-                self.upload_ime_marked_text.push_str(new_text);
+            field => {
+                let Some(input) = field.and_then(|f| self.active_end_caret_input_mut(f)) else {
+                    return;
+                };
+                input.mark(new_text);
             }
-            None => return,
         }
         window.invalidate_character_coordinates();
         cx.notify();
@@ -230,18 +210,6 @@ impl EntityInputHandler for SftpPane {
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
         match self.active_input_field(window)? {
-            SftpInputField::Path => {
-                let input = self.pending_path_input.as_ref()?;
-                let cursor = byte_index_for_utf16(&input.value, range.start);
-                Some(ime_caret_bounds(
-                    window,
-                    element_bounds,
-                    &input.value[..cursor],
-                    px(14.),
-                    px(12.),
-                    px(0.),
-                ))
-            }
             SftpInputField::Editor => {
                 let editor = self.editor.as_ref()?;
                 let cursor = editor
@@ -258,16 +226,15 @@ impl EntityInputHandler for SftpPane {
                     self.editor_scroll.offset().x,
                 ))
             }
+            SftpInputField::Path => {
+                let input = self.pending_path_input.as_ref()?;
+                input
+                    .state
+                    .bounds_for_range(range, element_bounds, window, 14., 12.)
+            }
             SftpInputField::Upload => {
-                let cursor = byte_index_for_utf16(&self.upload_input, range.start);
-                Some(ime_caret_bounds(
-                    window,
-                    element_bounds,
-                    &self.upload_input[..cursor],
-                    px(12.),
-                    px(8.),
-                    px(0.),
-                ))
+                self.upload_input
+                    .bounds_for_range(range, element_bounds, window, 12., 8.)
             }
         }
     }
@@ -283,15 +250,11 @@ impl EntityInputHandler for SftpPane {
 
     fn text_length_utf16(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> Option<usize> {
         match self.active_input_field(window)? {
-            SftpInputField::Path => self
-                .pending_path_input
-                .as_ref()
-                .map(|input| utf16_len(&input.value)),
             SftpInputField::Editor => self
                 .editor
                 .as_ref()
                 .map(|editor| utf16_len(&editor.content)),
-            SftpInputField::Upload => Some(utf16_len(&self.upload_input)),
+            field => Some(self.active_end_caret_input(field)?.length()),
         }
     }
 }
