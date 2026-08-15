@@ -11,9 +11,10 @@ use crossh_core::commands::{
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::theme;
 use crossh_ui::widgets::{CommandTooltip, LocalPathTooltip};
-use crossh_ui_component::{Avatar, AvatarKind};
+use crossh_ui_component::{Avatar, AvatarKind, StatusDot};
 
 use crate::features::workspace::shell::AppShell;
+use crate::features::workspace::status::{background_task_color, background_task_label};
 use crate::shared::i18n;
 
 const QUICK_COMMANDS_RAIL_ITEM_SIZE: f32 = 30.0;
@@ -292,35 +293,11 @@ fn render_background_task(task: BackgroundTask, cx: &mut Context<AppShell>) -> A
 }
 
 fn background_task_badge(status: BackgroundTaskStatus) -> impl IntoElement {
-    div()
-        .absolute()
-        .top(px(1.))
-        .right(px(1.))
-        .w(px(7.))
-        .h(px(7.))
-        .rounded_full()
-        .border_1()
-        .border_color(theme::surface())
-        .bg(background_task_color(status))
-}
-
-fn background_task_label(status: BackgroundTaskStatus) -> String {
-    i18n::text(match status {
-        BackgroundTaskStatus::Running => "quick_commands.running",
-        BackgroundTaskStatus::Stopping => "quick_commands.stopping",
-        BackgroundTaskStatus::Succeeded => "quick_commands.succeeded",
-        BackgroundTaskStatus::Failed => "quick_commands.failed",
-        BackgroundTaskStatus::Terminated => "quick_commands.terminated",
-    })
-}
-
-fn background_task_color(status: BackgroundTaskStatus) -> gpui::Rgba {
-    match status {
-        BackgroundTaskStatus::Running => theme::warning(),
-        BackgroundTaskStatus::Stopping | BackgroundTaskStatus::Terminated => theme::faint_text(),
-        BackgroundTaskStatus::Succeeded => theme::accent(),
-        BackgroundTaskStatus::Failed => theme::danger(),
-    }
+    div().absolute().top(px(1.)).right(px(1.)).child(
+        StatusDot::new(background_task_color(status))
+            .size(px(7.))
+            .border(theme::surface()),
+    )
 }
 
 #[cfg(test)]

@@ -10,6 +10,7 @@ pub mod badge;
 pub mod button;
 pub mod layout;
 pub mod separator;
+pub mod status_dot;
 pub mod tooltip;
 
 /// Crossh theme tokens exposed to component consumers.
@@ -23,6 +24,7 @@ pub mod prelude {
     pub use crate::button::{Button, ButtonSize, ButtonVariant};
     pub use crate::layout::{h_flex, v_flex};
     pub use crate::separator::{Separator, SeparatorOrientation};
+    pub use crate::status_dot::StatusDot;
 }
 
 pub use avatar::{Avatar, AvatarKind};
@@ -30,3 +32,4 @@ pub use badge::{Badge, BadgeTone};
 pub use button::{Button, ButtonSize, ButtonVariant};
 pub use layout::{h_flex, v_flex};
 pub use separator::{Separator, SeparatorOrientation};
+pub use status_dot::StatusDot;

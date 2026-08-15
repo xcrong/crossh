@@ -17,6 +17,7 @@ use crossh_core::config::ForwardSpec;
 use crossh_ssh::ForwardKind;
 use crossh_terminal::settings::TerminalSettings;
 use crossh_ui::{icons, theme};
+use crossh_ui_component::StatusDot;
 
 type ForwardKey = (ForwardKind, ForwardSpec);
 
@@ -454,11 +455,14 @@ fn render_section(
                 theme::canvas()
             })
             .hover(|s| s.bg(theme::raised()))
-            .child(div().w(px(10.)).h(px(10.)).rounded_full().bg(if on {
-                theme::accent()
-            } else {
-                theme::border_strong()
-            }))
+            .child(
+                StatusDot::new(if on {
+                    theme::accent()
+                } else {
+                    theme::border_strong()
+                })
+                .size(px(10.)),
+            )
             .child(icons::icon(icons::IconName::Link, 14.).text_color(if on {
                 theme::accent()
             } else {

@@ -14,12 +14,13 @@ use gpui::{
 use crate::features::connections::HostEntry;
 use crate::features::terminal::ConnState;
 use crate::features::workspace::shell::AppShell;
+use crate::features::workspace::status::conn_state_dot_color;
 use crate::features::workspace::view::{ActiveView, LocalDir};
 use crate::shared::i18n::{self};
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::widgets::{LocalPathTooltip, ime_input_canvas, text_caret};
 use crossh_ui::{icons, theme};
-use crossh_ui_component::{Avatar, AvatarKind};
+use crossh_ui_component::{Avatar, AvatarKind, StatusDot};
 
 const TRANSPARENT: gpui::Rgba = gpui::Rgba {
     r: 0.0,
@@ -1078,13 +1079,7 @@ fn render_host_entry(
                         theme::muted_text()
                     }),
                 )
-                .child(
-                    div()
-                        .w(px(6.))
-                        .h(px(6.))
-                        .rounded_full()
-                        .bg(state_dot_color(&state)),
-                )
+                .child(StatusDot::new(conn_state_dot_color(&state)))
                 .child(
                     div()
                         .flex_1()
@@ -1285,15 +1280,6 @@ fn render_host_group_empty(label: String) -> AnyElement {
 
 fn is_active_connection(state: &Option<ConnState>) -> bool {
     matches!(state, Some(ConnState::Connected))
-}
-
-fn state_dot_color(state: &Option<ConnState>) -> gpui::Rgba {
-    match state {
-        Some(ConnState::Connected) => theme::accent(),
-        Some(ConnState::Connecting) => theme::warning(),
-        Some(ConnState::Error(_)) => theme::danger(),
-        Some(ConnState::Closed) | None => theme::faint_text(),
-    }
 }
 
 /// 连接状态徽标文字。

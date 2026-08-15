@@ -17,13 +17,16 @@ use crate::features::terminal::{ConnState, TerminalView};
 use crate::features::workspace::empty_state;
 use crate::features::workspace::pane::WorkspacePane;
 use crate::features::workspace::shell::{AppShell, GitSyncOperation, GitSyncState};
+use crate::features::workspace::status::{
+    background_task_color, background_task_label, conn_state_dot_color, local_tab_dot_color,
+};
 use crate::shared::i18n;
 use crossh_core::commands::{BackgroundTask, BackgroundTaskStatus, CommandRecord};
 use crossh_core::project::GitStatus;
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::widgets::{LocalPathTooltip, ime_input_canvas, text_caret};
 use crossh_ui::{icons, theme};
-use crossh_ui_component::{Button, ButtonSize, ButtonVariant};
+use crossh_ui_component::{Button, ButtonSize, ButtonVariant, StatusDot};
 
 /// 一个远程终端/SFTP 标签。
 pub struct Tab {
@@ -990,13 +993,7 @@ fn render_background_task_row(task: &BackgroundTask, cx: &mut Context<AppShell>)
             })
             .into()
         })
-        .child(
-            div()
-                .w(px(6.))
-                .h(px(6.))
-                .rounded_full()
-                .bg(background_task_color(task.status)),
-        )
+        .child(StatusDot::new(background_task_color(task.status)))
         .child(render_command_preview(
             &task.command,
             theme::muted_text(),
@@ -1035,25 +1032,6 @@ fn render_background_task_row(task: &BackgroundTask, cx: &mut Context<AppShell>)
         );
     }
     row.into_any_element()
-}
-
-fn background_task_label(status: BackgroundTaskStatus) -> String {
-    i18n::text(match status {
-        BackgroundTaskStatus::Running => "quick_commands.running",
-        BackgroundTaskStatus::Stopping => "quick_commands.stopping",
-        BackgroundTaskStatus::Succeeded => "quick_commands.succeeded",
-        BackgroundTaskStatus::Failed => "quick_commands.failed",
-        BackgroundTaskStatus::Terminated => "quick_commands.terminated",
-    })
-}
-
-fn background_task_color(status: BackgroundTaskStatus) -> gpui::Rgba {
-    match status {
-        BackgroundTaskStatus::Running => theme::warning(),
-        BackgroundTaskStatus::Stopping | BackgroundTaskStatus::Terminated => theme::faint_text(),
-        BackgroundTaskStatus::Succeeded => theme::accent(),
-        BackgroundTaskStatus::Failed => theme::danger(),
-    }
 }
 
 pub fn render_quick_command_editor(
@@ -1385,13 +1363,7 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                                 theme::muted_text()
                             })
                             .hover(|s| s.text_color(theme::accent()))
-                            .child(
-                                div()
-                                    .w(px(6.))
-                                    .h(px(6.))
-                                    .rounded_full()
-                                    .bg(tab_badge_color(&state)),
-                            )
+                            .child(StatusDot::new(conn_state_dot_color(&state)))
                             .child(
                                 div()
                                     .min_w_0()
@@ -1550,13 +1522,7 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                                 theme::muted_text()
                             })
                             .hover(|s| s.text_color(theme::accent()))
-                            .child(
-                                div()
-                                    .w(px(6.))
-                                    .h(px(6.))
-                                    .rounded_full()
-                                    .bg(local_tab_badge_color(&state, command_running)),
-                            )
+                            .child(StatusDot::new(local_tab_dot_color(&state, command_running)))
                             .child(
                                 div()
                                     .min_w_0()
@@ -1636,23 +1602,6 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                 this.new_tab(window, cx);
             })),
     )
-}
-
-fn tab_badge_color(state: &Option<ConnState>) -> gpui::Rgba {
-    match state {
-        Some(ConnState::Connecting) => theme::warning(),
-        Some(ConnState::Connected) => theme::accent(),
-        Some(ConnState::Error(_)) => theme::danger(),
-        Some(ConnState::Closed) | None => theme::faint_text(),
-    }
-}
-
-/// 本地会话标签状态点：有命令在运行时优先显示黄色警示（连接色不再生效）。
-fn local_tab_badge_color(state: &Option<ConnState>, command_running: bool) -> gpui::Rgba {
-    if command_running {
-        return theme::warning();
-    }
-    tab_badge_color(state)
 }
 
 fn tab_label(tab: &Tab, cx: &mut Context<AppShell>) -> String {
@@ -1828,24 +1777,5 @@ mod tests {
         assert!(tail.ends_with("release.tar.gz"));
         assert!(head.starts_with("deploy"));
         assert!(command_preview_parts("git status").is_none());
-    }
-
-    #[test]
-    fn local_tab_badge_turns_warning_while_a_command_runs() {
-        let connected = Some(ConnState::Connected);
-        let error = Some(ConnState::Error("failed".into()));
-
-        assert_eq!(local_tab_badge_color(&connected, true), theme::warning());
-        assert_eq!(local_tab_badge_color(&connected, false), theme::accent());
-        assert_eq!(local_tab_badge_color(&error, true), theme::warning());
-        assert_eq!(
-            local_tab_badge_color(&error, false),
-            tab_badge_color(&error)
-        );
-        assert_eq!(local_tab_badge_color(&None, false), tab_badge_color(&None));
-        assert_eq!(
-            local_tab_badge_color(&Some(ConnState::Closed), true),
-            theme::warning()
-        );
     }
 }
