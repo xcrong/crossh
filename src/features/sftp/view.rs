@@ -25,8 +25,8 @@ use crossh_ui::context_menu::{
 };
 use crossh_ui::widgets::text_caret;
 use crossh_ui::widgets::{
-    byte_index_for_utf16, ime_caret_bounds, ime_input_canvas, replace_utf16_range, utf16_len,
-    utf16_offset_for_byte, utf16_slice,
+    byte_index_for_utf16, ime_caret_bounds, ime_input_canvas, marked_text_span,
+    replace_utf16_range, utf16_len, utf16_offset_for_byte, utf16_slice,
 };
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{Button, ButtonSize, ButtonVariant, ModalDialog, TextInput, scroll_y};
@@ -835,14 +835,7 @@ impl SftpPane {
             }
         }
         if !input.state.ime_marked_text.is_empty() {
-            input_el = input_el.child(
-                div()
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .underline()
-                    .text_decoration_color(theme::accent())
-                    .child(SharedString::from(input.state.ime_marked_text.clone())),
-            );
+            input_el = input_el.child(marked_text_span(input.state.ime_marked_text.clone()));
         }
         input_el = input_el.child(ime_input_canvas(focus, cx.entity()));
 
@@ -1135,14 +1128,7 @@ impl SftpPane {
                         );
                     }
                     if !ime_marked_text.is_empty() {
-                        row = row.child(
-                            div()
-                                .flex_shrink_0()
-                                .whitespace_nowrap()
-                                .underline()
-                                .text_decoration_color(theme::accent())
-                                .child(SharedString::from(ime_marked_text.clone())),
-                        );
+                        row = row.child(marked_text_span(ime_marked_text.clone()));
                     }
                     let suffix_start = ime_replacement
                         .filter(|_| !ime_marked_text.is_empty())

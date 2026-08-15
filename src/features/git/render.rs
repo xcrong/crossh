@@ -10,7 +10,7 @@ use gpui::{
 
 use crate::shared::i18n;
 use crossh_core::git::{ChangeStatus, DiffLine, DiffLineKind, FileChange};
-use crossh_ui::widgets::{ime_input_canvas, text_caret};
+use crossh_ui::widgets::{ime_input_canvas, marked_text_span, text_caret, text_span};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
     Badge, BadgeTone, Button, ButtonSize, ButtonVariant, Hint, SplitResizer, scroll_y,
@@ -765,7 +765,7 @@ fn render_commit_editor_text(editor: &CommitEditor, focused: bool) -> AnyElement
                     ))),
             );
         } else {
-            row = row.child(marked_text(&editor.state.ime_marked_text));
+            row = row.child(marked_text_span(editor.state.ime_marked_text.as_str()));
         }
         return row.into_any_element();
     }
@@ -780,7 +780,7 @@ fn render_commit_editor_text(editor: &CommitEditor, focused: bool) -> AnyElement
             let selected_start = selection_start.clamp(line_start, line_end);
             let selected_end = selection_end.clamp(line_start, line_end);
             row = row
-                .child(text_part(&editor.state.value[line_start..selected_start]))
+                .child(text_span(&editor.state.value[line_start..selected_start]))
                 .when(selected_start < selected_end, |row| {
                     row.child(div().flex_shrink_0().bg(theme::accent_soft()).child(
                         SharedString::from(
@@ -788,45 +788,27 @@ fn render_commit_editor_text(editor: &CommitEditor, focused: bool) -> AnyElement
                         ),
                     ))
                 })
-                .child(text_part(&editor.state.value[selected_end..line_end]));
+                .child(text_span(&editor.state.value[selected_end..line_end]));
         } else if (line_start..=line_end).contains(&editor.state.cursor) {
-            row = row.child(text_part(
+            row = row.child(text_span(
                 &editor.state.value[line_start..editor.state.cursor],
             ));
             if focused {
                 row = row.child(text_caret(px(15.)));
             }
             if !editor.state.ime_marked_text.is_empty() {
-                row = row.child(marked_text(&editor.state.ime_marked_text));
+                row = row.child(marked_text_span(editor.state.ime_marked_text.as_str()));
             }
-            row = row.child(text_part(
+            row = row.child(text_span(
                 &editor.state.value[editor.state.cursor..line_end],
             ));
         } else {
-            row = row.child(text_part(line));
+            row = row.child(text_span(line));
         }
         content = content.child(row);
         line_start = line_end + 1;
     }
     content.into_any_element()
-}
-
-fn text_part(text: &str) -> AnyElement {
-    div()
-        .flex_shrink_0()
-        .whitespace_nowrap()
-        .child(SharedString::from(text.to_string()))
-        .into_any_element()
-}
-
-fn marked_text(text: &str) -> AnyElement {
-    div()
-        .flex_shrink_0()
-        .whitespace_nowrap()
-        .underline()
-        .text_decoration_color(theme::accent())
-        .child(SharedString::from(text.to_string()))
-        .into_any_element()
 }
 
 const DIFF_GUTTER_WIDTH: f32 = 112.;

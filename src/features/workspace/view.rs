@@ -22,7 +22,7 @@ use crate::shared::i18n;
 use crossh_core::commands::{BackgroundTask, BackgroundTaskStatus, CommandRecord};
 use crossh_core::project::GitStatus;
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
-use crossh_ui::widgets::{ime_input_canvas, text_caret};
+use crossh_ui::widgets::{ime_input_canvas, marked_text_span, text_caret, text_span};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
     Button, ButtonSize, ButtonVariant, CountBadge, ModalDialog, SplitResizer, StatusDot, Tooltip,
@@ -946,22 +946,10 @@ pub fn render_quick_command_editor(
                     ))),
             );
         } else {
-            input = input.child(
-                div()
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .underline()
-                    .text_decoration_color(theme::accent())
-                    .child(SharedString::from(ime_marked_text.clone())),
-            );
+            input = input.child(marked_text_span(ime_marked_text.clone()));
         }
     } else {
-        input = input.child(
-            div()
-                .flex_shrink_0()
-                .whitespace_nowrap()
-                .child(SharedString::from(value[..selection_start].to_string())),
-        );
+        input = input.child(text_span(value[..selection_start].to_string()));
         if let Some((start, end)) = selection {
             input = input.child(
                 div()
@@ -976,22 +964,10 @@ pub fn render_quick_command_editor(
                 input = input.child(text_caret(px(20.)));
             }
             if !ime_marked_text.is_empty() {
-                input = input.child(
-                    div()
-                        .flex_shrink_0()
-                        .whitespace_nowrap()
-                        .underline()
-                        .text_decoration_color(theme::accent())
-                        .child(SharedString::from(ime_marked_text.clone())),
-                );
+                input = input.child(marked_text_span(ime_marked_text.clone()));
             }
         }
-        input = input.child(
-            div()
-                .flex_shrink_0()
-                .whitespace_nowrap()
-                .child(SharedString::from(value[selection_end..].to_string())),
-        );
+        input = input.child(text_span(value[selection_end..].to_string()));
     }
     input = input.child(ime_input_canvas(focus, cx.entity()));
 

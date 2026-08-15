@@ -1,8 +1,9 @@
 //! 跨 UI 模块复用的小组件与工具函数。
 
 use gpui::{
-    Bounds, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Font, Hsla, Keystroke,
-    Pixels, Point, SharedString, Styled, TextRun, Window, canvas, div, px, size,
+    AnyElement, Bounds, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Font, Hsla,
+    IntoElement, Keystroke, ParentElement, Pixels, Point, SharedString, Styled, TextRun, Window,
+    canvas, div, px, size,
 };
 
 use std::ops::Range;
@@ -18,6 +19,28 @@ pub fn text_caret(height: gpui::Pixels) -> impl gpui::IntoElement {
         .flex_shrink_0()
         .rounded(px(1.))
         .bg(theme::accent())
+}
+
+/// 单段纯文本片段：flex 行内不收缩、不折行。
+/// 用于输入框等按段拼装的排版，保证分段边界与滚动行为一致。
+pub fn text_span(text: impl Into<SharedString>) -> AnyElement {
+    div()
+        .flex_shrink_0()
+        .whitespace_nowrap()
+        .child(text.into())
+        .into_any_element()
+}
+
+/// IME 组合标记文本片段：下划线 + 主题强调色，用于输入法组合中的待确认文本。
+/// 与 `text_span` 同结构，仅多下划线强调，替换两端文本时需要保持视觉等价。
+pub fn marked_text_span(text: impl Into<SharedString>) -> AnyElement {
+    div()
+        .flex_shrink_0()
+        .whitespace_nowrap()
+        .underline()
+        .text_decoration_color(theme::accent())
+        .child(text.into())
+        .into_any_element()
 }
 
 /// Register the focused element with the platform text input system during paint.

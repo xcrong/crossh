@@ -19,7 +19,7 @@ use crate::features::updates::{UpdateController, UpdateStatus};
 use crate::features::workspace::AppShell;
 use crate::shared::i18n::{self, LanguagePreference};
 use crossh_agent::{AgentModel, AgentModelRef, AgentProtocol, AgentProvider, AgentSettings};
-use crossh_ui::widgets::{ime_input_canvas, printable_char, text_caret, text_width};
+use crossh_ui::widgets::{ime_input_canvas, printable_char, text_caret, text_span, text_width};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{Button, ButtonSize, ButtonVariant, Stepper, ToggleSwitch, scroll_y};
 
@@ -1518,11 +1518,7 @@ fn input_text_part(field: AgentInputField, value: &str, mask_api_key: bool) -> A
     } else {
         value.to_string()
     };
-    div()
-        .flex_shrink_0()
-        .whitespace_nowrap()
-        .child(SharedString::from(display))
-        .into_any_element()
+    text_span(display)
 }
 
 fn input_index_for_x(
