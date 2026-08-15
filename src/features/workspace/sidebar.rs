@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use gpui::{
-    AnyElement, AppContext, Context, FontWeight, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div,
-    px,
+    AnyElement, App, AppContext, ClickEvent, Context, Div, ElementId, FontWeight,
+    InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, SharedString,
+    Stateful, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
 use crate::features::connections::HostEntry;
@@ -311,6 +311,47 @@ pub fn render_sidebar(
     sidebar_root.into_any_element()
 }
 
+/// rail 栏中的 30px 头像切换按钮：项目与主机两处入口复用同一外观与交互骨架。
+fn rail_avatar_button(
+    id: impl Into<ElementId>,
+    avatar: Avatar,
+    tooltip: SharedString,
+    selected: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .w(px(30.))
+        .h(px(30.))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(theme::RADIUS_SM))
+        .cursor_pointer()
+        .border_1()
+        .border_color(if selected {
+            theme::accent()
+        } else {
+            TRANSPARENT
+        })
+        .bg(if selected {
+            theme::accent_soft()
+        } else {
+            TRANSPARENT
+        })
+        .hover(move |style| {
+            style.bg(if selected {
+                theme::accent_soft()
+            } else {
+                theme::surface()
+            })
+        })
+        .tooltip(move |_window, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
+        .child(avatar)
+        .on_click(on_click)
+}
+
 /// 收起主机栏时保留活跃项目与连接主机，便于直接切换工作目标。
 pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
     let active_remote_key = match shell.workspace.active_view {
@@ -344,43 +385,15 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
         let project_id = project_dir.to_string_lossy().to_string();
         let avatar = Avatar::new(&label).kind(AvatarKind::Project);
         let selected = is_active_local_dir(shell, dir);
-        activity = activity.child(
-            div()
-                .id(SharedString::from(format!(
-                    "sidebar-rail-project-{project_id}"
-                )))
-                .w(px(30.))
-                .h(px(30.))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(theme::RADIUS_SM))
-                .cursor_pointer()
-                .border_1()
-                .border_color(if selected {
-                    theme::accent()
-                } else {
-                    TRANSPARENT
-                })
-                .bg(if selected {
-                    theme::accent_soft()
-                } else {
-                    TRANSPARENT
-                })
-                .hover(move |style| {
-                    style.bg(if selected {
-                        theme::accent_soft()
-                    } else {
-                        theme::surface()
-                    })
-                })
-                .tooltip(move |_window, cx| cx.new(|_| Tooltip::new(label.clone())).into())
-                .child(avatar)
-                .on_click(cx.listener(move |this, _ev, _window, cx| {
-                    this.activate_local_dir(project_dir.clone(), cx);
-                })),
-        );
+        activity = activity.child(rail_avatar_button(
+            SharedString::from(format!("sidebar-rail-project-{project_id}")),
+            avatar,
+            label.into(),
+            selected,
+            cx.listener(move |this, _ev, _window, cx| {
+                this.activate_local_dir(project_dir.clone(), cx);
+            }),
+        ));
     }
     for (index, entry) in shell.connections.entries().iter().enumerate() {
         if !is_active_connection(&shell.connections.state_for_key(&entry.key, cx)) {
@@ -389,41 +402,15 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
         let alias = entry.alias.clone();
         let avatar = Avatar::new(&alias).kind(AvatarKind::Host);
         let selected = active_remote_key.as_deref() == Some(entry.key.as_str());
-        activity = activity.child(
-            div()
-                .id(("sidebar-rail-host", index))
-                .w(px(30.))
-                .h(px(30.))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(theme::RADIUS_SM))
-                .cursor_pointer()
-                .border_1()
-                .border_color(if selected {
-                    theme::accent()
-                } else {
-                    TRANSPARENT
-                })
-                .bg(if selected {
-                    theme::accent_soft()
-                } else {
-                    TRANSPARENT
-                })
-                .hover(move |style| {
-                    style.bg(if selected {
-                        theme::accent_soft()
-                    } else {
-                        theme::surface()
-                    })
-                })
-                .tooltip(move |_window, cx| cx.new(|_| Tooltip::new(alias.clone())).into())
-                .child(avatar)
-                .on_click(cx.listener(move |this, _ev, _window, cx| {
-                    this.open_host(index, cx);
-                })),
-        );
+        activity = activity.child(rail_avatar_button(
+            ("sidebar-rail-host", index),
+            avatar,
+            alias.into(),
+            selected,
+            cx.listener(move |this, _ev, _window, cx| {
+                this.open_host(index, cx);
+            }),
+        ));
     }
 
     let add_entries = rail_add_menu_entries(

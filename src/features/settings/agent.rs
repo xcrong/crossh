@@ -11,53 +11,24 @@ impl SettingsWindow {
         let compact_layout = self.compact_layout;
         self.prepare_agent_draft(settings);
 
-        let mut active_models = div()
-            .w_full()
-            .min_w_0()
-            .flex()
-            .flex_row()
-            .gap_1()
-            .flex_wrap()
-            .justify_end();
-        let mut reviewer_models = div()
-            .w_full()
-            .min_w_0()
-            .flex()
-            .flex_row()
-            .gap_1()
-            .flex_wrap()
-            .justify_end();
-        for provider in &self.agent_draft.providers {
-            for model_entry in &provider.models {
-                let reference = AgentModelRef {
-                    provider: provider.id.clone(),
-                    model: model_entry.id.clone(),
-                };
-                let label = format!("{}/{}", provider.name, model_entry.name);
-                let active_reference = reference.clone();
-                active_models = active_models.child(settings_choice_button(
-                    format!("settings-agent-active-{}-{}", provider.id, model_entry.id),
-                    label.clone(),
-                    self.agent_draft.active_model == reference,
-                    cx.listener(move |this, _ev, _window, cx| {
-                        this.agent_draft.active_model = active_reference.clone();
-                        this.agent_error = None;
-                        cx.notify();
-                    }),
-                ));
-                let reviewer_reference = reference.clone();
-                reviewer_models = reviewer_models.child(settings_choice_button(
-                    format!("settings-agent-reviewer-{}-{}", provider.id, model_entry.id),
-                    label,
-                    self.agent_draft.reviewer_model == reference,
-                    cx.listener(move |this, _ev, _window, cx| {
-                        this.agent_draft.reviewer_model = reviewer_reference.clone();
-                        this.agent_error = None;
-                        cx.notify();
-                    }),
-                ));
-            }
-        }
+        let active_models = self.model_choice_buttons(
+            cx,
+            "settings-agent-active",
+            |this, reference| this.agent_draft.active_model == *reference,
+            |this, reference| {
+                this.agent_draft.active_model = reference;
+                this.agent_error = None;
+            },
+        );
+        let reviewer_models = self.model_choice_buttons(
+            cx,
+            "settings-agent-reviewer",
+            |this, reference| this.agent_draft.reviewer_model == *reference,
+            |this, reference| {
+                this.agent_draft.reviewer_model = reference;
+                this.agent_error = None;
+            },
+        );
 
         let rounds = self.agent_draft.max_tool_rounds;
         let rounds_control = Stepper::new("settings-agent-rounds")
@@ -97,13 +68,13 @@ impl SettingsWindow {
             .child(responsive_settings_row(
                 i18n::text("settings.agent_active_model"),
                 i18n::text("settings.agent_active_model_description"),
-                active_models.into_any_element(),
+                active_models,
                 compact_layout,
             ))
             .child(responsive_settings_row(
                 i18n::text("settings.agent_reviewer_model"),
                 i18n::text("settings.agent_reviewer_model_description"),
-                reviewer_models.into_any_element(),
+                reviewer_models,
                 compact_layout,
             ))
             .child(responsive_settings_row(
@@ -119,6 +90,46 @@ impl SettingsWindow {
                 compact_layout,
             ))
             .into_any_element()
+    }
+
+    /// 一组模型选择按钮（active / reviewer 共用）：同一容器初始化，双层 provider-model 循环
+    /// 遍历生成选择项，仅 id 前缀、选中判断与写入字段随调用点不同。
+    fn model_choice_buttons(
+        &mut self,
+        cx: &mut Context<Self>,
+        id_prefix: &'static str,
+        is_selected: impl Fn(&Self, &AgentModelRef) -> bool,
+        on_select: impl Fn(&mut Self, AgentModelRef) + Clone + 'static,
+    ) -> AnyElement {
+        let mut buttons = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_row()
+            .gap_1()
+            .flex_wrap()
+            .justify_end();
+        for provider in &self.agent_draft.providers {
+            for model_entry in &provider.models {
+                let reference = AgentModelRef {
+                    provider: provider.id.clone(),
+                    model: model_entry.id.clone(),
+                };
+                let label = format!("{}/{}", provider.name, model_entry.name);
+                let selected = is_selected(self, &reference);
+                let on_select = on_select.clone();
+                buttons = buttons.child(settings_choice_button(
+                    format!("{id_prefix}-{}-{}", provider.id, model_entry.id),
+                    label,
+                    selected,
+                    cx.listener(move |this, _ev, _window, cx| {
+                        on_select(this, reference.clone());
+                        cx.notify();
+                    }),
+                ));
+            }
+        }
+        buttons.into_any_element()
     }
 
     pub(super) fn agent_input(
