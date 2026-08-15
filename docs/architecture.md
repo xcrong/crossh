@@ -10,6 +10,7 @@ crossh (application + feature views)
   -> crossh-agent -> crossh-ai-sdk
   -> crossh-theme
   -> crossh-ui -> crossh-assets
+  -> crossh-ui-component -> crossh-ui
   -> crossh-terminal -> crossh-core
   -> crossh-ssh      -> crossh-core
   -> crossh-update
@@ -35,6 +36,7 @@ crossh-update     -> no GPUI, release/download/install implementation
 crossh-theme      -> no GPUI, renderer-independent color tokens
 crossh-assets     -> no GPUI, embedded Crossh icon assets and icon identifiers
 crossh-ui         -> GPUI primitives and the asset-source adapter
+crossh-ui-component -> GPUI widgets on top of crossh-ui
 shared resources  -> external `crossh-assets` directory loaded by every binary
 ```
 
@@ -49,6 +51,7 @@ shared resources  -> external `crossh-assets` directory loaded by every binary
 - `crossh-update`: release manifest validation, HTTPS downloads, checksum verification, archive installation, and the standalone updater hand-off.
 - `crossh-assets`: UI-neutral Lucide SVG storage, shared external-resource discovery, debug embedded fallback, shared icon identifiers, and asset integrity tests. Its files live under `crates/crossh-assets/assets/icons/`.
 - `crossh-ui`: reusable GPUI widgets, context menus, the GPUI adapter for `crossh-theme`, icon rendering, and the `AssetSource` adapter backed by the shared external resource directory.
+- `crossh-ui-component`: reusable stateless GPUI control kit (buttons, badges, avatars, separators, tooltips, and layout helpers) layered on `crossh-ui`.
 - `crossh`: process startup plus user-facing feature views and GPUI adapters. `crossh git` delegates to the sibling `crossh-git` binary; `crossh agent` delegates to the sibling `crossh-agent` binary; `features/terminal/view.rs` is the `terminal_view`-style host around Zed's terminal foundation; `features/connections/entity.rs` is the adapter around `crossh-ssh::ConnectionHandle`.
 - `crossh-git`: standalone Git Viewer entry point. It reuses the Git feature source through the same GPUI and UI dependencies but does not initialize SSH, terminal, agent, workspace, or settings features.
 - `crossh-agent` binary: standalone interactive terminal agent entry point. It reuses `src/agent_cli.rs` and needs no GPUI; it reads the agent section of the shared `settings.toml` through `crossh_agent::load_agent_settings` and depends only on the pure crates.
@@ -60,6 +63,7 @@ Within the application crate:
 - `features/sftp`: remote file browser/editor UI and SFTP-specific interaction helpers.
 - `features/forwarding`: local, remote, and dynamic forwarding UI.
 - `features/settings`: application settings persistence and settings window.
+- `features/git`: Git Viewer window, change staging/commit, and pull/push actions with status-bar sync.
 - `features/updates`: update controller and update presentation only.
 
 `AppShell` is the GPUI composition root for the workspace feature. Session

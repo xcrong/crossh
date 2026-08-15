@@ -1,12 +1,12 @@
 # crossh-agent 独立二进制拆分计划
 
-状态：Phase 0-3 已执行完毕（2026-08-15），Phase 4 待 §5 信号触发；执行到 Phase 1-3 时升级为 ADR（参照 0008 格式）并更新 `docs/architecture.md`——本次已同步更新 `docs/architecture.md` 的依赖图、ownership 与边界规则 7。
+状态：**已完结**（2026-08-15）。Phase 0-3 已执行完毕并收录为 ADR 0009；依赖图、ownership 与边界规则 7 已同步到 `docs/architecture.md`。Phase 4（独立分发）仍未启动，待 §5 信号触发后另起计划。
 
 ## 1. 背景与现状盘点（已核实）
 
 `crossh agent` 现在是同一二进制的子命令（`src/main.rs:55-75`），但已经是"准独立"状态：
 
-- `src/agent_cli.rs`（1862 行）**零 gpui、零 `crate::`/`features` 引用**，只依赖 `crossh-agent`、`crossh-theme`、`crossh-ssh`（仅 `ssh_runtime`，agent_cli.rs:406/720）、ratatui/crossterm/tui-markdown/unicode-width、tokio。
+- `src/agent_cli.rs`（1866 行）**零 gpui、零 `crate::`/`features` 引用**，只依赖 `crossh-agent`、`crossh-theme`、`crossh-ssh`（仅 `ssh_runtime`）、ratatui/crossterm/tui-markdown/unicode-width、tokio。
 - 唯一的外部耦合是 `main.rs:69` 从 `features::settings::load()` 注入 `AgentSettings`。
 - `settings.toml` 是扁平合并文件（`persistence.rs`），`agent` 是其中的独立 table，结构由纯 crate `crossh-agent` 的 `AgentSettings` 定义；serde 默认忽略未知字段，因此"只读 agent 段"与 GUI 的完整读写天然兼容。
 - `src/bin/` 自动发现 bin target（`crossh-git`、`crossh-updater` 先例）；`agent_cli.rs` 用 `#[path]` 引用 `agent_cli_render.rs` 和测试模块，相对路径与 crate 根无关，可直接被 bin 目标复用。

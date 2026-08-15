@@ -1,7 +1,10 @@
 # Crossh xterm Compatibility Profile
 
 This document defines the compatibility boundary for Crossh. It is a tested
-profile, not a claim of complete ECMA-48, DEC VT, or xterm conformance.
+profile, not a claim of complete ECMA-48, DEC VT, or xterm conformance. Rows
+marked `Out of scope` are documented as not implemented in the current
+codebase; several of them were implemented by the pre-Zed self-built renderer
+and were removed when Crossh adopted the Zed terminal core (2026-08-08).
 
 ## Sources
 
@@ -20,53 +23,54 @@ screen state.
 | Area | Owner | Status | Crossh responsibility or evidence |
 | --- | --- | --- | --- |
 | C0 controls, UTF-8 text, line editing, cursor movement | Zed terminal | Zed | Standard screen behavior is delegated to Zed. |
-| C1 7-bit/8-bit introducers and string terminators | Zed + Crossh observer | Partial | Zed consumes screen controls; Crossh observes OSC/DCS/APC and must safely handle C1 forms. |
-| ESC screen controls and character-set controls | Zed terminal | Zed | Crossh observes only state-changing sequences needed for policy, such as RIS. |
+| C1 7-bit/8-bit introducers and string terminators | Zed terminal | Partial | Zed consumes screen controls; Crossh has no OSC/DCS/APC observer of its own. |
+| ESC screen controls and character-set controls | Zed terminal | Zed | No duplicate screen implementation. |
 | CSI public cursor, erase, insert/delete, scroll, tab, SGR | Zed terminal | Zed | No duplicate screen implementation. |
-| CSI queries (`DA`, `DSR`, `CPR`, size reports) | Zed + Crossh | Partial | Zed handles public DA/DSR and size reports; Crossh handles private DECXCPR and policy-owned query responses not exposed by the public API. |
-| CSI private modes (alternate screen, cursor, mouse, paste, focus) | Zed terminal | Zed | Crossh observes alternate-screen transitions for image and keyboard side state. |
-| DECSTR (`CSI ! p`) and RIS (`ESC c`) | Crossh observer + Zed | Partial | Crossh resets policy-owned state; Zed resets the screen emulator. |
-| OSC title (`0`, `2`) | Zed + Crossh | Partial | Zed owns terminal title events; Crossh keeps the raw title for Crossh tab policy. |
-| OSC 7 working directory | Crossh | Crossh | Parsed incrementally and validated as an absolute decoded path. |
-| OSC 8 hyperlinks | Zed terminal | Zed | Zed owns hyperlink cells; Crossh separately detects plain-text URLs for navigation. |
+| CSI queries (`DA`, `DSR`, `CPR`, size reports) | Zed terminal | Partial | Zed handles public DA/DSR and size responses; Crossh adds no query handling. |
+| CSI private modes (alternate screen, cursor, mouse, paste, focus) | Zed terminal | Zed | Zed owns mode state; Crossh reads the alternate-screen flag only to decide scroll behavior and to switch terminals. |
+| DECSTR (`CSI ! p`) and RIS (`ESC c`) | Zed terminal | Zed | Zed resets the screen emulator; Crossh has no reset observer. |
+| OSC title (`0`, `2`) | Zed + Crossh | Partial | Zed owns terminal title events; Crossh decodes `crossh-command=` / `crossh-command-status=` markers that ride the title channel and derives tab titles from the raw title. |
+| OSC 7 working directory | Crossh hooks + title channel | Crossh | Generated hooks emit OSC 7 and title markers; Crossh decodes the title marker (`crates/crossh-core/src/terminal/title.rs`) rather than parsing OSC 7 itself. |
+| OSC 8 hyperlinks | Zed terminal | Zed | Zed owns hyperlink cells; Crossh opens URL navigation targets through the platform opener. |
 | OSC 10/11/12 dynamic colors | Zed terminal | Zed | Zed handles color queries and color state; Crossh does not reimplement colors. |
-| OSC 52 clipboard | Crossh policy + Zed screen | Crossh | Copy is allowed; remote clipboard reads are denied; payloads are bounded. |
-| OSC 133 shell integration | Crossh | Crossh | Prompt, command start, command end, status, and cwd markers. |
-| OSC 9 / 777 notifications and OSC 9;4 progress | Crossh | Crossh | Parsed into application events with bounded text and lifecycle state. |
-| OSC 99 Kitty notifications | Crossh | Crossh | Chunking, lifecycle, bounded payloads, and response policy. |
-| OSC 1337 iTerm images | Crossh | Crossh | Inline image payloads only; local file access is rejected. |
-| DCS tmux passthrough | Crossh observer | Crossh | Unwraps bounded doubled-ESC payloads and reparses nested events. |
-| DCS DECRQSS / XTGETTCAP | Crossh | Crossh | Responds to the supported capability subset; unknown queries receive negative replies. |
-| DCS Sixel | Crossh | Crossh | Captures bounded Sixel payloads for the existing decoder. |
-| APC Kitty graphics | Crossh | Crossh | Parses bounded base64 chunks; rendering policy lives in the terminal feature. |
-| DCS/APC/OSC unknown extensions | Zed + Crossh observer | Partial | Safely ignored after bounded parsing; no vendor behavior is claimed. |
-| PM and SOS strings | Crossh observer | Partial | Must be consumed and bounded without producing screen text; no semantic support is claimed. |
-| Legacy, UTF-8, SGR, and urxvt mouse reports | Zed + Crossh input | Partial | Zed exposes standard modes; Crossh supplies the urxvt 1015 path and input reports. |
-| SGR mouse (`1006`) and button/drag/motion modes | Zed terminal | Zed | Zed owns mode state; Crossh routes reports where the Crossh view needs them. |
-| Alternate screen and bracketed paste | Zed terminal | Zed | Crossh only resets side state when applications leave the alternate screen. |
-| Focus in/out reporting | Zed terminal | Zed | Zed emits the standard `CSI I`/`CSI O` bytes. |
-| xterm `modifyOtherKeys` levels 0-3 | Crossh | Partial | Level 1/2/3 ordinary-key encoding, `CSI > 4 : mask m`, XTMODKEYS/XTDISMODKEYS reset, query, alternate-screen exit isolation, and Vim exit bytes are covered; xterm's broader special-key resource matrix is not claimed. |
-| Kitty keyboard flags, query, push, and pop | Crossh | Partial | Input encoding, per-screen stacks, query response, and RIS/DECSTR/alternate-screen reset semantics are covered; the full progressive-enhancement surface is not claimed. |
-| Keyboard input and application modes | Crossh input | Partial | Control, Meta, Kitty, modifyOtherKeys, keypad, mouse, and paste paths are tested independently. |
-| Fuzz/property safety for arbitrary bytes | Crossh | Partial | Deterministic arbitrary-byte, cancellation, and oversized-sequence tests prove bounded recovery; a separate `cargo-fuzz` target is not maintained yet. |
-| Real Vim/Neovim/tmux PTY captures | Crossh tests | Partial | Real Vim `CSI > 4;2m` / `CSI > 4;m` and tmux alternate-screen bytes are covered; this change includes no Neovim capture, so no Neovim behavior is claimed. |
-| Kitty graphics animation, remote file/shared-memory transport | None | Out of scope | Requires media lifecycle and explicit local-file policy not present in Crossh. |
+| OSC 52 clipboard | None | Out of scope | The pinned Zed configuration compiles OSC 52 off (`Osc52::Disabled`); there is no Crossh policy layer for copy-out or paste-in. |
+| OSC 133 shell integration | Crossh hooks + title channel | Crossh | Bash/Zsh/Fish hooks report prompt, command start/end, status, and cwd; event decoding happens in the terminal view via `crossh-core::terminal` markers. PowerShell is not covered. |
+| OSC 9 / 777 notifications and OSC 9;4 progress | None | Out of scope | Not implemented; only BEL triggers a native notification. |
+| OSC 99 Kitty notifications | None | Out of scope | Not implemented (no chunking, lifecycle, close, `alive`, buttons, activation, expiry, or capability queries). |
+| OSC 1337 iTerm images | None | Out of scope | Not implemented; the `OSC 1337` prefix is used only as an internal title-marker channel by the shell hooks. |
+| DCS tmux passthrough | None | Out of scope | Not implemented. |
+| DCS DECRQSS / XTGETTCAP | None | Out of scope | Not implemented. |
+| DCS Sixel | None | Out of scope | Not implemented. |
+| APC Kitty graphics | None | Out of scope | Not implemented (no transmission, chunking, placeholders, placement, z-order, deletion, or acknowledgements). |
+| DCS/APC/OSC unknown extensions | Zed terminal | Partial | Safely consumed or ignored by the core; no vendor behavior is claimed. |
+| PM and SOS strings | Zed terminal | Partial | Processed without producing screen text by the core; no Crossh handling. |
+| Legacy, UTF-8, SGR, and urxvt mouse reports | Zed terminal | Partial | Zed encodes standard and SGR (1006) reports; urxvt CSI 1015 is not implemented. |
+| SGR mouse (`1006`) and button/drag/motion modes | Zed terminal | Zed | Zed owns mode state and report encoding. |
+| Alternate screen and bracketed paste | Zed terminal | Zed | Crossh only uses the alternate-screen flag for scroll and terminal-switch behavior. |
+| Focus in/out reporting | Zed terminal | Zed | Zed emits the standard `CSI I`/`CSI O` bytes under mode 1004. |
+| xterm `modifyOtherKeys` levels 0-3 | None | Out of scope | No input encoding; the Vim fixture only proves the emulator decodes `CSI > 4 ; 2 m` / `CSI > 4 ; m`. |
+| Kitty keyboard protocol | None | Out of scope | No progressive encoding, stacks, or query responses. |
+| Keyboard input and application modes | Zed terminal | Partial | Zed provides basic ESC-sequence encoding (cursor, function, modified keys); no Kitty/modifyOtherKeys paths. |
+| Fuzz/property safety for arbitrary bytes | None | Out of scope | Replay tests cover fixtures and one-byte chunk boundaries only; no fuzz/property harness exists. |
+| Real Vim/Neovim/tmux PTY captures | Crossh tests | Partial | Vim (`vim_modify_other_keys.hex`) and tmux (`tmux_pty.hex`) samples are covered; no Neovim capture is included, so no Neovim behavior is claimed. |
+| Kitty graphics animation, remote file/shared-memory transport | None | Out of scope | Requires a graphics implementation and a local-file access policy that do not exist. |
 | Printer control, VT52 personality, protected fields, DEC font loading | None | Out of scope | Not needed by the supported shell/TUI profile. |
 
 ## Profile Claim
 
 The supported claim is: Crossh delegates standard screen behavior to the
-locked Zed terminal core and provides a bounded, incremental observer for the
-Crossh policy surface listed above. Compatibility is supported only for rows
-marked `Zed`, `Crossh`, or `Partial`, and only to the extent covered by tests
-and fixtures. Rows marked `Out of scope` are not claimed; `Partial` rows are
-limited to the exact cases named in their evidence.
+locked Zed terminal core and adds shell hooks plus title-channel decoding for
+prompt/command/cwd markers, BEL-based notifications, and URL navigation.
+Compatibility is supported only for rows marked `Zed`, `Crossh`, or `Partial`,
+and only to the extent covered by tests and fixtures. Rows marked
+`Out of scope` are not claimed; `Partial` rows are limited to the exact cases
+named in their evidence.
 
 ## Evidence Commands
 
 ```sh
 cargo test --quiet
-cargo test --quiet replay
+cargo test --release --test terminal_replay -- --test-threads=1
 scripts/check-architecture.sh
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings

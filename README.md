@@ -24,7 +24,7 @@
 cargo run            # 开发模式（日志同时 tee 到 stderr）
 cargo run --release  # 发布模式
 
-# 交互式 coding agent
+# 交互式 coding agent（也可直接运行独立二进制 cargo run --bin crossh-agent）
 cargo run -- agent
 cargo run -- agent --continue
 
@@ -32,6 +32,8 @@ cargo run -- agent --continue
 crossh git
 crossh git ~/Code/draw-backend
 ```
+
+Git Viewer 提供变更列表、staging/unstage、commit、push/pull 与刷新，状态栏同步显示与远端的分歧；`cmd-r` 刷新。
 
 发布包会同时包含 `crossh`、`crossh-git` 和共享的 `crossh-assets/` 资源目录。`crossh git`
 会优先启动安装目录旁边的 `crossh-git`，所有子程序共用同一份字体、图标和主题资源，
@@ -72,11 +74,15 @@ Agent 终端内输入 `/help` 查看命令。常用命令包括 `/model`、`/thi
 ```
 crates/
   crossh-core/                无 UI 的配置、终端契约、命令/Git 逻辑
+  crossh-agent/               无 UI 的 agent 循环、工具、会话与策略
+  crossh-ai-sdk/              无 UI 的 provider 消息、HTTP/SSE 与 wire adapter
+  crossh-theme/               无 UI 的颜色 tokens
   crossh-ssh/                 russh 连接、SFTP、转发和认证引擎
   crossh-terminal/            终端 settings/events 模型边界
   crossh-update/              manifest、下载校验、归档安装和 updater
   crossh-assets/              无 UI 的图标资源、嵌入和资源完整性校验
   crossh-ui/                  GPUI 主题、图标、菜单和通用控件
+  crossh-ui-component/        通用 GPUI 控件（按钮、徽章、头像、分隔线等）
 src/
   main.rs                     入口编排：窗口、快捷键、启动顺序
   infrastructure/logging.rs  日志、panic hook、日志裁剪
@@ -85,8 +91,10 @@ src/
     terminal/                 Zed terminal 的终端视图宿主
     sftp/                     SFTP 面板、远程编辑器和交互逻辑
     forwarding/               端口转发面板
+    git/                      Git Viewer 窗口与变更操作
     workspace/                外壳、侧栏、标签和 WorkspacePane 抽象
     settings/                 设置窗口与持久化编排
+    updates/                  更新状态机与设置页入口
 ```
 
 依赖方向保持单向：`crossh-core`、`crossh-assets`、`crossh-ssh`、`crossh-terminal` 和 `crossh-update` 不依赖 GPUI；`crossh-ui` 将 `crossh-assets` 适配为 GPUI 的资源源；根 package 的 GPUI feature adapter 依赖这些 crate；`workspace` 通过 `WorkspacePane` trait 消费终端、SFTP 和转发面板。可重复执行的分层检查位于 `scripts/check-architecture.sh`。
@@ -99,10 +107,9 @@ UI 图标统一放在 `crates/crossh-assets/assets/icons/`，由 `crossh-assets`
 
 ## 路线图
 
-见 [ROADMAP.md](ROADMAP.md) 和 [docs/archived/](docs/archived/)。已实现的规划外补强：设置面板、i18n、连接池生命周期。
-未落地的 stretch 项：
+终端能力已冻结：后续终端变更以 bug 修复驱动，不再规划新协议能力。历史计划归档在 [docs/archived/](docs/archived/)。已实现的规划外补强：设置面板、i18n、连接池生命周期。
+未落地的 stretch 项（均与终端协议无关）：
 
-- 命令生命周期事件和其他 Crossh 终端附加层
 - SFTP 拖拽上传 / 批量 / 断点续传
 - 标签拖拽排序
 - config 编辑 UI、自动重连
