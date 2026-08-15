@@ -134,6 +134,7 @@ pub struct Button {
     loading: bool,
     full_width: bool,
     tooltip: Option<SharedString>,
+    hover_background: Option<gpui::Rgba>,
     on_click: Option<ClickHandler>,
 }
 
@@ -150,6 +151,7 @@ impl Button {
             loading: false,
             full_width: false,
             tooltip: None,
+            hover_background: None,
             on_click: None,
         }
     }
@@ -199,6 +201,11 @@ impl Button {
         self
     }
 
+    pub fn hover_background(mut self, color: gpui::Rgba) -> Self {
+        self.hover_background = Some(color);
+        self
+    }
+
     pub fn on_click(
         mut self,
         on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -211,6 +218,9 @@ impl Button {
 impl RenderOnce for Button {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let button_style = self.variant.style(self.selected);
+        let hover_background = self
+            .hover_background
+            .unwrap_or(button_style.hover_background);
         let focus = window
             .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
             .read(cx)
@@ -244,7 +254,7 @@ impl RenderOnce for Button {
                 button_style.foreground
             })
             .when(!disabled, |this| {
-                this.hover(|element| element.bg(button_style.hover_background))
+                this.hover(|element| element.bg(hover_background))
                     .active(|element| element.bg(button_style.active_background))
             })
             .when(!disabled, |this| {
@@ -350,5 +360,17 @@ mod tests {
     fn icon_size_is_preserved() {
         let size = ButtonSize::Icon(px(30.));
         assert_eq!(size, ButtonSize::Icon(px(30.)));
+    }
+
+    #[test]
+    fn hover_background_is_preserved() {
+        let color = gpui::Rgba {
+            r: 0.9,
+            g: 0.4,
+            b: 0.1,
+            a: 1.0,
+        };
+        let button = Button::new("stop").hover_background(color);
+        assert_eq!(button.hover_background, Some(color));
     }
 }

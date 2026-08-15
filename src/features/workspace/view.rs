@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use gpui::{
-    AnyElement, AppContext, ClickEvent, Context, Entity, FontWeight, InteractiveElement,
-    IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, px,
+    AnyElement, AppContext, ClickEvent, Context, Div, ElementId, Entity, FontWeight,
+    InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels,
+    SharedString, Stateful, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
 use crate::features::connections::Connection;
@@ -692,50 +692,21 @@ fn render_quick_command_row(
             SharedString::from(format!("quick-command-preview-{index}")),
         ))
         .child(
-            div()
-                .id(SharedString::from(format!("quick-run-{index}")))
-                .w(px(20.))
-                .h(px(20.))
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(theme::RADIUS_SM))
-                .cursor_pointer()
-                .hover(|style| style.bg(theme::raised()))
-                .tooltip(|_window, cx| {
-                    cx.new(|_| Tooltip::new(i18n::text("quick_commands.run")))
-                        .into()
-                })
-                .child(icons::icon(icons::IconName::Play, 12.).text_color(theme::faint_text()))
+            Button::new(SharedString::from(format!("quick-run-{index}")))
+                .size(ButtonSize::Icon(px(20.)))
+                .variant(ButtonVariant::Ghost)
+                .icon(icons::icon(icons::IconName::Play, 12.).text_color(theme::faint_text()))
+                .tooltip(i18n::text("quick_commands.run"))
                 .on_click(cx.listener(move |this, _ev, _window, cx| {
                     this.run_quick_command(run_scope.clone(), run_command.clone(), false, cx);
                     cx.stop_propagation();
                 })),
         )
         .child(
-            div()
-                .id(SharedString::from(format!("quick-run-background-{index}")))
-                .w(px(20.))
-                .h(px(20.))
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(theme::RADIUS_SM))
-                .cursor_pointer()
-                .hover(|style| style.bg(theme::raised()))
-                .tooltip(move |_window, cx| {
-                    cx.new(|_| {
-                        Tooltip::new(i18n::text(if background_restart_id.is_some() {
-                            "quick_commands.restart"
-                        } else {
-                            "quick_commands.run_background"
-                        }))
-                    })
-                    .into()
-                })
-                .child(
+            Button::new(SharedString::from(format!("quick-run-background-{index}")))
+                .size(ButtonSize::Icon(px(20.)))
+                .variant(ButtonVariant::Ghost)
+                .icon(
                     icons::icon(
                         if background_restart_id.is_some() {
                             icons::IconName::RefreshCw
@@ -750,6 +721,11 @@ fn render_quick_command_row(
                         theme::faint_text()
                     }),
                 )
+                .tooltip(i18n::text(if background_restart_id.is_some() {
+                    "quick_commands.restart"
+                } else {
+                    "quick_commands.run_background"
+                }))
                 .on_click(cx.listener(move |this, _ev, _window, cx| {
                     if let Some(id) = background_restart_id {
                         this.restart_background_task(id, cx);
@@ -765,28 +741,17 @@ fn render_quick_command_row(
                 })),
         )
         .child(
-            div()
-                .id(SharedString::from(format!("quick-pin-{index}")))
-                .w(px(20.))
-                .h(px(20.))
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(theme::RADIUS_SM))
-                .cursor_pointer()
-                .hover(|style| style.bg(theme::raised()))
-                .tooltip(|_window, cx| {
-                    cx.new(|_| Tooltip::new(i18n::text("tooltip.pin_command")))
-                        .into()
-                })
-                .child(
+            Button::new(SharedString::from(format!("quick-pin-{index}")))
+                .size(ButtonSize::Icon(px(20.)))
+                .variant(ButtonVariant::Ghost)
+                .icon(
                     icons::icon(icons::IconName::Pin, 12.).text_color(if record.pinned {
                         theme::accent()
                     } else {
                         theme::faint_text()
                     }),
                 )
+                .tooltip(i18n::text("tooltip.pin_command"))
                 .on_click(cx.listener(move |this, _ev, _window, cx| {
                     this.toggle_quick_command_pin(pin_scope.clone(), pin_command.clone(), cx);
                     cx.stop_propagation();
@@ -907,20 +872,12 @@ fn render_background_task_row(task: &BackgroundTask, cx: &mut Context<AppShell>)
     if active {
         let id = task.id;
         row = row.child(
-            div()
-                .id(SharedString::from(format!("background-stop-{id}")))
-                .w(px(20.))
-                .h(px(20.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .hover(|style| style.bg(theme::accent_soft()))
-                .tooltip(|_window, cx| {
-                    cx.new(|_| Tooltip::new(i18n::text("quick_commands.stop")))
-                        .into()
-                })
-                .child(icons::icon(icons::IconName::CircleX, 12.).text_color(theme::danger()))
+            Button::new(SharedString::from(format!("background-stop-{id}")))
+                .size(ButtonSize::Icon(px(20.)))
+                .variant(ButtonVariant::Ghost)
+                .hover_background(theme::accent_soft())
+                .icon(icons::icon(icons::IconName::CircleX, 12.).text_color(theme::danger()))
+                .tooltip(i18n::text("quick_commands.stop"))
                 .on_click(cx.listener(move |this, _ev, _window, cx| {
                     this.stop_background_task(id, cx);
                     cx.stop_propagation();
@@ -1086,6 +1043,83 @@ fn status_badge(text: String, color: impl Into<gpui::Hsla>) -> impl IntoElement 
         .child(SharedString::from(text))
 }
 
+// 容器不绑定 click；标签名与关闭按钮分别绑定，避免事件叠加。
+#[allow(clippy::too_many_arguments)]
+fn render_tab_chip<M, S, C>(
+    cx: &mut Context<AppShell>,
+    container_id: impl Into<ElementId>,
+    dot_color: gpui::Rgba,
+    label: impl Into<SharedString>,
+    is_active: bool,
+    label_id: impl Into<ElementId>,
+    menu: M,
+    on_select: S,
+    close_id: impl Into<ElementId>,
+    on_close: C,
+) -> Stateful<Div>
+where
+    M: Fn(&MouseDownEvent, &mut AppShell, &mut Window, &mut Context<AppShell>) + 'static,
+    S: Fn(&ClickEvent, &mut AppShell, &mut Window, &mut Context<AppShell>) + 'static,
+    C: Fn(&ClickEvent, &mut AppShell, &mut Window, &mut Context<AppShell>) + 'static,
+{
+    let label: SharedString = label.into();
+    let mut container = div()
+        .flex()
+        .flex_none()
+        .flex_row()
+        .items_center()
+        .gap_1()
+        .h(px(28.))
+        .px_1()
+        .rounded(px(theme::RADIUS_SM));
+    if is_active {
+        container = container
+            .bg(theme::accent_soft())
+            .border_b_2()
+            .border_color(theme::accent());
+    } else {
+        container = container.hover(|style| style.bg(theme::raised()));
+    }
+    container
+        .id(container_id)
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |this, ev: &MouseDownEvent, window, cx| menu(ev, this, window, cx)),
+        )
+        .child(
+            div()
+                .id(label_id)
+                .flex()
+                .items_center()
+                .gap_1()
+                .px_2()
+                .py_1()
+                .cursor_pointer()
+                .text_xs()
+                .text_color(if is_active {
+                    theme::text()
+                } else {
+                    theme::muted_text()
+                })
+                .hover(|s| s.text_color(theme::accent()))
+                .child(StatusDot::new(dot_color))
+                .child(div().min_w_0().max_w(px(220.)).truncate().child(label))
+                .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
+                    on_select(ev, this, window, cx)
+                })),
+        )
+        .child(
+            Button::new(close_id)
+                .size(ButtonSize::Icon(px(24.)))
+                .variant(ButtonVariant::Ghost)
+                .icon(icons::icon(icons::IconName::X, 13.).text_color(theme::muted_text()))
+                .tooltip(i18n::text("tooltip.close_tab"))
+                .on_click(
+                    cx.listener(move |this, ev: &ClickEvent, w, cx| on_close(ev, this, w, cx)),
+                ),
+        )
+}
+
 fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoElement {
     let mut strip = div()
         .id("tab-strip")
@@ -1110,136 +1144,87 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                 let is_active = active_idx == idx;
                 let state = shell.connections.state_for_key(&tab.host_key, cx);
                 let alias = tab_label(tab, cx);
-                // 容器不绑定 click；标签名与关闭按钮分别绑定，避免事件叠加。
-                let mut container = div()
-                    .flex()
-                    .flex_none()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .h(px(28.))
-                    .px_1()
-                    .rounded(px(theme::RADIUS_SM));
-                if is_active {
-                    container = container
-                        .bg(theme::accent_soft())
-                        .border_b_2()
-                        .border_color(theme::accent());
-                } else {
-                    container = container.hover(|style| style.bg(theme::raised()));
-                }
+                let single = shell.workspace.sessions.remote_tabs.len() == 1;
                 let (has_terminal, low_latency_enabled, low_latency_available) = tab
                     .pane
                     .terminal_info(cx)
                     .map(|info| (true, info.low_latency_enabled, info.low_latency_available))
                     .unwrap_or((false, false, false));
-                let container = container
-                    .id(("remote-tab-container", idx))
-                    .on_mouse_down(MouseButton::Right, {
-                        let target = tab.target.clone();
-                        let single = shell.workspace.sessions.remote_tabs.len() == 1;
-                        cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
-                            let mut entries = vec![MenuEntry::Item(MenuItem {
-                                id: "switch".into(),
-                                label: i18n::text("context_menu.switch"),
+                let target = tab.target.clone();
+                strip = strip.child(render_tab_chip(
+                    cx,
+                    ("remote-tab-container", idx),
+                    conn_state_dot_color(&state),
+                    alias,
+                    is_active,
+                    ("remote-tab", idx),
+                    move |ev: &MouseDownEvent, this, _window, cx| {
+                        let mut entries = vec![MenuEntry::Item(MenuItem {
+                            id: "switch".into(),
+                            label: i18n::text("context_menu.switch"),
+                            shortcut_hint: None,
+                            disabled: is_active,
+                            danger: false,
+                            action: ShellMenuAction::SelectRemoteTab(idx),
+                        })];
+                        if has_terminal {
+                            entries.push(MenuEntry::CheckedItem {
+                                item: MenuItem {
+                                    id: "low-latency-shell-input".into(),
+                                    label: i18n::text("context_menu.low_latency_shell_input"),
+                                    shortcut_hint: None,
+                                    disabled: !low_latency_available,
+                                    danger: false,
+                                    action: ShellMenuAction::ToggleLowLatencyShellInput(idx),
+                                },
+                                checked: low_latency_enabled,
+                            });
+                        }
+                        entries.extend([
+                            MenuEntry::Item(MenuItem {
+                                id: "close".into(),
+                                label: i18n::text("context_menu.close"),
                                 shortcut_hint: None,
-                                disabled: is_active,
+                                disabled: false,
                                 danger: false,
-                                action: ShellMenuAction::SelectRemoteTab(idx),
-                            })];
-                            if has_terminal {
-                                entries.push(MenuEntry::CheckedItem {
-                                    item: MenuItem {
-                                        id: "low-latency-shell-input".into(),
-                                        label: i18n::text("context_menu.low_latency_shell_input"),
-                                        shortcut_hint: None,
-                                        disabled: !low_latency_available,
-                                        danger: false,
-                                        action: ShellMenuAction::ToggleLowLatencyShellInput(idx),
-                                    },
-                                    checked: low_latency_enabled,
-                                });
-                            }
-                            entries.extend([
-                                MenuEntry::Item(MenuItem {
-                                    id: "close".into(),
-                                    label: i18n::text("context_menu.close"),
-                                    shortcut_hint: None,
-                                    disabled: false,
-                                    danger: false,
-                                    action: ShellMenuAction::CloseRemoteTab(idx),
-                                }),
-                                MenuEntry::Item(MenuItem {
-                                    id: "close-others".into(),
-                                    label: i18n::text("context_menu.close_others"),
-                                    shortcut_hint: None,
-                                    disabled: single,
-                                    danger: false,
-                                    action: ShellMenuAction::CloseOtherRemoteTabs(idx),
-                                }),
-                                MenuEntry::Item(MenuItem {
-                                    id: "close-all".into(),
-                                    label: i18n::text("context_menu.close_all"),
-                                    shortcut_hint: None,
-                                    disabled: false,
-                                    danger: false,
-                                    action: ShellMenuAction::CloseAllRemoteTabs,
-                                }),
-                                MenuEntry::Separator,
-                                MenuEntry::Item(MenuItem {
-                                    id: "copy-target".into(),
-                                    label: i18n::text("context_menu.copy_target"),
-                                    shortcut_hint: None,
-                                    disabled: false,
-                                    danger: false,
-                                    action: ShellMenuAction::CopyText(target.clone()),
-                                }),
-                            ]);
-                            this.open_context_menu(ev.position, entries, cx);
-                        })
-                    })
-                    .child(
-                        div()
-                            .id(("remote-tab", idx))
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .px_2()
-                            .py_1()
-                            .cursor_pointer()
-                            .text_xs()
-                            .text_color(if is_active {
-                                theme::text()
-                            } else {
-                                theme::muted_text()
-                            })
-                            .hover(|s| s.text_color(theme::accent()))
-                            .child(StatusDot::new(conn_state_dot_color(&state)))
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .max_w(px(220.))
-                                    .truncate()
-                                    .child(SharedString::from(alias)),
-                            )
-                            .on_click(cx.listener(move |this, _ev, _w, cx| {
-                                this.switch_remote_tab(idx, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new(("remote-tab-close", idx))
-                            .size(ButtonSize::Icon(px(24.)))
-                            .variant(ButtonVariant::Ghost)
-                            .icon(
-                                icons::icon(icons::IconName::X, 13.)
-                                    .text_color(theme::muted_text()),
-                            )
-                            .tooltip(i18n::text("tooltip.close_tab"))
-                            .on_click(cx.listener(move |this, _ev, w, cx| {
-                                this.request_close_remote_tab(idx, w, cx);
-                            })),
-                    );
-                strip = strip.child(container);
+                                action: ShellMenuAction::CloseRemoteTab(idx),
+                            }),
+                            MenuEntry::Item(MenuItem {
+                                id: "close-others".into(),
+                                label: i18n::text("context_menu.close_others"),
+                                shortcut_hint: None,
+                                disabled: single,
+                                danger: false,
+                                action: ShellMenuAction::CloseOtherRemoteTabs(idx),
+                            }),
+                            MenuEntry::Item(MenuItem {
+                                id: "close-all".into(),
+                                label: i18n::text("context_menu.close_all"),
+                                shortcut_hint: None,
+                                disabled: false,
+                                danger: false,
+                                action: ShellMenuAction::CloseAllRemoteTabs,
+                            }),
+                            MenuEntry::Separator,
+                            MenuEntry::Item(MenuItem {
+                                id: "copy-target".into(),
+                                label: i18n::text("context_menu.copy_target"),
+                                shortcut_hint: None,
+                                disabled: false,
+                                danger: false,
+                                action: ShellMenuAction::CopyText(target.clone()),
+                            }),
+                        ]);
+                        this.open_context_menu(ev.position, entries, cx);
+                    },
+                    move |_ev: &ClickEvent, this, _window, cx| {
+                        this.switch_remote_tab(idx, cx);
+                    },
+                    ("remote-tab-close", idx),
+                    move |_ev: &ClickEvent, this, w, cx| {
+                        this.request_close_remote_tab(idx, w, cx);
+                    },
+                ));
             }
         }
         Some(ActiveView::LocalSession(active_session_id)) => {
@@ -1266,125 +1251,77 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                     Some(session) => session.terminal.read(cx).tab_title(&fallback),
                     None => fallback,
                 };
-                let mut container = div()
-                    .flex()
-                    .flex_none()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .h(px(28.))
-                    .px_1()
-                    .rounded(px(theme::RADIUS_SM));
-                if is_active {
-                    container = container
-                        .bg(theme::accent_soft())
-                        .border_b_2()
-                        .border_color(theme::accent());
-                } else {
-                    container = container.hover(|style| style.bg(theme::raised()));
-                }
-                let container = container
-                    .id(("local-tab-container", session_id))
-                    .on_mouse_down(MouseButton::Right, {
-                        let cwd = shell
-                            .workspace
-                            .sessions
-                            .local_sessions
-                            .get(&session_id)
-                            .map(|session| session.cwd.clone())
-                            .unwrap_or_default();
-                        let single = session_ids.len() == 1;
-                        cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
-                            let entries = vec![
-                                MenuEntry::Item(MenuItem {
-                                    id: "switch".into(),
-                                    label: i18n::text("context_menu.switch"),
-                                    shortcut_hint: None,
-                                    disabled: is_active,
-                                    danger: false,
-                                    action: ShellMenuAction::SelectLocalSession(session_id),
-                                }),
-                                MenuEntry::Item(MenuItem {
-                                    id: "close".into(),
-                                    label: i18n::text("context_menu.close"),
-                                    shortcut_hint: None,
-                                    disabled: false,
-                                    danger: false,
-                                    action: ShellMenuAction::CloseLocalSession(session_id),
-                                }),
-                                MenuEntry::Item(MenuItem {
-                                    id: "close-others".into(),
-                                    label: i18n::text("context_menu.close_others"),
-                                    shortcut_hint: None,
-                                    disabled: single,
-                                    danger: false,
-                                    action: ShellMenuAction::CloseOtherLocalSessions(session_id),
-                                }),
-                                MenuEntry::Separator,
-                                MenuEntry::Item(MenuItem {
-                                    id: "copy-path".into(),
-                                    label: i18n::text("context_menu.copy_path"),
-                                    shortcut_hint: None,
-                                    disabled: false,
-                                    danger: false,
-                                    action: ShellMenuAction::CopyText(
-                                        cwd.to_string_lossy().to_string(),
-                                    ),
-                                }),
-                                MenuEntry::Item(MenuItem {
-                                    id: "reveal-finder".into(),
-                                    label: i18n::text("context_menu.reveal_in_finder"),
-                                    shortcut_hint: None,
-                                    disabled: false,
-                                    danger: false,
-                                    action: ShellMenuAction::RevealInFinder(cwd.clone()),
-                                }),
-                            ];
-                            this.open_context_menu(ev.position, entries, cx);
-                        })
-                    })
-                    .child(
-                        div()
-                            .id(("local-tab", session_id))
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .px_2()
-                            .py_1()
-                            .cursor_pointer()
-                            .text_xs()
-                            .text_color(if is_active {
-                                theme::text()
-                            } else {
-                                theme::muted_text()
-                            })
-                            .hover(|s| s.text_color(theme::accent()))
-                            .child(StatusDot::new(local_tab_dot_color(&state, command_running)))
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .max_w(px(220.))
-                                    .truncate()
-                                    .child(SharedString::from(label)),
-                            )
-                            .on_click(cx.listener(move |this, _ev, _w, cx| {
-                                this.select_local_session(session_id, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new(("local-tab-close", session_id))
-                            .size(ButtonSize::Icon(px(24.)))
-                            .variant(ButtonVariant::Ghost)
-                            .icon(
-                                icons::icon(icons::IconName::X, 13.)
-                                    .text_color(theme::muted_text()),
-                            )
-                            .tooltip(i18n::text("tooltip.close_tab"))
-                            .on_click(cx.listener(move |this, _ev, w, cx| {
-                                this.request_close_local_session(session_id, w, cx);
-                            })),
-                    );
-                strip = strip.child(container);
+                let cwd = shell
+                    .workspace
+                    .sessions
+                    .local_sessions
+                    .get(&session_id)
+                    .map(|session| session.cwd.clone())
+                    .unwrap_or_default();
+                let single = session_ids.len() == 1;
+                strip = strip.child(render_tab_chip(
+                    cx,
+                    ("local-tab-container", session_id),
+                    local_tab_dot_color(&state, command_running),
+                    label,
+                    is_active,
+                    ("local-tab", session_id),
+                    move |ev: &MouseDownEvent, this, _window, cx| {
+                        let entries = vec![
+                            MenuEntry::Item(MenuItem {
+                                id: "switch".into(),
+                                label: i18n::text("context_menu.switch"),
+                                shortcut_hint: None,
+                                disabled: is_active,
+                                danger: false,
+                                action: ShellMenuAction::SelectLocalSession(session_id),
+                            }),
+                            MenuEntry::Item(MenuItem {
+                                id: "close".into(),
+                                label: i18n::text("context_menu.close"),
+                                shortcut_hint: None,
+                                disabled: false,
+                                danger: false,
+                                action: ShellMenuAction::CloseLocalSession(session_id),
+                            }),
+                            MenuEntry::Item(MenuItem {
+                                id: "close-others".into(),
+                                label: i18n::text("context_menu.close_others"),
+                                shortcut_hint: None,
+                                disabled: single,
+                                danger: false,
+                                action: ShellMenuAction::CloseOtherLocalSessions(session_id),
+                            }),
+                            MenuEntry::Separator,
+                            MenuEntry::Item(MenuItem {
+                                id: "copy-path".into(),
+                                label: i18n::text("context_menu.copy_path"),
+                                shortcut_hint: None,
+                                disabled: false,
+                                danger: false,
+                                action: ShellMenuAction::CopyText(
+                                    cwd.to_string_lossy().to_string(),
+                                ),
+                            }),
+                            MenuEntry::Item(MenuItem {
+                                id: "reveal-finder".into(),
+                                label: i18n::text("context_menu.reveal_in_finder"),
+                                shortcut_hint: None,
+                                disabled: false,
+                                danger: false,
+                                action: ShellMenuAction::RevealInFinder(cwd.clone()),
+                            }),
+                        ];
+                        this.open_context_menu(ev.position, entries, cx);
+                    },
+                    move |_ev: &ClickEvent, this, _window, cx| {
+                        this.select_local_session(session_id, cx);
+                    },
+                    ("local-tab-close", session_id),
+                    move |_ev: &ClickEvent, this, w, cx| {
+                        this.request_close_local_session(session_id, w, cx);
+                    },
+                ));
             }
         }
         None => {}
