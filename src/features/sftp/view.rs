@@ -10,10 +10,9 @@ use std::rc::Rc;
 use async_channel::{Receiver, Sender};
 use gpui::{
     AnyElement, App, AppContext, Bounds, ClipboardEntry, Context, Entity, EntityInputHandler,
-    FocusHandle, InteractiveElement, IntoElement, KeyDownEvent, Keystroke, MouseButton,
-    MouseDownEvent, ParentElement, PathPromptOptions, Pixels, Point, Render, ScrollHandle,
-    SharedString, StatefulInteractiveElement, Styled, Task, UTF16Selection, Window, canvas, div,
-    px,
+    FocusHandle, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
+    ParentElement, PathPromptOptions, Pixels, Point, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement, Styled, Task, UTF16Selection, Window, canvas, div, px,
 };
 
 use crate::features::workspace::pane::{PaneRisk, TerminalPaneInfo, WorkspacePane};
@@ -25,7 +24,7 @@ use crossh_ui::context_menu::{
 };
 use crossh_ui::widgets::text_caret;
 use crossh_ui::widgets::{
-    byte_index_for_utf16, ime_caret_bounds, ime_input_canvas, marked_text_span,
+    byte_index_for_utf16, ime_caret_bounds, ime_input_canvas, marked_text_span, printable_char,
     replace_utf16_range, utf16_len, utf16_offset_for_byte, utf16_slice,
 };
 use crossh_ui::{icons, theme};
@@ -1182,13 +1181,6 @@ impl SftpPane {
             )
             .into_any_element()
     }
-}
-
-fn printable_char(ks: &Keystroke) -> Option<char> {
-    if ks.modifiers.control || ks.modifiers.platform {
-        return None;
-    }
-    ks.key_char.as_ref().and_then(|s| s.chars().next())
 }
 
 #[cfg(test)]
