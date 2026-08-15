@@ -21,7 +21,7 @@ use crate::shared::i18n::{self, LanguagePreference};
 use crossh_agent::{AgentModel, AgentModelRef, AgentProtocol, AgentProvider, AgentSettings};
 use crossh_ui::widgets::{ime_input_canvas, printable_char, text_caret, text_width};
 use crossh_ui::{icons, theme};
-use crossh_ui_component::{Button, ButtonSize, ButtonVariant};
+use crossh_ui_component::{Button, ButtonSize, ButtonVariant, Stepper, ToggleSwitch};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingsSection {
@@ -218,43 +218,26 @@ impl SettingsWindow {
             .flex()
             .items_center()
             .gap_1()
-            .child(settings_icon_button(
-                "settings-recent-dirs-decrease",
-                icons::IconName::Minus,
-                i18n::text("settings.recent_dirs"),
-                cx.listener(|this, _ev, _window, cx| {
-                    let max = this
-                        .shell_settings(cx)
-                        .workspace
-                        .recent_dirs_max
-                        .saturating_sub(1);
-                    this.write_to_shell(cx, |shell, cx| shell.set_recent_dirs_max(max, cx));
-                }),
-            ))
             .child(
-                div()
-                    .w(px(64.))
-                    .h(px(30.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(theme::RADIUS_SM))
-                    .bg(theme::raised())
-                    .text_xs()
-                    .text_color(theme::text())
-                    .child(SharedString::from(
-                        rust_i18n::t!("settings.dirs", value = recent_dirs_max).to_string(),
-                    )),
+                Stepper::new("settings-recent-dirs")
+                    .value(rust_i18n::t!("settings.dirs", value = recent_dirs_max))
+                    .tooltips(
+                        i18n::text("settings.recent_dirs"),
+                        i18n::text("settings.recent_dirs"),
+                    )
+                    .on_decrease(cx.listener(|this, _ev, _window, cx| {
+                        let max = this
+                            .shell_settings(cx)
+                            .workspace
+                            .recent_dirs_max
+                            .saturating_sub(1);
+                        this.write_to_shell(cx, |shell, cx| shell.set_recent_dirs_max(max, cx));
+                    }))
+                    .on_increase(cx.listener(|this, _ev, _window, cx| {
+                        let max = this.shell_settings(cx).workspace.recent_dirs_max + 1;
+                        this.write_to_shell(cx, |shell, cx| shell.set_recent_dirs_max(max, cx));
+                    })),
             )
-            .child(settings_icon_button(
-                "settings-recent-dirs-increase",
-                icons::IconName::Plus,
-                i18n::text("settings.recent_dirs"),
-                cx.listener(|this, _ev, _window, cx| {
-                    let max = this.shell_settings(cx).workspace.recent_dirs_max + 1;
-                    this.write_to_shell(cx, |shell, cx| shell.set_recent_dirs_max(max, cx));
-                }),
-            ))
             .child(settings_icon_button(
                 "settings-recent-dirs-clear",
                 icons::IconName::X,
@@ -292,72 +275,28 @@ impl SettingsWindow {
         let settings_row = move |label: String, description: String, control: AnyElement| {
             responsive_settings_row(label, description, control, compact_layout)
         };
-        let mut notifications = div()
-            .id("settings-terminal-notifications-toggle")
-            .w(px(42.))
-            .h(px(24.))
-            .p_1()
-            .flex()
-            .items_center()
-            .rounded_full()
-            .cursor_pointer()
-            .bg(if settings.terminal.notifications_enabled {
-                theme::accent()
-            } else {
-                theme::border_strong()
+        let entity = cx.entity();
+        let notifications = ToggleSwitch::new("settings-terminal-notifications-toggle")
+            .on(settings.terminal.notifications_enabled)
+            .on_toggle(move |_on, _ev, _window, cx| {
+                entity.update(cx, |this, cx| {
+                    this.write_to_shell(cx, |shell, cx| shell.toggle_terminal_notifications(cx));
+                });
             });
-        notifications = if settings.terminal.notifications_enabled {
-            notifications.justify_end()
-        } else {
-            notifications.justify_start()
-        };
-        notifications = notifications.child(
-            div()
-                .w(px(18.))
-                .h(px(18.))
-                .rounded_full()
-                .bg(theme::canvas()),
-        );
-        notifications = notifications.on_click(cx.listener(|this, _ev, _window, cx| {
-            this.write_to_shell(cx, |shell, cx| shell.toggle_terminal_notifications(cx));
-        }));
 
         let font_size = settings.terminal.font_size.round() as u32;
-        let font_control = div()
-            .flex()
-            .items_center()
-            .gap_1()
-            .child(settings_icon_button(
-                "settings-font-decrease",
-                icons::IconName::Minus,
+        let font_control = Stepper::new("settings-font")
+            .value(rust_i18n::t!("settings.pixels", value = font_size))
+            .tooltips(
                 i18n::text("settings.font_size"),
-                cx.listener(|this, _ev, _window, cx| {
-                    this.write_to_shell(cx, |shell, cx| shell.adjust_font_size(-1.0, cx));
-                }),
-            ))
-            .child(
-                div()
-                    .w(px(64.))
-                    .h(px(30.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(theme::RADIUS_SM))
-                    .bg(theme::raised())
-                    .text_xs()
-                    .text_color(theme::text())
-                    .child(SharedString::from(
-                        rust_i18n::t!("settings.pixels", value = font_size).to_string(),
-                    )),
+                i18n::text("settings.font_size"),
             )
-            .child(settings_icon_button(
-                "settings-font-increase",
-                icons::IconName::Plus,
-                i18n::text("settings.font_size"),
-                cx.listener(|this, _ev, _window, cx| {
-                    this.write_to_shell(cx, |shell, cx| shell.adjust_font_size(1.0, cx));
-                }),
-            ));
+            .on_decrease(cx.listener(|this, _ev, _window, cx| {
+                this.write_to_shell(cx, |shell, cx| shell.adjust_font_size(-1.0, cx));
+            }))
+            .on_increase(cx.listener(|this, _ev, _window, cx| {
+                this.write_to_shell(cx, |shell, cx| shell.adjust_font_size(1.0, cx));
+            }));
 
         let scrollback_values = [500usize, 1000, 5000, 10000];
         let mut scrollback = div()
@@ -439,38 +378,16 @@ impl SettingsWindow {
             .updates
             .read_with(cx, |updates, _app| updates.status().clone());
 
-        let mut startup_toggle = div()
-            .id("settings-updates-startup-toggle")
-            .w(px(42.))
-            .h(px(24.))
-            .p_1()
-            .flex()
-            .items_center()
-            .rounded_full()
-            .cursor_pointer()
-            .bg(if settings.updates.check_on_startup {
-                theme::accent()
-            } else {
-                theme::border_strong()
+        let entity = cx.entity();
+        let startup_toggle = ToggleSwitch::new("settings-updates-startup-toggle")
+            .on(settings.updates.check_on_startup)
+            .on_toggle(move |on, _ev, _window, cx| {
+                // 原实现读取 `!this.shell_settings(cx).updates.check_on_startup`;
+                // 快照与 shell 状态在渲染时一致,新状态 `on` 与之等价,直接使用即可。
+                entity.update(cx, |this, cx| {
+                    this.write_to_shell(cx, |shell, cx| shell.set_update_check_on_startup(on, cx));
+                });
             });
-        startup_toggle = if settings.updates.check_on_startup {
-            startup_toggle.justify_end()
-        } else {
-            startup_toggle.justify_start()
-        };
-        startup_toggle = startup_toggle.child(
-            div()
-                .w(px(18.))
-                .h(px(18.))
-                .rounded_full()
-                .bg(theme::canvas()),
-        );
-        startup_toggle = startup_toggle.on_click(cx.listener(|this, _ev, _window, cx| {
-            let enabled = !this.shell_settings(cx).updates.check_on_startup;
-            this.write_to_shell(cx, |shell, cx| {
-                shell.set_update_check_on_startup(enabled, cx)
-            });
-        }));
 
         let (status_text, status_color) = update_status_presentation(&status);
         let status_control = div()

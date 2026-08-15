@@ -61,44 +61,23 @@ impl SettingsWindow {
         }
 
         let rounds = self.agent_draft.max_tool_rounds;
-        let rounds_control = div()
-            .flex()
-            .items_center()
-            .gap_1()
-            .child(settings_icon_button(
-                "settings-agent-rounds-decrease",
-                icons::IconName::Minus,
+        let rounds_control = Stepper::new("settings-agent-rounds")
+            .value(rounds.to_string())
+            .font_weight(FontWeight::MEDIUM)
+            .tooltips(
                 i18n::text("settings.agent_rounds"),
-                cx.listener(|this, _ev, _window, cx| {
-                    this.agent_draft.max_tool_rounds =
-                        this.agent_draft.max_tool_rounds.saturating_sub(10).max(1);
-                    cx.notify();
-                }),
-            ))
-            .child(
-                div()
-                    .w(px(64.))
-                    .h(px(30.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(theme::RADIUS_SM))
-                    .bg(theme::raised())
-                    .text_xs()
-                    .text_color(theme::text())
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(SharedString::from(rounds.to_string())),
+                i18n::text("settings.agent_rounds"),
             )
-            .child(settings_icon_button(
-                "settings-agent-rounds-increase",
-                icons::IconName::Plus,
-                i18n::text("settings.agent_rounds"),
-                cx.listener(|this, _ev, _window, cx| {
-                    this.agent_draft.max_tool_rounds =
-                        (this.agent_draft.max_tool_rounds + 10).min(1000);
-                    cx.notify();
-                }),
-            ));
+            .on_decrease(cx.listener(|this, _ev, _window, cx| {
+                this.agent_draft.max_tool_rounds =
+                    this.agent_draft.max_tool_rounds.saturating_sub(10).max(1);
+                cx.notify();
+            }))
+            .on_increase(cx.listener(|this, _ev, _window, cx| {
+                this.agent_draft.max_tool_rounds =
+                    (this.agent_draft.max_tool_rounds + 10).min(1000);
+                cx.notify();
+            }));
         let save = settings_icon_button(
             "settings-agent-save",
             icons::IconName::Save,

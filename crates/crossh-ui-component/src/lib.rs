@@ -11,6 +11,8 @@ pub mod button;
 pub mod layout;
 pub mod separator;
 pub mod status_dot;
+pub mod stepper;
+pub mod toggle;
 pub mod tooltip;
 
 /// Crossh theme tokens exposed to component consumers.
@@ -25,6 +27,8 @@ pub mod prelude {
     pub use crate::layout::{h_flex, v_flex};
     pub use crate::separator::{Separator, SeparatorOrientation};
     pub use crate::status_dot::StatusDot;
+    pub use crate::stepper::Stepper;
+    pub use crate::toggle::ToggleSwitch;
     pub use crate::tooltip::Tooltip;
 }
 
@@ -34,4 +38,6 @@ pub use button::{Button, ButtonSize, ButtonVariant};
 pub use layout::{h_flex, v_flex};
 pub use separator::{Separator, SeparatorOrientation};
 pub use status_dot::StatusDot;
+pub use stepper::Stepper;
+pub use toggle::ToggleSwitch;
 pub use tooltip::Tooltip;
