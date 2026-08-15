@@ -1,26 +1,23 @@
 //! Git 窗口布局与视觉渲染。
 
-use std::cell::Cell;
 use std::path::Path;
-use std::rc::Rc;
 
 use gpui::{
-    AnyElement, Bounds, Context, FontWeight, InteractiveElement, IntoElement,
-    ListHorizontalSizingBehavior, ListSizingBehavior, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled,
-    Window, canvas, div, prelude::FluentBuilder, px, uniform_list,
+    AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ListHorizontalSizingBehavior,
+    ListSizingBehavior, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement,
+    Styled, Window, div, prelude::FluentBuilder, px, uniform_list,
 };
 
 use crate::shared::i18n;
 use crossh_core::git::{ChangeStatus, DiffLine, DiffLineKind, FileChange};
 use crossh_ui::widgets::{ime_input_canvas, text_caret};
 use crossh_ui::{icons, theme};
-use crossh_ui_component::{Badge, BadgeTone, Button, ButtonSize, ButtonVariant};
+use crossh_ui_component::{Badge, BadgeTone, Button, ButtonSize, ButtonVariant, SplitResizer};
 
 use super::editor::CommitEditor;
 use super::model::{
-    ChangeKey, CompactPage, DiffState, OperationState, clamp_changes_pane_width,
-    uses_compact_git_layout,
+    CHANGES_PANE_MAX_WIDTH, CHANGES_PANE_MIN_WIDTH, ChangeKey, CompactPage, DiffState,
+    OperationState, clamp_changes_pane_width, uses_compact_git_layout,
 };
 use super::window::GitWindow;
 use super::{
@@ -65,76 +62,19 @@ impl Render for GitWindow {
 impl GitWindow {
     fn render_standard_body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let width = clamp_changes_pane_width(self.changes_pane_width.get());
-        let container: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::new(Cell::new(None));
-        let backing = canvas(
-            {
-                let container = container.clone();
-                move |bounds, _window, _cx| container.set(Some(bounds))
-            },
-            {
-                let container = container.clone();
-                let width_cell = self.changes_pane_width.clone();
-                let dragging = self.changes_pane_dragging.clone();
-                move |_bounds, _state, window, _cx| {
-                    window.on_mouse_event({
-                        let container = container.clone();
-                        let width_cell = width_cell.clone();
-                        let dragging = dragging.clone();
-                        move |event: &MouseMoveEvent, phase, window, _cx| {
-                            if !matches!(phase, gpui::DispatchPhase::Bubble) {
-                                return;
-                            }
-                            if !dragging.get() {
-                                return;
-                            }
-                            let Some(bounds) = container.get() else {
-                                return;
-                            };
-                            width_cell.set(clamp_changes_pane_width(
-                                (event.position.x - bounds.origin.x).as_f32(),
-                            ));
-                            window.refresh();
-                        }
-                    });
-                    window.on_mouse_event({
-                        let dragging = dragging.clone();
-                        move |_event: &MouseUpEvent, phase, window, _cx| {
-                            if !matches!(phase, gpui::DispatchPhase::Bubble) {
-                                return;
-                            }
-                            if dragging.replace(false) {
-                                window.refresh();
-                            }
-                        }
-                    });
-                }
-            },
+        let resizer = SplitResizer::new(
+            "git-changes-resize",
+            self.changes_pane_dragging.clone(),
+            self.changes_pane_width.clone(),
         )
-        .absolute()
-        .size_full();
-
-        let resize_handle = div()
-            .id("git-changes-resize")
-            .absolute()
-            .top_0()
-            .right(px(-4.))
-            .w(px(8.))
-            .h_full()
-            .cursor_col_resize()
-            .on_mouse_down(MouseButton::Left, {
-                let dragging = self.changes_pane_dragging.clone();
-                move |_event: &MouseDownEvent, window, _cx| {
-                    dragging.set(true);
-                    window.refresh();
-                }
-            });
+        .min_width(CHANGES_PANE_MIN_WIDTH)
+        .max_width(CHANGES_PANE_MAX_WIDTH);
 
         div()
             .relative()
             .flex_1()
             .min_h_0()
             .flex()
-            .child(backing)
             .child(
                 div()
                     .relative()
@@ -143,7 +83,7 @@ impl GitWindow {
                     .border_r_1()
                     .border_color(theme::border_strong())
                     .child(self.render_changes_pane(false, window, cx))
-                    .child(resize_handle),
+                    .child(resizer),
             )
             .child(self.render_diff_pane(false, window, cx))
             .into_any_element()

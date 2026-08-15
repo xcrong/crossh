@@ -1,14 +1,12 @@
 //! 侧栏：主机搜索框、Local/Active/Bank 分组列表、宽度拖拽。
 
-use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::rc::Rc;
 
 use gpui::{
-    AnyElement, AppContext, Bounds, Context, FontWeight, InteractiveElement, IntoElement,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, SharedString,
-    StatefulInteractiveElement, Styled, Window, canvas, div, px,
+    AnyElement, AppContext, Context, FontWeight, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div,
+    px,
 };
 
 use crate::features::connections::HostEntry;
@@ -20,7 +18,7 @@ use crate::shared::i18n::{self};
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::widgets::{ime_input_canvas, text_caret};
 use crossh_ui::{icons, theme};
-use crossh_ui_component::{Avatar, AvatarKind, StatusDot, Tooltip};
+use crossh_ui_component::{Avatar, AvatarKind, SplitResizer, StatusDot, Tooltip};
 
 const TRANSPARENT: gpui::Rgba = gpui::Rgba {
     r: 0.0,
@@ -290,85 +288,14 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
         .sidebar_width
         .get()
         .clamp(theme::SIDEBAR_MIN_WIDTH, theme::SIDEBAR_MAX_WIDTH);
-    let container: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::new(Cell::new(None));
-    let backing = canvas(
-        {
-            let container = container.clone();
-            move |bounds, _window, _cx| container.set(Some(bounds))
-        },
-        {
-            let container = container.clone();
-            let width_cell = shell.sidebar_width.clone();
-            let dragging = shell.sidebar_dragging.clone();
-            move |_bounds, _state, window, _cx| {
-                window.on_mouse_event({
-                    let container = container.clone();
-                    let width_cell = width_cell.clone();
-                    let dragging = dragging.clone();
-                    move |ev: &MouseMoveEvent, phase, window, _cx| {
-                        if !matches!(phase, gpui::DispatchPhase::Bubble) {
-                            return;
-                        }
-                        if !dragging.get() {
-                            return;
-                        }
-                        let Some(bounds) = container.get() else {
-                            return;
-                        };
-                        let width = (ev.position.x - bounds.origin.x)
-                            .as_f32()
-                            .clamp(theme::SIDEBAR_MIN_WIDTH, theme::SIDEBAR_MAX_WIDTH);
-                        width_cell.set(width);
-                        window.refresh();
-                    }
-                });
-                window.on_mouse_event({
-                    let dragging = dragging.clone();
-                    move |_ev: &MouseUpEvent, phase, window, _cx| {
-                        if !matches!(phase, gpui::DispatchPhase::Bubble) {
-                            return;
-                        }
-                        if dragging.replace(false) {
-                            window.refresh();
-                        }
-                    }
-                });
-            }
-        },
+    let resizer = SplitResizer::new(
+        "sidebar-resize",
+        shell.sidebar_dragging.clone(),
+        shell.sidebar_width.clone(),
     )
-    .absolute()
-    .size_full();
-
-    let resizing = shell.sidebar_dragging.get();
-    let resize_handle = div()
-        .id("sidebar-resize")
-        .absolute()
-        .top_0()
-        .right(px(-4.))
-        .w(px(8.))
-        .h_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_col_resize()
-        .child(
-            div()
-                .w(px(1.))
-                .h_full()
-                .bg(if resizing {
-                    theme::accent()
-                } else {
-                    theme::border()
-                })
-                .hover(|style| style.bg(theme::accent())),
-        )
-        .on_mouse_down(MouseButton::Left, {
-            let dragging = shell.sidebar_dragging.clone();
-            move |_ev, window, _cx| {
-                dragging.set(true);
-                window.refresh();
-            }
-        });
+    .min_width(theme::SIDEBAR_MIN_WIDTH)
+    .max_width(theme::SIDEBAR_MAX_WIDTH)
+    .line();
 
     let titlebar = div()
         .relative()
@@ -411,7 +338,6 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
         .bg(theme::sidebar())
         .border_r_1()
         .border_color(theme::border())
-        .child(backing)
         .child(
             div()
                 .size_full()
@@ -421,7 +347,7 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
                 .child(search)
                 .child(list),
         )
-        .child(resize_handle);
+        .child(resizer);
     sidebar_root.into_any_element()
 }
 
