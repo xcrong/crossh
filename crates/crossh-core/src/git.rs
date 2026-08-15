@@ -281,6 +281,29 @@ pub fn commit(cwd: &Path, message: &str) -> Result<(), GitError> {
     run_git(cwd, &["commit", "-m", message])
 }
 
+/// 推送当前分支到已配置的上游；尚无上游时以 `origin` 为远程并建立跟踪。
+pub fn push(cwd: &Path) -> Result<(), GitError> {
+    if has_upstream(cwd)? {
+        run_git(cwd, &["push"])
+    } else {
+        run_git(cwd, &["push", "-u", "origin", "HEAD"])
+    }
+}
+
+fn has_upstream(cwd: &Path) -> Result<bool, GitError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args([
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ])
+        .output()?;
+    Ok(output.status.success())
+}
+
 fn run_git_paths(cwd: &Path, args: &[&str], paths: &[String]) -> Result<(), GitError> {
     let output = Command::new("git")
         .arg("-C")
@@ -915,5 +938,84 @@ mod tests {
                 })
         );
         assert!(commit(dir.path(), "   ").is_err());
+    }
+
+    #[test]
+    fn pushes_to_origin_and_follows_the_upstream_afterwards() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let run_in = |base: &Path, args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(base)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}: {:?}", output.stderr);
+        };
+
+        let local = dir.path().join("local");
+        fs::create_dir_all(&local).unwrap();
+        run_in(&local, &["init", "-q"]);
+        let branch = String::from_utf8_lossy(
+            &Command::new("git")
+                .arg("-C")
+                .arg(&local)
+                .args(["symbolic-ref", "--short", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string();
+        assert!(!branch.is_empty(), "local repo should be on a branch");
+        run_in(
+            dir.path(),
+            &["init", "-q", "--bare", "-b", &branch, "remote.git"],
+        );
+        run_in(&local, &["config", "user.email", "test@crossh.local"]);
+        run_in(&local, &["config", "user.name", "Crossh Test"]);
+        run_in(&local, &["remote", "add", "origin", "../remote.git"]);
+        fs::write(local.join("note.txt"), "first\n").unwrap();
+        run_in(&local, &["add", "-A"]);
+        run_in(&local, &["commit", "-qm", "init"]);
+
+        push(&local).expect("first push should create the upstream on origin");
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(&local)
+                .args(["rev-parse", "@{upstream}"])
+                .output()
+                .unwrap()
+                .status
+                .success(),
+            "first push should record origin tracking"
+        );
+
+        fs::write(local.join("note.txt"), "first\nsecond\n").unwrap();
+        run_in(&local, &["add", "-A"]);
+        run_in(&local, &["commit", "-qm", "second"]);
+
+        push(&local).expect("second push should follow the recorded upstream");
+        let head = |base: &Path| {
+            String::from_utf8_lossy(
+                &Command::new("git")
+                    .arg("-C")
+                    .arg(base)
+                    .args(["rev-parse", "HEAD"])
+                    .output()
+                    .unwrap()
+                    .stdout,
+            )
+            .trim()
+            .to_string()
+        };
+        assert_eq!(
+            head(&local),
+            head(&dir.path().join("remote.git")),
+            "remote HEAD should reach the pushed commit"
+        );
     }
 }

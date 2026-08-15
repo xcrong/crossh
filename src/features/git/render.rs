@@ -207,6 +207,18 @@ impl GitWindow {
                     ))),
             )
             .child(
+                Button::new("git-push")
+                    .size(ButtonSize::Icon(px(30.)))
+                    .variant(ButtonVariant::Ghost)
+                    .loading(matches!(self.operation, OperationState::Running))
+                    .tooltip(i18n::text("git.push"))
+                    .icon(icons::icon(icons::IconName::Upload, 14.).text_color(theme::muted_text()))
+                    .disabled(!self.can_push())
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.push_changes(cx);
+                    })),
+            )
+            .child(
                 Button::new("git-refresh")
                     .size(ButtonSize::Icon(px(30.)))
                     .variant(ButtonVariant::Ghost)

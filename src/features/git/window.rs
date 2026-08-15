@@ -10,7 +10,7 @@ use gpui::{
     UniformListScrollHandle, WindowBounds, WindowOptions, px,
 };
 
-use crossh_core::git::{FileChange, commit, diff, scan_changes, stage, unstage};
+use crossh_core::git::{FileChange, commit, diff, push, scan_changes, stage, unstage};
 use crossh_core::project::GitStatus;
 
 use super::editor::CommitEditor;
@@ -25,6 +25,7 @@ enum GitOperation {
     Stage(Vec<String>),
     Unstage(Vec<String>),
     Commit(String),
+    Push,
 }
 
 pub struct GitWindow {
@@ -326,6 +327,13 @@ impl GitWindow {
         );
     }
 
+    pub(super) fn push_changes(&mut self, cx: &mut Context<Self>) {
+        if !self.can_push() {
+            return;
+        }
+        self.run_operation(GitOperation::Push, None, false, cx);
+    }
+
     fn run_operation(
         &mut self,
         operation: GitOperation,
@@ -347,6 +355,7 @@ impl GitWindow {
                         GitOperation::Stage(paths) => stage(&cwd, &paths),
                         GitOperation::Unstage(paths) => unstage(&cwd, &paths),
                         GitOperation::Commit(message) => commit(&cwd, &message),
+                        GitOperation::Push => push(&cwd),
                     }
                 })
                 .await;
@@ -383,6 +392,10 @@ impl GitWindow {
         self.staged_count() > 0
             && !self.commit_editor.value.trim().is_empty()
             && !matches!(self.operation, OperationState::Running)
+    }
+
+    pub(super) fn can_push(&self) -> bool {
+        self.status.is_some() && !matches!(self.operation, OperationState::Running)
     }
 
     pub(super) fn selected_entry(&self) -> Option<&FileChange> {

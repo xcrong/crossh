@@ -230,6 +230,7 @@ git:
   back_to_changes: 返回更改列表
   commit_message_placeholder: 输入提交信息
   commit_files: "提交 %{count} 个文件"
+  push: 推送
 
 connection:
   connecting_with_separator: "连接中 · "

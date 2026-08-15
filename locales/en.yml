@@ -230,6 +230,7 @@ git:
   back_to_changes: Back to changes
   commit_message_placeholder: Commit message
   commit_files: "Commit %{count} files"
+  push: Push
 
 connection:
   connecting_with_separator: "Connecting · "
