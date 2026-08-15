@@ -1,8 +1,6 @@
 use super::*;
 
-use crate::shared::text_editing::{
-    clamp_char_boundary, next_char_boundary, previous_char_boundary, selection_bounds,
-};
+use crate::shared::text_editing::{TextEditingState, clamp_char_boundary, selection_bounds};
 
 impl SettingsWindow {
     pub(super) fn render_agent_settings(
@@ -345,12 +343,10 @@ impl SettingsWindow {
         let primary = key.modifiers.control || key.modifiers.platform;
         let extend = key.modifiers.shift;
         if primary && key.key == "a" {
-            self.agent_anchor = Some(0);
-            self.agent_cursor = self.agent_input_value(field).len();
+            self.with_agent_text_state(field, TextEditingState::select_all);
         } else if primary && matches!(key.key.as_str(), "c" | "x") {
-            if let Some((start, end)) = selection_bounds(self.agent_anchor, self.agent_cursor) {
-                let value = self.agent_input_value(field);
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(value[start..end].into()));
+            if let Some(text) = self.agent_text_state(field).selected_text() {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
                 if key.key == "x" {
                     self.replace_agent_selection(field, "");
                 }
@@ -387,17 +383,9 @@ impl SettingsWindow {
         } else if matches!(key.key.as_str(), "left" | "right") {
             self.move_agent_cursor(field, key.key == "right", extend);
         } else if matches!(key.key.as_str(), "home" | "end") {
-            if extend && self.agent_anchor.is_none() {
-                self.agent_anchor = Some(self.agent_cursor);
-            }
-            self.agent_cursor = if key.key == "end" {
-                self.agent_input_value(field).len()
-            } else {
-                0
-            };
-            if !extend {
-                self.agent_anchor = None;
-            }
+            self.with_agent_text_state(field, |state| {
+                state.move_to_boundary(key.key == "end", extend)
+            });
         } else if let Some(character) = printable_char(key)
             && (!matches!(
                 field,
@@ -513,71 +501,54 @@ impl SettingsWindow {
         }
     }
 
-    pub(super) fn replace_agent_selection(&mut self, field: AgentInputField, replacement: &str) {
-        let mut value = self.agent_input_value(field);
+    /// 以瞬时“读”路径构造共享 `TextEditingState`：从 draft 读取 value，并把光标与锚点
+    /// 收敛到合法字符边界。不改写任何字段（供 `selected_text` 等只读用途）。
+    fn agent_text_state(&self, field: AgentInputField) -> TextEditingState {
+        let value = self.agent_input_value(field);
         let cursor = clamp_char_boundary(&value, self.agent_cursor);
         let anchor = self
             .agent_anchor
             .map(|anchor| clamp_char_boundary(&value, anchor));
-        let (start, end) = selection_bounds(anchor, cursor).unwrap_or((cursor, cursor));
-        value.replace_range(start..end, replacement);
-        self.agent_cursor = start + replacement.len();
-        self.agent_anchor = None;
-        self.set_agent_input_value(field, value);
+        TextEditingState {
+            value,
+            cursor,
+            anchor,
+            ime_marked_text: String::new(),
+            ime_replacement: None,
+        }
+    }
+
+    /// 在共享 `TextEditingState` 上执行一次编辑（瞬时“读-改-写”）：读取 draft、
+    /// 委托 `edit` 运算，然后把光标/锚点与结果写回 draft。
+    fn with_agent_text_state<R>(
+        &mut self,
+        field: AgentInputField,
+        edit: impl FnOnce(&mut TextEditingState) -> R,
+    ) -> R {
+        let mut state = self.agent_text_state(field);
+        let result = edit(&mut state);
+        self.agent_cursor = state.cursor;
+        self.agent_anchor = state.anchor;
+        self.set_agent_input_value(field, state.value);
+        result
+    }
+
+    pub(super) fn replace_agent_selection(&mut self, field: AgentInputField, replacement: &str) {
+        self.with_agent_text_state(field, |state| state.replace_selection(replacement));
     }
 
     pub(super) fn agent_backspace(&mut self, field: AgentInputField) {
-        if selection_bounds(self.agent_anchor, self.agent_cursor).is_some() {
-            self.replace_agent_selection(field, "");
-            return;
-        }
-        let value = self.agent_input_value(field);
-        self.agent_cursor = clamp_char_boundary(&value, self.agent_cursor);
-        let start = previous_char_boundary(&value, self.agent_cursor);
-        if start != self.agent_cursor {
-            self.agent_anchor = Some(start);
-            self.replace_agent_selection(field, "");
-        }
+        self.with_agent_text_state(field, TextEditingState::backspace);
     }
 
     pub(super) fn agent_delete(&mut self, field: AgentInputField) {
-        if selection_bounds(self.agent_anchor, self.agent_cursor).is_some() {
-            self.replace_agent_selection(field, "");
-            return;
-        }
-        let value = self.agent_input_value(field);
-        self.agent_cursor = clamp_char_boundary(&value, self.agent_cursor);
-        let end = next_char_boundary(&value, self.agent_cursor);
-        if end != self.agent_cursor {
-            self.agent_anchor = Some(end);
-            self.replace_agent_selection(field, "");
-        }
+        self.with_agent_text_state(field, TextEditingState::delete);
     }
 
     pub(super) fn move_agent_cursor(&mut self, field: AgentInputField, right: bool, extend: bool) {
-        if !extend
-            && let Some((start, end)) = selection_bounds(self.agent_anchor, self.agent_cursor)
-        {
-            self.agent_cursor = if right { end } else { start };
-            self.agent_anchor = None;
-            return;
-        }
-        if extend && self.agent_anchor.is_none() {
-            self.agent_anchor = Some(self.agent_cursor);
-        }
-        let value = self.agent_input_value(field);
-        self.agent_cursor = clamp_char_boundary(&value, self.agent_cursor);
-        self.agent_anchor = self
-            .agent_anchor
-            .map(|anchor| clamp_char_boundary(&value, anchor));
-        self.agent_cursor = if right {
-            next_char_boundary(&value, self.agent_cursor)
-        } else {
-            previous_char_boundary(&value, self.agent_cursor)
-        };
-        if !extend {
-            self.agent_anchor = None;
-        }
+        self.with_agent_text_state(field, |state| {
+            state.move_horizontal(if right { 1 } else { -1 }, extend)
+        });
     }
 
     pub(super) fn add_agent_provider(&mut self, cx: &mut Context<Self>) {

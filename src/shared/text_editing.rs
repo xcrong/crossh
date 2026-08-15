@@ -65,7 +65,8 @@ impl TextEditingState {
         self.anchor = None;
     }
 
-    /// 退格：有选区则删除选区；否则删除光标前一字符。
+    /// 退格：有选区则删除选区；否则删除光标前一字符。实际删除后清除锚点，
+    /// 避免光标与锚点重合时的陈旧锚点演变成幽灵选区。
     pub fn backspace(&mut self) {
         if let Some((start, end)) = self.selection() {
             self.value.replace_range(start..end, "");
@@ -77,10 +78,11 @@ impl TextEditingState {
         if start != self.cursor {
             self.value.replace_range(start..self.cursor, "");
             self.cursor = start;
+            self.anchor = None;
         }
     }
 
-    /// 删除：有选区则删除选区；否则删除光标处字符。
+    /// 删除：有选区则删除选区；否则删除光标处字符。实际删除后同样清除锚点。
     pub fn delete(&mut self) {
         if let Some((start, end)) = self.selection() {
             self.value.replace_range(start..end, "");
@@ -91,6 +93,7 @@ impl TextEditingState {
         let end = next_char_boundary(&self.value, self.cursor);
         if end != self.cursor {
             self.value.replace_range(self.cursor..end, "");
+            self.anchor = None;
         }
     }
 
@@ -225,6 +228,28 @@ mod tests {
 
         editor.move_horizontal(1, false);
         assert_eq!(editor.cursor, "a中".len());
+        assert_eq!(editor.anchor, None);
+    }
+
+    #[test]
+    fn non_selection_backspace_clears_stale_anchor() {
+        let mut editor = TextEditingState::new("a中b");
+        editor.cursor = 4;
+        editor.anchor = Some(4);
+        editor.backspace();
+        assert_eq!(editor.value, "ab");
+        assert_eq!(editor.cursor, 1);
+        assert_eq!(editor.anchor, None);
+    }
+
+    #[test]
+    fn non_selection_delete_clears_stale_anchor() {
+        let mut editor = TextEditingState::new("a中b");
+        editor.cursor = 1;
+        editor.anchor = Some(1);
+        editor.delete();
+        assert_eq!(editor.value, "ab");
+        assert_eq!(editor.cursor, 1);
         assert_eq!(editor.anchor, None);
     }
 
