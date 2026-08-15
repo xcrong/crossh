@@ -16,6 +16,7 @@ pub mod separator;
 pub mod split_resizer;
 pub mod status_dot;
 pub mod stepper;
+pub mod text_input;
 pub mod toggle;
 pub mod tooltip;
 
@@ -36,6 +37,7 @@ pub mod prelude {
     pub use crate::split_resizer::{SplitHandleSide, SplitResizer};
     pub use crate::status_dot::StatusDot;
     pub use crate::stepper::Stepper;
+    pub use crate::text_input::TextInput;
     pub use crate::toggle::ToggleSwitch;
     pub use crate::tooltip::Tooltip;
 }
@@ -51,5 +53,6 @@ pub use separator::{Separator, SeparatorOrientation};
 pub use split_resizer::{SplitHandleSide, SplitResizer};
 pub use status_dot::StatusDot;
 pub use stepper::Stepper;
+pub use text_input::TextInput;
 pub use toggle::ToggleSwitch;
 pub use tooltip::Tooltip;

@@ -1,0 +1,363 @@
+//! 单行文本输入框外壳:值 / caret / placeholder / IME 标记 / IME 输入 canvas。
+
+use std::rc::Rc;
+
+use crossh_ui::widgets::{ime_input_canvas, text_caret};
+use gpui::{
+    App, ElementId, Entity, EntityInputHandler, FocusHandle, InteractiveElement, IntoElement,
+    KeyDownEvent, ParentElement, RenderOnce, Rgba, SharedString, StatefulInteractiveElement,
+    Styled, Window, div, prelude::FluentBuilder, px,
+};
+
+use crate::theme;
+
+type KeyHandler = Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App)>;
+
+/// 单行文本输入框外壳,渲染「值 + caret + placeholder + IME 标记 + IME 输入 canvas」。
+///
+/// 无状态组件:值与 IME 标记文本由调用方传入声明;按键逻辑保留在各 owner
+/// (调用方通过 `cx.listener(...)` 传入 [`TextInput::on_key_down`])。
+/// 泛型 `V` 是 IME 输入目标,渲染时通过 [`TextInput::entity`] 注册到平台输入系统。
+///
+/// 内容布局:值为空时显示 caret(聚焦时)+ placeholder 或 IME 标记;
+/// 非空时显示 `display`(默认取 `value`)+ caret(聚焦时)+ IME 标记。
+pub struct TextInput<V> {
+    id: ElementId,
+    focus: FocusHandle,
+    value: SharedString,
+    display: Option<SharedString>,
+    placeholder: Option<SharedString>,
+    ime_marked_text: SharedString,
+    caret_height: gpui::Pixels,
+    height: gpui::Pixels,
+    padding_x: gpui::Pixels,
+    text_size: gpui::Pixels,
+    text_color: Rgba,
+    background: Rgba,
+    focus_visible_accent: bool,
+    flex_1: bool,
+    full_width: bool,
+    entity: Option<Entity<V>>,
+    on_key_down: Option<KeyHandler>,
+}
+
+impl<V> TextInput<V> {
+    pub fn new(id: impl Into<ElementId>, focus: FocusHandle) -> Self {
+        Self {
+            id: id.into(),
+            focus,
+            value: SharedString::default(),
+            display: None,
+            placeholder: None,
+            ime_marked_text: SharedString::default(),
+            caret_height: px(16.),
+            height: px(32.),
+            padding_x: px(8.),
+            text_size: px(12.),
+            text_color: theme::text(),
+            background: theme::canvas(),
+            focus_visible_accent: false,
+            flex_1: false,
+            full_width: false,
+            entity: None,
+            on_key_down: None,
+        }
+    }
+
+    /// 输入框的实际值;决定「是否为空 → placeholder / caret」分支。
+    pub fn value(mut self, value: impl Into<SharedString>) -> Self {
+        self.value = value.into();
+        self
+    }
+
+    /// 渲染用文本;缺省使用 `value`(掩码等场景由调用方传入 ● 串)。
+    pub fn display(mut self, display: impl Into<SharedString>) -> Self {
+        self.display = Some(display.into());
+        self
+    }
+
+    pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
+        self.placeholder = Some(placeholder.into());
+        self
+    }
+
+    /// IME 组合中的标记文本;穿 underlining + accent 下划线样式。
+    pub fn ime_marked_text(mut self, ime: impl Into<SharedString>) -> Self {
+        self.ime_marked_text = ime.into();
+        self
+    }
+
+    pub fn caret_height(mut self, height: impl Into<gpui::Pixels>) -> Self {
+        self.caret_height = height.into();
+        self
+    }
+
+    pub fn height(mut self, height: impl Into<gpui::Pixels>) -> Self {
+        self.height = height.into();
+        self
+    }
+
+    pub fn padding_x(mut self, padding: impl Into<gpui::Pixels>) -> Self {
+        self.padding_x = padding.into();
+        self
+    }
+
+    pub fn text_size(mut self, size: impl Into<gpui::Pixels>) -> Self {
+        self.text_size = size.into();
+        self
+    }
+
+    /// 便捷方法:与 gpui `Styled::text_xs` 对齐的 12px。
+    pub fn text_xs(mut self) -> Self {
+        self.text_size = px(12.);
+        self
+    }
+
+    /// 便捷方法:与 gpui `Styled::text_sm` 对齐的 14px。
+    pub fn text_sm(mut self) -> Self {
+        self.text_size = px(14.);
+        self
+    }
+
+    /// 容器文字颜色(含 placeholder);必填,调用方需传入条件色。
+    pub fn text_color(mut self, color: impl Into<Rgba>) -> Self {
+        self.text_color = color.into();
+        self
+    }
+
+    /// 容器背景色;缺省 `theme::canvas()`。
+    pub fn bg(mut self, background: impl Into<Rgba>) -> Self {
+        self.background = background.into();
+        self
+    }
+
+    /// 键盘聚焦时用 accent 描边替代 focus_ring(对应 sftp 上传框)。
+    pub fn focus_visible_accent(mut self) -> Self {
+        self.focus_visible_accent = true;
+        self
+    }
+
+    /// 在横向 flex 行中撑满剩余宽度(等价原 `.flex_1().min_w_0()`)。
+    pub fn flex_1(mut self) -> Self {
+        self.flex_1 = true;
+        self
+    }
+
+    /// 占据整行宽度(等价原 `.w_full()`)。
+    pub fn full_width(mut self) -> Self {
+        self.full_width = true;
+        self
+    }
+
+    /// IME 输入目标;渲染时以该实体向平台输入系统注册输入处理。
+    pub fn entity(mut self, entity: Entity<V>) -> Self {
+        self.entity = Some(entity);
+        self
+    }
+
+    pub fn on_key_down(
+        mut self,
+        handler: impl Fn(&KeyDownEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_key_down = Some(Rc::new(handler));
+        self
+    }
+}
+
+impl<V: EntityInputHandler + 'static> IntoElement for TextInput<V> {
+    type Element = gpui::ViewElement<Self>;
+
+    #[track_caller]
+    fn into_element(self) -> Self::Element {
+        gpui::ViewElement::new(self)
+    }
+}
+
+impl<V: EntityInputHandler + 'static> RenderOnce for TextInput<V> {
+    fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        debug_assert!(
+            self.entity.is_some(),
+            "TextInput requires an entity() to register IME input"
+        );
+        let TextInput {
+            id,
+            focus,
+            value,
+            display,
+            placeholder,
+            ime_marked_text,
+            caret_height,
+            height,
+            padding_x,
+            text_size,
+            text_color,
+            background,
+            focus_visible_accent,
+            flex_1,
+            full_width,
+            entity,
+            on_key_down,
+        } = self;
+        let focused = focus.is_focused(window);
+        let display_text = display.unwrap_or_else(|| value.clone());
+
+        let mut children: Vec<gpui::AnyElement> = Vec::new();
+        if value.is_empty() {
+            if focused {
+                children.push(text_caret(caret_height).into_any_element());
+            }
+            if ime_marked_text.is_empty() {
+                if let Some(placeholder) = placeholder {
+                    children.push(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .truncate()
+                            .child(placeholder)
+                            .into_any_element(),
+                    );
+                }
+            } else {
+                children.push(marked_element(ime_marked_text).into_any_element());
+            }
+        } else {
+            children.push(
+                div()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .child(display_text)
+                    .into_any_element(),
+            );
+            if focused {
+                children.push(text_caret(caret_height).into_any_element());
+            }
+            if !ime_marked_text.is_empty() {
+                children.push(marked_element(ime_marked_text).into_any_element());
+            }
+        }
+
+        let click_focus = focus.clone();
+        div()
+            .id(id)
+            .relative()
+            .h(height)
+            .px(padding_x)
+            .flex()
+            .items_center()
+            .overflow_x_hidden()
+            .bg(background)
+            .border_1()
+            .border_color(theme::border_strong())
+            .rounded(px(theme::RADIUS_SM))
+            .text_size(text_size)
+            .text_color(text_color)
+            .track_focus(&focus)
+            .tab_stop(true)
+            .focus(|style| style.border_color(theme::focus_ring()))
+            .when(focus_visible_accent, |el| {
+                el.focus_visible(|style| style.border_color(theme::accent()))
+            })
+            .when(flex_1, |el| el.flex_1().min_w_0())
+            .when(full_width, |el| el.w_full())
+            .on_click(move |_ev, window, cx| window.focus(&click_focus, cx))
+            .when(on_key_down.is_some(), |el| {
+                el.on_key_down(move |ev, window, cx| {
+                    if let Some(handler) = &on_key_down {
+                        handler(ev, window, cx);
+                    }
+                })
+            })
+            .children(children)
+            .child(ime_input_canvas(
+                focus,
+                entity.expect("entity required for IME input"),
+            ))
+    }
+}
+
+fn marked_element(text: SharedString) -> impl IntoElement {
+    div()
+        .flex_shrink_0()
+        .whitespace_nowrap()
+        .underline()
+        .text_decoration_color(theme::accent())
+        .child(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{FocusHandle, TestAppContext, px};
+
+    use super::{TextInput, theme};
+
+    fn focus(cx: &mut TestAppContext) -> FocusHandle {
+        cx.update(|cx| cx.focus_handle())
+    }
+
+    #[gpui::test]
+    fn text_input_defaults(cx: &mut TestAppContext) {
+        let input: TextInput<()> = TextInput::new("search", focus(cx));
+        assert!(input.value.is_empty());
+        assert!(input.display.is_none());
+        assert!(input.placeholder.is_none());
+        assert!(input.ime_marked_text.is_empty());
+        assert_eq!(input.caret_height, px(16.));
+        assert_eq!(input.height, px(32.));
+        assert_eq!(input.padding_x, px(8.));
+        assert_eq!(input.text_size, px(12.));
+        assert_eq!(input.text_color, theme::text());
+        assert_eq!(input.background, theme::canvas());
+        assert!(!input.focus_visible_accent);
+        assert!(!input.flex_1);
+        assert!(!input.full_width);
+        assert!(input.entity.is_none());
+        assert!(input.on_key_down.is_none());
+    }
+
+    #[gpui::test]
+    fn text_input_builder_sets_value_placeholder_display_ime_and_metrics(cx: &mut TestAppContext) {
+        let masked = "••••".to_string();
+        let input: TextInput<()> = TextInput::new("prompt", focus(cx))
+            .value("secret")
+            .display(masked.clone())
+            .placeholder("Type here")
+            .ime_marked_text("中")
+            .caret_height(px(15.))
+            .height(px(34.))
+            .padding_x(px(12.))
+            .text_size(px(14.))
+            .text_color(theme::accent())
+            .bg(theme::surface())
+            .focus_visible_accent()
+            .on_key_down(|_, _, _| {});
+
+        assert_eq!(input.value.as_ref(), "secret");
+        assert_eq!(input.display.as_deref(), Some(masked.as_str()));
+        assert_eq!(input.placeholder.as_deref(), Some("Type here"));
+        assert_eq!(input.ime_marked_text.as_ref(), "中");
+        assert_eq!(input.caret_height, px(15.));
+        assert_eq!(input.height, px(34.));
+        assert_eq!(input.padding_x, px(12.));
+        assert_eq!(input.text_size, px(14.));
+        assert_eq!(input.text_color, theme::accent());
+        assert_eq!(input.background, theme::surface());
+        assert!(input.focus_visible_accent);
+        assert!(input.on_key_down.is_some());
+    }
+
+    #[gpui::test]
+    fn text_xs_and_text_sm_are_12_and_14px(cx: &mut TestAppContext) {
+        let small: TextInput<()> = TextInput::new("xs", focus(cx)).text_xs();
+        let medium: TextInput<()> = TextInput::new("sm", focus(cx)).text_sm();
+        assert_eq!(small.text_size, px(12.));
+        assert_eq!(medium.text_size, px(14.));
+    }
+
+    #[gpui::test]
+    fn layout_flags_and_focus_visible_are_sticky(cx: &mut TestAppContext) {
+        let input: TextInput<()> = TextInput::new("sftp", focus(cx)).flex_1().full_width();
+        assert!(input.flex_1);
+        assert!(input.full_width);
+    }
+}

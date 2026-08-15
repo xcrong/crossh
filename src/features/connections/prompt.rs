@@ -1,16 +1,16 @@
 //! 模态弹窗：主机密钥确认 / 凭据（口令、密码）输入。
 
 use gpui::{
-    AnyElement, Context, InteractiveElement, IntoElement, KeyDownEvent, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, px,
+    AnyElement, Context, IntoElement, KeyDownEvent, ParentElement, SharedString, Styled, Window,
+    div, px,
 };
 
 use crate::features::workspace::AppShell;
 use crate::shared::i18n;
 use crossh_ssh::{CredentialKind, HostKeyDecision};
-use crossh_ui::widgets::{ime_input_canvas, printable_char, text_caret};
+use crossh_ui::widgets::printable_char;
 use crossh_ui::{icons, theme};
-use crossh_ui_component::{Button, ButtonSize, ButtonVariant, ModalDialog};
+use crossh_ui_component::{Button, ButtonSize, ButtonVariant, ModalDialog, TextInput};
 
 /// 当前活动模态的显示快照。
 pub enum PromptDisplay {
@@ -32,7 +32,7 @@ pub enum PromptDisplay {
 pub fn render_prompt_modal(
     shell: &mut AppShell,
     prompt: PromptDisplay,
-    window: &Window,
+    _window: &Window,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
     let modal_focus = shell.modal_focus.clone();
@@ -122,50 +122,19 @@ pub fn render_prompt_modal(
 
     if is_credential {
         let masked = "•".repeat(shell.prompt_input.chars().count());
-        let ime_marked_text = shell.prompt_ime_marked_text.clone();
-        let input_focused = modal_focus.is_focused(window);
-        let mut input = div()
-            .id("prompt-input")
-            .w_full()
-            .h(px(34.))
-            .px_3()
-            .flex()
-            .items_center()
-            .mt_2()
-            .bg(theme::canvas())
-            .border_1()
-            .border_color(theme::border_strong())
-            .rounded(px(theme::RADIUS_SM))
+        let ime_masked = "•".repeat(shell.prompt_ime_marked_text.chars().count());
+        let input = TextInput::new("prompt-input", modal_focus.clone())
+            .full_width()
+            .value(shell.prompt_input.clone())
+            .display(masked)
+            .ime_marked_text(ime_masked)
+            .height(px(34.))
+            .padding_x(px(12.))
             .text_sm()
             .text_color(theme::text())
-            .track_focus(&modal_focus)
-            .tab_stop(true)
-            .relative()
-            .on_click({
-                let modal_focus = modal_focus.clone();
-                move |_ev, window, cx| window.focus(&modal_focus, cx)
-            })
+            .entity(cx.entity())
             .on_key_down(cx.listener(handle_credential_key));
-        if !masked.is_empty() {
-            input = input.child(SharedString::from(masked));
-        }
-        if input_focused {
-            input = input.child(text_caret(px(16.)));
-        }
-        if !ime_marked_text.is_empty() {
-            input = input.child(
-                div()
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .underline()
-                    .text_decoration_color(theme::accent())
-                    .child(SharedString::from(
-                        "•".repeat(ime_marked_text.chars().count()),
-                    )),
-            );
-        }
-        input = input.child(ime_input_canvas(modal_focus, cx.entity()));
-        modal = modal.child(input);
+        modal = modal.child(div().mt_2().child(input));
     }
     modal = modal.child(buttons);
 

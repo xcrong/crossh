@@ -29,7 +29,7 @@ use crossh_ui::widgets::{
     utf16_offset_for_byte, utf16_slice,
 };
 use crossh_ui::{icons, theme};
-use crossh_ui_component::{Button, ButtonSize, ButtonVariant, ModalDialog};
+use crossh_ui_component::{Button, ButtonSize, ButtonVariant, ModalDialog, TextInput};
 
 use super::logic::*;
 

@@ -235,72 +235,17 @@ impl Render for SftpPane {
         );
 
         // 底部：上传输入 + 进度/消息。
-        let focus = self.focus.clone();
-        let upload_val = self.upload_input.clone();
-        let upload_ime = self.upload_ime_marked_text.clone();
-        let input_focused = focus.is_focused(window);
-        let mut input = div()
-            .id("sftp-upload-input")
+        let input = TextInput::new("sftp-upload-input", self.focus.clone())
             .flex_1()
-            .min_w_0()
-            .h(px(32.))
-            .px_2()
-            .flex()
-            .items_center()
-            .rounded(px(theme::RADIUS_SM))
-            .relative()
-            .bg(theme::canvas())
-            .border_1()
-            .border_color(theme::border_strong())
+            .value(self.upload_input.clone())
+            .placeholder(i18n::text("sftp.local_path_placeholder"))
+            .ime_marked_text(self.upload_ime_marked_text.clone())
+            .caret_height(px(15.))
             .text_xs()
             .text_color(theme::text())
-            .track_focus(&focus)
-            .tab_stop(true)
-            .focus(|style| style.border_color(theme::focus_ring()))
-            .focus_visible(|style| style.border_color(theme::accent()))
-            .on_click({
-                let focus = focus.clone();
-                move |_ev, window, cx| window.focus(&focus, cx)
-            })
+            .focus_visible_accent()
+            .entity(cx.entity())
             .on_key_down(cx.listener(SftpPane::handle_input_key));
-        if upload_val.is_empty() {
-            if input_focused {
-                input = input.child(text_caret(px(15.)));
-            }
-            if upload_ime.is_empty() {
-                input = input.child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .truncate()
-                        .child(SharedString::from(i18n::text(
-                            "sftp.local_path_placeholder",
-                        ))),
-                );
-            }
-        } else {
-            input = input.child(
-                div()
-                    .min_w_0()
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .child(SharedString::from(upload_val)),
-            );
-            if input_focused {
-                input = input.child(text_caret(px(15.)));
-            }
-        }
-        if !upload_ime.is_empty() {
-            input = input.child(
-                div()
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .underline()
-                    .text_decoration_color(theme::accent())
-                    .child(SharedString::from(upload_ime)),
-            );
-        }
-        input = input.child(ime_input_canvas(focus, cx.entity()));
 
         let mut bottom = div()
             .flex()

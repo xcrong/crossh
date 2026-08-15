@@ -16,11 +16,10 @@ use crate::features::workspace::status::conn_state_dot_color;
 use crate::features::workspace::view::{ActiveView, LocalDir};
 use crate::shared::i18n::{self};
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
-use crossh_ui::widgets::{ime_input_canvas, text_caret};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
     Avatar, AvatarKind, Button, ButtonSize, ButtonVariant, CountBadge, Hint, SplitResizer,
-    StatusDot, Tooltip,
+    StatusDot, TextInput, Tooltip,
 };
 
 const TRANSPARENT: gpui::Rgba = gpui::Rgba {
@@ -36,12 +35,14 @@ fn host_entry_matches(entry: &HostEntry, query: &str) -> bool {
 }
 
 /// 侧栏整体布局：标题栏（含设置）+ 搜索框 + 分组列表 + 宽度拖拽。
-pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShell>) -> AnyElement {
+pub fn render_sidebar(
+    shell: &AppShell,
+    _window: &Window,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
     let query = shell.host_query.trim().to_ascii_lowercase();
     let search_focus = shell.host_focus.clone();
-    let search_value = shell.host_query.clone();
     let search_ime = shell.host_ime_marked_text.clone();
-    let input_entity = cx.entity();
     let active_remote_key = match shell.workspace.active_view {
         Some(ActiveView::RemoteTab(idx)) => shell
             .workspace
@@ -215,87 +216,34 @@ pub fn render_sidebar(shell: &AppShell, window: &Window, cx: &mut Context<AppShe
     }
     list = list.child(active_group).child(bank_group);
 
-    let search_focused = search_focus.is_focused(window);
-    let mut search_content = div()
-        .min_w_0()
-        .flex_1()
-        .flex()
-        .items_center()
-        .overflow_x_hidden();
-    if search_value.is_empty() {
-        if search_focused {
-            search_content = search_content.child(text_caret(px(16.)));
-        }
-        if search_ime.is_empty() {
-            search_content = search_content.child(
-                div()
-                    .min_w_0()
-                    .flex_1()
-                    .truncate()
-                    .child(SharedString::from(i18n::text("sidebar.search_placeholder"))),
-            );
-        } else {
-            search_content = search_content.child(
-                div()
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .underline()
-                    .text_decoration_color(theme::accent())
-                    .child(SharedString::from(search_ime.clone())),
-            );
-        }
-    } else {
-        search_content = search_content.child(
-            div()
-                .min_w_0()
-                .flex_shrink_0()
-                .whitespace_nowrap()
-                .child(SharedString::from(search_value)),
-        );
-        if search_focused {
-            search_content = search_content.child(text_caret(px(16.)));
-        }
-        if !search_ime.is_empty() {
-            search_content = search_content.child(
-                div()
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .underline()
-                    .text_decoration_color(theme::accent())
-                    .child(SharedString::from(search_ime)),
-            );
-        }
-    }
     let search = div()
-        .id("host-search")
+        .id("host-search-wrap")
         .mx_2()
         .mb_2()
-        .h(px(32.))
-        .px_2()
         .flex()
         .items_center()
         .gap_2()
-        .bg(theme::surface())
-        .border_1()
-        .border_color(theme::border_strong())
-        .rounded(px(theme::RADIUS_SM))
-        .relative()
-        .text_xs()
-        .text_color(if shell.host_query.is_empty() {
-            theme::faint_text()
-        } else {
-            theme::text()
-        })
-        .track_focus(&search_focus)
-        .focus(|style| style.border_color(theme::focus_ring()))
+        .cursor_text()
         .on_click({
-            let search_focus = search_focus.clone();
-            move |_ev, window, cx| window.focus(&search_focus, cx)
+            let focus = search_focus.clone();
+            move |_ev, window, cx| window.focus(&focus, cx)
         })
-        .on_key_down(cx.listener(AppShell::handle_host_search_key))
         .child(icons::icon(icons::IconName::Search, 14.).text_color(theme::muted_text()))
-        .child(search_content)
-        .child(ime_input_canvas(search_focus, input_entity));
+        .child(
+            TextInput::new("host-search", search_focus.clone())
+                .value(shell.host_query.clone())
+                .placeholder(i18n::text("sidebar.search_placeholder"))
+                .ime_marked_text(search_ime)
+                .text_color(if shell.host_query.is_empty() {
+                    theme::faint_text()
+                } else {
+                    theme::text()
+                })
+                .bg(theme::surface())
+                .flex_1()
+                .entity(cx.entity())
+                .on_key_down(cx.listener(AppShell::handle_host_search_key)),
+        );
 
     let width = shell
         .sidebar_width
