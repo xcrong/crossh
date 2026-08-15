@@ -10,7 +10,7 @@ use std::rc::Rc;
 use async_channel::{Receiver, Sender};
 use gpui::{
     AnyElement, App, AppContext, Bounds, ClipboardEntry, Context, Entity, EntityInputHandler,
-    FocusHandle, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, Keystroke, MouseButton,
+    FocusHandle, InteractiveElement, IntoElement, KeyDownEvent, Keystroke, MouseButton,
     MouseDownEvent, ParentElement, PathPromptOptions, Pixels, Point, Render, ScrollHandle,
     SharedString, StatefulInteractiveElement, Styled, Task, UTF16Selection, Window, canvas, div,
     px,
@@ -29,6 +29,7 @@ use crossh_ui::widgets::{
     utf16_offset_for_byte, utf16_slice,
 };
 use crossh_ui::{icons, theme};
+use crossh_ui_component::ModalDialog;
 
 use super::logic::*;
 
@@ -893,45 +894,18 @@ impl SftpPane {
                     })),
             );
 
-        let card = div()
-            .w(px(360.))
-            .p_5()
-            .bg(theme::surface())
-            .border_1()
-            .border_color(theme::border_strong())
-            .rounded(px(theme::RADIUS_MD))
-            .shadow_md()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_sm()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme::text())
-                    .child(icons::icon(icons::IconName::Pencil, 17.).text_color(theme::info()))
-                    .child(SharedString::from(title)),
-            )
-            .child(input_el)
-            .child(buttons);
-
-        div()
-            .absolute()
-            .size_full()
-            .top_0()
-            .left_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(theme::scrim())
-            .id("sftp-path-scrim")
-            .on_click(cx.listener(|this, _ev, _window, cx| {
-                this.cancel_path_input(cx);
-            }))
-            .child(card)
-            .into_any_element()
+        ModalDialog::new(
+            title,
+            icons::icon(icons::IconName::Pencil, 17.).text_color(theme::info()),
+        )
+        .width(px(360.))
+        .scrim_id("sftp-path-scrim")
+        .on_backdrop_click(cx.listener(|this, _ev, _window, cx| {
+            this.cancel_path_input(cx);
+        }))
+        .child(input_el)
+        .child(buttons)
+        .into_any_element()
     }
 
     /// 删除确认模态；未打开时返回空元素。
@@ -984,57 +958,18 @@ impl SftpPane {
                     })),
             );
 
-        let card = div()
-            .w(px(380.))
-            .p_5()
-            .bg(theme::surface())
-            .border_1()
-            .border_color(theme::border_strong())
-            .rounded(px(theme::RADIUS_MD))
-            .shadow_md()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_sm()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme::text())
-                    .child(icons::icon(icons::IconName::Trash, 17.).text_color(theme::danger()))
-                    .child(SharedString::from(rust_i18n::t!(
-                        "context_menu.delete_title",
-                        kind = kind
-                    ))),
-            )
-            .child(
-                div()
-                    .mt_2()
-                    .text_xs()
-                    .text_color(theme::muted_text())
-                    .child(SharedString::from(rust_i18n::t!(
-                        "context_menu.delete_body",
-                        name = name
-                    ))),
-            )
-            .child(buttons);
-
-        div()
-            .absolute()
-            .size_full()
-            .top_0()
-            .left_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(theme::scrim())
-            .id("sftp-delete-scrim")
-            .on_click(cx.listener(|this, _ev, _window, cx| {
-                this.cancel_delete(cx);
-            }))
-            .child(card)
-            .into_any_element()
+        ModalDialog::new(
+            rust_i18n::t!("context_menu.delete_title", kind = kind),
+            icons::icon(icons::IconName::Trash, 17.).text_color(theme::danger()),
+        )
+        .width(px(380.))
+        .scrim_id("sftp-delete-scrim")
+        .on_backdrop_click(cx.listener(|this, _ev, _window, cx| {
+            this.cancel_delete(cx);
+        }))
+        .body(rust_i18n::t!("context_menu.delete_body", name = name))
+        .child(buttons)
+        .into_any_element()
     }
 
     fn render_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {

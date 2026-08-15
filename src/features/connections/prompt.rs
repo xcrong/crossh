@@ -1,7 +1,7 @@
 //! 模态弹窗：主机密钥确认 / 凭据（口令、密码）输入。
 
 use gpui::{
-    AnyElement, Context, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, ParentElement,
+    AnyElement, Context, InteractiveElement, IntoElement, KeyDownEvent, ParentElement,
     SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
@@ -10,6 +10,7 @@ use crate::shared::i18n;
 use crossh_ssh::{CredentialKind, HostKeyDecision};
 use crossh_ui::widgets::{ime_input_canvas, printable_char, text_caret};
 use crossh_ui::{icons, theme};
+use crossh_ui_component::ModalDialog;
 
 /// 当前活动模态的显示快照。
 pub enum PromptDisplay {
@@ -109,38 +110,15 @@ pub fn render_prompt_modal(
         PromptDisplay::None => {}
     }
 
-    let mut card = div()
-        .w(px(440.))
-        .p_5()
-        .bg(theme::surface())
-        .border_1()
-        .border_color(theme::border_strong())
-        .rounded(px(theme::RADIUS_MD))
-        .shadow_md()
-        .flex()
-        .flex_col()
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .text_sm()
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme::text())
-                .child(icons::icon(modal_icon, 17.).text_color(if is_credential {
-                    theme::info()
-                } else {
-                    theme::warning()
-                }))
-                .child(SharedString::from(title)),
-        )
-        .child(
-            div()
-                .mt_2()
-                .text_xs()
-                .text_color(theme::muted_text())
-                .child(SharedString::from(body)),
-        );
+    let mut modal = ModalDialog::new(
+        title,
+        icons::icon(modal_icon, 17.).text_color(if is_credential {
+            theme::info()
+        } else {
+            theme::warning()
+        }),
+    )
+    .body(body);
 
     if is_credential {
         let masked = "•".repeat(shell.prompt_input.chars().count());
@@ -187,21 +165,11 @@ pub fn render_prompt_modal(
             );
         }
         input = input.child(ime_input_canvas(modal_focus, cx.entity()));
-        card = card.child(input);
+        modal = modal.child(input);
     }
-    card = card.child(buttons);
+    modal = modal.child(buttons);
 
-    div()
-        .absolute()
-        .size_full()
-        .top_0()
-        .left_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(theme::scrim())
-        .child(card)
-        .into_any_element()
+    modal.into_any_element()
 }
 
 fn handle_credential_key(

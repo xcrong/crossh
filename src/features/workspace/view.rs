@@ -25,7 +25,7 @@ use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::widgets::{ime_input_canvas, text_caret};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
-    Button, ButtonSize, ButtonVariant, CountBadge, SplitResizer, StatusDot, Tooltip,
+    Button, ButtonSize, ButtonVariant, CountBadge, ModalDialog, SplitResizer, StatusDot, Tooltip,
 };
 
 /// 一个远程终端/SFTP 标签。
@@ -1089,48 +1089,20 @@ pub fn render_quick_command_editor(
                 })),
         );
 
-    let card = div()
-        .id("quick-command-editor-card")
-        .w(px(500.))
-        .p_5()
-        .bg(theme::surface())
-        .border_1()
-        .border_color(theme::border_strong())
-        .rounded(px(theme::RADIUS_MD))
-        .shadow_md()
-        .flex()
-        .flex_col()
-        .on_click(cx.listener(|_this, _ev, _window, cx| {
-            cx.stop_propagation();
-        }))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .text_sm()
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme::text())
-                .child(icons::icon(icons::IconName::Pencil, 16.).text_color(theme::info()))
-                .child(SharedString::from(i18n::text("quick_commands.edit_title"))),
-        )
-        .child(input)
-        .child(buttons);
-    div()
-        .absolute()
-        .top_0()
-        .left_0()
-        .size_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(theme::scrim())
-        .id("quick-command-editor-scrim")
-        .on_click(cx.listener(|this, _ev, _window, cx| {
-            this.cancel_quick_command_editor(cx);
-        }))
-        .child(card)
-        .into_any_element()
+    ModalDialog::new(
+        i18n::text("quick_commands.edit_title"),
+        icons::icon(icons::IconName::Pencil, 16.).text_color(theme::info()),
+    )
+    .width(px(500.))
+    .scrim_id("quick-command-editor-scrim")
+    .card_id("quick-command-editor-card")
+    .blocks_card_clicks()
+    .on_backdrop_click(cx.listener(|this, _ev, _window, cx| {
+        this.cancel_quick_command_editor(cx);
+    }))
+    .child(input)
+    .child(buttons)
+    .into_any_element()
 }
 
 fn status_badge(text: String, color: impl Into<gpui::Hsla>) -> impl IntoElement {
