@@ -256,23 +256,15 @@ fn render_status_bar_toggle(
     toggle: fn(&mut AppShell, &mut Context<AppShell>),
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
-    div()
-        .id(id)
-        .w(px(22.))
-        .h(px(22.))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(theme::RADIUS_SM))
-        .cursor_pointer()
-        .hover(|style| style.bg(theme::raised()))
-        .tooltip(move |_window, cx| cx.new(|_| Tooltip::new(i18n::text(tooltip))).into())
-        .child(icons::icon(icon, 13.).text_color(if active {
+    Button::new(id)
+        .size(ButtonSize::Icon(px(22.)))
+        .variant(ButtonVariant::Ghost)
+        .icon(icons::icon(icon, 13.).text_color(if active {
             theme::accent()
         } else {
             theme::muted_text()
         }))
+        .tooltip(i18n::text(tooltip))
         .on_click(cx.listener(move |this, _ev, _window, cx| toggle(this, cx)))
         .into_any_element()
 }
@@ -1051,39 +1043,21 @@ pub fn render_quick_command_editor(
         .gap_2()
         .mt_4()
         .child(
-            div()
-                .id("quick-command-editor-save")
-                .h(px(30.))
-                .px_3()
-                .flex()
-                .items_center()
-                .gap_2()
-                .rounded(px(theme::RADIUS_SM))
-                .cursor_pointer()
-                .bg(theme::accent())
-                .text_xs()
-                .text_color(theme::canvas())
-                .child(icons::icon(icons::IconName::Check, 13.).text_color(theme::canvas()))
-                .child(SharedString::from(i18n::text("quick_commands.save")))
+            Button::new("quick-command-editor-save")
+                .size(ButtonSize::Medium)
+                .variant(ButtonVariant::Primary)
+                .icon(icons::icon(icons::IconName::Check, 13.).text_color(theme::canvas()))
+                .label(i18n::text("quick_commands.save"))
                 .on_click(cx.listener(|this, _ev, _window, cx| {
                     this.submit_quick_command_editor(cx);
                 })),
         )
         .child(
-            div()
-                .id("quick-command-editor-cancel")
-                .h(px(30.))
-                .px_3()
-                .flex()
-                .items_center()
-                .gap_2()
-                .rounded(px(theme::RADIUS_SM))
-                .cursor_pointer()
-                .bg(theme::raised())
-                .text_xs()
-                .text_color(theme::text())
-                .child(icons::icon(icons::IconName::X, 13.).text_color(theme::muted_text()))
-                .child(SharedString::from(i18n::text("prompt.cancel")))
+            Button::new("quick-command-editor-cancel")
+                .size(ButtonSize::Medium)
+                .variant(ButtonVariant::Secondary)
+                .icon(icons::icon(icons::IconName::X, 13.).text_color(theme::muted_text()))
+                .label(i18n::text("prompt.cancel"))
                 .on_click(cx.listener(|this, _ev, _window, cx| {
                     this.cancel_quick_command_editor(cx);
                 })),
@@ -1252,26 +1226,14 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                             })),
                     )
                     .child(
-                        div()
-                            .id(("remote-tab-close", idx))
-                            .w(px(24.))
-                            .h(px(24.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(theme::RADIUS_SM))
-                            .cursor_pointer()
-                            .text_color(theme::muted_text())
-                            .hover(|s| s.bg(theme::raised()).text_color(theme::danger()))
-                            .tooltip(|_window, cx| {
-                                cx.new(|_| Tooltip::new(i18n::text("tooltip.close_tab")))
-                                    .into()
-                            })
-                            .child(
+                        Button::new(("remote-tab-close", idx))
+                            .size(ButtonSize::Icon(px(24.)))
+                            .variant(ButtonVariant::Ghost)
+                            .icon(
                                 icons::icon(icons::IconName::X, 13.)
-                                    .text_color(theme::muted_text())
-                                    .hover(|s| s.text_color(theme::danger())),
+                                    .text_color(theme::muted_text()),
                             )
+                            .tooltip(i18n::text("tooltip.close_tab"))
                             .on_click(cx.listener(move |this, _ev, w, cx| {
                                 this.request_close_remote_tab(idx, w, cx);
                             })),
@@ -1409,26 +1371,14 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                             })),
                     )
                     .child(
-                        div()
-                            .id(("local-tab-close", session_id))
-                            .w(px(24.))
-                            .h(px(24.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(theme::RADIUS_SM))
-                            .cursor_pointer()
-                            .text_color(theme::muted_text())
-                            .hover(|s| s.bg(theme::raised()).text_color(theme::danger()))
-                            .tooltip(|_window, cx| {
-                                cx.new(|_| Tooltip::new(i18n::text("tooltip.close_tab")))
-                                    .into()
-                            })
-                            .child(
+                        Button::new(("local-tab-close", session_id))
+                            .size(ButtonSize::Icon(px(24.)))
+                            .variant(ButtonVariant::Ghost)
+                            .icon(
                                 icons::icon(icons::IconName::X, 13.)
-                                    .text_color(theme::muted_text())
-                                    .hover(|s| s.text_color(theme::danger())),
+                                    .text_color(theme::muted_text()),
                             )
+                            .tooltip(i18n::text("tooltip.close_tab"))
                             .on_click(cx.listener(move |this, _ev, w, cx| {
                                 this.request_close_local_session(session_id, w, cx);
                             })),

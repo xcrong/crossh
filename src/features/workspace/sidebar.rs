@@ -18,7 +18,10 @@ use crate::shared::i18n::{self};
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::widgets::{ime_input_canvas, text_caret};
 use crossh_ui::{icons, theme};
-use crossh_ui_component::{Avatar, AvatarKind, CountBadge, Hint, SplitResizer, StatusDot, Tooltip};
+use crossh_ui_component::{
+    Avatar, AvatarKind, Button, ButtonSize, ButtonVariant, CountBadge, Hint, SplitResizer,
+    StatusDot, Tooltip,
+};
 
 const TRANSPARENT: gpui::Rgba = gpui::Rgba {
     r: 0.0,
@@ -846,26 +849,11 @@ fn render_local_dir(
     // 仅有历史记录（无活动会话）的目录提供「从最近记录移除」按钮。
     if count == 0 {
         row = row.child(
-            div()
-                .id(("local-forget", idx))
-                .w(px(24.))
-                .h(px(24.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(theme::RADIUS_SM))
-                .cursor_pointer()
-                .text_color(theme::muted_text())
-                .hover(|s| s.bg(theme::raised()).text_color(theme::danger()))
-                .tooltip(|_window, cx| {
-                    cx.new(|_| Tooltip::new(i18n::text("tooltip.forget_dir")))
-                        .into()
-                })
-                .child(
-                    icons::icon(icons::IconName::X, 14.)
-                        .text_color(theme::muted_text())
-                        .hover(|s| s.text_color(theme::danger())),
-                )
+            Button::new(("local-forget", idx))
+                .size(ButtonSize::Icon(px(24.)))
+                .variant(ButtonVariant::Ghost)
+                .icon(icons::icon(icons::IconName::X, 14.).text_color(theme::muted_text()))
+                .tooltip(i18n::text("tooltip.forget_dir"))
                 .on_click(cx.listener(move |this, _ev, _window, cx| {
                     cx.stop_propagation();
                     this.forget_local_dir(project_dir.clone(), cx);
@@ -873,26 +861,11 @@ fn render_local_dir(
         );
     }
     row.child(
-        div()
-            .id(("local-new", idx))
-            .w(px(24.))
-            .h(px(24.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(theme::RADIUS_SM))
-            .cursor_pointer()
-            .text_color(theme::muted_text())
-            .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
-            .tooltip(|_window, cx| {
-                cx.new(|_| Tooltip::new(i18n::text("tooltip.new_terminal")))
-                    .into()
-            })
-            .child(
-                icons::icon(icons::IconName::Plus, 14.)
-                    .text_color(theme::muted_text())
-                    .hover(|s| s.text_color(theme::text())),
-            )
+        Button::new(("local-new", idx))
+            .size(ButtonSize::Icon(px(24.)))
+            .variant(ButtonVariant::Ghost)
+            .icon(icons::icon(icons::IconName::Plus, 14.).text_color(theme::muted_text()))
+            .tooltip(i18n::text("tooltip.new_terminal"))
             .on_click(cx.listener(move |this, _ev, _window, cx| {
                 cx.stop_propagation();
                 this.open_local_session(
@@ -1009,52 +982,28 @@ fn render_host_entry(
                         .child(SharedString::from(alias)),
                 )
                 .child(
-                    div()
-                        .id(("sftp-btn", idx))
-                        .w(px(24.))
-                        .h(px(24.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(theme::RADIUS_SM))
-                        .cursor_pointer()
-                        .text_color(theme::muted_text())
-                        .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
-                        .tooltip(|_window, cx| {
-                            cx.new(|_| Tooltip::new(i18n::text("tooltip.open_sftp")))
-                                .into()
-                        })
-                        .child(
+                    Button::new(("sftp-btn", idx))
+                        .size(ButtonSize::Icon(px(24.)))
+                        .variant(ButtonVariant::Ghost)
+                        .icon(
                             icons::icon(icons::IconName::Folder, 14.)
-                                .text_color(theme::muted_text())
-                                .hover(|s| s.text_color(theme::text())),
+                                .text_color(theme::muted_text()),
                         )
+                        .tooltip(i18n::text("tooltip.open_sftp"))
                         .on_click(cx.listener(move |this, _ev, _w, cx| {
                             cx.stop_propagation();
                             this.open_sftp(idx, cx);
                         })),
                 )
                 .child(
-                    div()
-                        .id(("fwd-btn", idx))
-                        .w(px(24.))
-                        .h(px(24.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(theme::RADIUS_SM))
-                        .cursor_pointer()
-                        .text_color(theme::muted_text())
-                        .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
-                        .tooltip(|_window, cx| {
-                            cx.new(|_| Tooltip::new(i18n::text("tooltip.port_forwarding")))
-                                .into()
-                        })
-                        .child(
+                    Button::new(("fwd-btn", idx))
+                        .size(ButtonSize::Icon(px(24.)))
+                        .variant(ButtonVariant::Ghost)
+                        .icon(
                             icons::icon(icons::IconName::ArrowLeftRight, 14.)
-                                .text_color(theme::muted_text())
-                                .hover(|s| s.text_color(theme::text())),
+                                .text_color(theme::muted_text()),
                         )
+                        .tooltip(i18n::text("tooltip.port_forwarding"))
                         .on_click(cx.listener(move |this, _ev, _w, cx| {
                             cx.stop_propagation();
                             this.open_forward(idx, cx);
@@ -1129,26 +1078,11 @@ fn render_host_group(spec: HostGroupSpec, cx: &mut Context<AppShell>) -> AnyElem
 
     if let Some(action) = action {
         header = header.child(
-            div()
-                .id(format!("host-group-action-{id}"))
-                .w(px(24.))
-                .h(px(24.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(theme::RADIUS_SM))
-                .cursor_pointer()
-                .text_color(theme::muted_text())
-                .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
-                .tooltip(|_window, cx| {
-                    cx.new(|_| Tooltip::new(i18n::text("tooltip.new_project")))
-                        .into()
-                })
-                .child(
-                    icons::icon(icons::IconName::Plus, 14.)
-                        .text_color(theme::muted_text())
-                        .hover(|s| s.text_color(theme::text())),
-                )
+            Button::new(format!("host-group-action-{id}"))
+                .size(ButtonSize::Icon(px(24.)))
+                .variant(ButtonVariant::Ghost)
+                .icon(icons::icon(icons::IconName::Plus, 14.).text_color(theme::muted_text()))
+                .tooltip(i18n::text("tooltip.new_project"))
                 .on_click(cx.listener(move |this, _ev, _window, cx| {
                     cx.stop_propagation();
                     action(this, cx);

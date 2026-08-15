@@ -10,7 +10,7 @@ use crate::shared::i18n;
 use crossh_ssh::{CredentialKind, HostKeyDecision};
 use crossh_ui::widgets::{ime_input_canvas, printable_char, text_caret};
 use crossh_ui::{icons, theme};
-use crossh_ui_component::ModalDialog;
+use crossh_ui_component::{Button, ButtonSize, ButtonVariant, ModalDialog};
 
 /// 当前活动模态的显示快照。
 pub enum PromptDisplay {
@@ -212,47 +212,20 @@ fn host_key_button(
         HostKeyDecision::Reject => icons::IconName::CircleX,
         HostKeyDecision::AcceptOnce | HostKeyDecision::AcceptAlways => icons::IconName::Check,
     };
-    div()
-        .id(id)
-        .h(px(30.))
-        .px_3()
-        .flex()
-        .items_center()
-        .gap_2()
-        .rounded(px(theme::RADIUS_SM))
-        .text_xs()
-        .cursor_pointer()
-        .border_1()
-        .border_color(if matches!(decision, HostKeyDecision::Reject) {
-            theme::border_strong()
+    let reject = matches!(decision, HostKeyDecision::Reject);
+    Button::new(id)
+        .size(ButtonSize::Medium)
+        .variant(if reject {
+            ButtonVariant::Default
         } else {
-            theme::accent()
+            ButtonVariant::Primary
         })
-        .bg(if matches!(decision, HostKeyDecision::Reject) {
-            theme::raised()
-        } else {
-            theme::accent()
-        })
-        .hover(|s| {
-            s.bg(if matches!(decision, HostKeyDecision::Reject) {
-                theme::border_strong()
-            } else {
-                theme::accent_hover()
-            })
-        })
-        .text_color(if matches!(decision, HostKeyDecision::Reject) {
+        .icon(icons::icon(icon, 14.).text_color(if reject {
             theme::text()
         } else {
             theme::canvas()
-        })
-        .child(
-            icons::icon(icon, 14.).text_color(if matches!(decision, HostKeyDecision::Reject) {
-                theme::text()
-            } else {
-                theme::canvas()
-            }),
-        )
-        .child(SharedString::from(label))
+        }))
+        .label(label)
         .on_click(cx.listener(move |this, _ev, _w, cx| {
             this.resolve_host_key(decision, cx);
         }))
@@ -260,40 +233,14 @@ fn host_key_button(
 
 fn cred_button(cx: &mut Context<AppShell>, label: String, submit: bool) -> impl IntoElement {
     let id = SharedString::from(label.clone());
-    div()
-        .id(id)
-        .h(px(30.))
-        .px_3()
-        .flex()
-        .items_center()
-        .gap_2()
-        .rounded(px(theme::RADIUS_SM))
-        .text_xs()
-        .cursor_pointer()
-        .border_1()
-        .border_color(if submit {
-            theme::accent()
+    Button::new(id)
+        .size(ButtonSize::Medium)
+        .variant(if submit {
+            ButtonVariant::Primary
         } else {
-            theme::border_strong()
+            ButtonVariant::Default
         })
-        .bg(if submit {
-            theme::accent()
-        } else {
-            theme::raised()
-        })
-        .hover(|s| {
-            s.bg(if submit {
-                theme::accent_hover()
-            } else {
-                theme::border_strong()
-            })
-        })
-        .text_color(if submit {
-            theme::canvas()
-        } else {
-            theme::text()
-        })
-        .child(
+        .icon(
             icons::icon(
                 if submit {
                     icons::IconName::Check
@@ -308,7 +255,7 @@ fn cred_button(cx: &mut Context<AppShell>, label: String, submit: bool) -> impl 
                 theme::text()
             }),
         )
-        .child(SharedString::from(label))
+        .label(label)
         .on_click(cx.listener(move |this, _ev, _w, cx| {
             if submit {
                 let val = std::mem::take(&mut this.prompt_input);

@@ -1392,21 +1392,11 @@ fn settings_text_action(
     label: String,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    div()
-        .id(id)
-        .h(px(30.))
-        .px_2()
-        .flex()
-        .items_center()
-        .gap_1()
-        .rounded(px(theme::RADIUS_SM))
-        .cursor_pointer()
-        .bg(theme::raised())
-        .text_xs()
-        .text_color(theme::muted_text())
-        .hover(|style| style.bg(theme::accent()).text_color(theme::canvas()))
-        .child(icons::icon(icon, 14.).text_color(theme::muted_text()))
-        .child(SharedString::from(label))
+    Button::new(id)
+        .size(ButtonSize::Small)
+        .variant(ButtonVariant::Ghost)
+        .icon(icons::icon(icon, 14.).text_color(theme::muted_text()))
+        .label(label)
         .on_click(on_click)
         .into_any_element()
 }
@@ -1604,27 +1594,11 @@ fn settings_link_button(
     label: String,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    div()
-        .id(id)
-        .h(px(30.))
-        .px_2()
-        .flex()
-        .items_center()
-        .gap_1()
-        .rounded(px(theme::RADIUS_SM))
-        .cursor_pointer()
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::raised())
-        .text_xs()
-        .text_color(theme::muted_text())
-        .hover(|s| s.bg(theme::accent()).text_color(theme::canvas()))
-        .child(
-            icons::icon(icons::IconName::Link, 14.)
-                .text_color(theme::muted_text())
-                .hover(|s| s.text_color(theme::canvas())),
-        )
-        .child(SharedString::from(label))
+    Button::new(id)
+        .size(ButtonSize::Small)
+        .variant(ButtonVariant::Link)
+        .icon(icons::icon(icons::IconName::Link, 14.).text_color(theme::muted_text()))
+        .label(label)
         .on_click(on_click)
         .into_any_element()
 }

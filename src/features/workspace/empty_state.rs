@@ -11,6 +11,7 @@ use crate::features::connections::HostEntry;
 use crate::features::workspace::shell::AppShell;
 use crate::shared::i18n;
 use crossh_ui::{icons, theme};
+use crossh_ui_component::{Button, ButtonSize, ButtonVariant};
 
 const CONTINUE_ENTRY_LIMIT: usize = 8;
 const COMPACT_LAYOUT_BREAKPOINT: f32 = 520.;
@@ -113,29 +114,16 @@ pub(crate) fn render(
     } else {
         filters.flex_1()
     };
-    let mut open_project = div()
-        .id("empty-open-folder")
-        .h(px(40.))
-        .px_3()
-        .flex()
-        .items_center()
-        .gap_2()
-        .rounded(px(theme::RADIUS_SM))
-        .cursor_pointer()
-        .bg(theme::accent())
-        .text_sm()
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(theme::canvas())
-        .hover(|style| style.bg(theme::accent_hover()))
-        .child(icons::icon(icons::IconName::FolderOpen, 15.).text_color(theme::canvas()))
-        .child(SharedString::from(i18n::text("project.open_folder")))
+    let mut open_project = Button::new("empty-open-folder")
+        .size(ButtonSize::Large)
+        .variant(ButtonVariant::Primary)
+        .icon(icons::icon(icons::IconName::FolderOpen, 15.).text_color(theme::canvas()))
+        .label(i18n::text("project.open_folder"))
         .on_click(cx.listener(|this, _ev, _window, cx| {
             this.choose_project_directory(cx);
         }));
     if compact {
-        open_project = open_project.w_full();
-    } else {
-        open_project = open_project.flex_none();
+        open_project = open_project.full_width();
     }
     let actions = if compact {
         div()
@@ -149,6 +137,7 @@ pub(crate) fn render(
         div()
             .w_full()
             .flex()
+            .items_center()
             .gap_2()
             .child(filters)
             .child(open_project)

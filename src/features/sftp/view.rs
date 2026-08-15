@@ -29,7 +29,7 @@ use crossh_ui::widgets::{
     utf16_offset_for_byte, utf16_slice,
 };
 use crossh_ui::{icons, theme};
-use crossh_ui_component::ModalDialog;
+use crossh_ui_component::{Button, ButtonSize, ButtonVariant, ModalDialog};
 
 use super::logic::*;
 
@@ -854,41 +854,23 @@ impl SftpPane {
         let mut buttons = div().flex().flex_row().gap_2().mt_4();
         buttons = buttons
             .child(
-                div()
-                    .id("sftp-path-confirm")
-                    .h(px(30.))
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .rounded(px(theme::RADIUS_SM))
-                    .cursor_pointer()
-                    .bg(theme::accent())
-                    .hover(|s| s.bg(theme::accent_hover()))
-                    .text_xs()
-                    .text_color(theme::canvas())
-                    .child(SharedString::from(if is_rename {
+                Button::new("sftp-path-confirm")
+                    .size(ButtonSize::Medium)
+                    .variant(ButtonVariant::Primary)
+                    .label(if is_rename {
                         i18n::text("context_menu.rename")
                     } else {
                         i18n::text("context_menu.create")
-                    }))
+                    })
                     .on_click(cx.listener(|this, _ev, _window, cx| {
                         this.submit_path_input(cx);
                     })),
             )
             .child(
-                div()
-                    .id("sftp-path-cancel")
-                    .h(px(30.))
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .rounded(px(theme::RADIUS_SM))
-                    .cursor_pointer()
-                    .bg(theme::raised())
-                    .hover(|s| s.bg(theme::border_strong()))
-                    .text_xs()
-                    .text_color(theme::text())
-                    .child(SharedString::from(i18n::text("prompt.cancel")))
+                Button::new("sftp-path-cancel")
+                    .size(ButtonSize::Medium)
+                    .variant(ButtonVariant::Secondary)
+                    .label(i18n::text("prompt.cancel"))
                     .on_click(cx.listener(|this, _ev, _window, cx| {
                         this.cancel_path_input(cx);
                     })),
@@ -922,37 +904,19 @@ impl SftpPane {
         let mut buttons = div().flex().flex_row().gap_2().mt_4();
         buttons = buttons
             .child(
-                div()
-                    .id("sftp-delete-confirm")
-                    .h(px(30.))
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .rounded(px(theme::RADIUS_SM))
-                    .cursor_pointer()
-                    .bg(theme::danger())
-                    .hover(|s| s.bg(theme::danger_hover()))
-                    .text_xs()
-                    .text_color(theme::canvas())
-                    .child(SharedString::from(i18n::text("context_menu.delete")))
+                Button::new("sftp-delete-confirm")
+                    .size(ButtonSize::Medium)
+                    .variant(ButtonVariant::Danger)
+                    .label(i18n::text("context_menu.delete"))
                     .on_click(cx.listener(|this, _ev, _window, cx| {
                         this.confirm_delete_submit(cx);
                     })),
             )
             .child(
-                div()
-                    .id("sftp-delete-cancel")
-                    .h(px(30.))
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .rounded(px(theme::RADIUS_SM))
-                    .cursor_pointer()
-                    .bg(theme::raised())
-                    .hover(|s| s.bg(theme::border_strong()))
-                    .text_xs()
-                    .text_color(theme::text())
-                    .child(SharedString::from(i18n::text("prompt.cancel")))
+                Button::new("sftp-delete-cancel")
+                    .size(ButtonSize::Medium)
+                    .variant(ButtonVariant::Secondary)
+                    .label(i18n::text("prompt.cancel"))
                     .on_click(cx.listener(|this, _ev, _window, cx| {
                         this.cancel_delete(cx);
                     })),
@@ -1006,20 +970,11 @@ impl SftpPane {
             .border_b_1()
             .border_color(theme::border())
             .child(
-                div()
-                    .id("sftp-editor-back")
-                    .h(px(28.))
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .rounded(px(theme::RADIUS_SM))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme::raised()))
-                    .text_xs()
-                    .text_color(theme::text())
-                    .child(icons::icon(icons::IconName::ArrowLeft, 14.).text_color(theme::text()))
-                    .child(SharedString::from(i18n::text("sftp.file_list")))
+                Button::new("sftp-editor-back")
+                    .size(ButtonSize::Small)
+                    .variant(ButtonVariant::Ghost)
+                    .icon(icons::icon(icons::IconName::ArrowLeft, 14.))
+                    .label(i18n::text("sftp.file_list"))
                     .on_click(cx.listener(|this, _ev, _window, cx| {
                         this.close_editor(cx);
                     })),
@@ -1051,87 +1006,47 @@ impl SftpPane {
         let mut actions = div().flex().flex_row().items_center().gap_1();
         if read_only {
             actions = actions.child(
-                div()
-                    .id("sftp-editor-edit")
-                    .h(px(28.))
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .rounded(px(theme::RADIUS_SM))
-                    .cursor_pointer()
-                    .bg(theme::raised())
-                    .hover(|s| s.bg(theme::border_strong()))
-                    .text_xs()
-                    .text_color(theme::text())
-                    .child(icons::icon(icons::IconName::Pencil, 14.).text_color(theme::text()))
-                    .child(SharedString::from(i18n::text("sftp.enter_editing")))
+                Button::new("sftp-editor-edit")
+                    .size(ButtonSize::Small)
+                    .variant(ButtonVariant::Secondary)
+                    .icon(icons::icon(icons::IconName::Pencil, 14.).text_color(theme::text()))
+                    .label(i18n::text("sftp.enter_editing"))
                     .on_click(cx.listener(|this, _ev, window, cx| {
                         this.enter_editor_edit(window, cx);
                     })),
             );
         } else {
             actions = actions.child(
-                div()
-                    .id("sftp-editor-read-only")
-                    .h(px(28.))
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .rounded(px(theme::RADIUS_SM))
-                    .cursor_pointer()
-                    .bg(theme::raised())
-                    .hover(|s| s.bg(theme::border_strong()))
-                    .text_xs()
-                    .text_color(theme::text())
-                    .child(icons::icon(icons::IconName::ShieldAlert, 14.).text_color(theme::text()))
-                    .child(SharedString::from(i18n::text("sftp.read_only")))
+                Button::new("sftp-editor-read-only")
+                    .size(ButtonSize::Small)
+                    .variant(ButtonVariant::Secondary)
+                    .icon(icons::icon(icons::IconName::ShieldAlert, 14.).text_color(theme::text()))
+                    .label(i18n::text("sftp.read_only"))
                     .on_click(cx.listener(|this, _ev, _window, cx| {
                         this.leave_editor_edit(cx);
                     })),
             );
             if dirty {
                 actions = actions.child(
-                    div()
-                        .id("sftp-editor-save")
-                        .h(px(28.))
-                        .px_2()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .rounded(px(theme::RADIUS_SM))
-                        .cursor_pointer()
-                        .bg(theme::accent())
-                        .hover(|s| s.bg(theme::accent_hover()))
-                        .text_xs()
-                        .text_color(theme::canvas())
-                        .child(icons::icon(icons::IconName::Save, 14.).text_color(theme::canvas()))
-                        .child(SharedString::from(if saving {
+                    Button::new("sftp-editor-save")
+                        .size(ButtonSize::Small)
+                        .variant(ButtonVariant::Primary)
+                        .icon(icons::icon(icons::IconName::Save, 14.).text_color(theme::canvas()))
+                        .label(if saving {
                             i18n::text("sftp.saving_short")
                         } else {
                             i18n::text("sftp.save")
-                        }))
+                        })
                         .on_click(cx.listener(|this, _ev, _window, cx| {
                             this.save_editor(cx);
                         })),
                 );
                 actions = actions.child(
-                    div()
-                        .id("sftp-editor-discard")
-                        .h(px(28.))
-                        .px_2()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .rounded(px(theme::RADIUS_SM))
-                        .cursor_pointer()
-                        .bg(theme::raised())
-                        .hover(|s| s.bg(theme::border_strong()))
-                        .text_xs()
-                        .text_color(theme::text())
-                        .child(icons::icon(icons::IconName::X, 14.).text_color(theme::text()))
-                        .child(SharedString::from(i18n::text("sftp.discard")))
+                    Button::new("sftp-editor-discard")
+                        .size(ButtonSize::Small)
+                        .variant(ButtonVariant::Secondary)
+                        .icon(icons::icon(icons::IconName::X, 14.).text_color(theme::text()))
+                        .label(i18n::text("sftp.discard"))
                         .on_click(cx.listener(|this, _ev, _window, cx| {
                             this.discard_editor(cx);
                         })),

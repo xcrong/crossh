@@ -28,20 +28,11 @@ impl Render for SftpPane {
             .border_b_1()
             .border_color(theme::border())
             .child(
-                div()
-                    .id("sftp-up")
-                    .h(px(28.))
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .rounded(px(theme::RADIUS_SM))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme::raised()))
-                    .text_xs()
-                    .text_color(theme::text())
-                    .child(icons::icon(icons::IconName::ArrowUp, 14.).text_color(theme::text()))
-                    .child(SharedString::from(i18n::text("sftp.parent")))
+                Button::new("sftp-up")
+                    .size(ButtonSize::Small)
+                    .variant(ButtonVariant::Ghost)
+                    .icon(icons::icon(icons::IconName::ArrowUp, 14.))
+                    .label(i18n::text("sftp.parent"))
                     .on_click(cx.listener(|this, _ev, _w, cx| {
                         let p = parent_of(&this.cwd);
                         this.request_list(p);
@@ -58,22 +49,12 @@ impl Render for SftpPane {
                     .child(SharedString::from(cwd)),
             )
             .child(
-                div()
-                    .id("sftp-refresh")
-                    .w(px(28.))
-                    .h(px(28.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(theme::RADIUS_SM))
-                    .px_2()
-                    .cursor_pointer()
-                    .text_color(theme::muted_text())
-                    .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
-                    .child(
+                Button::new("sftp-refresh")
+                    .size(ButtonSize::Icon(px(28.)))
+                    .variant(ButtonVariant::Ghost)
+                    .icon(
                         icons::icon(icons::IconName::RefreshCw, 14.)
-                            .text_color(theme::muted_text())
-                            .hover(|s| s.text_color(theme::text())),
+                            .text_color(theme::muted_text()),
                     )
                     .on_click(cx.listener(|this, _ev, _w, cx| {
                         this.request_list(this.cwd.clone());
