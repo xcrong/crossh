@@ -132,26 +132,15 @@ fn provider_and_model_ids_must_be_unique() {
 }
 
 #[test]
-fn reviewer_model_must_differ_from_active_model() {
-    let mut settings = configured_settings();
-    settings.reviewer_model = settings.active_model.clone();
-    assert_eq!(
-        settings.validate(),
-        Err("Reviewer model must be different from the active model")
-    );
-
-    let mut settings = configured_settings();
-    settings.reviewer_model = AgentModelRef {
-        provider: "local".into(),
-        model: "other-model".into(),
-    };
-    settings.providers[0].models.push(AgentModel {
-        id: "other-model".into(),
-        name: "Other Model".into(),
-        reasoning: false,
-        context_window: 128_000,
-        max_tokens: 32_000,
-    });
+fn reviewer_may_reuse_the_active_model() {
+    // 设计意图：评审模型与主模型是否分离是产品层面的可选增强（多模型用户
+    // 可另配评审模型以隔离仓库注入内容），而不是配置硬约束。默认配置只有
+    // 一个模型时，评审复用主模型或回退到人工审批，绝不能因此拒绝启动。
+    // 2026-08 曾把“评审模型必须与主模型不同”误当作校验规则加入 validate()，
+    // 导致只有单模型配额的用户在 deb731f 之后启动即失败；此测试锁定
+    // “二者相等合法”的行为，防止同类约束再次混入校验层。
+    let settings = configured_settings();
+    assert_eq!(settings.active_model, settings.reviewer_model);
     assert_eq!(settings.validate(), Ok(()));
 }
 

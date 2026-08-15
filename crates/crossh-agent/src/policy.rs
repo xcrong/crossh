@@ -227,11 +227,6 @@ impl AgentSettings {
         if has_models {
             self.resolve(&self.active_model)?;
             self.resolve(&self.reviewer_model)?;
-            // 评审模型与主模型必须不同：同一模型评审会被主模型输出（可能含
-            // 仓库注入内容）直接引导，评审链失去隔离意义。
-            if self.active_model == self.reviewer_model {
-                return Err("Reviewer model must be different from the active model");
-            }
         } else if self.active_model != AgentModelRef::default()
             || self.reviewer_model != AgentModelRef::default()
         {
