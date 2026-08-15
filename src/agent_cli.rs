@@ -115,8 +115,12 @@ pub(crate) fn parse_options(
 }
 
 pub(crate) fn print_help() {
+    print_help_for("crossh-agent");
+}
+
+fn print_help_for(command: &str) {
     println!(
-        "Usage: crossh agent [OPTIONS]\n\nStart the interactive Crossh coding agent.\n\nOptions:\n  -c, --continue          Continue the most recent project session\n  -r, --resume VALUE      Resume a session by number, id, name, or path\n  -m, --model VALUE       Select provider/model or a model id\n      --thinking LEVEL    Set off, minimal, low, medium, high, or xhigh reasoning\n      --no-session         Do not write a persistent session\n  -h, --help              Print this help\n\nInside the agent, type /help for commands and Ctrl-T/Ctrl-O for display toggles."
+        "Usage: {command} [OPTIONS]\n\nStart the interactive Crossh coding agent.\n\nOptions:\n  -c, --continue          Continue the most recent project session\n  -r, --resume VALUE      Resume a session by number, id, name, or path\n  -m, --model VALUE       Select provider/model or a model id\n      --thinking LEVEL    Set off, minimal, low, medium, high, or xhigh reasoning\n      --no-session         Do not write a persistent session\n  -h, --help              Print this help\n\nInside the agent, type /help for commands and Ctrl-T/Ctrl-O for display toggles."
     );
 }
 

@@ -48,17 +48,7 @@ pub(crate) fn spawn_git_process(cwd: &Path) -> std::io::Result<()> {
 }
 
 fn git_process_command(cwd: &Path) -> std::io::Result<Command> {
-    let executable = std::env::current_exe()?
-        .parent()
-        .map(|directory| {
-            directory.join(if cfg!(windows) {
-                "crossh-git.exe"
-            } else {
-                "crossh-git"
-            })
-        })
-        .filter(|path| path.is_file())
-        .unwrap_or_else(|| Path::new("crossh-git").to_path_buf());
+    let executable = crossh_core::process::sibling_executable("crossh-git");
     let mut command = Command::new(executable);
     command
         .arg(cwd)

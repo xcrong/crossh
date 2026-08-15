@@ -1,0 +1,46 @@
+//! Process-level helpers shared by the application binaries.
+
+use std::path::PathBuf;
+
+/// 在当前可执行文件旁查找同伴二进制，找不到时回退为按名称执行（交给 PATH）。
+///
+/// 发布包会把所有二进制放在同一目录（app bundle `MacOS/`、Linux tar 根目录、
+/// Windows zip 根目录），因此同伴二进制优先；开发环境中直接 `cargo build`
+/// 即可让主程序委托到同目录产物。
+pub fn sibling_executable(name: &str) -> PathBuf {
+    let filename = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    };
+    std::env::current_exe()
+        .ok()
+        .and_then(|current| current.parent().map(|directory| directory.join(filename)))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from(name))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    #[test]
+    fn missing_sibling_falls_back_to_path_syntax() {
+        let name = "crossh-core-test-no-such-sibling";
+        let current = std::env::current_exe().expect("current exe should resolve");
+        let directory = current.parent().expect("exe should have a parent");
+        let sibling = if cfg!(windows) {
+            directory.join(format!("{name}.exe"))
+        } else {
+            directory.join(name)
+        };
+        assert!(
+            !sibling.exists(),
+            "test fixture name collides with a real file: {}",
+            sibling.display()
+        );
+        assert_eq!(sibling_executable(name), PathBuf::from(name));
+    }
+}

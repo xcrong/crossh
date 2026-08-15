@@ -4,7 +4,6 @@
 //! 和 Crossh 本地 renderer 的交互式终端。
 //! SFTP 与端口转发已经作为独立 feature 接入工作区。
 
-mod agent_cli;
 mod app;
 mod features;
 mod infrastructure;
@@ -53,25 +52,15 @@ fn main() {
             return;
         }
         Some("agent") => {
-            let options = match agent_cli::parse_options(args) {
-                Ok(options) => options,
-                Err(error) if error == "help" => {
-                    agent_cli::print_help();
-                    return;
-                }
+            let arguments = std::env::args().skip(2).collect::<Vec<_>>();
+            let code = match spawn_agent_process(&arguments) {
+                Ok(code) => code,
                 Err(error) => {
-                    eprintln!("crossh agent: {error}\n");
-                    agent_cli::print_help();
-                    std::process::exit(2);
+                    eprintln!("crossh agent: {error}");
+                    std::process::exit(1);
                 }
             };
-            if let Err(error) =
-                agent_cli::run_with_options(features::settings::load().agent, options)
-            {
-                eprintln!("crossh agent: {error}");
-                std::process::exit(1);
-            }
-            return;
+            std::process::exit(code);
         }
         Some("git") => match features::git::parse_cli(
             args,
@@ -136,6 +125,25 @@ fn main() {
         infrastructure::app_menu::install(cx);
         app::open_launch_target(launch_target, cx);
     });
+}
+
+/// 委托同目录（或 PATH）的 `crossh-agent` 二进制。继承 stdio 让 TUI 直接
+/// 使用当前终端，launcher 不碰 termios；透传子进程退出码，退出路径不变。
+fn spawn_agent_process(arguments: &[String]) -> Result<i32, String> {
+    let executable = crossh_core::process::sibling_executable("crossh-agent");
+    let status = std::process::Command::new(&executable)
+        .args(arguments)
+        .status()
+        .map_err(|error| {
+            // sibling_executable 在找不到同伴二进制时回退为纯文件名（交给
+            // PATH）；此时启动失败几乎一定是二进制缺失，给出可执行的指引。
+            if executable.is_relative() {
+                format!("{error}: crossh-agent not found next to crossh or on PATH; build it with `cargo build` or install crossh-agent alongside crossh")
+            } else {
+                error.to_string()
+            }
+        })?;
+    Ok(status.code().unwrap_or(1))
 }
 
 fn print_help() {

@@ -23,7 +23,7 @@ Write-Host "==> rustup target add $Target"
 rustup target add $Target | Out-Null
 
 Write-Host "==> cargo build --release --target $Target"
-cargo build --release --target $Target --bin crossh --bin crossh-git --bin crossh-updater
+cargo build --release --target $Target --bin crossh --bin crossh-agent --bin crossh-git --bin crossh-updater
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $BinDir = Join-Path "target" (Join-Path $Target "release")
@@ -61,6 +61,7 @@ Copy-Item (Join-Path $ZedRoot "assets/fonts/lilex/Lilex-Regular.ttf") (Join-Path
 Copy-Item (Join-Path $ZedRoot "assets/fonts/lilex/Lilex-Bold.ttf") (Join-Path $AssetDestination "fonts/lilex")
 Set-Content -Path (Join-Path $AssetDestination "manifest.json") -Value (ConvertTo-Json @{ schema = 1; zed_revision = $ZedRevision } -Compress)
 Copy-Item (Join-Path $BinDir "crossh.exe") $Stage
+Copy-Item (Join-Path $BinDir "crossh-agent.exe") $Stage
 Copy-Item (Join-Path $BinDir "crossh-git.exe") $Stage
 Copy-Item (Join-Path $BinDir "crossh-updater.exe") $Stage
 Copy-Item "README.md" $Stage

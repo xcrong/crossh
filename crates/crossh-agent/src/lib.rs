@@ -1,11 +1,14 @@
 //! Vendor-neutral agent messages and wire-protocol adapters.
 
+mod config;
 mod messages;
 mod policy;
 mod providers;
 mod tools;
 
 pub mod session;
+
+pub use config::load as load_agent_settings;
 
 pub use messages::{
     AgentContentBlock, AgentEvent, AgentMessage, AgentResponse, AgentRole, AgentToolCall,
