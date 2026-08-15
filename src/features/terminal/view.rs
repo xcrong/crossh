@@ -144,6 +144,14 @@ fn open_navigation_target(target: &zed_terminal::MaybeNavigationTarget, cx: &mut
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
 
+/// UI-only requests emitted by a terminal view and handled by the workspace.
+#[derive(Clone, Debug)]
+pub(crate) enum TerminalViewEvent {
+    SendSelectionToAdjacent { text: String },
+}
+
+impl EventEmitter<TerminalViewEvent> for TerminalView {}
+
 pub struct TerminalView {
     /// The display-only entity is replaced by the PTY-backed entity once the
     /// Zed builder finishes. The element reads this field directly.
@@ -172,6 +180,7 @@ pub struct TerminalView {
     /// the renderer so the system bell fires exactly once per event.
     bell_pending: bool,
     context_menu: Option<ContextMenuState<TerminalMenuAction>>,
+    adjacent_terminal_available: bool,
     /// Whether the current right-button press was forwarded to the PTY.
     right_mouse_down: bool,
     /// The terminal view origin in window coordinates, used to place the menu.
@@ -328,6 +337,7 @@ impl TerminalView {
                 ime_marked_text: String::new(),
                 bell_pending: false,
                 context_menu: None,
+                adjacent_terminal_available: false,
                 right_mouse_down: false,
                 anchor_bounds: Rc::new(Cell::new(None)),
                 show_timestamps: settings.show_timestamps,
@@ -767,6 +777,29 @@ impl TerminalView {
             .update(cx, |terminal, _| terminal.input(bytes));
     }
 
+    pub(crate) fn paste_raw_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        if text.is_empty() {
+            return;
+        }
+        self.ime_marked_text.clear();
+        self.zed_terminal
+            .update(cx, |terminal, _| terminal.paste(text));
+        self.request_focus();
+        cx.notify();
+    }
+
+    pub(crate) fn set_adjacent_terminal_available(
+        &mut self,
+        available: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.adjacent_terminal_available == available {
+            return;
+        }
+        self.adjacent_terminal_available = available;
+        cx.notify();
+    }
+
     pub(crate) fn run_command(&mut self, command: &str, cx: &mut Context<Self>) {
         let command = command.trim();
         if command.is_empty() {
@@ -859,7 +892,12 @@ impl TerminalView {
                     .map(|word| word.word.clone()),
             )
         };
-        let entries = menu_entries(true, has_selection, hovered_word);
+        let entries = menu_entries(
+            true,
+            has_selection,
+            self.adjacent_terminal_available,
+            hovered_word,
+        );
         self.context_menu = Some(ContextMenuState { position, entries });
         cx.notify();
     }
@@ -876,13 +914,31 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let refocus_source = !matches!(&action, TerminalMenuAction::SendSelectionToAdjacent);
+
         match action {
             TerminalMenuAction::Copy => self.copy_selection(cx),
             TerminalMenuAction::Paste => self.paste_clipboard(cx),
             TerminalMenuAction::SelectAll => self.select_all_terminal(cx),
+            TerminalMenuAction::SendSelectionToAdjacent => {
+                let text = self
+                    .zed_terminal
+                    .read(cx)
+                    .last_content()
+                    .selection_text
+                    .clone()
+                    .filter(|text| !text.is_empty());
+                if let Some(text) = text {
+                    cx.emit(TerminalViewEvent::SendSelectionToAdjacent { text });
+                }
+            }
             TerminalMenuAction::OpenUrl(url) => cx.open_url(&url),
         }
-        window.focus(&self.focus, cx);
+        // Sending schedules focus on the destination terminal; restoring the source focus here
+        // would race that request and make the final focus platform-dependent.
+        if refocus_source {
+            window.focus(&self.focus, cx);
+        }
         self.close_context_menu(cx);
     }
 
@@ -986,6 +1042,17 @@ impl WorkspacePane for TerminalWorkspacePane {
     fn run_command(&self, command: &str, cx: &mut App) {
         self.0
             .update(cx, |terminal, cx| terminal.run_command(command, cx));
+    }
+
+    fn send_text(&self, text: &str, cx: &mut App) {
+        self.0
+            .update(cx, |terminal, cx| terminal.paste_raw_text(text, cx));
+    }
+
+    fn set_adjacent_terminal_available(&self, available: bool, cx: &mut App) {
+        self.0.update(cx, |terminal, cx| {
+            terminal.set_adjacent_terminal_available(available, cx)
+        });
     }
 
     fn handle_system_notification_response(

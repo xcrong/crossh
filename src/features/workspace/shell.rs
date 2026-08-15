@@ -27,7 +27,7 @@ use crate::features::connections::{PromptDisplay, render_prompt_modal};
 use crate::features::forwarding::ForwardPane;
 use crate::features::settings::{self, SettingsSnapshot};
 use crate::features::sftp::SftpPane;
-use crate::features::terminal::{TerminalEvent, TerminalView};
+use crate::features::terminal::{TerminalEvent, TerminalView, TerminalViewEvent};
 use crate::features::updates::{UpdateController, UpdateSettings};
 use crate::features::workspace::empty_state::EmptyStateFilter;
 use crate::features::workspace::quick_commands_rail::render_quick_commands_rail;
@@ -63,6 +63,8 @@ use crate::shared::text_editing::{next_char_boundary, previous_char_boundary, se
 mod quit;
 #[path = "shell_input.rs"]
 mod shell_input;
+#[path = "split.rs"]
+mod split;
 #[path = "tabs.rs"]
 mod tabs;
 
@@ -152,6 +154,10 @@ pub struct AppShell {
     /// Right-side command panel width and drag state.
     pub(crate) quick_commands_width: Rc<Cell<f32>>,
     pub(crate) quick_commands_dragging: Rc<Cell<bool>>,
+    /// Left terminal split width and drag state; zero means use an even split
+    /// for the current available width.
+    pub(crate) terminal_split_width: Rc<Cell<f32>>,
+    pub(crate) terminal_split_dragging: Rc<Cell<bool>>,
     pub(crate) command_history: CommandHistory,
     pub(crate) background_tasks: BackgroundTaskManager,
     remote_background_controls: BTreeMap<u64, (Entity<Connection>, u64)>,
@@ -231,6 +237,8 @@ impl AppShell {
             tab_scroll: gpui::ScrollHandle::new(),
             quick_commands_width: Rc::new(Cell::new(theme::QUICK_COMMANDS_WIDTH)),
             quick_commands_dragging: Rc::new(Cell::new(false)),
+            terminal_split_width: Rc::new(Cell::new(0.)),
+            terminal_split_dragging: Rc::new(Cell::new(false)),
             command_history: CommandHistory::load(),
             background_tasks: BackgroundTaskManager::default(),
             remote_background_controls: BTreeMap::new(),
@@ -286,6 +294,7 @@ impl AppShell {
             Some(e) => e.clone(),
             None => return,
         };
+        self.collapse_terminal_split(cx);
         let resolved = self.connections.resolve(&entry.alias);
         let methods = self.connections.auth_methods(&resolved);
         let host_key = ConnectionManager::pool_key(&resolved);
@@ -309,6 +318,7 @@ impl AppShell {
             Some(e) => e.clone(),
             None => return,
         };
+        self.collapse_terminal_split(cx);
         let resolved = self.connections.resolve(&entry.alias);
         let methods = self.connections.auth_methods(&resolved);
         let host_key = ConnectionManager::pool_key(&resolved);
@@ -334,6 +344,22 @@ impl AppShell {
         cwd: PathBuf,
         cx: &mut Context<Self>,
     ) {
+        self.collapse_terminal_split(cx);
+        let view = self.create_local_session(project_dir, cwd, cx);
+        if let ActiveView::LocalSession(session_id) = view {
+            self.select_local_session(session_id, cx);
+            self.refresh_git_status(session_id, false, cx);
+        }
+        self.status = None;
+        cx.notify();
+    }
+
+    fn create_local_session(
+        &mut self,
+        project_dir: PathBuf,
+        cwd: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> ActiveView {
         let project_dir = normalize_local_cwd(project_dir);
         let cwd = normalize_local_cwd(cwd);
         self.remember_local_dir(&project_dir, cx);
@@ -378,10 +404,20 @@ impl AppShell {
             }
             TerminalEvent::TitleChanged | TerminalEvent::Notification => cx.notify(),
         });
+        let adjacent_subscription =
+            cx.subscribe(&terminal, |this, terminal, event, cx| match event {
+                TerminalViewEvent::SendSelectionToAdjacent { text } => {
+                    this.send_to_adjacent_terminal(terminal.entity_id(), text, cx);
+                }
+            });
         self.workspace
             .sessions
             .terminal_subscriptions
             .push(subscription);
+        self.workspace
+            .sessions
+            .terminal_subscriptions
+            .push(adjacent_subscription);
         self.workspace.sessions.local_sessions.insert(
             session_id,
             LocalSession {
@@ -394,10 +430,7 @@ impl AppShell {
         );
         self.ensure_git_status_refresh_task(cx);
         self.sync_local_dirs(cx);
-        self.select_local_session(session_id, cx);
-        self.refresh_git_status(session_id, false, cx);
-        self.status = None;
-        cx.notify();
+        ActiveView::LocalSession(session_id)
     }
 
     pub(crate) fn activate_local_dir(&mut self, project_dir: PathBuf, cx: &mut Context<Self>) {
@@ -421,6 +454,9 @@ impl AppShell {
         session_id: LocalSessionId,
         cx: &mut Context<Self>,
     ) {
+        if self.workspace.active_view == Some(ActiveView::LocalSession(session_id)) {
+            return;
+        }
         let cwd = self
             .workspace
             .sessions
@@ -429,6 +465,7 @@ impl AppShell {
             .find(|(_, dir)| dir.sessions.contains(&session_id))
             .map(|(cwd, _)| cwd.clone());
         let Some(cwd) = cwd else { return };
+        self.collapse_terminal_split(cx);
         if let Some(dir) = self.workspace.sessions.local_dirs.get_mut(&cwd) {
             dir.active_session = Some(session_id);
         }
@@ -454,6 +491,8 @@ impl AppShell {
         else {
             return;
         };
+        let split_affected =
+            self.prepare_terminal_split_view_close(ActiveView::LocalSession(session_id), cx);
         let was_active = self.workspace.active_view == Some(ActiveView::LocalSession(session_id));
         let mut next_session = None;
         let remove_dir = if let Some(dir) = self.workspace.sessions.local_dirs.get_mut(&cwd) {
@@ -486,6 +525,9 @@ impl AppShell {
                 });
             self.refocus_active_terminal(cx);
         }
+        if split_affected && !was_active {
+            self.refocus_active_terminal(cx);
+        }
         cx.notify();
     }
 
@@ -494,17 +536,33 @@ impl AppShell {
         response: SystemNotificationResponse,
         cx: &mut Context<Self>,
     ) -> bool {
+        let mut handled_remote = false;
+        let mut remote_focus = None;
         for (index, tab) in self.workspace.sessions.remote_tabs.iter().enumerate() {
             let Some(focus) = tab.pane.handle_system_notification_response(&response, cx) else {
                 continue;
             };
+            handled_remote = true;
             if focus {
-                self.workspace.active_view = Some(ActiveView::RemoteTab(index));
                 tab.pane.request_focus(cx);
+                remote_focus = Some(ActiveView::RemoteTab(index));
+            }
+            break;
+        }
+        if handled_remote {
+            if let Some(view) = remote_focus
+                && !self.workspace.focus_split_view(view)
+            {
+                self.workspace.active_view = Some(view);
+            }
+            if remote_focus.is_some() {
                 cx.notify();
             }
             return true;
         }
+
+        let mut handled_local = false;
+        let mut local_focus = None;
         for (&session_id, session) in &self.workspace.sessions.local_sessions {
             let handled = session.terminal.update(cx, |terminal, cx| {
                 terminal.handle_system_notification_response(&response, cx)
@@ -512,11 +570,22 @@ impl AppShell {
             let Some(focus) = handled else {
                 continue;
             };
+            handled_local = true;
             if focus {
-                self.workspace.active_view = Some(ActiveView::LocalSession(session_id));
                 session
                     .terminal
                     .update(cx, |terminal, _cx| terminal.request_focus());
+                local_focus = Some(ActiveView::LocalSession(session_id));
+            }
+            break;
+        }
+        if handled_local {
+            if let Some(view) = local_focus
+                && !self.workspace.focus_split_view(view)
+            {
+                self.workspace.active_view = Some(view);
+            }
+            if local_focus.is_some() {
                 cx.notify();
             }
             return true;
@@ -542,7 +611,7 @@ impl AppShell {
     }
 
     fn active_command_context(&self, cx: &Context<Self>) -> Option<ActiveCommandContext> {
-        match self.workspace.active_view? {
+        match self.workspace.focused_view()? {
             ActiveView::LocalSession(session_id) => {
                 let session = self.workspace.sessions.local_sessions.get(&session_id)?;
                 let cwd = session
@@ -1456,7 +1525,7 @@ impl AppShell {
                 if weak
                     .update(cx, |this, cx| {
                         if let Some(ActiveView::LocalSession(session_id)) =
-                            this.workspace.active_view
+                            this.workspace.focused_view()
                         {
                             this.refresh_git_status(session_id, false, cx);
                         }
@@ -1537,32 +1606,6 @@ impl AppShell {
             .local_dirs
             .iter()
             .find_map(|(_, dir)| dir.sessions.contains(&session_id).then_some(dir))
-    }
-
-    fn local_session_cwd(&self, session_id: LocalSessionId, cx: &Context<Self>) -> PathBuf {
-        self.workspace
-            .sessions
-            .local_sessions
-            .get(&session_id)
-            .map(|session| {
-                session
-                    .terminal
-                    .read(cx)
-                    .cwd
-                    .as_deref()
-                    .map(|cwd| normalize_local_cwd(PathBuf::from(cwd)))
-                    .unwrap_or_else(|| session.cwd.clone())
-            })
-            .unwrap_or_else(current_local_cwd)
-    }
-
-    fn local_session_project_dir(&self, session_id: LocalSessionId) -> PathBuf {
-        self.workspace
-            .sessions
-            .local_sessions
-            .get(&session_id)
-            .map(|session| session.project_dir.clone())
-            .unwrap_or_else(current_local_cwd)
     }
 
     fn local_cwd_matching_query(&self, query: &str) -> Option<PathBuf> {
@@ -1649,7 +1692,7 @@ impl Render for AppShell {
         }
 
         // 快捷命令是 workspace 级面板，使用当前活动视图的上下文；没有活动视图时不显示。
-        let quick_context = match self.workspace.active_view {
+        let quick_context = match self.workspace.focused_view() {
             Some(ActiveView::LocalSession(session_id)) => self
                 .workspace
                 .sessions
@@ -1730,7 +1773,7 @@ impl Render for AppShell {
             .child(sidebar)
             .child(main)
             .children(quick_commands);
-        let status_bar = render_workspace_status_bar(self, cx);
+        let status_bar = render_workspace_status_bar(self, available_main_width, cx);
 
         let mut root =
             div()

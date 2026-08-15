@@ -14,6 +14,7 @@ use crate::features::settings::is_settings_window_open;
 use crate::features::terminal::{ConnState, TerminalView};
 use crate::features::workspace::empty_state;
 use crate::features::workspace::pane::WorkspacePane;
+use crate::features::workspace::registry::{SplitSide, TerminalSplitState};
 use crate::features::workspace::shell::{AppShell, GitSyncOperation, GitSyncState};
 use crate::features::workspace::status::{
     background_task_color, background_task_label, conn_state_dot_color, local_tab_dot_color,
@@ -27,6 +28,9 @@ use crossh_ui::{icons, theme};
 use crossh_ui_component::{
     Button, ButtonSize, ButtonVariant, CountBadge, ModalDialog, SplitResizer, StatusDot, Tooltip,
 };
+
+const TERMINAL_SPLIT_MIN_PANE_WIDTH: f32 = 160.0;
+const TERMINAL_SPLIT_HANDLE_WIDTH: f32 = 8.0;
 
 /// 一个远程终端/SFTP 标签。
 pub struct Tab {
@@ -108,24 +112,16 @@ pub fn render_main(
 
     // 终端/SFTP 区。
     let mut content = div().flex_1().min_h_0().flex().relative();
-    let active_pane = match shell.workspace.active_view {
-        Some(ActiveView::RemoteTab(idx)) => shell
-            .workspace
-            .sessions
-            .remote_tabs
-            .get(idx)
-            .map(|tab| tab.pane.render()),
-        Some(ActiveView::LocalSession(session_id)) => shell
-            .workspace
-            .sessions
-            .local_sessions
-            .get(&session_id)
-            .map(|session| session.terminal.clone().into_any_element()),
-        None => None,
-    };
     let mut terminal_area = div().flex_1().min_w_0().min_h_0().relative();
-    if let Some(active_pane) = active_pane {
-        terminal_area = terminal_area.child(active_pane);
+    if let Some(split) = shell.workspace.terminal_split {
+        terminal_area =
+            terminal_area.child(render_terminal_split(shell, split, available_width, cx));
+    } else if let Some(active_view) = shell.workspace.active_view {
+        if let Some(active_pane) = render_workspace_view(shell, active_view) {
+            terminal_area = terminal_area.child(active_pane);
+        } else {
+            terminal_area = terminal_area.child(empty_state::render(shell, available_width, cx));
+        }
     } else {
         terminal_area = terminal_area.child(empty_state::render(shell, available_width, cx));
     }
@@ -152,21 +148,229 @@ pub fn render_main(
     pane.into_any_element()
 }
 
-pub(crate) fn render_workspace_status_bar(
-    shell: &AppShell,
+fn render_workspace_view(shell: &AppShell, view: ActiveView) -> Option<AnyElement> {
+    match view {
+        ActiveView::RemoteTab(index) => shell
+            .workspace
+            .sessions
+            .remote_tabs
+            .get(index)
+            .map(|tab| tab.pane.render()),
+        ActiveView::LocalSession(session_id) => shell
+            .workspace
+            .sessions
+            .local_sessions
+            .get(&session_id)
+            .map(|session| session.terminal.clone().into_any_element()),
+    }
+}
+
+fn render_terminal_split(
+    shell: &mut AppShell,
+    split: TerminalSplitState,
+    available_width: Pixels,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
-    let terminal_active = match shell.workspace.active_view {
-        Some(ActiveView::LocalSession(_)) => true,
-        Some(ActiveView::RemoteTab(index)) => shell
+    let available_width = available_width.as_f32().max(0.0);
+    let has_room = terminal_split_available(px(available_width));
+    let pane_min_width = if has_room {
+        TERMINAL_SPLIT_MIN_PANE_WIDTH
+    } else {
+        0.0
+    };
+    let max_left_width = if has_room {
+        (available_width - TERMINAL_SPLIT_HANDLE_WIDTH - pane_min_width).max(pane_min_width)
+    } else {
+        (available_width - TERMINAL_SPLIT_HANDLE_WIDTH).max(0.0)
+    };
+    let default_left_width = ((available_width - TERMINAL_SPLIT_HANDLE_WIDTH) / 2.0).max(0.0);
+    let left_width = terminal_split_left_width(
+        shell.terminal_split_width.get(),
+        default_left_width,
+        pane_min_width,
+        max_left_width,
+    );
+    let left = div()
+        .relative()
+        .w(px(left_width))
+        .h_full()
+        .flex_shrink_0()
+        .border_r_1()
+        .border_color(theme::border_strong())
+        .child(render_split_pane(
+            shell,
+            split.left,
+            SplitSide::Left,
+            split.focused == SplitSide::Left,
+            cx,
+        ));
+    let right = div().h_full().flex_1().min_w_0().child(render_split_pane(
+        shell,
+        split.right,
+        SplitSide::Right,
+        split.focused == SplitSide::Right,
+        cx,
+    ));
+
+    div()
+        .id("terminal-split")
+        .size_full()
+        .relative()
+        .flex()
+        .flex_row()
+        .min_w_0()
+        .min_h_0()
+        .overflow_hidden()
+        .child(left)
+        .child(right)
+        .child(render_terminal_split_resizer(
+            shell,
+            left_width,
+            pane_min_width,
+            max_left_width,
+        ))
+        .into_any_element()
+}
+
+fn render_terminal_split_resizer(
+    shell: &AppShell,
+    left_width: f32,
+    min_width: f32,
+    max_width: f32,
+) -> impl IntoElement {
+    div()
+        .relative()
+        .absolute()
+        .left_0()
+        .top_0()
+        .w(px(left_width))
+        .h_full()
+        .child(
+            SplitResizer::new(
+                "terminal-split-resizer",
+                shell.terminal_split_dragging.clone(),
+                shell.terminal_split_width.clone(),
+            )
+            .min_width(min_width)
+            .max_width(max_width)
+            .line(),
+        )
+}
+
+fn render_split_pane(
+    shell: &mut AppShell,
+    view: ActiveView,
+    side: SplitSide,
+    focused: bool,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    let content = render_workspace_view(shell, view)
+        .unwrap_or_else(|| div().size_full().bg(theme::canvas()).into_any_element());
+    let id = match side {
+        SplitSide::Left => "terminal-split-left",
+        SplitSide::Right => "terminal-split-right",
+    };
+    div()
+        .id(id)
+        .relative()
+        .size_full()
+        .min_w_0()
+        .min_h_0()
+        .overflow_hidden()
+        .border_t_1()
+        .border_color(if focused {
+            theme::accent()
+        } else {
+            theme::border()
+        })
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _event, _window, cx| {
+                this.focus_terminal_split(side, cx);
+                cx.stop_propagation();
+            }),
+        )
+        .child(content)
+        .into_any_element()
+}
+
+fn terminal_split_available(width: Pixels) -> bool {
+    width.as_f32() >= TERMINAL_SPLIT_MIN_PANE_WIDTH * 2.0 + TERMINAL_SPLIT_HANDLE_WIDTH
+}
+
+fn terminal_split_left_width(requested: f32, default: f32, min_width: f32, max_width: f32) -> f32 {
+    if requested <= 0.0 {
+        default.clamp(min_width, max_width)
+    } else {
+        requested.clamp(min_width, max_width)
+    }
+}
+
+fn render_workspace_terminal_toggle(
+    shell: &AppShell,
+    available_width: Pixels,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    let terminal_active = shell
+        .workspace
+        .focused_view()
+        .is_some_and(|view| workspace_view_has_terminal(shell, view));
+    if !terminal_active {
+        return div().h(px(0.)).flex_none().into_any_element();
+    }
+
+    let split_active = shell.workspace.terminal_split.is_some();
+    let can_toggle = split_active || terminal_split_available(available_width);
+    let tooltip = if split_active {
+        "tooltip.close_split"
+    } else if can_toggle {
+        "tooltip.split_terminal"
+    } else {
+        "tooltip.split_terminal_narrow"
+    };
+    Button::new("terminal-split-toggle")
+        .size(ButtonSize::Icon(px(22.)))
+        .variant(ButtonVariant::Ghost)
+        .selected(split_active)
+        .disabled(!can_toggle)
+        .icon(
+            icons::icon(icons::IconName::Columns2, 13.).text_color(if split_active {
+                theme::accent()
+            } else {
+                theme::muted_text()
+            }),
+        )
+        .tooltip(i18n::text(tooltip))
+        .on_click(cx.listener(|this, _event, window, cx| {
+            this.toggle_terminal_split(window, cx);
+        }))
+        .into_any_element()
+}
+
+fn workspace_view_has_terminal(shell: &AppShell, view: ActiveView) -> bool {
+    match view {
+        ActiveView::LocalSession(session_id) => shell
+            .workspace
+            .sessions
+            .local_sessions
+            .contains_key(&session_id),
+        ActiveView::RemoteTab(index) => shell
             .workspace
             .sessions
             .remote_tabs
             .get(index)
             .and_then(|tab| tab.pane.terminal_entity_id())
             .is_some(),
-        None => false,
-    };
+    }
+}
+
+pub(crate) fn render_workspace_status_bar(
+    shell: &AppShell,
+    available_width: Pixels,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    let focused_view = shell.workspace.focused_view();
+    let terminal_active = focused_view.is_some_and(|view| workspace_view_has_terminal(shell, view));
     let mut left = div()
         .min_w_0()
         .flex()
@@ -197,9 +401,10 @@ pub(crate) fn render_workspace_status_bar(
             AppShell::toggle_timestamps,
             cx,
         ));
+        left = left.child(render_workspace_terminal_toggle(shell, available_width, cx));
     }
 
-    if let Some(ActiveView::LocalSession(session_id)) = shell.workspace.active_view
+    if let Some(ActiveView::LocalSession(session_id)) = focused_view
         && let Some(session) = shell.workspace.sessions.local_sessions.get(&session_id)
     {
         let cwd = session.cwd.to_string_lossy().to_string();
@@ -1115,6 +1320,12 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
     match shell.workspace.active_view {
         Some(ActiveView::RemoteTab(active_idx)) => {
             for idx in 0..shell.workspace.sessions.remote_tabs.len() {
+                if shell
+                    .workspace
+                    .is_split_secondary(ActiveView::RemoteTab(idx))
+                {
+                    continue;
+                }
                 let tab = &shell.workspace.sessions.remote_tabs[idx];
                 let is_active = active_idx == idx;
                 let state = shell.connections.state_for_key(&tab.host_key, cx);
@@ -1208,6 +1419,12 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                 .map(|dir| dir.sessions.clone())
                 .unwrap_or_default();
             for (idx, session_id) in session_ids.iter().copied().enumerate() {
+                if shell
+                    .workspace
+                    .is_split_secondary(ActiveView::LocalSession(session_id))
+                {
+                    continue;
+                }
                 let is_active = active_session_id == session_id;
                 let state = shell
                     .workspace
@@ -1399,6 +1616,19 @@ fn state_priority(state: &ConnState) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_split_requires_two_usable_columns() {
+        assert!(!terminal_split_available(px(327.)));
+        assert!(terminal_split_available(px(328.)));
+    }
+
+    #[test]
+    fn terminal_split_width_preserves_dragged_values_on_both_sides_of_default() {
+        assert_eq!(terminal_split_left_width(0., 500., 160., 940.), 500.);
+        assert_eq!(terminal_split_left_width(220., 500., 160., 940.), 220.);
+        assert_eq!(terminal_split_left_width(760., 500., 160., 940.), 760.);
+    }
 
     #[test]
     fn git_status_refresh_coalesces_overlapping_requests() {

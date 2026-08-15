@@ -167,6 +167,9 @@ tooltip:
   host_sidebar: 显示或隐藏主机栏
   timestamps: 显示或隐藏行时间戳
   quick_commands: 显示或隐藏快捷命令栏
+  split_terminal: 将终端分为左右两栏
+  close_split: 关闭右侧终端
+  split_terminal_narrow: 窗口太窄，无法使用两栏终端
   pin_command: 固定或取消固定命令
 
 context_menu:
@@ -187,6 +190,7 @@ context_menu:
   copy: 复制
   paste: 粘贴
   select_all: 全选
+  send_selection_to_adjacent: 发送选中内容到相邻终端
   open_link: 打开链接
   download: 下载
   open_folder: 打开

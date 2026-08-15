@@ -8,12 +8,14 @@ pub(crate) enum TerminalMenuAction {
     Copy,
     Paste,
     SelectAll,
+    SendSelectionToAdjacent,
     OpenUrl(String),
 }
 
 pub(crate) fn menu_entries(
     connected: bool,
     has_selection: bool,
+    adjacent_terminal_available: bool,
     hovered_word: Option<String>,
 ) -> Vec<MenuEntry<TerminalMenuAction>> {
     let mut entries = vec![
@@ -42,6 +44,18 @@ pub(crate) fn menu_entries(
             action: TerminalMenuAction::SelectAll,
         }),
     ];
+
+    if adjacent_terminal_available {
+        entries.push(MenuEntry::Separator);
+        entries.push(MenuEntry::Item(MenuItem {
+            id: "send-selection-to-adjacent".into(),
+            label: i18n::text("context_menu.send_selection_to_adjacent"),
+            shortcut_hint: None,
+            disabled: !has_selection,
+            danger: false,
+            action: TerminalMenuAction::SendSelectionToAdjacent,
+        }));
+    }
 
     if let Some(url) = hovered_word.filter(|word| is_openable_url(word)) {
         entries.push(MenuEntry::Separator);
@@ -115,20 +129,40 @@ mod tests {
 
     #[test]
     fn clipboard_actions_follow_terminal_state() {
-        let entries = menu_entries(false, false, None);
+        let entries = menu_entries(false, false, false, None);
 
         assert!(item(&entries, "copy").disabled);
         assert!(item(&entries, "paste").disabled);
         assert!(!item(&entries, "select-all").disabled);
 
-        let entries = menu_entries(true, true, None);
+        let entries = menu_entries(true, true, false, None);
         assert!(!item(&entries, "copy").disabled);
         assert!(!item(&entries, "paste").disabled);
     }
 
     #[test]
+    fn adjacent_send_action_requires_a_selection_and_a_split() {
+        let entries = menu_entries(true, true, false, None);
+        assert!(!entries.iter().any(|entry| {
+            matches!(
+                entry,
+                MenuEntry::Item(MenuItem {
+                    action: TerminalMenuAction::SendSelectionToAdjacent,
+                    ..
+                })
+            )
+        }));
+
+        let entries = menu_entries(true, false, true, None);
+        assert!(item(&entries, "send-selection-to-adjacent").disabled);
+
+        let entries = menu_entries(true, true, true, None);
+        assert!(!item(&entries, "send-selection-to-adjacent").disabled);
+    }
+
+    #[test]
     fn only_openable_urls_get_a_link_action() {
-        let entries = menu_entries(true, false, Some("https://example.com".into()));
+        let entries = menu_entries(true, false, false, Some("https://example.com".into()));
         assert!(matches!(
             entries.last(),
             Some(MenuEntry::Item(MenuItem {
@@ -137,7 +171,7 @@ mod tests {
             })) if url == "https://example.com"
         ));
 
-        let entries = menu_entries(true, false, Some("not a url".into()));
+        let entries = menu_entries(true, false, false, Some("not a url".into()));
         assert!(!entries.iter().any(|entry| {
             matches!(
                 entry,

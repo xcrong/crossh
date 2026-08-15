@@ -74,6 +74,22 @@ impl AppShell {
     /// Zed owns the interactive SSH process and keeps authentication prompts
     /// inside the same terminal, just like its native terminal workflow.
     pub(super) fn open_terminal_target(&mut self, target: String, cx: &mut Context<Self>) {
+        self.collapse_terminal_split(cx);
+        let view = self.create_terminal_target(target, cx);
+        self.workspace.active_view = Some(view);
+        self.status = None;
+        cx.notify();
+    }
+
+    pub(super) fn open_terminal_target_for_split(
+        &mut self,
+        target: String,
+        cx: &mut Context<Self>,
+    ) -> ActiveView {
+        self.create_terminal_target(target, cx)
+    }
+
+    fn create_terminal_target(&mut self, target: String, cx: &mut Context<Self>) -> ActiveView {
         let resolved = self.connections.resolve(&target);
         let host_key = ConnectionManager::pool_key(&resolved);
         let terminal = TerminalView::from_zed_shell(
@@ -103,21 +119,27 @@ impl AppShell {
             TerminalEvent::CwdChanged => cx.notify(),
             TerminalEvent::PromptReached => {}
         });
+        let adjacent_subscription =
+            cx.subscribe(&terminal, |this, terminal, event, cx| match event {
+                TerminalViewEvent::SendSelectionToAdjacent { text } => {
+                    this.send_to_adjacent_terminal(terminal.entity_id(), text, cx);
+                }
+            });
         self.workspace
             .sessions
             .terminal_subscriptions
             .push(subscription);
+        self.workspace
+            .sessions
+            .terminal_subscriptions
+            .push(adjacent_subscription);
         self.workspace.sessions.remote_tabs.push(Tab {
             target,
             host_key,
             connection: None,
             pane: crate::features::terminal::view::workspace_pane(terminal),
         });
-        self.workspace.active_view = Some(ActiveView::RemoteTab(
-            self.workspace.sessions.remote_tabs.len() - 1,
-        ));
-        self.status = None;
-        cx.notify();
+        ActiveView::RemoteTab(self.workspace.sessions.remote_tabs.len() - 1)
     }
 
     pub(super) fn switch_tab(&mut self, idx: usize, cx: &mut Context<Self>) {
@@ -136,9 +158,12 @@ impl AppShell {
     }
 
     pub(crate) fn switch_remote_tab(&mut self, idx: usize, cx: &mut Context<Self>) {
-        if idx >= self.workspace.sessions.remote_tabs.len() {
+        if idx >= self.workspace.sessions.remote_tabs.len()
+            || self.workspace.active_view == Some(ActiveView::RemoteTab(idx))
+        {
             return;
         }
+        self.collapse_terminal_split(cx);
         self.workspace.active_view = Some(ActiveView::RemoteTab(idx));
         self.refocus_active_terminal(cx);
         cx.notify();
@@ -148,6 +173,8 @@ impl AppShell {
         if idx >= self.workspace.sessions.remote_tabs.len() {
             return;
         }
+        let closing_view = ActiveView::RemoteTab(idx);
+        let split_affected = self.prepare_terminal_split_view_close(closing_view, cx);
         if let Some(owner) = remote_tab_background_owner(&self.workspace.sessions.remote_tabs[idx])
         {
             self.stop_background_tasks_for_owner(&owner, cx);
@@ -171,6 +198,10 @@ impl AppShell {
             Some(ActiveView::RemoteTab(a)) if a > idx => Some(ActiveView::RemoteTab(a - 1)),
             other => other,
         };
+        self.workspace.remap_split_remote_tab_indices(idx);
+        if split_affected {
+            self.refocus_active_terminal(cx);
+        }
         cx.notify();
     }
 
@@ -189,7 +220,7 @@ impl AppShell {
 
     /// 关闭活动标签；有命令运行等风险时先弹确认框。
     pub(super) fn request_close_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.workspace.active_view {
+        match self.workspace.focused_view() {
             Some(ActiveView::RemoteTab(idx)) => self.request_close_remote_tab(idx, window, cx),
             Some(ActiveView::LocalSession(session_id)) => {
                 self.request_close_local_session(session_id, window, cx)
@@ -299,23 +330,34 @@ impl AppShell {
     pub(super) fn cycle_tab(&mut self, direction: isize, cx: &mut Context<Self>) {
         match self.workspace.active_view {
             Some(ActiveView::RemoteTab(current)) => {
-                let len = self.workspace.sessions.remote_tabs.len();
-                if len == 0 {
+                let visible = (0..self.workspace.sessions.remote_tabs.len())
+                    .filter(|&idx| {
+                        !self
+                            .workspace
+                            .is_split_secondary(ActiveView::RemoteTab(idx))
+                    })
+                    .collect::<Vec<_>>();
+                let Some(next) = next_cycle_index(current, &visible, direction) else {
                     return;
-                }
-                let next = (current as isize + direction).rem_euclid(len as isize) as usize;
-                self.switch_remote_tab(next, cx);
+                };
+                self.switch_remote_tab(visible[next], cx);
             }
             Some(ActiveView::LocalSession(session_id)) => {
-                let Some(dir) = self.local_dir_for_session(session_id) else {
-                    return;
-                };
-                let Some(current) = dir.sessions.iter().position(|id| *id == session_id) else {
-                    return;
-                };
-                let next =
-                    (current as isize + direction).rem_euclid(dir.sessions.len() as isize) as usize;
-                if let Some(next_session) = dir.sessions.get(next).copied() {
+                let session_ids = self
+                    .local_dir_for_session(session_id)
+                    .map(|dir| dir.sessions.clone())
+                    .unwrap_or_default();
+                let visible = session_ids
+                    .into_iter()
+                    .filter(|&id| {
+                        !self
+                            .workspace
+                            .is_split_secondary(ActiveView::LocalSession(id))
+                    })
+                    .collect::<Vec<_>>();
+                if let Some(next) = next_cycle_index(session_id, &visible, direction)
+                    && let Some(next_session) = visible.get(next).copied()
+                {
                     self.select_local_session(next_session, cx);
                 }
             }
@@ -347,6 +389,36 @@ impl AppShell {
         cx.notify();
     }
 
+    pub(super) fn local_session_cwd(
+        &self,
+        session_id: LocalSessionId,
+        cx: &Context<Self>,
+    ) -> PathBuf {
+        self.workspace
+            .sessions
+            .local_sessions
+            .get(&session_id)
+            .map(|session| {
+                session
+                    .terminal
+                    .read(cx)
+                    .cwd
+                    .as_deref()
+                    .map(|cwd| normalize_local_cwd(PathBuf::from(cwd)))
+                    .unwrap_or_else(|| session.cwd.clone())
+            })
+            .unwrap_or_else(current_local_cwd)
+    }
+
+    pub(super) fn local_session_project_dir(&self, session_id: LocalSessionId) -> PathBuf {
+        self.workspace
+            .sessions
+            .local_sessions
+            .get(&session_id)
+            .map(|session| session.project_dir.clone())
+            .unwrap_or_else(current_local_cwd)
+    }
+
     /// 关闭除 `keep` 外的全部远程标签。
     pub(super) fn close_other_remote_tabs(&mut self, keep: usize, cx: &mut Context<Self>) {
         if keep >= self.workspace.sessions.remote_tabs.len() {
@@ -361,6 +433,7 @@ impl AppShell {
             .filter(|(index, _)| *index != keep)
             .filter_map(|(_, tab)| remote_tab_background_owner(tab))
             .collect::<Vec<_>>();
+        self.collapse_terminal_split(cx);
         for owner in owners {
             self.stop_background_tasks_for_owner(&owner, cx);
         }
@@ -386,6 +459,7 @@ impl AppShell {
             .iter()
             .filter_map(remote_tab_background_owner)
             .collect::<Vec<_>>();
+        self.collapse_terminal_split(cx);
         for owner in owners {
             self.stop_background_tasks_for_owner(&owner, cx);
         }
@@ -412,6 +486,7 @@ impl AppShell {
         }) else {
             return;
         };
+        self.collapse_terminal_split(cx);
         for session_id in others {
             self.close_local_session(session_id, cx);
         }
@@ -428,7 +503,7 @@ impl AppShell {
 
     /// 把焦点交还给当前活动终端 tab（切换 tab / 关闭模态后调用）。
     pub(super) fn refocus_active_terminal(&self, cx: &mut Context<Self>) {
-        match self.workspace.active_view {
+        match self.workspace.focused_view() {
             Some(ActiveView::RemoteTab(idx)) => {
                 if let Some(tab) = self.workspace.sessions.remote_tabs.get(idx) {
                     tab.pane.request_focus(cx);
@@ -444,6 +519,15 @@ impl AppShell {
             None => {}
         }
     }
+}
+
+fn next_cycle_index<T: PartialEq>(current: T, visible: &[T], direction: isize) -> Option<usize> {
+    if visible.len() <= 1 {
+        return None;
+    }
+    let position = visible.iter().position(|index| index == &current)?;
+    let next = (position as isize + direction).rem_euclid(visible.len() as isize) as usize;
+    (next != position).then_some(next)
 }
 
 fn zed_ssh_shell(target: &str, host: &HostConfig) -> Shell {
@@ -480,7 +564,15 @@ fn zed_ssh_shell(target: &str, host: &HostConfig) -> Shell {
 mod tests {
     use crate::shared::i18n;
 
-    use super::TabCloseRisk;
+    use super::{TabCloseRisk, next_cycle_index};
+
+    #[test]
+    fn cycle_skips_split_secondary_and_stops_when_only_one_view_is_visible() {
+        assert_eq!(next_cycle_index(0, &[0, 2, 4], 1), Some(1));
+        assert_eq!(next_cycle_index(2, &[0, 2, 4], -1), Some(0));
+        assert_eq!(next_cycle_index(0, &[0], 1), None);
+        assert_eq!(next_cycle_index(1, &[0, 2], 1), None);
+    }
 
     #[test]
     fn close_confirmation_is_only_required_for_material_activity() {

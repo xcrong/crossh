@@ -152,6 +152,7 @@ define_icons! {
     ChevronDown => "icons/chevron-down.svg",
     ChevronRight => "icons/chevron-right.svg",
     Clock => "icons/clock.svg",
+    Columns2 => "icons/columns-2.svg",
     Download => "icons/download.svg",
     Eye => "icons/eye.svg",
     EyeOff => "icons/eye-off.svg",

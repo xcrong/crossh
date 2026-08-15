@@ -28,6 +28,8 @@ pub(crate) trait WorkspacePane {
     fn is_command_running(&self, cx: &App) -> bool;
     fn toggle_low_latency(&self, cx: &mut App);
     fn run_command(&self, command: &str, cx: &mut App);
+    fn send_text(&self, _text: &str, _cx: &mut App) {}
+    fn set_adjacent_terminal_available(&self, _available: bool, _cx: &mut App) {}
     fn handle_system_notification_response(
         &self,
         response: &SystemNotificationResponse,

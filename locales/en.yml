@@ -167,6 +167,9 @@ tooltip:
   host_sidebar: Show or hide the host sidebar
   timestamps: Show or hide line timestamps
   quick_commands: Show or hide the quick commands panel
+  split_terminal: Split the terminal into two columns
+  close_split: Close the right terminal
+  split_terminal_narrow: The window is too narrow for two terminal columns
   pin_command: Pin or unpin command
 
 context_menu:
@@ -187,6 +190,7 @@ context_menu:
   copy: Copy
   paste: Paste
   select_all: Select All
+  send_selection_to_adjacent: Send Selection to Adjacent Terminal
   open_link: Open Link
   download: Download
   open_folder: Open

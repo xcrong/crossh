@@ -9,7 +9,7 @@ pub(crate) mod context_menu;
 pub(crate) mod view;
 
 pub(crate) use crossh_terminal::{ConnState, TerminalEvent};
-pub(crate) use view::TerminalView;
+pub(crate) use view::{TerminalView, TerminalViewEvent};
 
 /// Install the terminal-only portion of Zed's default keymap.
 ///
