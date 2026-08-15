@@ -799,15 +799,10 @@ impl SettingsWindow {
                         div()
                             .w(px(56.))
                             .h(px(56.))
-                            .flex()
                             .flex_shrink_0()
-                            .items_center()
-                            .justify_center()
                             .rounded(px(theme::RADIUS_MD))
-                            .bg(theme::accent_soft())
-                            .child(
-                                icons::icon(icons::IconName::Info, 30.).text_color(theme::accent()),
-                            ),
+                            .overflow_hidden()
+                            .child(icons::logo(56.)),
                     )
                     .child(
                         div()
