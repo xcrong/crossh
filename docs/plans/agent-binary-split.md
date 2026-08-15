@@ -46,8 +46,8 @@ crossh-agent（独立 TUI 二进制，src/bin/crossh-agent.rs）
 
 ### Phase 2 — main.rs 委托（架构落地，行为不变）
 
-1. `main.rs` 的 agent 分支改为 spawn 委托：镜像 `features/git/cli.rs:50-61` 的 sibling 优先 + PATH 回退查找，**继承 stdio**（子进程直接操作同一终端；launcher 不得碰 termios），`wait` 后透传退出码。
-2. 可选收敛：把 sibling 查找逻辑从 `features/git/cli.rs` 抽到 `crossh-core`（纯 crate），git 与 agent 两个启动器复用。
+1. `main.rs` 的 agent 分支改为 spawn 委托：镜像 `features/git_launcher.rs:50-61` 的 sibling 优先 + PATH 回退查找，**继承 stdio**（子进程直接操作同一终端；launcher 不得碰 termios），`wait` 后透传退出码。
+2. 可选收敛：把 sibling 查找逻辑从 `features/git_launcher.rs` 抽到 `crossh-core`（纯 crate），git 与 agent 两个启动器复用。
 3. 删除 `main.rs` 的 `mod agent_cli`（及 `agent_cli_render` 在 GUI 侧的编译）。
 4. 更新架构文档：`docs/architecture.md` 的依赖图与边界规则（规则 7 扩展为"`crossh-git` 与 `crossh-agent` 是仅有的两个允许 `#[path]` 的独立入口"）；同步 `scripts/check-architecture.sh`。
 5. 错误提示：sibling 与 PATH 均找不到时，报错提示安装 `crossh-agent`。

@@ -1,8 +1,6 @@
-//! Git 可视化功能：独立的 Git 窗口（VS Code 源码管理风格）。
+//! Git Viewer UI：由独立的 `crossh-git` 进程承载。
 
 use gpui::{App, KeyBinding, actions};
-
-mod cli;
 
 actions!(
     git_window,
@@ -36,11 +34,6 @@ mod model;
 mod render;
 mod window;
 
-#[allow(unused_imports)]
-pub(crate) use cli::{
-    GitCliCommand, parse as parse_cli, print_help as print_cli_help,
-    print_standalone_help as print_standalone_cli_help, spawn_git_process,
-};
 pub(crate) use window::open_git_window;
 
 #[cfg(feature = "visual-tests")]

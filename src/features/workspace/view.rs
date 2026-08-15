@@ -503,8 +503,13 @@ fn render_git_status(
                 .text_color(theme::text())
                 .child(SharedString::from(status.branch.clone())),
         )
-        .on_click(cx.listener(move |_this, _ev, _window, cx| {
-            crate::features::git::open_git_window(click_cwd.clone(), cx);
+        .on_click(cx.listener(move |_this, _ev, _window, _cx| {
+            if let Err(error) = crate::features::git_launcher::spawn_git_process(&click_cwd) {
+                log::error!(
+                    "failed to start crossh-git for {}: {error}",
+                    click_cwd.display()
+                );
+            }
         }));
 
     if status.ahead > 0 {

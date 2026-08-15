@@ -38,6 +38,7 @@ impl TextEditingState {
     /// 清空文本与全部编辑状态（含 IME 组合），光标回到 0。
     ///
     /// 供 CommitEditor / 设置输入框作为“提交后重置”入口。
+    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.value.clear();
         self.cursor = 0;

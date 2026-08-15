@@ -10,7 +10,7 @@
 
 `cx.defer` 把操作安排到当前 `App` 更新结束之后。它适合从已有窗口的输入或渲染事件中安全地修改窗口列表，但不能无条件用于应用冷启动的第一个窗口：此时应用没有现存窗口维持正常的窗口生命周期，延迟任务可能无法产生用户可见窗口。
 
-CLI 的另一个生命周期独立于 GPUI：如果终端进程本身进入 `Application::run`，命令自然会被 GUI 事件循环阻塞。要实现普通桌面 CLI 的启动语义，终端进程应只负责生成独立 GUI 子进程，然后立即返回。Git Viewer 使用同目录的 `crossh-git` 独立二进制，不再通过环境变量让完整 `crossh` 递归进入 Git 窗口路径。
+CLI 的另一个生命周期独立于 GPUI：如果终端进程本身进入 `Application::run`，命令自然会被 GUI 事件循环阻塞。要实现普通桌面 CLI 的启动语义，终端进程应只负责生成独立 GUI 子进程，然后立即返回。Git Viewer 的 CLI 和工作区状态栏入口都使用同目录的 `crossh-git` 独立二进制，不再通过环境变量让完整 `crossh` 递归进入 Git 窗口路径。
 
 ## 稳定规则
 
@@ -28,7 +28,7 @@ CLI 的另一个生命周期独立于 GPUI：如果终端进程本身进入 `App
 
 ## 当前实现
 
-- CLI 进程分离：`src/features/git/cli.rs`；独立入口：`src/bin/crossh-git.rs`
+- CLI 进程分离：`src/features/git_launcher.rs`；独立入口：`src/bin/crossh-git.rs`
 - 共享资源发现：`crates/crossh-assets/src/lib.rs`；打包资源：`scripts/copy-shared-assets.sh`
 - 启动路径装配：`src/main.rs`
 - 首窗口同步创建和已有窗口延迟创建：`src/features/git/window.rs`

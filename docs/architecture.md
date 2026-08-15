@@ -52,18 +52,19 @@ shared resources  -> external `crossh-assets` directory loaded by every binary
 - `crossh-assets`: UI-neutral Lucide SVG storage, shared external-resource discovery, debug embedded fallback, shared icon identifiers, and asset integrity tests. Its files live under `crates/crossh-assets/assets/icons/`.
 - `crossh-ui`: reusable GPUI widgets, context menus, the GPUI adapter for `crossh-theme`, icon rendering, and the `AssetSource` adapter backed by the shared external resource directory.
 - `crossh-ui-component`: reusable stateless GPUI control kit (buttons, badges, avatars, separators, tooltips, and layout helpers) layered on `crossh-ui`.
-- `crossh`: process startup plus user-facing feature views and GPUI adapters. `crossh git` delegates to the sibling `crossh-git` binary; `crossh agent` delegates to the sibling `crossh-agent` binary; `features/terminal/view.rs` is the `terminal_view`-style host around Zed's terminal foundation; `features/connections/entity.rs` is the adapter around `crossh-ssh::ConnectionHandle`.
-- `crossh-git`: standalone Git Viewer entry point. It reuses the Git feature source through the same GPUI and UI dependencies but does not initialize SSH, terminal, agent, workspace, or settings features.
+- `crossh`: process startup plus user-facing feature views and GPUI adapters. `crossh git` and the workspace status-bar Git entry delegate to the sibling `crossh-git` binary; `crossh agent` delegates to the sibling `crossh-agent` binary; `features/terminal/view.rs` is the `terminal_view`-style host around Zed's terminal foundation; `features/connections/entity.rs` is the adapter around `crossh-ssh::ConnectionHandle`.
+- `crossh-git`: standalone Git Viewer entry point. It owns the Git window source and reuses the same GPUI and UI dependencies, but does not initialize SSH, terminal, agent, workspace, or settings features.
 - `crossh-agent` binary: standalone interactive terminal agent entry point. It reuses `src/agent_cli.rs` and needs no GPUI; it reads the agent section of the shared `settings.toml` through `crossh_agent::load_agent_settings` and depends only on the pure crates.
 
 Within the application crate:
 
-- `features/workspace`: navigation, tabs, active view, local projects, and pane composition.
+- `features/workspace`: navigation, tabs, active view, local projects, pane composition, status-bar Git status, and pull/push sync actions.
 - `features/connections`: connection-facing UI, host navigation data, and the GPUI connection entity.
 - `features/sftp`: remote file browser/editor UI and SFTP-specific interaction helpers.
 - `features/forwarding`: local, remote, and dynamic forwarding UI.
 - `features/settings`: application settings persistence and settings window.
-- `features/git`: Git Viewer window, change staging/commit, and pull/push actions with status-bar sync.
+- `features/git_launcher`: Git CLI parsing and fire-and-forget startup of the sibling `crossh-git` process.
+- `src/features/git`: Git Viewer window, change staging/commit, and pull/push actions; this source is not mounted by the `crossh` application binary and is owned by the standalone `crossh-git` entry point.
 - `features/updates`: update controller and update presentation only.
 
 `AppShell` is the GPUI composition root for the workspace feature. Session

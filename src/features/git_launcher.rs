@@ -1,3 +1,7 @@
+//! Git Viewer 的命令行解析与独立进程启动器。
+//!
+//! 该模块保持轻量，使主工作区只需携带启动入口，不必编译完整 Git UI。
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -7,7 +11,7 @@ pub(crate) enum GitCliCommand {
     Help,
 }
 
-pub(crate) fn parse(
+pub(crate) fn parse_cli(
     mut args: impl Iterator<Item = String>,
     current_dir: Result<PathBuf, String>,
 ) -> Result<GitCliCommand, String> {
@@ -27,12 +31,12 @@ pub(crate) fn parse(
 }
 
 #[allow(dead_code)]
-pub(crate) fn print_help() {
+pub(crate) fn print_cli_help() {
     print_help_for("crossh git");
 }
 
 #[allow(dead_code)]
-pub(crate) fn print_standalone_help() {
+pub(crate) fn print_standalone_cli_help() {
     print_help_for("crossh-git");
 }
 
@@ -79,12 +83,12 @@ fn git_process_command(cwd: &Path) -> std::io::Result<Command> {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{GitCliCommand, git_process_command, parse};
+    use super::{GitCliCommand, git_process_command, parse_cli};
 
     #[test]
     fn no_arguments_open_the_current_directory() {
         assert_eq!(
-            parse(std::iter::empty(), Ok(PathBuf::from("/repo"))),
+            parse_cli(std::iter::empty(), Ok(PathBuf::from("/repo"))),
             Ok(GitCliCommand::Open(PathBuf::from("/repo")))
         );
     }
@@ -92,14 +96,14 @@ mod tests {
     #[test]
     fn help_and_invalid_arguments_are_distinct() {
         assert_eq!(
-            parse(
+            parse_cli(
                 ["--help"].into_iter().map(str::to_string),
                 Ok(PathBuf::new())
             ),
             Ok(GitCliCommand::Help)
         );
         assert_eq!(
-            parse(
+            parse_cli(
                 ["first", "second"].into_iter().map(str::to_string),
                 Ok(PathBuf::new())
             ),
@@ -108,10 +112,10 @@ mod tests {
     }
 
     #[test]
-    fn one_directory_argument_opens_that_directory() {
+    fn one_directory_argument_is_resolved_from_the_current_directory() {
         assert_eq!(
-            parse(
-                ["/repo/other"].into_iter().map(str::to_string),
+            parse_cli(
+                ["other"].into_iter().map(str::to_string),
                 Ok(PathBuf::from("/repo"))
             ),
             Ok(GitCliCommand::Open(PathBuf::from("/repo/other")))
@@ -119,10 +123,10 @@ mod tests {
     }
 
     #[test]
-    fn relative_directory_argument_is_resolved_from_the_current_directory() {
+    fn absolute_directory_argument_is_preserved() {
         assert_eq!(
-            parse(
-                ["other"].into_iter().map(str::to_string),
+            parse_cli(
+                ["/repo/other"].into_iter().map(str::to_string),
                 Ok(PathBuf::from("/repo"))
             ),
             Ok(GitCliCommand::Open(PathBuf::from("/repo/other")))
@@ -132,7 +136,7 @@ mod tests {
     #[test]
     fn current_directory_errors_are_reported() {
         assert_eq!(
-            parse(std::iter::empty(), Err("cwd unavailable".to_string())),
+            parse_cli(std::iter::empty(), Err("cwd unavailable".to_string())),
             Err("cwd unavailable".to_string())
         );
     }
@@ -146,5 +150,11 @@ mod tests {
             [Path::new("/repo").as_os_str()]
         );
         assert_eq!(command.get_current_dir(), Some(Path::new("/repo")));
+        assert_eq!(
+            Path::new(command.get_program())
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("crossh-git")
+        );
     }
 }

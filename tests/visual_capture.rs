@@ -9,6 +9,9 @@ mod app;
 #[path = "../src/features/mod.rs"]
 mod features;
 #[cfg(target_os = "macos")]
+#[path = "../src/features/git/mod.rs"]
+mod git;
+#[cfg(target_os = "macos")]
 #[path = "../src/infrastructure/mod.rs"]
 mod infrastructure;
 #[cfg(target_os = "macos")]
@@ -64,7 +67,7 @@ fn main() {
     let platform = gpui_platform::current_platform(true);
     let mut cx = VisualTestAppContext::with_asset_source(
         platform,
-        Arc::new(crossh_ui::assets::UiAssetSource),
+        Arc::new(crossh_ui::assets::UiAssetSource::default()),
     );
 
     cx.update(|cx| {
@@ -79,7 +82,7 @@ fn main() {
             .load_fonts(cx)
             .expect("Zed embedded fonts should load");
         features::settings::init(cx);
-        features::git::init(cx);
+        git::init(cx);
         features::terminal::init(cx);
     });
 
@@ -229,7 +232,7 @@ fn capture_git_window(
 ) {
     let window = cx
         .open_offscreen_window(window_size, |_window, cx| {
-            features::git::visual_fixture(cwd, show_compact_diff, show_error, cx)
+            git::visual_fixture(cwd, show_compact_diff, show_error, cx)
         })
         .expect("Git visual test window should open");
     cx.run_until_parked();

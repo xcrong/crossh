@@ -2,7 +2,7 @@
 
 pub(crate) mod connections;
 pub(crate) mod forwarding;
-pub(crate) mod git;
+pub(crate) mod git_launcher;
 pub(crate) mod settings;
 pub(crate) mod sftp;
 pub(crate) mod terminal;

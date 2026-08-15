@@ -62,24 +62,24 @@ fn main() {
             };
             std::process::exit(code);
         }
-        Some("git") => match features::git::parse_cli(
+        Some("git") => match features::git_launcher::parse_cli(
             args,
             std::env::current_dir().map_err(|error| error.to_string()),
         ) {
-            Ok(features::git::GitCliCommand::Open(cwd)) => {
-                if let Err(error) = features::git::spawn_git_process(&cwd) {
+            Ok(features::git_launcher::GitCliCommand::Open(cwd)) => {
+                if let Err(error) = features::git_launcher::spawn_git_process(&cwd) {
                     eprintln!("crossh git: failed to start crossh-git: {error}");
                     std::process::exit(1);
                 }
                 return;
             }
-            Ok(features::git::GitCliCommand::Help) => {
-                features::git::print_cli_help();
+            Ok(features::git_launcher::GitCliCommand::Help) => {
+                features::git_launcher::print_cli_help();
                 return;
             }
             Err(error) => {
                 eprintln!("crossh git: {error}\n");
-                features::git::print_cli_help();
+                features::git_launcher::print_cli_help();
                 std::process::exit(2);
             }
         },
@@ -120,7 +120,6 @@ fn main() {
         infrastructure::theme::install_crossh_theme(cx);
         crossh_ui::assets::load_fonts(cx).expect("Crossh fonts should load");
         features::settings::init(cx);
-        features::git::init(cx);
         features::terminal::init(cx);
         infrastructure::app_menu::install(cx);
         app::open_launch_target(launch_target, cx);
