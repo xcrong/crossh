@@ -10,8 +10,7 @@ use crossh_core::commands::{
 };
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::theme;
-use crossh_ui::widgets::{CommandTooltip, LocalPathTooltip};
-use crossh_ui_component::{Avatar, AvatarKind, StatusDot};
+use crossh_ui_component::{Avatar, AvatarKind, StatusDot, Tooltip};
 
 use crate::features::workspace::shell::AppShell;
 use crate::features::workspace::status::{background_task_color, background_task_label};
@@ -134,10 +133,8 @@ fn render_pinned_command(
         .cursor_pointer()
         .hover(|style| style.bg(theme::raised()))
         .tooltip(move |_window, cx| {
-            cx.new(|_| CommandTooltip {
-                command: SharedString::from(tooltip_command.clone()),
-            })
-            .into()
+            cx.new(|_| Tooltip::new(tooltip_command.clone()).wide())
+                .into()
         })
         .child(Avatar::new(&command).kind(AvatarKind::Command))
         .on_click(
@@ -256,12 +253,7 @@ fn render_background_task(task: BackgroundTask, cx: &mut Context<AppShell>) -> A
         .cursor_pointer()
         .bg(theme::raised())
         .hover(|style| style.bg(theme::accent_soft()))
-        .tooltip(move |_window, cx| {
-            cx.new(|_| LocalPathTooltip {
-                path: SharedString::from(tooltip.clone()),
-            })
-            .into()
-        })
+        .tooltip(move |_window, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
         .child(Avatar::new(&task.command).kind(AvatarKind::Command))
         .child(background_task_badge(task.status))
         .on_mouse_down(

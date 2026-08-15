@@ -18,9 +18,9 @@ use crate::features::workspace::status::conn_state_dot_color;
 use crate::features::workspace::view::{ActiveView, LocalDir};
 use crate::shared::i18n::{self};
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
-use crossh_ui::widgets::{LocalPathTooltip, ime_input_canvas, text_caret};
+use crossh_ui::widgets::{ime_input_canvas, text_caret};
 use crossh_ui::{icons, theme};
-use crossh_ui_component::{Avatar, AvatarKind, StatusDot};
+use crossh_ui_component::{Avatar, AvatarKind, StatusDot, Tooltip};
 
 const TRANSPARENT: gpui::Rgba = gpui::Rgba {
     r: 0.0,
@@ -489,12 +489,7 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
                         theme::surface()
                     })
                 })
-                .tooltip(move |_window, cx| {
-                    cx.new(|_| LocalPathTooltip {
-                        path: SharedString::from(label.clone()),
-                    })
-                    .into()
-                })
+                .tooltip(move |_window, cx| cx.new(|_| Tooltip::new(label.clone())).into())
                 .child(avatar)
                 .on_click(cx.listener(move |this, _ev, _window, cx| {
                     this.activate_local_dir(project_dir.clone(), cx);
@@ -537,12 +532,7 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
                         theme::surface()
                     })
                 })
-                .tooltip(move |_window, cx| {
-                    cx.new(|_| LocalPathTooltip {
-                        path: SharedString::from(alias.clone()),
-                    })
-                    .into()
-                })
+                .tooltip(move |_window, cx| cx.new(|_| Tooltip::new(alias.clone())).into())
                 .child(avatar)
                 .on_click(cx.listener(move |this, _ev, _window, cx| {
                     this.open_host(index, cx);
@@ -609,10 +599,8 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
                 .border_color(theme::border_strong())
                 .hover(|style| style.bg(theme::surface()).text_color(theme::text()))
                 .tooltip(|_window, cx| {
-                    cx.new(|_| LocalPathTooltip {
-                        path: SharedString::from(i18n::text("tooltip.open_target")),
-                    })
-                    .into()
+                    cx.new(|_| Tooltip::new(i18n::text("tooltip.open_target")))
+                        .into()
                 })
                 .child(
                     icons::icon(icons::IconName::Plus, 15.)
@@ -863,7 +851,7 @@ fn render_local_dir(
         .hover(|s| s.bg(theme::surface()))
         .tooltip(move |_window, cx| {
             let path = tooltip_path.clone();
-            cx.new(|_| LocalPathTooltip { path }).into()
+            cx.new(|_| Tooltip::new(path)).into()
         })
         .on_click(cx.listener(move |this, _ev, _window, cx| {
             this.activate_local_dir(project_dir_for_row.clone(), cx);
@@ -934,10 +922,8 @@ fn render_local_dir(
                 .text_color(theme::muted_text())
                 .hover(|s| s.bg(theme::raised()).text_color(theme::danger()))
                 .tooltip(|_window, cx| {
-                    cx.new(|_| LocalPathTooltip {
-                        path: SharedString::from(i18n::text("tooltip.forget_dir")),
-                    })
-                    .into()
+                    cx.new(|_| Tooltip::new(i18n::text("tooltip.forget_dir")))
+                        .into()
                 })
                 .child(
                     icons::icon(icons::IconName::X, 14.)
@@ -963,10 +949,8 @@ fn render_local_dir(
             .text_color(theme::muted_text())
             .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
             .tooltip(|_window, cx| {
-                cx.new(|_| LocalPathTooltip {
-                    path: SharedString::from(i18n::text("tooltip.new_terminal")),
-                })
-                .into()
+                cx.new(|_| Tooltip::new(i18n::text("tooltip.new_terminal")))
+                    .into()
             })
             .child(
                 icons::icon(icons::IconName::Plus, 14.)
@@ -1101,10 +1085,8 @@ fn render_host_entry(
                         .text_color(theme::muted_text())
                         .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
                         .tooltip(|_window, cx| {
-                            cx.new(|_| LocalPathTooltip {
-                                path: SharedString::from(i18n::text("tooltip.open_sftp")),
-                            })
-                            .into()
+                            cx.new(|_| Tooltip::new(i18n::text("tooltip.open_sftp")))
+                                .into()
                         })
                         .child(
                             icons::icon(icons::IconName::Folder, 14.)
@@ -1129,10 +1111,8 @@ fn render_host_entry(
                         .text_color(theme::muted_text())
                         .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
                         .tooltip(|_window, cx| {
-                            cx.new(|_| LocalPathTooltip {
-                                path: SharedString::from(i18n::text("tooltip.port_forwarding")),
-                            })
-                            .into()
+                            cx.new(|_| Tooltip::new(i18n::text("tooltip.port_forwarding")))
+                                .into()
                         })
                         .child(
                             icons::icon(icons::IconName::ArrowLeftRight, 14.)
@@ -1238,10 +1218,8 @@ fn render_host_group(spec: HostGroupSpec, cx: &mut Context<AppShell>) -> AnyElem
                 .text_color(theme::muted_text())
                 .hover(|s| s.bg(theme::raised()).text_color(theme::text()))
                 .tooltip(|_window, cx| {
-                    cx.new(|_| LocalPathTooltip {
-                        path: SharedString::from(i18n::text("tooltip.new_project")),
-                    })
-                    .into()
+                    cx.new(|_| Tooltip::new(i18n::text("tooltip.new_project")))
+                        .into()
                 })
                 .child(
                     icons::icon(icons::IconName::Plus, 14.)

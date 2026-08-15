@@ -279,12 +279,8 @@ impl RenderOnce for Button {
             button = button.on_click(move |event, window, cx| on_click(event, window, cx));
         }
         if let Some(tooltip) = self.tooltip {
-            button = button.tooltip(move |_window, cx| {
-                cx.new(|_| Tooltip {
-                    text: tooltip.clone(),
-                })
-                .into()
-            });
+            button =
+                button.tooltip(move |_window, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into());
         }
 
         if self.loading {

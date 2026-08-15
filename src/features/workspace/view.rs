@@ -24,9 +24,9 @@ use crate::shared::i18n;
 use crossh_core::commands::{BackgroundTask, BackgroundTaskStatus, CommandRecord};
 use crossh_core::project::GitStatus;
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
-use crossh_ui::widgets::{LocalPathTooltip, ime_input_canvas, text_caret};
+use crossh_ui::widgets::{ime_input_canvas, text_caret};
 use crossh_ui::{icons, theme};
-use crossh_ui_component::{Button, ButtonSize, ButtonVariant, StatusDot};
+use crossh_ui_component::{Button, ButtonSize, ButtonVariant, StatusDot, Tooltip};
 
 /// 一个远程终端/SFTP 标签。
 pub struct Tab {
@@ -267,12 +267,7 @@ fn render_status_bar_toggle(
         .rounded(px(theme::RADIUS_SM))
         .cursor_pointer()
         .hover(|style| style.bg(theme::raised()))
-        .tooltip(move |_window, cx| {
-            cx.new(|_| LocalPathTooltip {
-                path: SharedString::from(i18n::text(tooltip)),
-            })
-            .into()
-        })
+        .tooltip(move |_window, cx| cx.new(|_| Tooltip::new(i18n::text(tooltip))).into())
         .child(icons::icon(icon, 13.).text_color(if active {
             theme::accent()
         } else {
@@ -302,10 +297,8 @@ fn render_git_status(
         .cursor_pointer()
         .hover(|s| s.bg(theme::raised()))
         .tooltip(|_window, cx| {
-            cx.new(|_| LocalPathTooltip {
-                path: SharedString::from(crate::shared::i18n::text("git.title")),
-            })
-            .into()
+            cx.new(|_| Tooltip::new(crate::shared::i18n::text("git.title")))
+                .into()
         })
         .child(icons::icon(icons::IconName::GitBranch, 13.).text_color(theme::accent()))
         .child(
@@ -795,10 +788,8 @@ fn render_quick_command_row(
                 .cursor_pointer()
                 .hover(|style| style.bg(theme::raised()))
                 .tooltip(|_window, cx| {
-                    cx.new(|_| LocalPathTooltip {
-                        path: SharedString::from(i18n::text("quick_commands.run")),
-                    })
-                    .into()
+                    cx.new(|_| Tooltip::new(i18n::text("quick_commands.run")))
+                        .into()
                 })
                 .child(icons::icon(icons::IconName::Play, 12.).text_color(theme::faint_text()))
                 .on_click(cx.listener(move |this, _ev, _window, cx| {
@@ -819,12 +810,12 @@ fn render_quick_command_row(
                 .cursor_pointer()
                 .hover(|style| style.bg(theme::raised()))
                 .tooltip(move |_window, cx| {
-                    cx.new(|_| LocalPathTooltip {
-                        path: SharedString::from(i18n::text(if background_restart_id.is_some() {
+                    cx.new(|_| {
+                        Tooltip::new(i18n::text(if background_restart_id.is_some() {
                             "quick_commands.restart"
                         } else {
                             "quick_commands.run_background"
-                        })),
+                        }))
                     })
                     .into()
                 })
@@ -870,10 +861,8 @@ fn render_quick_command_row(
                 .cursor_pointer()
                 .hover(|style| style.bg(theme::raised()))
                 .tooltip(|_window, cx| {
-                    cx.new(|_| LocalPathTooltip {
-                        path: SharedString::from(i18n::text("tooltip.pin_command")),
-                    })
-                    .into()
+                    cx.new(|_| Tooltip::new(i18n::text("tooltip.pin_command")))
+                        .into()
                 })
                 .child(
                     icons::icon(icons::IconName::Pin, 12.).text_color(if record.pinned {
@@ -907,10 +896,8 @@ fn render_command_preview(command: &str, color: gpui::Rgba, id: SharedString) ->
         .text_xs()
         .text_color(color)
         .tooltip(move |_window, cx| {
-            cx.new(|_| crossh_ui::widgets::CommandTooltip {
-                command: SharedString::from(tooltip_command.clone()),
-            })
-            .into()
+            cx.new(|_| Tooltip::new(tooltip_command.clone()).wide())
+                .into()
         });
 
     if let Some((head, tail)) = command_preview_parts(command) {
@@ -987,12 +974,7 @@ fn render_background_task_row(task: &BackgroundTask, cx: &mut Context<AppShell>)
         .px_2()
         .rounded(px(theme::RADIUS_SM))
         .bg(theme::raised())
-        .tooltip(move |_window, cx| {
-            cx.new(|_| crossh_ui::widgets::LocalPathTooltip {
-                path: SharedString::from(cwd.clone()),
-            })
-            .into()
-        })
+        .tooltip(move |_window, cx| cx.new(|_| Tooltip::new(cwd.clone())).into())
         .child(StatusDot::new(background_task_color(task.status)))
         .child(render_command_preview(
             &task.command,
@@ -1019,10 +1001,8 @@ fn render_background_task_row(task: &BackgroundTask, cx: &mut Context<AppShell>)
                 .cursor_pointer()
                 .hover(|style| style.bg(theme::accent_soft()))
                 .tooltip(|_window, cx| {
-                    cx.new(|_| LocalPathTooltip {
-                        path: SharedString::from(i18n::text("quick_commands.stop")),
-                    })
-                    .into()
+                    cx.new(|_| Tooltip::new(i18n::text("quick_commands.stop")))
+                        .into()
                 })
                 .child(icons::icon(icons::IconName::CircleX, 12.).text_color(theme::danger()))
                 .on_click(cx.listener(move |this, _ev, _window, cx| {
@@ -1388,10 +1368,8 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                             .text_color(theme::muted_text())
                             .hover(|s| s.bg(theme::raised()).text_color(theme::danger()))
                             .tooltip(|_window, cx| {
-                                cx.new(|_| crossh_ui::widgets::LocalPathTooltip {
-                                    path: SharedString::from(i18n::text("tooltip.close_tab")),
-                                })
-                                .into()
+                                cx.new(|_| Tooltip::new(i18n::text("tooltip.close_tab")))
+                                    .into()
                             })
                             .child(
                                 icons::icon(icons::IconName::X, 13.)
@@ -1547,10 +1525,8 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                             .text_color(theme::muted_text())
                             .hover(|s| s.bg(theme::raised()).text_color(theme::danger()))
                             .tooltip(|_window, cx| {
-                                cx.new(|_| crossh_ui::widgets::LocalPathTooltip {
-                                    path: SharedString::from(i18n::text("tooltip.close_tab")),
-                                })
-                                .into()
+                                cx.new(|_| Tooltip::new(i18n::text("tooltip.close_tab")))
+                                    .into()
                             })
                             .child(
                                 icons::icon(icons::IconName::X, 13.)
@@ -1588,10 +1564,8 @@ fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEl
                     .text_color(theme::canvas())
             })
             .tooltip(|_window, cx| {
-                cx.new(|_| crossh_ui::widgets::LocalPathTooltip {
-                    path: SharedString::from(i18n::text("tooltip.new_terminal")),
-                })
-                .into()
+                cx.new(|_| Tooltip::new(i18n::text("tooltip.new_terminal")))
+                    .into()
             })
             .child(
                 icons::icon(icons::IconName::Plus, 15.)

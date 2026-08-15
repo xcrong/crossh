@@ -2,65 +2,12 @@
 
 use gpui::{
     Bounds, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Font, Hsla, Keystroke,
-    ParentElement, Pixels, Point, Render, SharedString, Styled, TextRun, Window, canvas, div, px,
-    size,
+    Pixels, Point, SharedString, Styled, TextRun, Window, canvas, div, px, size,
 };
 
 use std::ops::Range;
 
 use crate::theme;
-
-/// 简单的纯文本 tooltip：按内容收缩，长文本最多 480px 并自动换行。
-pub struct LocalPathTooltip {
-    pub path: SharedString,
-}
-
-impl Render for LocalPathTooltip {
-    fn render(
-        &mut self,
-        _window: &mut Window,
-        _cx: &mut gpui::Context<Self>,
-    ) -> impl gpui::IntoElement {
-        div()
-            .w_auto()
-            .max_w(px(480.))
-            .px_2()
-            .py_1()
-            .bg(theme::raised())
-            .border_1()
-            .border_color(theme::border_strong())
-            .text_xs()
-            .text_color(theme::text())
-            .whitespace_normal()
-            .child(self.path.clone())
-    }
-}
-
-/// Full command preview for quick-command rows.
-pub struct CommandTooltip {
-    pub command: SharedString,
-}
-
-impl Render for CommandTooltip {
-    fn render(
-        &mut self,
-        _window: &mut Window,
-        _cx: &mut gpui::Context<Self>,
-    ) -> impl gpui::IntoElement {
-        div()
-            .w_auto()
-            .max_w(px(520.))
-            .px_3()
-            .py_2()
-            .bg(theme::canvas())
-            .border_1()
-            .border_color(theme::border_strong())
-            .text_xs()
-            .text_color(theme::text())
-            .whitespace_normal()
-            .child(self.command.clone())
-    }
-}
 
 /// Focused text fields use a small explicit caret because these fields are
 /// rendered as GPUI layout elements rather than native text inputs.

@@ -25,6 +25,7 @@ pub mod prelude {
     pub use crate::layout::{h_flex, v_flex};
     pub use crate::separator::{Separator, SeparatorOrientation};
     pub use crate::status_dot::StatusDot;
+    pub use crate::tooltip::Tooltip;
 }
 
 pub use avatar::{Avatar, AvatarKind};
@@ -33,3 +34,4 @@ pub use button::{Button, ButtonSize, ButtonVariant};
 pub use layout::{h_flex, v_flex};
 pub use separator::{Separator, SeparatorOrientation};
 pub use status_dot::StatusDot;
+pub use tooltip::Tooltip;
