@@ -18,7 +18,7 @@ use crate::shared::i18n::{self};
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::widgets::{ime_input_canvas, text_caret};
 use crossh_ui::{icons, theme};
-use crossh_ui_component::{Avatar, AvatarKind, Hint, SplitResizer, StatusDot, Tooltip};
+use crossh_ui_component::{Avatar, AvatarKind, CountBadge, Hint, SplitResizer, StatusDot, Tooltip};
 
 const TRANSPARENT: gpui::Rgba = gpui::Rgba {
     r: 0.0,
@@ -1125,20 +1125,7 @@ fn render_host_group(spec: HostGroupSpec, cx: &mut Context<AppShell>) -> AnyElem
                 .font_weight(FontWeight::MEDIUM)
                 .child(SharedString::from(title)),
         )
-        .child(
-            div()
-                .min_w(px(20.))
-                .h(px(18.))
-                .px_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded_full()
-                .bg(theme::raised())
-                .text_xs()
-                .text_color(theme::muted_text())
-                .child(SharedString::from(count.to_string())),
-        );
+        .child(CountBadge::new(count.to_string()).min_width(px(20.)));
 
     if let Some(action) = action {
         header = header.child(

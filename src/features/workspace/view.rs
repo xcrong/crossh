@@ -24,7 +24,9 @@ use crossh_core::project::GitStatus;
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::widgets::{ime_input_canvas, text_caret};
 use crossh_ui::{icons, theme};
-use crossh_ui_component::{Button, ButtonSize, ButtonVariant, SplitResizer, StatusDot, Tooltip};
+use crossh_ui_component::{
+    Button, ButtonSize, ButtonVariant, CountBadge, SplitResizer, StatusDot, Tooltip,
+};
 
 /// 一个远程终端/SFTP 标签。
 pub struct Tab {
@@ -445,15 +447,12 @@ pub(crate) fn render_quick_commands(
                 .child(icons::icon(icons::IconName::Terminal, 13.).text_color(theme::accent()))
                 .child(SharedString::from(i18n::text("quick_commands.title")))
                 .child(
-                    div()
-                        .px_2()
-                        .py(px(1.))
-                        .rounded_full()
-                        .bg(theme::raised())
-                        .ml_auto()
-                        .text_xs()
-                        .text_color(theme::muted_text())
-                        .child(SharedString::from(format!("{}/{}", records.len(), total))),
+                    div().ml_auto().child(
+                        CountBadge::new(format!("{}/{}", records.len(), total))
+                            .unbounded()
+                            .padding_x(px(8.))
+                            .padding_y(px(1.)),
+                    ),
                 ),
         )
         .child(
@@ -519,13 +518,12 @@ pub(crate) fn render_quick_commands(
                     "quick_commands.background_tasks",
                 )))
                 .child(
-                    div()
-                        .ml_auto()
-                        .px_1()
-                        .rounded_full()
-                        .bg(theme::raised())
-                        .text_color(theme::muted_text())
-                        .child(SharedString::from(tasks.len().to_string())),
+                    div().ml_auto().child(
+                        CountBadge::new(tasks.len().to_string())
+                            .unbounded()
+                            .padding_x(px(4.))
+                            .padding_y(px(0.)),
+                    ),
                 ),
         );
         for task in tasks {

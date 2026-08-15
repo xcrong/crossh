@@ -8,6 +8,7 @@
 pub mod avatar;
 pub mod badge;
 pub mod button;
+pub mod count_badge;
 pub mod hint;
 pub mod layout;
 pub mod separator;
@@ -26,6 +27,7 @@ pub mod prelude {
     pub use crate::avatar::{Avatar, AvatarKind};
     pub use crate::badge::{Badge, BadgeTone};
     pub use crate::button::{Button, ButtonSize, ButtonVariant};
+    pub use crate::count_badge::CountBadge;
     pub use crate::hint::Hint;
     pub use crate::layout::{h_flex, v_flex};
     pub use crate::separator::{Separator, SeparatorOrientation};
@@ -39,6 +41,7 @@ pub mod prelude {
 pub use avatar::{Avatar, AvatarKind};
 pub use badge::{Badge, BadgeTone};
 pub use button::{Button, ButtonSize, ButtonVariant};
+pub use count_badge::CountBadge;
 pub use hint::Hint;
 pub use layout::{h_flex, v_flex};
 pub use separator::{Separator, SeparatorOrientation};
