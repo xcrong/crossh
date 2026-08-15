@@ -83,65 +83,29 @@ impl RemoteEditor {
     }
 
     fn insert(&mut self, text: &str) {
-        if text.is_empty() {
-            return;
+        if insert_text(&mut self.content, &mut self.cursor, text) {
+            self.dirty = true;
         }
-        self.content.insert_str(self.cursor, text);
-        self.cursor += text.len();
-        self.dirty = true;
     }
 
     fn backspace(&mut self) {
-        let start = previous_char_boundary(&self.content, self.cursor);
-        if start != self.cursor {
-            self.content.replace_range(start..self.cursor, "");
-            self.cursor = start;
+        if backspace_char(&mut self.content, &mut self.cursor) {
             self.dirty = true;
         }
     }
 
     fn delete(&mut self) {
-        let end = next_char_boundary(&self.content, self.cursor);
-        if end != self.cursor {
-            self.content.replace_range(self.cursor..end, "");
+        if delete_char(&mut self.content, &mut self.cursor) {
             self.dirty = true;
         }
     }
 
     fn move_horizontal(&mut self, direction: i8) {
-        self.cursor = if direction < 0 {
-            previous_char_boundary(&self.content, self.cursor)
-        } else {
-            next_char_boundary(&self.content, self.cursor)
-        };
+        move_cursor_horizontal(&self.content, &mut self.cursor, direction);
     }
 
     fn move_vertical(&mut self, direction: i8) {
-        let (line_start, line_end) = line_bounds(&self.content, self.cursor);
-        let column = self.content[line_start..self.cursor].chars().count();
-        let target_start = if direction < 0 {
-            if line_start == 0 {
-                return;
-            }
-            self.content[..line_start - 1]
-                .rfind('\n')
-                .map(|idx| idx + 1)
-                .unwrap_or(0)
-        } else {
-            if line_end == self.content.len() {
-                return;
-            }
-            line_end + 1
-        };
-        let target_end = self.content[target_start..]
-            .find('\n')
-            .map(|idx| target_start + idx)
-            .unwrap_or(self.content.len());
-        self.cursor = self.content[target_start..target_end]
-            .char_indices()
-            .nth(column)
-            .map(|(idx, _)| target_start + idx)
-            .unwrap_or(target_end);
+        move_cursor_vertical(&self.content, &mut self.cursor, direction);
     }
 }
 
@@ -424,28 +388,8 @@ impl SftpPane {
         }
     }
 
-    fn parent_of(path: &str) -> String {
-        let p = path.trim_end_matches('/');
-        if p.is_empty() {
-            return "/".to_string();
-        }
-        match p.rfind('/') {
-            Some(0) => "/".to_string(),
-            Some(idx) => p[..idx].to_string(),
-            None => ".".to_string(),
-        }
-    }
-
-    fn join(base: &str, name: &str) -> String {
-        if base.ends_with('/') {
-            format!("{base}{name}")
-        } else {
-            format!("{base}/{name}")
-        }
-    }
-
     fn download(&mut self, name: &str) {
-        let remote = Self::join(&self.cwd, name);
+        let remote = join(&self.cwd, name);
         let target = downloads_dir().join(name);
         let Some(local) = unique_local_path(&target) else {
             self.message = Some(rust_i18n::t!("sftp.no_local_name", name = name).to_string());
@@ -468,7 +412,7 @@ impl SftpPane {
             return;
         }
 
-        let remote = Self::join(&self.cwd, name);
+        let remote = join(&self.cwd, name);
         let mut editor = RemoteEditor::loading(remote.clone(), name.to_string(), cx.focus_handle());
         if try_send_command(&self.cmd_tx, SftpCmd::ReadFile { remote }).is_err() {
             editor.loading = false;
@@ -522,7 +466,7 @@ impl SftpPane {
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "upload.bin".into());
-        let remote = Self::join(&self.cwd, &basename);
+        let remote = join(&self.cwd, &basename);
         if try_send_command(&self.cmd_tx, SftpCmd::Upload { local, remote }).is_err() {
             self.message = Some(sftp_channel_unavailable());
         } else {
@@ -704,12 +648,12 @@ impl SftpPane {
     ) {
         match action {
             SftpMenuAction::Navigate(name) => {
-                let path = Self::join(&self.cwd, &name);
+                let path = join(&self.cwd, &name);
                 self.request_list(path);
             }
             SftpMenuAction::Download(name) => self.download(&name),
             SftpMenuAction::UploadHere(name) => {
-                let path = Self::join(&self.cwd, &name);
+                let path = join(&self.cwd, &name);
                 self.request_list(path);
                 window.focus(&self.focus, cx);
             }
@@ -755,10 +699,10 @@ impl SftpPane {
             cx.notify();
             return;
         }
-        let remote = Self::join(&self.cwd, &value);
+        let remote = join(&self.cwd, &value);
         let command = match &input.rename_from {
             Some(from) => SftpCmd::Rename {
-                from: Self::join(&self.cwd, from),
+                from: join(&self.cwd, from),
                 to: remote,
             },
             None => SftpCmd::Mkdir { path: remote },
@@ -804,7 +748,7 @@ impl SftpPane {
         let Some(confirm) = self.confirm_delete.take() else {
             return;
         };
-        let remote = Self::join(&self.cwd, &confirm.name);
+        let remote = join(&self.cwd, &confirm.name);
         if try_send_command(&self.cmd_tx, SftpCmd::Remove { path: remote }).is_err() {
             self.message = Some(sftp_channel_unavailable());
         }
@@ -1423,25 +1367,6 @@ mod tests {
     use super::*;
     use gpui::TestAppContext;
     use std::path::Path;
-
-    #[test]
-    fn parent_of_handles_root_and_nested_paths() {
-        assert_eq!(SftpPane::parent_of("/"), "/");
-        assert_eq!(SftpPane::parent_of("////"), "/");
-        assert_eq!(SftpPane::parent_of("/home/user"), "/home");
-        assert_eq!(SftpPane::parent_of("/home/user/"), "/home");
-        assert_eq!(SftpPane::parent_of("."), ".");
-    }
-
-    #[test]
-    fn join_handles_relative_and_root_bases() {
-        assert_eq!(SftpPane::join(".", "notes.txt"), "./notes.txt");
-        assert_eq!(SftpPane::join("/", "notes.txt"), "/notes.txt");
-        assert_eq!(
-            SftpPane::join("/home/user", "notes.txt"),
-            "/home/user/notes.txt"
-        );
-    }
 
     #[test]
     fn command_queue_reports_full_and_closed_channels() {

@@ -30,7 +30,7 @@ use super::{
 
 impl Render for GitWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.compact_layout = uses_compact_git_layout(window.viewport_size().width);
+        self.compact_layout = uses_compact_git_layout(window.viewport_size().width.into());
         let body = if self.compact_layout {
             match self.compact_page {
                 CompactPage::Changes => self.render_changes_pane(true, window, cx),

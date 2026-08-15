@@ -43,7 +43,7 @@ impl Render for SftpPane {
                     .child(icons::icon(icons::IconName::ArrowUp, 14.).text_color(theme::text()))
                     .child(SharedString::from(i18n::text("sftp.parent")))
                     .on_click(cx.listener(|this, _ev, _w, cx| {
-                        let p = Self::parent_of(&this.cwd);
+                        let p = parent_of(&this.cwd);
                         this.request_list(p);
                         cx.notify();
                     })),
@@ -164,7 +164,7 @@ impl Render for SftpPane {
                     let name_click = name.clone();
                     cx.listener(move |this, _ev, _w, cx| {
                         if is_dir {
-                            let p = Self::join(&this.cwd, &name_click);
+                            let p = join(&this.cwd, &name_click);
                             this.request_list(p);
                         } else {
                             this.open_file_or_download(&name_click, cx);

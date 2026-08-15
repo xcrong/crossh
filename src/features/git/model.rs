@@ -1,5 +1,4 @@
 use crossh_core::git::{FileChange, FileDiff};
-use gpui::{Pixels, px};
 
 pub const GIT_COMPACT_WIDTH: f32 = 840.;
 pub const CHANGES_PANE_DEFAULT_WIDTH: f32 = 300.;
@@ -72,8 +71,8 @@ impl RefreshState {
     }
 }
 
-pub fn uses_compact_git_layout(width: Pixels) -> bool {
-    width < px(GIT_COMPACT_WIDTH)
+pub fn uses_compact_git_layout(width: f32) -> bool {
+    width < GIT_COMPACT_WIDTH
 }
 
 pub fn clamp_changes_pane_width(width: f32) -> f32 {
@@ -147,8 +146,8 @@ mod tests {
 
     #[test]
     fn git_layout_switches_at_compact_width() {
-        assert!(uses_compact_git_layout(px(839.)));
-        assert!(!uses_compact_git_layout(px(840.)));
+        assert!(uses_compact_git_layout(839.));
+        assert!(!uses_compact_git_layout(840.));
     }
 
     #[test]

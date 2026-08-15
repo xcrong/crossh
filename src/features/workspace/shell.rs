@@ -1098,7 +1098,7 @@ impl AppShell {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
             }
             ShellMenuAction::RevealInFinder(path) => {
-                std::process::Command::new("open").arg(&path).spawn().ok();
+                crossh_core::process::reveal_in_finder(&path);
             }
             ShellMenuAction::ForgetLocalDir(cwd) => self.forget_local_dir(cwd, cx),
             ShellMenuAction::OpenLocalTerminal(cwd) => {

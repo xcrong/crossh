@@ -1,6 +1,6 @@
 //! Process-level helpers shared by the application binaries.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// 在当前可执行文件旁查找同伴二进制，找不到时回退为按名称执行（交给 PATH）。
 ///
@@ -18,6 +18,29 @@ pub fn sibling_executable(name: &str) -> PathBuf {
         .and_then(|current| current.parent().map(|directory| directory.join(filename)))
         .filter(|path| path.is_file())
         .unwrap_or_else(|| PathBuf::from(name))
+}
+
+/// 在系统文件管理器中展示给定路径：macOS `open`、Linux `xdg-open`、
+/// Windows `explorer`，其他平台无等价动作。
+///
+/// 返回是否成功启动了展示进程。进程启动成功不代表展示必然可见（例如
+/// 某些 Linux 桌面缺少 `xdg-open`），调用方按静默失败处理即可。
+pub fn reveal_in_finder(path: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(target_os = "linux")]
+    let program = "xdg-open";
+    #[cfg(target_os = "windows")]
+    let program = "explorer";
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        let _ = path;
+        return false;
+    }
+    std::process::Command::new(program)
+        .arg(path)
+        .spawn()
+        .is_ok()
 }
 
 #[cfg(test)]
