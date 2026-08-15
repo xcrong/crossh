@@ -31,7 +31,7 @@ pub mod prelude {
     pub use crate::button::{Button, ButtonSize, ButtonVariant};
     pub use crate::count_badge::CountBadge;
     pub use crate::hint::Hint;
-    pub use crate::layout::{h_flex, v_flex};
+    pub use crate::layout::{h_flex, scroll_y, v_flex};
     pub use crate::modal::ModalDialog;
     pub use crate::separator::{Separator, SeparatorOrientation};
     pub use crate::split_resizer::{SplitHandleSide, SplitResizer};
@@ -47,7 +47,7 @@ pub use badge::{Badge, BadgeTone};
 pub use button::{Button, ButtonSize, ButtonVariant};
 pub use count_badge::CountBadge;
 pub use hint::Hint;
-pub use layout::{h_flex, v_flex};
+pub use layout::{h_flex, scroll_y, v_flex};
 pub use modal::ModalDialog;
 pub use separator::{Separator, SeparatorOrientation};
 pub use split_resizer::{SplitHandleSide, SplitResizer};

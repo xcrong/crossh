@@ -21,7 +21,7 @@ use crate::shared::i18n::{self, LanguagePreference};
 use crossh_agent::{AgentModel, AgentModelRef, AgentProtocol, AgentProvider, AgentSettings};
 use crossh_ui::widgets::{ime_input_canvas, printable_char, text_caret, text_width};
 use crossh_ui::{icons, theme};
-use crossh_ui_component::{Button, ButtonSize, ButtonVariant, Stepper, ToggleSwitch};
+use crossh_ui_component::{Button, ButtonSize, ButtonVariant, Stepper, ToggleSwitch, scroll_y};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingsSection {
@@ -173,9 +173,6 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let compact_layout = self.compact_layout;
-        let settings_row = move |label: String, description: String, control: AnyElement| {
-            responsive_settings_row(label, description, control, compact_layout)
-        };
         let mut languages = div()
             .w_full()
             .min_w_0()
@@ -253,15 +250,17 @@ impl SettingsWindow {
             .flex()
             .flex_col()
             .child(settings_heading("settings.general"))
-            .child(settings_row(
+            .child(responsive_settings_row(
                 i18n::text("settings.language"),
                 i18n::text("settings.language_description"),
                 languages.into_any_element(),
+                compact_layout,
             ))
-            .child(settings_row(
+            .child(responsive_settings_row(
                 i18n::text("settings.recent_dirs"),
                 i18n::text("settings.recent_dirs_description"),
                 recent_dirs_control.into_any_element(),
+                compact_layout,
             ))
             .into_any_element()
     }
@@ -272,9 +271,6 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let compact_layout = self.compact_layout;
-        let settings_row = move |label: String, description: String, control: AnyElement| {
-            responsive_settings_row(label, description, control, compact_layout)
-        };
         let entity = cx.entity();
         let notifications = ToggleSwitch::new("settings-terminal-notifications-toggle")
             .on(settings.terminal.notifications_enabled)
@@ -344,20 +340,23 @@ impl SettingsWindow {
             .flex()
             .flex_col()
             .child(settings_heading("settings.terminal"))
-            .child(settings_row(
+            .child(responsive_settings_row(
                 i18n::text("settings.notifications"),
                 i18n::text("settings.notifications_description"),
                 notifications.into_any_element(),
+                compact_layout,
             ))
-            .child(settings_row(
+            .child(responsive_settings_row(
                 i18n::text("settings.font_size"),
                 i18n::text("settings.font_size_description"),
                 font_control.into_any_element(),
+                compact_layout,
             ))
-            .child(settings_row(
+            .child(responsive_settings_row(
                 i18n::text("settings.scrollback"),
                 i18n::text("settings.scrollback_description"),
                 scrollback.into_any_element(),
+                compact_layout,
             ))
             .into_any_element()
     }
@@ -368,9 +367,6 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let compact_layout = self.compact_layout;
-        let settings_row = move |label: String, description: String, control: AnyElement| {
-            responsive_settings_row(label, description, control, compact_layout)
-        };
         self.updates.update(cx, |updates, _cx| {
             updates.set_settings(settings.updates.clone())
         });
@@ -416,15 +412,17 @@ impl SettingsWindow {
             .flex()
             .flex_col()
             .child(settings_heading("settings.updates"))
-            .child(settings_row(
+            .child(responsive_settings_row(
                 i18n::text("settings.updates_check_on_startup"),
                 i18n::text("settings.updates_check_on_startup_description"),
                 startup_toggle.into_any_element(),
+                compact_layout,
             ))
-            .child(settings_row(
+            .child(responsive_settings_row(
                 i18n::text("settings.updates_status"),
                 i18n::text("settings.updates_status_description"),
                 status_control.into_any_element(),
+                compact_layout,
             ));
 
         match status {
@@ -447,7 +445,7 @@ impl SettingsWindow {
                         move |_ev, _window, cx| cx.open_url(&release_url),
                     ));
                 }
-                content = content.child(settings_row(
+                content = content.child(responsive_settings_row(
                     rust_i18n::t!("settings.updates_available", version = version).to_string(),
                     if candidate.notes.is_empty() {
                         i18n::text("settings.updates_available_description")
@@ -455,10 +453,11 @@ impl SettingsWindow {
                         candidate.notes
                     },
                     actions.into_any_element(),
+                    compact_layout,
                 ));
             }
             UpdateStatus::Downloading(candidate) => {
-                content = content.child(settings_row(
+                content = content.child(responsive_settings_row(
                     rust_i18n::t!(
                         "settings.updates_downloading",
                         version = candidate.version.to_string()
@@ -466,6 +465,7 @@ impl SettingsWindow {
                     .to_string(),
                     i18n::text("settings.updates_downloading_description"),
                     div().into_any_element(),
+                    compact_layout,
                 ));
             }
             UpdateStatus::Ready { candidate, package } => {
@@ -476,7 +476,7 @@ impl SettingsWindow {
                     i18n::text("settings.updates_install"),
                     cx.listener(|this, _ev, _window, cx| this.install_update(cx)),
                 );
-                content = content.child(settings_row(
+                content = content.child(responsive_settings_row(
                     rust_i18n::t!(
                         "settings.updates_ready",
                         version = candidate.version.to_string()
@@ -484,6 +484,7 @@ impl SettingsWindow {
                     .to_string(),
                     package_text,
                     install,
+                    compact_layout,
                 ));
             }
             _ => {}

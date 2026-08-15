@@ -19,7 +19,7 @@ use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
     Avatar, AvatarKind, Button, ButtonSize, ButtonVariant, CountBadge, Hint, SplitResizer,
-    StatusDot, TextInput, Tooltip,
+    StatusDot, TextInput, Tooltip, scroll_y,
 };
 
 const TRANSPARENT: gpui::Rgba = gpui::Rgba {
@@ -200,17 +200,15 @@ pub fn render_sidebar(
         None
     };
 
-    let mut list = div()
+    let mut list = scroll_y(&shell.sidebar_scroll)
         .id("host-list")
-        .track_scroll(&shell.sidebar_scroll)
         .flex_1()
         .min_h_0()
         .flex()
         .flex_col()
         .gap_3()
         .px_3()
-        .py_3()
-        .overflow_y_scroll();
+        .py_3();
     if let Some(projects_group) = projects_group {
         list = list.child(projects_group);
     }

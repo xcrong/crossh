@@ -29,7 +29,7 @@ use crossh_ui::widgets::{
     utf16_offset_for_byte, utf16_slice,
 };
 use crossh_ui::{icons, theme};
-use crossh_ui_component::{Button, ButtonSize, ButtonVariant, ModalDialog, TextInput};
+use crossh_ui_component::{Button, ButtonSize, ButtonVariant, ModalDialog, TextInput, scroll_y};
 
 use super::logic::*;
 
@@ -1055,7 +1055,7 @@ impl SftpPane {
         }
         header = header.child(actions);
 
-        let mut body = div()
+        let mut body = scroll_y(&self.editor_scroll)
             .id("sftp-editor-body")
             .flex_1()
             .min_h_0()
@@ -1064,8 +1064,6 @@ impl SftpPane {
             .px_3()
             .py_2()
             .relative()
-            .track_scroll(&self.editor_scroll)
-            .overflow_y_scroll()
             .bg(theme::canvas())
             .track_focus(&focus)
             .tab_stop(true)

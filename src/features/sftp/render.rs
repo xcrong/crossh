@@ -63,16 +63,14 @@ impl Render for SftpPane {
             );
 
         // 列表区。
-        let mut list = div()
+        let mut list = scroll_y(&self.list_scroll)
             .id("sftp-entry-list")
             .flex_1()
             .min_h_0()
             .flex()
             .flex_col()
             .px_2()
-            .py_2()
-            .track_scroll(&self.list_scroll)
-            .overflow_y_scroll();
+            .py_2();
         let first_entry = ((self.list_scroll.offset().y.as_f32().max(0.) / SFTP_ROW_HEIGHT).floor()
             as usize)
             .min(self.entries.len());

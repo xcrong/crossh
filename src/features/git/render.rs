@@ -13,7 +13,7 @@ use crossh_core::git::{ChangeStatus, DiffLine, DiffLineKind, FileChange};
 use crossh_ui::widgets::{ime_input_canvas, text_caret};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
-    Badge, BadgeTone, Button, ButtonSize, ButtonVariant, Hint, SplitResizer,
+    Badge, BadgeTone, Button, ButtonSize, ButtonVariant, Hint, SplitResizer, scroll_y,
 };
 
 use super::editor::CommitEditor;
@@ -264,16 +264,14 @@ impl GitWindow {
             }))
             .child(self.render_commit_panel(compact, window, cx))
             .child(
-                div()
+                scroll_y(&self.changes_scroll)
                     .id(if compact {
                         "git-changes-list-compact"
                     } else {
                         "git-changes-list"
                     })
-                    .track_scroll(&self.changes_scroll)
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
                     .child(content),
             )
             .into_any_element()

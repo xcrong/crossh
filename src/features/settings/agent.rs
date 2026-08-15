@@ -11,9 +11,6 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let compact_layout = self.compact_layout;
-        let settings_row = move |label: String, description: String, control: AnyElement| {
-            responsive_settings_row(label, description, control, compact_layout)
-        };
         self.prepare_agent_draft(settings);
 
         let mut active_models = div()
@@ -99,25 +96,29 @@ impl SettingsWindow {
             .flex()
             .flex_col()
             .child(settings_heading("settings.agent"))
-            .child(settings_row(
+            .child(responsive_settings_row(
                 i18n::text("settings.agent_active_model"),
                 i18n::text("settings.agent_active_model_description"),
                 active_models.into_any_element(),
+                compact_layout,
             ))
-            .child(settings_row(
+            .child(responsive_settings_row(
                 i18n::text("settings.agent_reviewer_model"),
                 i18n::text("settings.agent_reviewer_model_description"),
                 reviewer_models.into_any_element(),
+                compact_layout,
             ))
-            .child(settings_row(
+            .child(responsive_settings_row(
                 i18n::text("settings.agent_rounds"),
                 i18n::text("settings.agent_rounds_description"),
                 rounds_control.into_any_element(),
+                compact_layout,
             ))
-            .child(settings_row(
+            .child(responsive_settings_row(
                 i18n::text("settings.agent_status"),
                 status_description,
                 save,
+                compact_layout,
             ))
             .into_any_element()
     }
@@ -742,9 +743,6 @@ impl SettingsWindow {
 
     pub(super) fn render_about_settings(&self) -> AnyElement {
         let compact_layout = self.compact_layout;
-        let settings_row = move |label: String, description: String, control: AnyElement| {
-            responsive_settings_row(label, description, control, compact_layout)
-        };
         let version = div()
             .text_sm()
             .text_color(theme::text())
@@ -805,20 +803,23 @@ impl SettingsWindow {
                             )),
                     ),
             )
-            .child(settings_row(
+            .child(responsive_settings_row(
                 i18n::text("settings.about_version"),
                 i18n::text("settings.about_version_description"),
                 version.into_any_element(),
+                compact_layout,
             ))
-            .child(settings_row(
+            .child(responsive_settings_row(
                 i18n::text("settings.about_source"),
                 i18n::text("settings.about_source_description"),
                 source,
+                compact_layout,
             ))
-            .child(settings_row(
+            .child(responsive_settings_row(
                 i18n::text("settings.about_license"),
                 i18n::text("settings.about_license_description"),
                 license,
+                compact_layout,
             ))
             .into_any_element()
     }

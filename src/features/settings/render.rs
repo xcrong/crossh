@@ -110,13 +110,11 @@ impl Render for SettingsWindow {
                 .child(about)
         };
 
-        let content_container = div()
+        let content_container = scroll_y(&self.scroll)
             .id("settings-content")
-            .track_scroll(&self.scroll)
             .flex_1()
             .min_h_0()
             .min_w_0()
-            .overflow_y_scroll()
             .py_4()
             .child(section_content);
         let content_container = if self.compact_layout {
