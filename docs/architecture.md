@@ -99,3 +99,5 @@ and quick verification command for focused validation.
 - [0007: Workspace panel composition](adr/0007-workspace-panel-composition.md)
 - [0008: Standalone Git Viewer binary](adr/0008-standalone-git-viewer.md)
 - [0009: Standalone agent binary](adr/0009-standalone-agent-binary.md)
+- [0010: Git workbench layering](adr/0010-git-workbench-layering.md)
+- [0011: Terminal split ownership](adr/0011-terminal-split-ownership.md)

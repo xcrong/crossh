@@ -46,7 +46,7 @@ pub struct Tab {
 pub type LocalSessionId = u64;
 
 /// 当前主区正在展示的工作区。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ActiveView {
     RemoteTab(usize),
     LocalSession(LocalSessionId),
@@ -113,7 +113,9 @@ pub fn render_main(
     // 终端/SFTP 区。
     let mut content = div().flex_1().min_h_0().flex().relative();
     let mut terminal_area = div().flex_1().min_w_0().min_h_0().relative();
-    if let Some(split) = shell.workspace.terminal_split {
+    // 分栏跟随其属主 Tab：只有属主 Tab 正被展示时才渲染分栏；否则
+    // 分栏状态保留，渲染当前活动 Tab 的普通视图，切回属主即恢复。
+    if let Some(split) = shell.workspace.active_split() {
         terminal_area =
             terminal_area.child(render_terminal_split(shell, split, available_width, cx));
     } else if let Some(active_view) = shell.workspace.active_view {
@@ -319,7 +321,9 @@ fn render_workspace_terminal_toggle(
         return div().h(px(0.)).flex_none().into_any_element();
     }
 
-    let split_active = shell.workspace.terminal_split.is_some();
+    // 分栏按钮的亮灭与当前 Tab（活动视图属主）绑定：显示「当前 Tab 是否
+    // 有分栏」，其他 Tab 的分栏不影响本 Tab 的按钮状态（ADR 0011）。
+    let split_active = shell.workspace.active_split().is_some();
     let can_toggle = split_active || terminal_split_available(available_width);
     let tooltip = if split_active {
         "tooltip.close_split"

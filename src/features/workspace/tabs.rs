@@ -10,11 +10,29 @@ use super::*;
 
 /// 单个标签页关闭时可能被打断的活动；任何一项存在都需要确认。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct TabCloseRisk {
+pub(super) struct TabCloseRisk {
     command_running: bool,
     sftp_writes: usize,
     unsaved_editors: usize,
     active_forwards: usize,
+}
+
+/// 分栏右窗格会话退出分栏时的去向。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SplitPaneRetirement {
+    /// 无活动：直接销毁。分栏是当前 Tab 的临时工作区，退出即清理。
+    Close,
+    /// 有活动（命令运行中/传输中/未保存等）：保留为普通标签，不打断用户。
+    KeepAsTab,
+}
+
+/// 决策右窗格会话退出分栏的去向。`None` 表示会话已不存在，统一按关闭
+/// 处理（关闭操作对不存在的会话是安全的空操作）。
+pub(super) fn split_pane_retirement(risk: Option<&TabCloseRisk>) -> SplitPaneRetirement {
+    match risk {
+        Some(risk) if risk.needs_confirmation() => SplitPaneRetirement::KeepAsTab,
+        _ => SplitPaneRetirement::Close,
+    }
 }
 
 impl TabCloseRisk {
@@ -73,8 +91,10 @@ impl AppShell {
     ///
     /// Zed owns the interactive SSH process and keeps authentication prompts
     /// inside the same terminal, just like its native terminal workflow.
+    ///
+    /// 打开新 Tab 不会取消源 Tab 的分栏：分栏跟随其属主 Tab，新 Tab 只是
+    /// 暂时盖住它，切回属主 Tab 时原分栏原样恢复。
     pub(super) fn open_terminal_target(&mut self, target: String, cx: &mut Context<Self>) {
-        self.collapse_terminal_split(cx);
         let view = self.create_terminal_target(target, cx);
         self.workspace.active_view = Some(view);
         self.status = None;
@@ -163,7 +183,6 @@ impl AppShell {
         {
             return;
         }
-        self.collapse_terminal_split(cx);
         self.workspace.active_view = Some(ActiveView::RemoteTab(idx));
         self.refocus_active_terminal(cx);
         cx.notify();
@@ -267,7 +286,11 @@ impl AppShell {
         });
     }
 
-    fn remote_tab_close_risk(&self, idx: usize, cx: &Context<Self>) -> Option<TabCloseRisk> {
+    pub(super) fn remote_tab_close_risk(
+        &self,
+        idx: usize,
+        cx: &Context<Self>,
+    ) -> Option<TabCloseRisk> {
         let tab = self.workspace.sessions.remote_tabs.get(idx)?;
         let pane_risk = tab.pane.risk(cx);
         Some(TabCloseRisk {
@@ -278,7 +301,7 @@ impl AppShell {
         })
     }
 
-    fn local_session_close_risk(
+    pub(super) fn local_session_close_risk(
         &self,
         session_id: LocalSessionId,
         cx: &Context<Self>,
@@ -433,7 +456,13 @@ impl AppShell {
             .filter(|(index, _)| *index != keep)
             .filter_map(|(_, tab)| remote_tab_background_owner(tab))
             .collect::<Vec<_>>();
-        self.collapse_terminal_split(cx);
+        // 批量清扫：只拆与被清扫 Tab 相关的分栏状态，右窗格会话随清扫
+        // 一视同仁地关闭，避免退休路径提前删除右窗格造成 keep 索引漂移。
+        let swept = (0..self.workspace.sessions.remote_tabs.len())
+            .filter(|index| *index != keep)
+            .map(ActiveView::RemoteTab)
+            .collect::<Vec<_>>();
+        self.detach_splits_for(&swept, cx);
         for owner in owners {
             self.stop_background_tasks_for_owner(&owner, cx);
         }
@@ -459,7 +488,10 @@ impl AppShell {
             .iter()
             .filter_map(remote_tab_background_owner)
             .collect::<Vec<_>>();
-        self.collapse_terminal_split(cx);
+        let swept = (0..self.workspace.sessions.remote_tabs.len())
+            .map(ActiveView::RemoteTab)
+            .collect::<Vec<_>>();
+        self.detach_splits_for(&swept, cx);
         for owner in owners {
             self.stop_background_tasks_for_owner(&owner, cx);
         }
@@ -486,7 +518,12 @@ impl AppShell {
         }) else {
             return;
         };
-        self.collapse_terminal_split(cx);
+        let swept = others
+            .iter()
+            .copied()
+            .map(ActiveView::LocalSession)
+            .collect::<Vec<_>>();
+        self.detach_splits_for(&swept, cx);
         for session_id in others {
             self.close_local_session(session_id, cx);
         }
@@ -564,7 +601,7 @@ fn zed_ssh_shell(target: &str, host: &HostConfig) -> Shell {
 mod tests {
     use crate::shared::i18n;
 
-    use super::{TabCloseRisk, next_cycle_index};
+    use super::{SplitPaneRetirement, TabCloseRisk, next_cycle_index, split_pane_retirement};
 
     #[test]
     fn cycle_skips_split_secondary_and_stops_when_only_one_view_is_visible() {
@@ -612,5 +649,37 @@ mod tests {
         assert!(detail.contains("2"));
         assert!(detail.contains(&i18n::text("tab_close.consequence")));
         assert!(detail.contains(&i18n::text("tab_close.running")));
+    }
+
+    #[test]
+    fn split_pane_retirement_destroys_idle_panes_and_keeps_busy_ones() {
+        assert_eq!(split_pane_retirement(None), SplitPaneRetirement::Close);
+        assert_eq!(
+            split_pane_retirement(Some(&TabCloseRisk::default())),
+            SplitPaneRetirement::Close
+        );
+        for risky in [
+            TabCloseRisk {
+                command_running: true,
+                ..Default::default()
+            },
+            TabCloseRisk {
+                sftp_writes: 1,
+                ..Default::default()
+            },
+            TabCloseRisk {
+                unsaved_editors: 1,
+                ..Default::default()
+            },
+            TabCloseRisk {
+                active_forwards: 1,
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(
+                split_pane_retirement(Some(&risky)),
+                SplitPaneRetirement::KeepAsTab
+            );
+        }
     }
 }

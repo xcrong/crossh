@@ -294,7 +294,6 @@ impl AppShell {
             Some(e) => e.clone(),
             None => return,
         };
-        self.collapse_terminal_split(cx);
         let resolved = self.connections.resolve(&entry.alias);
         let methods = self.connections.auth_methods(&resolved);
         let host_key = ConnectionManager::pool_key(&resolved);
@@ -318,7 +317,6 @@ impl AppShell {
             Some(e) => e.clone(),
             None => return,
         };
-        self.collapse_terminal_split(cx);
         let resolved = self.connections.resolve(&entry.alias);
         let methods = self.connections.auth_methods(&resolved);
         let host_key = ConnectionManager::pool_key(&resolved);
@@ -338,13 +336,14 @@ impl AppShell {
 
     /// 在项目目录 view 中打开一个独立的 Zed terminal session。
     /// `project_dir` 决定侧栏归属，`cwd` 只决定 shell 的初始工作目录。
+    ///
+    /// 打开新会话不取消源 Tab 的分栏：分栏跟随其属主 Tab。
     pub(crate) fn open_local_session(
         &mut self,
         project_dir: PathBuf,
         cwd: PathBuf,
         cx: &mut Context<Self>,
     ) {
-        self.collapse_terminal_split(cx);
         let view = self.create_local_session(project_dir, cwd, cx);
         if let ActiveView::LocalSession(session_id) = view {
             self.select_local_session(session_id, cx);
@@ -465,7 +464,6 @@ impl AppShell {
             .find(|(_, dir)| dir.sessions.contains(&session_id))
             .map(|(cwd, _)| cwd.clone());
         let Some(cwd) = cwd else { return };
-        self.collapse_terminal_split(cx);
         if let Some(dir) = self.workspace.sessions.local_dirs.get_mut(&cwd) {
             dir.active_session = Some(session_id);
         }
