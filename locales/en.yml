@@ -226,6 +226,8 @@ git:
   staged_changes: Staged Changes
   changes: Changes
   no_history: No commits yet
+  history_filter: Filter commits
+  history_no_matches: No matching commits
   no_branches: No local branches
   no_stashes: No stashes
   current_branch: Current

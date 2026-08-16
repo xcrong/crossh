@@ -26,6 +26,8 @@ use crossh_core::git_stash::{
 use crossh_core::terminal::path_display_name;
 use crossh_ui::context_menu::ContextMenuState;
 
+use crate::shared::text_editing::TextEditingState;
+
 use super::context_menu::{self, GitMenuAction};
 use super::editor::CommitEditor;
 #[cfg(feature = "visual-tests")]
@@ -44,6 +46,7 @@ pub struct GitWindow {
     pub(super) commit_editor: CommitEditor,
     pub(super) changes_focus: FocusHandle,
     pub(super) history_focus: FocusHandle,
+    pub(super) history_search_focus: FocusHandle,
     pub(super) branch_focus: FocusHandle,
     pub(super) stash_focus: FocusHandle,
     pub(super) _refresh_task: Option<Task<()>>,
@@ -59,6 +62,7 @@ pub struct GitWindow {
     pub(super) context_menu: Option<ContextMenuState<GitMenuAction>>,
     pub(super) pending_discard: Option<Vec<String>>,
     pub(super) pending_stash_drop: Option<String>,
+    pub(super) history_query: TextEditingState,
 }
 
 impl GitWindow {
@@ -72,6 +76,7 @@ impl GitWindow {
             commit_editor: CommitEditor::new(cx.focus_handle()),
             changes_focus: cx.focus_handle(),
             history_focus: cx.focus_handle(),
+            history_search_focus: cx.focus_handle(),
             branch_focus: cx.focus_handle(),
             stash_focus: cx.focus_handle(),
             _refresh_task: None,
@@ -87,6 +92,7 @@ impl GitWindow {
             context_menu: None,
             pending_discard: None,
             pending_stash_drop: None,
+            history_query: TextEditingState::new(String::new()),
         };
         git_window.refresh_list(cx);
         git_window.ensure_refresh_loop(cx);
@@ -257,7 +263,7 @@ impl GitWindow {
         matches!(self.compact_page, CompactPage::Stashes)
     }
 
-    fn refresh_history(&mut self, force: bool, cx: &mut Context<Self>) {
+    pub(super) fn refresh_history(&mut self, force: bool, cx: &mut Context<Self>) {
         let Some(request) = self
             .session
             .history
@@ -375,7 +381,8 @@ impl GitWindow {
     }
 
     pub(super) fn move_history_selection(&mut self, direction: i8, cx: &mut Context<Self>) {
-        if self.session.history.entries.is_empty() {
+        let entries = self.session.history.visible_rows();
+        if entries.is_empty() {
             return;
         }
         let current = self
@@ -383,20 +390,26 @@ impl GitWindow {
             .history
             .selected
             .as_ref()
-            .and_then(|id| {
-                self.session
-                    .history
-                    .entries
-                    .iter()
-                    .position(|entry| &entry.id == id)
-            })
+            .and_then(|id| entries.iter().position(|entry| &entry.entry.id == id))
             .unwrap_or(0);
         let next = if direction < 0 {
             current.saturating_sub(1)
         } else {
-            (current + 1).min(self.session.history.entries.len() - 1)
+            (current + 1).min(entries.len() - 1)
         };
-        self.select_history_commit(self.session.history.entries[next].id.clone(), cx);
+        self.select_history_commit(entries[next].entry.id.clone(), cx);
+    }
+
+    pub(super) fn set_history_query(&mut self, query: String, cx: &mut Context<Self>) {
+        if !self.session.history.set_query(query) {
+            return;
+        }
+        if self.session.history.selected.is_some()
+            && self.session.history.detail.selected_id() != self.session.history.selected.as_deref()
+        {
+            self.refresh_history_detail(cx);
+        }
+        cx.notify();
     }
 
     pub(super) fn select_branch(&mut self, name: String, cx: &mut Context<Self>) {

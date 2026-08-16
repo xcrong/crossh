@@ -18,6 +18,28 @@ pub struct CommitSummary {
     pub parents: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HistoryRefKind {
+    LocalBranch,
+    RemoteBranch,
+    Tag,
+    Head,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryRef {
+    pub name: String,
+    pub target: String,
+    pub kind: HistoryRefKind,
+    pub current: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistorySnapshot {
+    pub entries: Vec<CommitSummary>,
+    pub refs: Vec<HistoryRef>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitFileChange {
     pub path: String,
@@ -38,15 +60,21 @@ pub const DEFAULT_HISTORY_LIMIT: usize = 200;
 const MAX_HISTORY_LIMIT: usize = 500;
 const RECORD_SEPARATOR: u8 = 0x1e;
 
-pub fn list_history(cwd: &Path, limit: usize) -> Result<Vec<CommitSummary>, GitError> {
+pub fn list_history(cwd: &Path, limit: usize) -> Result<HistorySnapshot, GitError> {
     if limit == 0 {
-        return Ok(Vec::new());
+        return Ok(HistorySnapshot {
+            entries: Vec::new(),
+            refs: Vec::new(),
+        });
     }
     let limit = limit.min(MAX_HISTORY_LIMIT);
     let output = run_git(
         cwd,
         &[
             "log".to_string(),
+            "--all".to_string(),
+            "HEAD".to_string(),
+            "--topo-order".to_string(),
             "--no-color".to_string(),
             "--no-decorate".to_string(),
             "--date=iso-strict".to_string(),
@@ -55,7 +83,10 @@ pub fn list_history(cwd: &Path, limit: usize) -> Result<Vec<CommitSummary>, GitE
             limit.to_string(),
         ],
     )?;
-    parse_history(&output)
+    Ok(HistorySnapshot {
+        entries: parse_history(&output)?,
+        refs: list_refs(cwd)?,
+    })
 }
 
 pub fn show_commit(cwd: &Path, id: &str) -> Result<CommitDetail, GitError> {
@@ -113,6 +144,73 @@ fn run_git(cwd: &Path, args: &[String]) -> Result<Vec<u8>, GitError> {
             stderr
         }))
     }
+}
+
+fn list_refs(cwd: &Path) -> Result<Vec<HistoryRef>, GitError> {
+    let output = run_git(
+        cwd,
+        &[
+            "for-each-ref".to_string(),
+            "--sort=-committerdate".to_string(),
+            "--format=%(refname)%00%(refname:short)%00%(objectname)%00%(*objectname)%00%(HEAD)"
+                .to_string(),
+            "refs/heads".to_string(),
+            "refs/remotes".to_string(),
+            "refs/tags".to_string(),
+        ],
+    )?;
+    let mut refs = parse_refs(&output);
+
+    // Detached HEAD does not have a branch decoration, but it is still useful
+    // to show the selected commit as the active revision in the graph.
+    if !refs.iter().any(|reference| reference.current)
+        && let Ok(head) = run_git(cwd, &["rev-parse".to_string(), "HEAD".to_string()])
+    {
+        let target = field(&head);
+        if !target.is_empty() {
+            refs.push(HistoryRef {
+                name: "HEAD".to_string(),
+                target,
+                kind: HistoryRefKind::Head,
+                current: true,
+            });
+        }
+    }
+    Ok(refs)
+}
+
+fn parse_refs(output: &[u8]) -> Vec<HistoryRef> {
+    let mut refs = Vec::new();
+    for line in output.split(|byte| *byte == b'\n') {
+        let fields = line.split(|byte| *byte == 0).collect::<Vec<_>>();
+        if fields.len() < 5 {
+            continue;
+        }
+        let full_name = field(fields[0]);
+        let name = field(fields[1]);
+        let object = field(fields[2]);
+        let peeled = field(fields[3]);
+        let target = if peeled.is_empty() { object } else { peeled };
+        if name.is_empty() || target.is_empty() {
+            continue;
+        }
+        let kind = if full_name.starts_with("refs/heads/") {
+            HistoryRefKind::LocalBranch
+        } else if full_name.starts_with("refs/remotes/") {
+            HistoryRefKind::RemoteBranch
+        } else if full_name.starts_with("refs/tags/") {
+            HistoryRefKind::Tag
+        } else {
+            continue;
+        };
+        refs.push(HistoryRef {
+            name,
+            target,
+            kind,
+            current: field(fields[4]) == "*",
+        });
+    }
+    refs
 }
 
 fn parse_history(output: &[u8]) -> Result<Vec<CommitSummary>, GitError> {
@@ -252,11 +350,14 @@ mod tests {
 
         let entries = list_history(&dir, 10).unwrap();
 
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].subject, "second commit");
-        assert_eq!(entries[1].subject, "first commit");
-        assert_eq!(entries[0].short_id.len(), 7);
-        assert_eq!(entries[0].parents, vec![entries[1].id.clone()]);
+        assert_eq!(entries.entries.len(), 2);
+        assert_eq!(entries.entries[0].subject, "second commit");
+        assert_eq!(entries.entries[1].subject, "first commit");
+        assert_eq!(entries.entries[0].short_id.len(), 7);
+        assert_eq!(
+            entries.entries[0].parents,
+            vec![entries.entries[1].id.clone()]
+        );
     }
 
     #[test]
@@ -268,7 +369,7 @@ mod tests {
         run(&dir, &["add", "-A"]);
         run(&dir, &["commit", "-qm", "second commit", "-m", "body line"]);
 
-        let summary = list_history(&dir, 1).unwrap().remove(0);
+        let summary = list_history(&dir, 1).unwrap().entries.remove(0);
         let detail = show_commit(&dir, &summary.id).unwrap();
 
         assert_eq!(detail.summary, summary);
@@ -287,6 +388,46 @@ mod tests {
 
         assert!(show_commit(&dir, "HEAD~1").is_err());
         assert!(show_commit(&dir, "--version").is_err());
+    }
+
+    #[test]
+    fn lists_local_and_tag_refs_for_all_history() {
+        let dir = repository();
+        write_commit(&dir, "README.md", "first\n", "first commit", None);
+        run(&dir, &["branch", "feature"]);
+        run(&dir, &["tag", "v1"]);
+
+        let snapshot = list_history(&dir, 10).unwrap();
+
+        assert!(
+            snapshot.refs.iter().any(|reference| {
+                reference.name == "v1" && reference.kind == HistoryRefKind::Tag
+            }),
+            "refs: {:?}",
+            snapshot.refs
+        );
+        assert!(snapshot.refs.iter().any(|reference| {
+            reference.name == "feature" && reference.kind == HistoryRefKind::LocalBranch
+        }));
+        assert!(snapshot
+            .refs
+            .iter()
+            .any(|reference| reference.current && reference.kind == HistoryRefKind::LocalBranch));
+        assert_eq!(snapshot.entries.len(), 1);
+    }
+
+    #[test]
+    fn includes_detached_head_in_history_and_refs() {
+        let dir = repository();
+        write_commit(&dir, "README.md", "first\n", "first commit", None);
+        run(&dir, &["switch", "--detach", "HEAD"]);
+
+        let snapshot = list_history(&dir, 10).unwrap();
+
+        assert_eq!(snapshot.entries.len(), 1);
+        assert!(snapshot.refs.iter().any(|reference| {
+            reference.name == "HEAD" && reference.kind == HistoryRefKind::Head && reference.current
+        }));
     }
 
     fn repository() -> std::path::PathBuf {

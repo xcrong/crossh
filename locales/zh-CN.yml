@@ -226,6 +226,8 @@ git:
   staged_changes: 已暂存更改
   changes: 更改
   no_history: 暂无提交
+  history_filter: 筛选提交
+  history_no_matches: 没有匹配的提交
   no_branches: 暂无本地分支
   no_stashes: 暂无 Stash
   current_branch: 当前

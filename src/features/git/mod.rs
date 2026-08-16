@@ -54,6 +54,7 @@ mod branch_render;
 mod context_menu;
 mod editor;
 mod history;
+mod history_render;
 mod input;
 mod model;
 mod render;

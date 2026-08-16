@@ -227,8 +227,29 @@ fn create_git_fixture() -> PathBuf {
     fs::write(fixture.join("README.md"), "# Visual fixture\n").expect("write readme");
     run_git(&fixture, &["add", "-A"]);
     run_git(&fixture, &["commit", "-qm", "initial"]);
+    run_git(&fixture, &["branch", "-M", "main"]);
     run_git(&fixture, &["branch", "feature/history"]);
     run_git(&fixture, &["branch", "release/v1"]);
+    run_git(&fixture, &["switch", "feature/history"]);
+    fs::write(fixture.join("feature.md"), "Feature history branch\n")
+        .expect("write feature commit");
+    run_git(&fixture, &["add", "feature.md"]);
+    run_git(&fixture, &["commit", "-qm", "Add feature history"]);
+    run_git(&fixture, &["switch", "main"]);
+    fs::write(fixture.join("main.md"), "Main history branch\n").expect("write main commit");
+    run_git(&fixture, &["add", "main.md"]);
+    run_git(&fixture, &["commit", "-qm", "Advance main history"]);
+    run_git(
+        &fixture,
+        &[
+            "merge",
+            "--no-ff",
+            "feature/history",
+            "-m",
+            "Merge feature history",
+        ],
+    );
+    run_git(&fixture, &["tag", "v1.0.0"]);
 
     fs::write(
         fixture.join("src/features/git/window.rs"),

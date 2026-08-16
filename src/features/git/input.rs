@@ -16,6 +16,75 @@ use super::window::GitWindow;
 use crate::shared::text_editing::selection_bounds;
 
 impl GitWindow {
+    pub(super) fn handle_history_search_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let keystroke = &event.keystroke;
+        let primary = keystroke.modifiers.control || keystroke.modifiers.platform;
+        let extend = keystroke.modifiers.shift;
+        let mut handled = true;
+
+        if keystroke.key == "escape" {
+            self.history_query.clear();
+            self.set_history_query(String::new(), cx);
+            window.focus(&self.history_focus, cx);
+        } else if primary && keystroke.key == "a" {
+            self.history_query.select_all();
+        } else if primary && matches!(keystroke.key.as_str(), "c" | "x") {
+            if let Some(text) = self.history_query.selected_text() {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                if keystroke.key == "x" {
+                    self.history_query.clear_composition();
+                    self.history_query.replace_selection("");
+                }
+            }
+        } else if primary && keystroke.key == "v" {
+            let pasted = cx.read_from_clipboard().and_then(|item| {
+                item.into_entries().find_map(|entry| match entry {
+                    ClipboardEntry::String(value) => Some(value.text),
+                    _ => None,
+                })
+            });
+            if let Some(text) = pasted {
+                self.history_query.clear_composition();
+                self.history_query.replace_selection(&text);
+            }
+        } else {
+            match keystroke.key.as_str() {
+                "backspace" => {
+                    self.history_query.clear_composition();
+                    self.history_query.backspace();
+                }
+                "delete" => {
+                    self.history_query.clear_composition();
+                    self.history_query.delete();
+                }
+                "left" => self.history_query.move_horizontal(-1, extend),
+                "right" => self.history_query.move_horizontal(1, extend),
+                "home" => self.history_query.move_to_boundary(false, extend),
+                "end" => self.history_query.move_to_boundary(true, extend),
+                _ => {
+                    if let Some(character) = printable_char(keystroke) {
+                        self.history_query.clear_composition();
+                        self.history_query.replace_selection(&character.to_string());
+                    } else {
+                        handled = false;
+                    }
+                }
+            }
+        }
+
+        if handled {
+            let query = self.history_query.value.clone();
+            self.set_history_query(query, cx);
+            cx.stop_propagation();
+            cx.notify();
+        }
+    }
+
     pub(super) fn handle_commit_editor_key(
         &mut self,
         event: &KeyDownEvent,
@@ -94,7 +163,12 @@ impl EntityInputHandler for GitWindow {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<String> {
-        Some(utf16_slice(&self.commit_editor.state.value, range))
+        let value = if self.history_search_focus.is_focused(_window) {
+            &self.history_query.value
+        } else {
+            &self.commit_editor.state.value
+        };
+        Some(utf16_slice(value, range))
     }
 
     fn selected_text_range(
@@ -103,18 +177,33 @@ impl EntityInputHandler for GitWindow {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
-        let (start, end) = self.commit_editor.selection().unwrap_or((
-            self.commit_editor.state.cursor,
-            self.commit_editor.state.cursor,
-        ));
+        let (start, end) = if self.history_search_focus.is_focused(_window) {
+            self.history_query
+                .selection()
+                .unwrap_or((self.history_query.cursor, self.history_query.cursor))
+        } else {
+            self.commit_editor.selection().unwrap_or((
+                self.commit_editor.state.cursor,
+                self.commit_editor.state.cursor,
+            ))
+        };
+        let value = if self.history_search_focus.is_focused(_window) {
+            &self.history_query.value
+        } else {
+            &self.commit_editor.state.value
+        };
         Some(UTF16Selection {
-            range: utf16_offset_for_byte(&self.commit_editor.state.value, start)
-                ..utf16_offset_for_byte(&self.commit_editor.state.value, end),
-            reversed: self
-                .commit_editor
-                .state
-                .anchor
-                .is_some_and(|anchor| anchor > self.commit_editor.state.cursor),
+            range: utf16_offset_for_byte(value, start)..utf16_offset_for_byte(value, end),
+            reversed: if self.history_search_focus.is_focused(_window) {
+                self.history_query
+                    .anchor
+                    .is_some_and(|anchor| anchor > self.history_query.cursor)
+            } else {
+                self.commit_editor
+                    .state
+                    .anchor
+                    .is_some_and(|anchor| anchor > self.commit_editor.state.cursor)
+            },
         })
     }
 
@@ -123,25 +212,47 @@ impl EntityInputHandler for GitWindow {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
-        if self.commit_editor.state.ime_marked_text.is_empty() {
+        let history_search = self.history_search_focus.is_focused(_window);
+        let marked_text = if history_search {
+            &self.history_query.ime_marked_text
+        } else {
+            &self.commit_editor.state.ime_marked_text
+        };
+        if marked_text.is_empty() {
             return None;
         }
-        let start = self
-            .commit_editor
-            .state
-            .ime_replacement
-            .map(|(start, _)| start)
-            .unwrap_or(self.commit_editor.state.cursor);
-        let start = utf16_offset_for_byte(&self.commit_editor.state.value, start);
-        Some(start..start + utf16_len(&self.commit_editor.state.ime_marked_text))
+        let (value, replacement, cursor) = if history_search {
+            (
+                &self.history_query.value,
+                self.history_query.ime_replacement,
+                self.history_query.cursor,
+            )
+        } else {
+            (
+                &self.commit_editor.state.value,
+                self.commit_editor.state.ime_replacement,
+                self.commit_editor.state.cursor,
+            )
+        };
+        let start = replacement.map(|(start, _)| start).unwrap_or(cursor);
+        let start = utf16_offset_for_byte(value, start);
+        Some(start..start + utf16_len(marked_text))
     }
 
     fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some((start, end)) = self.commit_editor.state.ime_replacement.take() {
-            self.commit_editor.state.cursor = end;
-            self.commit_editor.state.anchor = (start != end).then_some(start);
+        if self.history_search_focus.is_focused(window) {
+            if let Some((start, end)) = self.history_query.ime_replacement.take() {
+                self.history_query.cursor = end;
+                self.history_query.anchor = (start != end).then_some(start);
+            }
+            self.history_query.ime_marked_text.clear();
+        } else {
+            if let Some((start, end)) = self.commit_editor.state.ime_replacement.take() {
+                self.commit_editor.state.cursor = end;
+                self.commit_editor.state.anchor = (start != end).then_some(start);
+            }
+            self.commit_editor.state.ime_marked_text.clear();
         }
-        self.commit_editor.state.ime_marked_text.clear();
         window.invalidate_character_coordinates();
         cx.notify();
     }
@@ -153,37 +264,36 @@ impl EntityInputHandler for GitWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (start, end) = self
-            .commit_editor
-            .state
+        let history_search = self.history_search_focus.is_focused(window);
+        let state = if history_search {
+            &mut self.history_query
+        } else {
+            &mut self.commit_editor.state
+        };
+        let (start, end) = state
             .ime_replacement
             .take()
             .or_else(|| {
                 replacement_range.map(|range| {
                     (
-                        byte_index_for_utf16(&self.commit_editor.state.value, range.start),
-                        byte_index_for_utf16(&self.commit_editor.state.value, range.end),
+                        byte_index_for_utf16(&state.value, range.start),
+                        byte_index_for_utf16(&state.value, range.end),
                     )
                 })
             })
-            .or_else(|| {
-                selection_bounds(
-                    self.commit_editor.state.anchor,
-                    self.commit_editor.state.cursor,
-                )
-            })
-            .unwrap_or((
-                self.commit_editor.state.cursor,
-                self.commit_editor.state.cursor,
-            ));
-        let range = utf16_offset_for_byte(&self.commit_editor.state.value, start)
-            ..utf16_offset_for_byte(&self.commit_editor.state.value, end);
-        self.commit_editor.state.cursor =
-            replace_utf16_range(&mut self.commit_editor.state.value, range, text);
-        self.commit_editor.state.anchor = None;
-        self.commit_editor.state.ime_marked_text.clear();
+            .or_else(|| selection_bounds(state.anchor, state.cursor))
+            .unwrap_or((state.cursor, state.cursor));
+        let range =
+            utf16_offset_for_byte(&state.value, start)..utf16_offset_for_byte(&state.value, end);
+        state.cursor = replace_utf16_range(&mut state.value, range, text);
+        state.anchor = None;
+        state.ime_marked_text.clear();
         window.invalidate_character_coordinates();
-        cx.notify();
+        if history_search {
+            self.set_history_query(self.history_query.value.clone(), cx);
+        } else {
+            cx.notify();
+        }
     }
 
     fn replace_and_mark_text_in_range(
@@ -194,27 +304,28 @@ impl EntityInputHandler for GitWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let replacement = self
-            .commit_editor
-            .state
+        let history_search = self.history_search_focus.is_focused(window);
+        let state = if history_search {
+            &mut self.history_query
+        } else {
+            &mut self.commit_editor.state
+        };
+        let replacement = state
             .ime_replacement
             .or_else(|| {
                 range.map(|range| {
                     (
-                        byte_index_for_utf16(&self.commit_editor.state.value, range.start),
-                        byte_index_for_utf16(&self.commit_editor.state.value, range.end),
+                        byte_index_for_utf16(&state.value, range.start),
+                        byte_index_for_utf16(&state.value, range.end),
                     )
                 })
             })
-            .or_else(|| self.commit_editor.selection())
-            .unwrap_or((
-                self.commit_editor.state.cursor,
-                self.commit_editor.state.cursor,
-            ));
-        self.commit_editor.state.ime_replacement = Some(replacement);
-        self.commit_editor.state.cursor = replacement.0;
-        self.commit_editor.state.anchor = None;
-        self.commit_editor.state.ime_marked_text = new_text.to_string();
+            .or_else(|| state.selection())
+            .unwrap_or((state.cursor, state.cursor));
+        state.ime_replacement = Some(replacement);
+        state.cursor = replacement.0;
+        state.anchor = None;
+        state.ime_marked_text = new_text.to_string();
         window.invalidate_character_coordinates();
         cx.notify();
     }
@@ -226,8 +337,13 @@ impl EntityInputHandler for GitWindow {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        let cursor = byte_index_for_utf16(&self.commit_editor.state.value, range.start);
-        let before_cursor = &self.commit_editor.state.value[..cursor];
+        let value = if self.history_search_focus.is_focused(window) {
+            &self.history_query.value
+        } else {
+            &self.commit_editor.state.value
+        };
+        let cursor = byte_index_for_utf16(value, range.start);
+        let before_cursor = &value[..cursor];
         let current_line = before_cursor.rsplit('\n').next().unwrap_or("");
         let line_index = before_cursor.bytes().filter(|byte| *byte == b'\n').count();
         Some(Bounds {
@@ -253,6 +369,10 @@ impl EntityInputHandler for GitWindow {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
-        Some(utf16_len(&self.commit_editor.state.value))
+        if self.history_search_focus.is_focused(_window) {
+            Some(utf16_len(&self.history_query.value))
+        } else {
+            Some(utf16_len(&self.commit_editor.state.value))
+        }
     }
 }

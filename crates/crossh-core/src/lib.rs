@@ -10,6 +10,7 @@ pub mod git;
 pub mod git_branch;
 pub mod git_conflict;
 pub mod git_history;
+pub mod git_history_graph;
 pub mod git_stash;
 pub mod git_status;
 pub mod process;
