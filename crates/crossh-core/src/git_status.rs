@@ -1,4 +1,7 @@
-//! Lightweight Git worktree inspection for the local-terminal status bar.
+//! Lightweight Git worktree inspection shared by the workspace and Git Viewer.
+//!
+//! This module owns the porcelain-v2 status contract. Consumers may choose
+//! their own refresh cadence, but they must not implement a second parser.
 
 use std::path::Path;
 use std::process::Command;
@@ -35,8 +38,6 @@ pub fn inspect(cwd: &Path) -> Option<GitStatus> {
 }
 
 /// 解析 `git status --porcelain=v2 --branch -z` 输出。
-///
-/// Git 变更列表与状态栏共用这一协议；公开解析器避免为了同一次扫描重复启动 Git。
 pub fn parse_status(output: &[u8]) -> Option<GitStatus> {
     let mut status = GitStatus::default();
     let mut oid = None;

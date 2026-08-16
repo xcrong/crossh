@@ -217,8 +217,25 @@ project:
 git:
   clean: 干净
   title: Git
+  changes_tab: 更改
+  history_tab: 历史
+  branches_tab: 分支
+  stashes_tab: 暂存
+  branches: 分支
+  stashes: 暂存
   staged_changes: 已暂存更改
   changes: 更改
+  no_history: 暂无提交
+  no_branches: 暂无本地分支
+  no_stashes: 暂无 Stash
+  current_branch: 当前
+  switch_branch: 切换
+  no_upstream: 未配置上游
+  upstream_gone: 上游已删除
+  commit_detail: 提交详情
+  back_to_history: 返回历史
+  no_files_changed: 没有变更文件
+  files_changed: "%{count} 个文件变更"
   staged: 已暂存
   working: 工作区
   refresh: 刷新
@@ -231,11 +248,35 @@ git:
   unstage: 取消暂存此文件
   stage_all: 暂存所有更改
   unstage_all: 取消暂存所有更改
+  selection: 选择
+  selection_count: "已选 %{count} 项"
+  stage_selected: "暂存选中 %{count} 个文件"
+  unstage_selected: "取消暂存选中 %{count} 个文件"
+  stage_hunk: 暂存此 Hunk
+  unstage_hunk: 取消暂存此 Hunk
+  select_all: 全选更改
+  clear_selection: 清除选择
+  discard_selected: 丢弃选中的工作区修改
+  discard_confirm: "丢弃 %{count} 个工作区修改？"
+  discard_confirm_detail: 此操作不可撤销，索引中的内容不会受到影响。
+  discard_cancel: 取消
+  discard_confirm_action: 丢弃修改
   back_to_changes: 返回更改列表
   commit_message_placeholder: 输入提交信息
   commit_files: "提交 %{count} 个文件"
   push: 推送
   pull: 拉取
+  stash_changes: 暂存当前修改
+  apply_stash: 应用
+  pop_stash: 应用并删除
+  drop_stash: 删除 Stash
+  drop_stash_confirm: 确定删除这个 Stash？
+  drop_stash_cancel: 取消
+  drop_stash_action: 删除
+  conflict_actions: 解决此冲突
+  conflict_use_ours: 使用当前版本
+  conflict_use_theirs: 使用目标版本
+  conflict_mark_resolved: 标记已解决
 
 connection:
   connecting_with_separator: "连接中 · "

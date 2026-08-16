@@ -173,5 +173,59 @@ mod tests {
             text_for("app_menu.check_for_updates", Locale::SimplifiedChinese),
             "检查更新…"
         );
+        assert_eq!(
+            rust_i18n::t!(
+                "git.selection_count",
+                locale = Locale::English.code(),
+                count = 2
+            )
+            .to_string(),
+            "2 selected"
+        );
+        assert_eq!(
+            rust_i18n::t!(
+                "git.selection_count",
+                locale = Locale::SimplifiedChinese.code(),
+                count = 2
+            )
+            .to_string(),
+            "已选 2 项"
+        );
+        assert_eq!(
+            text_for("git.stage_hunk", Locale::English),
+            "Stage this hunk"
+        );
+        assert_eq!(
+            text_for("git.stage_hunk", Locale::SimplifiedChinese),
+            "暂存此 Hunk"
+        );
+        assert_eq!(text_for("git.history_tab", Locale::English), "History");
+        assert_eq!(
+            text_for("git.history_tab", Locale::SimplifiedChinese),
+            "历史"
+        );
+        assert_eq!(text_for("git.branches_tab", Locale::English), "Branches");
+        assert_eq!(
+            text_for("git.branches_tab", Locale::SimplifiedChinese),
+            "分支"
+        );
+        assert_eq!(text_for("git.stashes_tab", Locale::English), "Stash");
+        assert_eq!(
+            text_for("git.stashes_tab", Locale::SimplifiedChinese),
+            "暂存"
+        );
+        assert_eq!(
+            text_for("git.conflict_use_ours", Locale::English),
+            "Use current"
+        );
+        assert_eq!(
+            rust_i18n::t!(
+                "git.files_changed",
+                locale = Locale::English.code(),
+                count = 3
+            )
+            .to_string(),
+            "3 files changed"
+        );
     }
 }

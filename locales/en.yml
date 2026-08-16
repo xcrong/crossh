@@ -217,8 +217,25 @@ project:
 git:
   clean: Clean
   title: Git
+  changes_tab: Changes
+  history_tab: History
+  branches_tab: Branches
+  stashes_tab: Stash
+  branches: Branches
+  stashes: Stash
   staged_changes: Staged Changes
   changes: Changes
+  no_history: No commits yet
+  no_branches: No local branches
+  no_stashes: No stashes
+  current_branch: Current
+  switch_branch: Switch
+  no_upstream: No upstream
+  upstream_gone: Upstream gone
+  commit_detail: Commit details
+  back_to_history: Back to history
+  no_files_changed: No changed files
+  files_changed: "%{count} files changed"
   staged: Staged
   working: Working Tree
   refresh: Refresh
@@ -231,11 +248,35 @@ git:
   unstage: Unstage file
   stage_all: Stage all changes
   unstage_all: Unstage all changes
+  selection: Selection
+  selection_count: "%{count} selected"
+  stage_selected: "Stage %{count} selected files"
+  unstage_selected: "Unstage %{count} selected files"
+  stage_hunk: Stage this hunk
+  unstage_hunk: Unstage this hunk
+  select_all: Select all changes
+  clear_selection: Clear selection
+  discard_selected: Discard selected worktree changes
+  discard_confirm: "Discard %{count} worktree changes?"
+  discard_confirm_detail: This cannot be undone. Indexed content will not be affected.
+  discard_cancel: Cancel
+  discard_confirm_action: Discard changes
   back_to_changes: Back to changes
   commit_message_placeholder: Commit message
   commit_files: "Commit %{count} files"
   push: Push
   pull: Pull
+  stash_changes: Stash changes
+  apply_stash: Apply
+  pop_stash: Pop
+  drop_stash: Drop stash
+  drop_stash_confirm: Drop this stash?
+  drop_stash_cancel: Cancel
+  drop_stash_action: Drop
+  conflict_actions: Resolve this conflict
+  conflict_use_ours: Use current
+  conflict_use_theirs: Use incoming
+  conflict_mark_resolved: Mark resolved
 
 connection:
   connecting_with_separator: "Connecting · "

@@ -46,7 +46,7 @@ use crossh_core::commands::{
 };
 use crossh_core::config::{HostConfig, SshConfig};
 use crossh_core::git::{pull, push};
-use crossh_core::project::inspect;
+use crossh_core::git_status::inspect;
 use crossh_ssh::{HostKeyDecision, RemoteCommandStatus};
 use crossh_terminal::settings::{
     MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK, TerminalSettings,

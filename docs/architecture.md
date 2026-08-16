@@ -27,7 +27,8 @@ crossh-agent (standalone terminal agent)
   -> crossh-theme
   -> crossh-core
 
-crossh-core       -> no GPUI, no application crate
+crossh-core       -> no GPUI, no application crate; Git command, status, branch,
+                      history, stash, conflict, and commit-detail contracts
 crossh-agent      -> no GPUI, agent loop, tools, sessions, and policy
 crossh-ai-sdk     -> no GPUI, provider-neutral messages, HTTP/SSE, and wire adapters
 crossh-ssh        -> no GPUI, transport implementation only
@@ -42,7 +43,7 @@ shared resources  -> external `crossh-assets` directory loaded by every binary
 
 ## Crate Ownership
 
-- `crossh-core`: OpenSSH config parsing, terminal-neutral contracts and title helpers, command history/background tasks, Git parsing, and shared connection state.
+- `crossh-core`: OpenSSH config parsing, terminal-neutral contracts and title helpers, command history/background tasks, Git command/diff parsing, local branch inspection/switching, stash and conflict operations, the shared `git_status`, `git_branch`, `git_history`, `git_stash`, and `git_conflict` parsers, and shared connection state.
 - `crossh-agent`: workspace-scoped tools, project context/skill/prompt discovery, JSONL session persistence, persisted agent configuration, and the agent loop. Resource discovery stays UI-neutral; the terminal CLI owns command presentation and prompt injection.
 - `crossh-ai-sdk`: canonical provider-neutral messages, HTTP and SSE transport, OpenAI Chat/Responses and Anthropic Messages adapters, reasoning-summary normalization, and the `ProviderAdapter` extension point for future compatible providers.
 - `crossh-theme`: renderer-independent Crossh color tokens shared by the GPUI and ratatui surfaces.
@@ -64,7 +65,7 @@ Within the application crate:
 - `features/forwarding`: local, remote, and dynamic forwarding UI.
 - `features/settings`: application settings persistence and settings window.
 - `features/git_launcher`: Git CLI parsing and fire-and-forget startup of the sibling `crossh-git` process.
-- `src/features/git`: Git Viewer window, change staging/commit, and pull/push actions; this source is not mounted by the `crossh` application binary and is owned by the standalone `crossh-git` entry point.
+- `src/features/git`: Git Viewer session state, GPUI adapter, window, input, and rendering for Changes, History, Branches, Stashes, and conflict resolution; `session.rs` is UI-independent and `window.rs` owns GPUI task adaptation. This source is not mounted by the `crossh` application binary and is owned by the standalone `crossh-git` entry point.
 - `features/updates`: update controller and update presentation only.
 
 `AppShell` is the GPUI composition root for the workspace feature. Session
@@ -81,6 +82,7 @@ engine remains in `crossh-ssh`.
 5. `main.rs` is assembly only: logging, runtime warm-up, platform setup, Zed global initialization, key bindings, and window boot.
 6. The updater binary depends on `crossh-update` directly. It must not include application source with `#[path]`.
 7. `crossh-git` and the `crossh-agent` binary are the only standalone entry points allowed to include application modules with `#[path]`; each must keep its boot path limited to the feature it owns. Release packaging places all binaries beside one shared `crossh-assets` directory; non-arm64-macOS packaging is built and verified only by GitHub Actions.
+8. Git protocol parsing and repository operations, including branch switching, stash lifecycle, and conflict resolution, belong in `crossh-core`; Git Viewer state transitions belong in the UI-independent session layer; GPUI views must not become the owner of Git semantics.
 
 The crate graph is the enforcement mechanism. A logic change that attempts to
 reach into GPUI fails at dependency resolution or compilation instead of

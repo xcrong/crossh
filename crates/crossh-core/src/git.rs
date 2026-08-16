@@ -4,11 +4,11 @@
 //! `--porcelain=v2` status, `--numstat` counters, and unified diff output.
 
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use crate::project::{GitStatus, parse_status};
+use crate::git_status::{GitStatus, parse_status};
 
 const MAX_DIFF_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_DIFF_LINES: usize = 10_000;
@@ -85,6 +85,8 @@ pub enum DiffLineKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiffLine {
     pub kind: DiffLineKind,
+    /// 所属 Hunk 的索引；未跟踪文件的合成新增行没有 Hunk。
+    pub hunk_index: Option<usize>,
     /// 旧文件行号（`-` / 上下文行有值，新增行为 None）。
     pub old_ln: Option<u32>,
     /// 新文件行号（`+` / 上下文行有值，删除行为 None）。
@@ -219,7 +221,7 @@ pub fn scan_changes(cwd: &Path) -> Result<ChangeScan, GitError> {
         }
     }
 
-    changes.sort_by_key(|entry| (entry.staged, entry.status.rank(), entry.path.clone()));
+    changes.sort_by_key(|entry| (!entry.staged, entry.status.rank(), entry.path.clone()));
     Ok(ChangeScan {
         changes,
         status: parse_status(&output),
@@ -231,16 +233,7 @@ pub fn diff(cwd: &Path, entry: &FileChange, staged: bool) -> Result<Option<FileD
     if entry.status == ChangeStatus::Untracked {
         return untracked_diff(cwd, entry);
     }
-    let mut args: Vec<&str> = vec!["diff", "--no-color", "--unified=3"];
-    if staged {
-        args.push("--cached");
-    }
-    args.push("--");
-    // 重命名必须同时给源与目标路径，否则 git 会把新文件当作全新文件比较。
-    if let Some(orig) = entry.orig_path.as_deref() {
-        args.push(orig);
-    }
-    args.push(&entry.path);
+    let args = diff_args(entry, staged);
     let output = git_output_limited(cwd, &args, MAX_DIFF_BYTES)?;
     parse_diff(&output)
 }
@@ -270,6 +263,36 @@ pub fn unstage(cwd: &Path, paths: &[String]) -> Result<(), GitError> {
     } else {
         run_git_paths(cwd, &["rm", "--cached", "-r", "--"], paths)
     }
+}
+
+/// 将工作区 Diff 中指定的 Hunk 加入暂存区。
+pub fn stage_hunk(cwd: &Path, entry: &FileChange, hunk_index: usize) -> Result<(), GitError> {
+    if entry.staged {
+        return Err(GitError::CommandFailed(
+            "暂存 Hunk 需要选择工作区 Diff".to_string(),
+        ));
+    }
+    apply_hunk(cwd, entry, false, hunk_index)
+}
+
+/// 将暂存区 Diff 中指定的 Hunk 移回工作区。
+pub fn unstage_hunk(cwd: &Path, entry: &FileChange, hunk_index: usize) -> Result<(), GitError> {
+    if !entry.staged {
+        return Err(GitError::CommandFailed(
+            "取消暂存 Hunk 需要选择暂存区 Diff".to_string(),
+        ));
+    }
+    apply_hunk(cwd, entry, true, hunk_index)
+}
+
+/// 丢弃指定路径的工作区修改，但保留索引中的内容。
+///
+/// 调用方应先确认路径是已跟踪的工作区改动；未跟踪文件不属于该操作。
+pub fn discard_worktree(cwd: &Path, paths: &[String]) -> Result<(), GitError> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    run_git_paths(cwd, &["restore", "--worktree", "--"], paths)
 }
 
 /// 提交当前暂存区。
@@ -346,6 +369,47 @@ fn run_git(cwd: &Path, args: &[&str]) -> Result<(), GitError> {
     git_result(output)
 }
 
+fn apply_hunk(
+    cwd: &Path,
+    entry: &FileChange,
+    staged_diff: bool,
+    hunk_index: usize,
+) -> Result<(), GitError> {
+    if matches!(
+        entry.status,
+        ChangeStatus::Untracked | ChangeStatus::Conflict
+    ) {
+        return Err(GitError::CommandFailed(
+            "未跟踪文件和冲突文件暂不支持 Hunk 操作".to_string(),
+        ));
+    }
+
+    let args = diff_args(entry, staged_diff);
+    let output = git_output_limited(cwd, &args, MAX_DIFF_BYTES)?;
+    let patch = select_hunk_patch(&output, hunk_index).ok_or_else(|| {
+        GitError::CommandFailed(format!("找不到第 {} 个 Diff Hunk", hunk_index + 1))
+    })?;
+
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(cwd)
+        .args(["apply", "--cached", "--recount"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if staged_diff {
+        command.arg("--reverse");
+    }
+    let mut child = command.spawn()?;
+    child
+        .stdin
+        .take()
+        .expect("git apply stdin must be piped")
+        .write_all(&patch)?;
+    git_result(child.wait_with_output()?)
+}
+
 fn git_result(output: std::process::Output) -> Result<(), GitError> {
     if output.status.success() {
         return Ok(());
@@ -357,6 +421,41 @@ fn git_result(output: std::process::Output) -> Result<(), GitError> {
         stderr
     };
     Err(GitError::CommandFailed(message))
+}
+
+fn diff_args(entry: &FileChange, staged: bool) -> Vec<&str> {
+    let mut args = vec!["diff", "--no-color", "--no-ext-diff", "--unified=3"];
+    if staged {
+        args.push("--cached");
+    }
+    args.push("--");
+    // 重命名必须同时给源与目标路径，否则 Git 会把新文件当作全新文件比较。
+    if let Some(orig) = entry.orig_path.as_deref() {
+        args.push(orig);
+    }
+    args.push(&entry.path);
+    args
+}
+
+/// 从单文件 unified diff 中保留文件头和指定 Hunk，生成可供 `git apply` 使用的补丁。
+fn select_hunk_patch(output: &[u8], hunk_index: usize) -> Option<Vec<u8>> {
+    let mut hunk_ranges = Vec::new();
+    let mut offset = 0;
+    for line in output.split_inclusive(|byte| *byte == b'\n') {
+        if line.starts_with(b"@@ ") {
+            hunk_ranges.push(offset);
+        }
+        offset += line.len();
+    }
+    let header_end = *hunk_ranges.first()?;
+    let start = *hunk_ranges.get(hunk_index)?;
+    let end = hunk_ranges
+        .get(hunk_index + 1)
+        .copied()
+        .unwrap_or(output.len());
+    let mut patch = output[..header_end].to_vec();
+    patch.extend_from_slice(&output[start..end]);
+    Some(patch)
 }
 
 /// 未跟踪文件没有可 diff 的基线：把整个文件内容当作新增行呈现。
@@ -386,6 +485,7 @@ fn untracked_diff(cwd: &Path, entry: &FileChange) -> Result<Option<FileDiff>, Gi
     for (index, line) in lines.into_iter().enumerate() {
         produced.push(DiffLine {
             kind: DiffLineKind::Added,
+            hunk_index: None,
             old_ln: None,
             new_ln: Some(index as u32 + 1),
             text: line.to_string(),
@@ -514,12 +614,20 @@ fn parse_diff(output: &[u8]) -> Result<Option<FileDiff>, GitError> {
     let mut diff = FileDiff::default();
     let mut old_ln = 0u32;
     let mut new_ln = 0u32;
+    let mut current_hunk_index = None;
     for line in text.lines() {
         if let Some((old_start, new_start)) = parse_hunk_header(line) {
             old_ln = old_start;
             new_ln = new_start;
+            current_hunk_index = Some(
+                diff.lines
+                    .iter()
+                    .filter(|line| line.kind == DiffLineKind::Hunk)
+                    .count(),
+            );
             diff.lines.push(DiffLine {
                 kind: DiffLineKind::Hunk,
+                hunk_index: current_hunk_index,
                 old_ln: None,
                 new_ln: None,
                 text: line.to_string(),
@@ -548,6 +656,7 @@ fn parse_diff(output: &[u8]) -> Result<Option<FileDiff>, GitError> {
         if let Some(content) = line.strip_prefix('+') {
             diff.lines.push(DiffLine {
                 kind: DiffLineKind::Added,
+                hunk_index: current_hunk_index,
                 old_ln: None,
                 new_ln: Some(new_ln),
                 text: content.to_string(),
@@ -556,6 +665,7 @@ fn parse_diff(output: &[u8]) -> Result<Option<FileDiff>, GitError> {
         } else if let Some(content) = line.strip_prefix('-') {
             diff.lines.push(DiffLine {
                 kind: DiffLineKind::Removed,
+                hunk_index: current_hunk_index,
                 old_ln: Some(old_ln),
                 new_ln: None,
                 text: content.to_string(),
@@ -564,6 +674,7 @@ fn parse_diff(output: &[u8]) -> Result<Option<FileDiff>, GitError> {
         } else if let Some(content) = line.strip_prefix(' ') {
             diff.lines.push(DiffLine {
                 kind: DiffLineKind::Context,
+                hunk_index: current_hunk_index,
                 old_ln: Some(old_ln),
                 new_ln: Some(new_ln),
                 text: content.to_string(),
@@ -672,6 +783,97 @@ mod tests {
         assert_eq!(diff.lines[2].old_ln, Some(2));
         assert_eq!(diff.lines[2].new_ln, None);
         assert_eq!(diff.lines[3].new_ln, Some(2));
+    }
+
+    #[test]
+    fn stages_and_unstages_one_hunk_without_touching_other_hunks() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}: {:?}", output.stderr);
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "test@crossh.local"]);
+        run(&["config", "user.name", "Crossh Test"]);
+
+        let baseline = (1..=20)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fs::write(dir.path().join("note.txt"), baseline).unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "-qm", "init"]);
+
+        let mut changed = (1..=20)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>();
+        changed[1] = "changed two".to_string();
+        changed[17] = "changed eighteen".to_string();
+        fs::write(dir.path().join("note.txt"), changed.join("\n") + "\n").unwrap();
+
+        let working = list_changes(dir.path())
+            .unwrap()
+            .into_iter()
+            .find(|change| !change.staged)
+            .expect("working change should exist");
+        let file_diff = diff(dir.path(), &working, false)
+            .unwrap()
+            .expect("working diff should exist");
+        assert_eq!(
+            file_diff
+                .lines
+                .iter()
+                .filter(|line| line.kind == DiffLineKind::Hunk)
+                .count(),
+            2
+        );
+
+        stage_hunk(dir.path(), &working, 1).unwrap();
+
+        let staged_text = String::from_utf8(
+            Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(["show", ":note.txt"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        assert_eq!(staged_text.lines().nth(1), Some("line 2"));
+        assert_eq!(staged_text.lines().nth(17), Some("changed eighteen"));
+
+        let staged = list_changes(dir.path())
+            .unwrap()
+            .into_iter()
+            .find(|change| change.staged && change.path == "note.txt")
+            .expect("staged hunk should be listed");
+        unstage_hunk(dir.path(), &staged, 0).unwrap();
+
+        let cached = Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["diff", "--cached", "--quiet"])
+            .output()
+            .unwrap();
+        assert!(
+            cached.status.success(),
+            "index should be clean after unstage"
+        );
+        assert!(
+            list_changes(dir.path())
+                .unwrap()
+                .iter()
+                .any(|change| !change.staged && change.path == "note.txt")
+        );
     }
 
     #[test]
@@ -965,6 +1167,51 @@ mod tests {
                 })
         );
         assert!(commit(dir.path(), "   ").is_err());
+    }
+
+    #[test]
+    fn restores_tracked_worktree_changes_without_touching_the_index() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}: {:?}", output.stderr);
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "test@crossh.local"]);
+        run(&["config", "user.name", "Crossh Test"]);
+        fs::write(dir.path().join("note.txt"), "base\n").unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "-qm", "init"]);
+
+        fs::write(dir.path().join("note.txt"), "staged\n").unwrap();
+        stage(dir.path(), &["note.txt".to_string()]).unwrap();
+        fs::write(dir.path().join("note.txt"), "working\n").unwrap();
+
+        discard_worktree(dir.path(), &["note.txt".to_string()]).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dir.path().join("note.txt")).unwrap(),
+            "staged\n"
+        );
+        assert!(
+            list_changes(dir.path())
+                .unwrap()
+                .iter()
+                .any(|change| change.path == "note.txt" && change.staged)
+        );
+        assert!(
+            !list_changes(dir.path())
+                .unwrap()
+                .iter()
+                .any(|change| change.path == "note.txt" && !change.staged)
+        );
     }
 
     #[test]

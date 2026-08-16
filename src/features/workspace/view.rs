@@ -21,7 +21,7 @@ use crate::features::workspace::status::{
 };
 use crate::shared::i18n;
 use crossh_core::commands::{BackgroundTask, BackgroundTaskStatus, CommandRecord};
-use crossh_core::project::GitStatus;
+use crossh_core::git_status::GitStatus;
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::widgets::{ime_input_canvas, marked_text_span, text_caret, text_span};
 use crossh_ui::{icons, theme};
