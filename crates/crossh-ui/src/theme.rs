@@ -11,6 +11,7 @@ pub const SIDEBAR_MAX_WIDTH: f32 = 360.0;
 pub const SIDEBAR_RAIL_WIDTH: f32 = 44.0;
 pub const TITLEBAR_HEIGHT: f32 = 42.0;
 pub const TAB_HEIGHT: f32 = 38.0;
+pub const STATUS_BAR_HEIGHT: f32 = 27.0;
 pub const ROW_HEIGHT: f32 = 36.0;
 pub const RADIUS_SM: f32 = 4.0;
 pub const RADIUS_MD: f32 = 8.0;

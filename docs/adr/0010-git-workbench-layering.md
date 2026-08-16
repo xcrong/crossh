@@ -23,6 +23,9 @@ Git 相关代码按三层演进：
    状态转换，不保存 GPUI entity、window、focus 或 scroll handle。
 3. `src/features/git/window.rs` 负责 GPUI 生命周期与后台任务适配，
    `render.rs` 和 `input.rs` 负责视图与输入。
+4. `crossh-ui-component` 负责跨 feature 复用的无状态 GPUI 外壳，包括
+   `TabStrip`、`TabItem`、`StatusBar`、`StatusMetric` 和 `Badge`；workspace 与 Git Viewer 只提供
+   各自的状态、内容和回调，不把 Git 语义放进组件层。
 
 UI 事件应先转成 Git 会话动作，由 GPUI 适配层调度 `crossh-core` 操作，再把结果
 应用回会话状态。工作区可以继续独立刷新轻量状态和执行快捷同步，不建立应用层 IPC。
@@ -33,7 +36,8 @@ Git 状态转换可以在无窗口的测试中验证，Git Viewer 的渲染重�
 实现，文件级、Hunk 级暂存/取消暂存、History 提交列表/详情、Branch 列表与
 checkout、Stash 列表生命周期以及冲突解决动作也沿用同一边界。代价是每
 种异步 Git 操作都需要显式定义请求、generation 和结果应用路径；跨进程状态最终
-一致仍依赖各自的刷新机制。
+一致仍依赖各自的刷新机制。共享 Tab 与状态栏外壳可以让独立进程保持统一的
+Crossh 视觉语言，同时不引入进程通信或 feature 间状态依赖。
 
 ## 关联规则
 

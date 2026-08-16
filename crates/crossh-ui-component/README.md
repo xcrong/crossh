@@ -10,5 +10,7 @@ depending on that crate at runtime:
 - feature views own state and pass callbacks into components;
 - colors and dimensions come from Crossh's theme.
 
-The public prelude currently includes `Button`, `Badge`, `Separator`, and the
-`h_flex`/`v_flex` layout helpers.
+The public prelude includes the basic controls plus shared `TabStrip`/`TabItem`,
+`StatusBar`, and text-only `StatusMetric` shells. Workspace and standalone
+feature views provide their own state, content, and callbacks to these
+components.

@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use gpui::{
-    AnyElement, AppContext, ClickEvent, Context, Div, ElementId, Entity, FontWeight,
-    InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels,
-    SharedString, Stateful, StatefulInteractiveElement, Styled, Window, div, px,
+    AnyElement, AppContext, ClickEvent, Context, ElementId, Entity, FontWeight, InteractiveElement,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, px,
 };
 
 use crate::features::connections::Connection;
@@ -26,7 +26,8 @@ use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::widgets::{ime_input_canvas, marked_text_span, text_caret, text_span};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
-    Button, ButtonSize, ButtonVariant, CountBadge, ModalDialog, SplitResizer, StatusDot, Tooltip,
+    BadgeTone, Button, ButtonSize, ButtonVariant, CountBadge, ModalDialog, SplitResizer, StatusBar,
+    StatusDot, StatusMetric, TabItem, TabStrip, Tooltip,
 };
 
 const TERMINAL_SPLIT_MIN_PANE_WIDTH: f32 = 160.0;
@@ -431,20 +432,7 @@ pub(crate) fn render_workspace_status_bar(
         }
     }
 
-    div()
-        .h(px(27.))
-        .w_full()
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_between()
-        .gap_3()
-        .px_3()
-        .border_t_1()
-        .border_color(theme::border())
-        .bg(theme::surface())
-        .text_xs()
-        .text_color(theme::muted_text())
+    StatusBar::new("workspace-status-bar")
         .child(left)
         .child(render_status_bar_toggle(
             "status-quick-commands",
@@ -517,34 +505,40 @@ fn render_git_status(
         }));
 
     if status.ahead > 0 {
-        git = git.child(status_badge(format!("↑{}", status.ahead), theme::info()));
+        git = git.child(status_metric(format!("↑{}", status.ahead), BadgeTone::Info));
     }
     if status.behind > 0 {
-        git = git.child(status_badge(format!("↓{}", status.behind), theme::info()));
+        git = git.child(status_metric(
+            format!("↓{}", status.behind),
+            BadgeTone::Info,
+        ));
     }
     if status.staged > 0 {
-        git = git.child(status_badge(format!("+{}", status.staged), theme::accent()));
+        git = git.child(status_metric(
+            format!("+{}", status.staged),
+            BadgeTone::Accent,
+        ));
     }
     if status.modified > 0 {
-        git = git.child(status_badge(
+        git = git.child(status_metric(
             format!("~{}", status.modified),
-            theme::warning(),
+            BadgeTone::Warning,
         ));
     }
     if status.untracked > 0 {
-        git = git.child(status_badge(
+        git = git.child(status_metric(
             format!("?{}", status.untracked),
-            theme::muted_text(),
+            BadgeTone::Neutral,
         ));
     }
     if status.conflicts > 0 {
-        git = git.child(status_badge(
+        git = git.child(status_metric(
             format!("!{}", status.conflicts),
-            theme::danger(),
+            BadgeTone::Danger,
         ));
     }
     if status.is_clean() {
-        git = git.child(status_badge(i18n::text("git.clean"), theme::accent()));
+        git = git.child(status_metric(i18n::text("git.clean"), BadgeTone::Success));
     }
     if status.behind > 0 || status.ahead > 0 || sync.is_some() {
         let mut actions = div().flex().items_center().gap_1();
@@ -1226,76 +1220,39 @@ pub fn render_quick_command_editor(
     .into_any_element()
 }
 
-fn status_badge(text: String, color: impl Into<gpui::Hsla>) -> impl IntoElement {
-    div()
-        .text_color(color.into())
-        .child(SharedString::from(text))
+fn status_metric(text: impl Into<SharedString>, tone: BadgeTone) -> AnyElement {
+    StatusMetric::new(text).tone(tone).into_any_element()
 }
 
 // 容器不绑定 click；标签名与关闭按钮分别绑定，避免事件叠加。
 #[allow(clippy::too_many_arguments)]
 fn render_tab_chip<M, S, C>(
     cx: &mut Context<AppShell>,
-    container_id: impl Into<ElementId>,
+    container_id: impl Into<gpui::ElementId>,
     dot_color: gpui::Rgba,
     label: impl Into<SharedString>,
     is_active: bool,
     label_id: impl Into<ElementId>,
     menu: M,
     on_select: S,
-    close_id: impl Into<ElementId>,
+    close_id: impl Into<gpui::ElementId>,
     on_close: C,
-) -> Stateful<Div>
+) -> AnyElement
 where
     M: Fn(&MouseDownEvent, &mut AppShell, &mut Window, &mut Context<AppShell>) + 'static,
     S: Fn(&ClickEvent, &mut AppShell, &mut Window, &mut Context<AppShell>) + 'static,
     C: Fn(&ClickEvent, &mut AppShell, &mut Window, &mut Context<AppShell>) + 'static,
 {
-    let label: SharedString = label.into();
-    let mut container = div()
-        .flex()
-        .flex_none()
-        .flex_row()
-        .items_center()
-        .gap_1()
-        .h(px(28.))
-        .px_1()
-        .rounded(px(theme::RADIUS_SM));
-    if is_active {
-        container = container
-            .bg(theme::accent_soft())
-            .border_b_2()
-            .border_color(theme::accent());
-    } else {
-        container = container.hover(|style| style.bg(theme::raised()));
-    }
-    container
-        .id(container_id)
+    TabItem::new(container_id, label)
+        .label_id(label_id)
+        .active(is_active)
+        .dot_color(dot_color)
         .on_mouse_down(
             MouseButton::Right,
             cx.listener(move |this, ev: &MouseDownEvent, window, cx| menu(ev, this, window, cx)),
         )
-        .child(
-            div()
-                .id(label_id)
-                .flex()
-                .items_center()
-                .gap_1()
-                .px_2()
-                .py_1()
-                .cursor_pointer()
-                .text_xs()
-                .text_color(if is_active {
-                    theme::text()
-                } else {
-                    theme::muted_text()
-                })
-                .hover(|s| s.text_color(theme::accent()))
-                .child(StatusDot::new(dot_color))
-                .child(div().min_w_0().max_w(px(220.)).truncate().child(label))
-                .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
-                    on_select(ev, this, window, cx)
-                })),
+        .on_select(
+            cx.listener(move |this, ev: &ClickEvent, window, cx| on_select(ev, this, window, cx)),
         )
         .child(
             Button::new(close_id)
@@ -1307,24 +1264,11 @@ where
                     cx.listener(move |this, ev: &ClickEvent, w, cx| on_close(ev, this, w, cx)),
                 ),
         )
+        .into_any_element()
 }
 
 fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoElement {
-    let mut strip = div()
-        .id("tab-strip")
-        .flex()
-        .flex_row()
-        .h(px(theme::TAB_HEIGHT))
-        .px_2()
-        .gap_1()
-        .items_center();
-    // This GPUI revision exposes horizontal scrolling through the style state;
-    // keeping the strip as a flex container lets its fixed-width children overflow.
-    strip.style().overflow.x = Some(gpui::Overflow::Scroll);
-    strip = strip
-        .track_scroll(&shell.tab_scroll)
-        .restrict_scroll_to_axis()
-        .bg(theme::surface());
+    let mut strip = TabStrip::new("tab-strip").track_scroll(&shell.tab_scroll);
 
     match shell.workspace.active_view {
         Some(ActiveView::RemoteTab(active_idx)) => {

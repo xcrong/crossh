@@ -17,7 +17,8 @@ use crossh_ui::context_menu::render_context_menu;
 use crossh_ui::widgets::{ime_input_canvas, marked_text_span, text_caret, text_span};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
-    Badge, BadgeTone, Button, ButtonSize, ButtonVariant, Hint, SplitResizer, scroll_y,
+    Badge, BadgeTone, Button, ButtonSize, ButtonVariant, Hint, SplitResizer, StatusBar,
+    StatusMetric, TabItem, TabStrip, scroll_y,
 };
 
 use super::editor::CommitEditor;
@@ -135,9 +136,9 @@ impl Render for GitWindow {
             .on_action(cx.listener(|this, _: &BackToChanges, _window, cx| {
                 this.back_to_changes(cx);
             }))
-            .child(self.render_header(cx))
             .child(self.render_page_tabs(cx))
-            .child(body);
+            .child(div().flex_1().min_h_0().flex().flex_col().child(body))
+            .child(self.render_status_bar(cx));
         if let Some(menu) = self.context_menu.clone() {
             root = root.child(render_context_menu(
                 &menu,
@@ -157,66 +158,33 @@ impl GitWindow {
         let history = self.is_history_page();
         let branches = self.is_branch_page();
         let stashes = self.is_stash_page();
-        div()
-            .id("git-page-tabs")
-            .h(px(34.))
-            .flex_shrink_0()
-            .px_2()
-            .flex()
-            .items_center()
-            .gap_1()
-            .bg(theme::sidebar())
-            .border_b_1()
-            .border_color(theme::border())
+        TabStrip::new("git-page-tabs")
+            .border_bottom()
             .child(
-                Button::new("git-page-changes")
-                    .size(ButtonSize::Small)
-                    .variant(if history || branches || stashes {
-                        ButtonVariant::Ghost
-                    } else {
-                        ButtonVariant::Secondary
-                    })
-                    .label(i18n::text("git.changes_tab"))
-                    .on_click(cx.listener(|this, _event, _window, cx| {
+                TabItem::new("git-page-changes", i18n::text("git.changes_tab"))
+                    .active(!history && !branches && !stashes)
+                    .on_select(cx.listener(|this, _event, _window, cx| {
                         this.show_changes(cx);
                     })),
             )
             .child(
-                Button::new("git-page-history")
-                    .size(ButtonSize::Small)
-                    .variant(if history {
-                        ButtonVariant::Secondary
-                    } else {
-                        ButtonVariant::Ghost
-                    })
-                    .label(i18n::text("git.history_tab"))
-                    .on_click(cx.listener(|this, _event, _window, cx| {
+                TabItem::new("git-page-history", i18n::text("git.history_tab"))
+                    .active(history)
+                    .on_select(cx.listener(|this, _event, _window, cx| {
                         this.show_history(cx);
                     })),
             )
             .child(
-                Button::new("git-page-branches")
-                    .size(ButtonSize::Small)
-                    .variant(if branches {
-                        ButtonVariant::Secondary
-                    } else {
-                        ButtonVariant::Ghost
-                    })
-                    .label(i18n::text("git.branches_tab"))
-                    .on_click(cx.listener(|this, _event, _window, cx| {
+                TabItem::new("git-page-branches", i18n::text("git.branches_tab"))
+                    .active(branches)
+                    .on_select(cx.listener(|this, _event, _window, cx| {
                         this.show_branches(cx);
                     })),
             )
             .child(
-                Button::new("git-page-stashes")
-                    .size(ButtonSize::Small)
-                    .variant(if stashes {
-                        ButtonVariant::Secondary
-                    } else {
-                        ButtonVariant::Ghost
-                    })
-                    .label(i18n::text("git.stashes_tab"))
-                    .on_click(cx.listener(|this, _event, _window, cx| {
+                TabItem::new("git-page-stashes", i18n::text("git.stashes_tab"))
+                    .active(stashes)
+                    .on_select(cx.listener(|this, _event, _window, cx| {
                         this.show_stashes(cx);
                     })),
             )
@@ -367,7 +335,7 @@ impl GitWindow {
             .py_2()
             .flex()
             .flex_col()
-            .gap_1()
+            .gap_2()
             .cursor_pointer()
             .border_l_2()
             .border_color(if selected {
@@ -579,9 +547,83 @@ impl GitWindow {
             .into_any_element()
     }
 
-    fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let staged_count = self.staged_count();
-        let working_count = self.session.changes.len().saturating_sub(staged_count);
+    fn render_status_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let branch_name = self
+            .session
+            .status
+            .as_ref()
+            .map(|status| status.branch.clone())
+            .unwrap_or_else(|| self.session.label.clone());
+        let mut branch = div()
+            .id("git-status-branch")
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px(px(6.))
+            .py(px(2.))
+            .rounded(px(theme::RADIUS_SM))
+            .cursor_pointer()
+            .hover(|style| style.bg(theme::raised()))
+            .child(icons::icon(icons::IconName::GitBranch, 13.).text_color(theme::accent()))
+            .child(
+                div()
+                    .min_w_0()
+                    .max_w(px(240.))
+                    .truncate()
+                    .text_color(theme::text())
+                    .child(SharedString::from(branch_name)),
+            )
+            .on_click(cx.listener(|this, _event, _window, cx| {
+                this.show_branches(cx);
+                cx.stop_propagation();
+            }));
+
+        if let Some(status) = &self.session.status {
+            if status.ahead > 0 {
+                branch = branch.child(git_status_metric(
+                    format!("↑{}", status.ahead),
+                    BadgeTone::Info,
+                ));
+            }
+            if status.behind > 0 {
+                branch = branch.child(git_status_metric(
+                    format!("↓{}", status.behind),
+                    BadgeTone::Info,
+                ));
+            }
+            if status.staged > 0 {
+                branch = branch.child(git_status_metric(
+                    format!("+{}", status.staged),
+                    BadgeTone::Accent,
+                ));
+            }
+            if status.modified > 0 {
+                branch = branch.child(git_status_metric(
+                    format!("~{}", status.modified),
+                    BadgeTone::Warning,
+                ));
+            }
+            if status.untracked > 0 {
+                branch = branch.child(git_status_metric(
+                    format!("?{}", status.untracked),
+                    BadgeTone::Neutral,
+                ));
+            }
+            if status.conflicts > 0 {
+                branch = branch.child(git_status_metric(
+                    format!("!{}", status.conflicts),
+                    BadgeTone::Danger,
+                ));
+            }
+            if status.is_clean() {
+                branch = branch.child(git_status_metric(
+                    i18n::text("git.clean"),
+                    BadgeTone::Success,
+                ));
+            }
+        }
+
         let refresh_loading = if self.is_history_page() {
             self.session.history.list_state.is_loading()
         } else if self.is_branch_page() {
@@ -591,76 +633,19 @@ impl GitWindow {
         } else {
             self.session.refresh.in_flight()
         };
-        let mut branch = div()
-            .id("git-current-branch")
-            .min_w_0()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(icons::icon(icons::IconName::GitBranch, 15.).text_color(theme::accent()))
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .text_sm()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme::text())
-                    .child(SharedString::from(
-                        self.session
-                            .status
-                            .as_ref()
-                            .map(|status| status.branch.clone())
-                            .unwrap_or_else(|| self.session.label.clone()),
-                    )),
-            )
-            .cursor_pointer()
-            .hover(|style| style.bg(theme::raised()))
-            .on_click(cx.listener(|this, _event, _window, cx| {
-                this.show_branches(cx);
-                cx.stop_propagation();
-            }));
-        if let Some(status) = &self.session.status {
-            if status.ahead > 0 {
-                branch = branch.child(status_badge(format!("↑{}", status.ahead)));
-            }
-            if status.behind > 0 {
-                branch = branch.child(status_badge(format!("↓{}", status.behind)));
-            }
-        }
-
-        div()
-            .h(px(46.))
+        let actions = div()
             .flex_shrink_0()
-            .px_3()
             .flex()
             .items_center()
-            .gap_2()
-            .bg(theme::surface())
-            .border_b_1()
-            .border_color(theme::border())
-            .child(branch)
-            .child(div().flex_1())
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .text_xs()
-                    .text_color(theme::muted_text())
-                    .child(SharedString::from(format!(
-                        "{} {} · {} {}",
-                        staged_count,
-                        i18n::text("git.staged"),
-                        working_count,
-                        i18n::text("git.changes")
-                    ))),
-            )
+            .gap_1()
             .child(
                 Button::new("git-pull")
-                    .size(ButtonSize::Icon(px(30.)))
+                    .size(ButtonSize::Icon(px(22.)))
                     .variant(ButtonVariant::Ghost)
                     .loading(matches!(self.session.operation, OperationState::Running))
                     .tooltip(i18n::text("git.pull"))
                     .icon(
-                        icons::icon(icons::IconName::Download, 14.).text_color(theme::muted_text()),
+                        icons::icon(icons::IconName::Download, 13.).text_color(theme::muted_text()),
                     )
                     .disabled(!self.can_pull())
                     .on_click(cx.listener(|this, _event, _window, cx| {
@@ -669,11 +654,11 @@ impl GitWindow {
             )
             .child(
                 Button::new("git-push")
-                    .size(ButtonSize::Icon(px(30.)))
+                    .size(ButtonSize::Icon(px(22.)))
                     .variant(ButtonVariant::Ghost)
                     .loading(matches!(self.session.operation, OperationState::Running))
                     .tooltip(i18n::text("git.push"))
-                    .icon(icons::icon(icons::IconName::Upload, 14.).text_color(theme::muted_text()))
+                    .icon(icons::icon(icons::IconName::Upload, 13.).text_color(theme::muted_text()))
                     .disabled(!self.can_push())
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.push_changes(cx);
@@ -681,19 +666,23 @@ impl GitWindow {
             )
             .child(
                 Button::new("git-refresh")
-                    .size(ButtonSize::Icon(px(30.)))
+                    .size(ButtonSize::Icon(px(22.)))
                     .variant(ButtonVariant::Ghost)
                     .loading(refresh_loading)
                     .tooltip(i18n::text("git.refresh"))
                     .icon(
-                        icons::icon(icons::IconName::RefreshCw, 14.)
+                        icons::icon(icons::IconName::RefreshCw, 13.)
                             .text_color(theme::muted_text()),
                     )
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.refresh_current_page(cx);
                         cx.notify();
                     })),
-            )
+            );
+
+        StatusBar::new("git-status-bar")
+            .child(branch)
+            .child(actions)
             .into_any_element()
     }
 
@@ -1749,8 +1738,8 @@ fn status_glyph(status: ChangeStatus) -> AnyElement {
         .into_any_element()
 }
 
-fn status_badge(text: String) -> AnyElement {
-    Badge::new(text).tone(BadgeTone::Info).into_any_element()
+fn git_status_metric(text: impl Into<SharedString>, tone: BadgeTone) -> AnyElement {
+    StatusMetric::new(text).tone(tone).into_any_element()
 }
 
 #[cfg(test)]
