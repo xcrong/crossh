@@ -88,7 +88,7 @@
 | P1 | S-D1 | providers 非流式入口链 | spec | 收缩非流式入口 |
 | P1 | S-D9 | ToolDefinition.requires_approval 只写不读 | spec | SDK 边界语义，需裁定 |
 | P2 | S-D10, S-D13, S-D15, S-A5, S-A7, S-A9, S-A10, S-C3, S-C5, S-C7, S-C8, S-D7, S-D11 | 契约/风格类决策 | 决策 | 每项二选一，随缘推进 |
-| P3 | S-B3, S-C1, S-A2, S-A3, S-A4, S-A6, S-A8, S-C4, S-C6, S-D5, S-D6, S-D8, S-D14 | 过期豁免与死配置清理 | 直接修 | 低风险批量清理 |
+| P3 | S-B3, S-C1, S-A2, S-A3, S-A4, S-A6, S-A8, S-C4, S-C6, S-D5, S-D6, S-D8, S-D14 | 过期豁免与死配置清理 | 直接修 ✅ | 已提交 `4b12e56`（18 文件，-166 行）。两处修正：S-A3 的 Info/Warning 构造点其实全在 cfg(test)，Warning 保留变体级豁免而非全部删除；S-D8 实际还有一个 crossh-agent 测试消费者已同步改写 |
 
 ## 与 SDD 工作流的衔接
 
