@@ -80,6 +80,13 @@
 - A `done` spec stays in `docs/specs/` as the change archive; a `superseded` spec names its replacement. Do not delete finished specs.
 - Closing a spec requires finishing its acceptance checklist, including the non-local platform CI jobs that were declared — the spec stays `in-progress` until those Actions jobs pass.
 
+## Simplification Audits (Manual)
+
+- Run `find-simplifications` audits ad hoc: when there is no active development task, right after closing a spec, or whenever the user asks to find things to simplify. One round per trigger; do not run it in the background or as a standing habit inside unrelated sessions.
+- The skill produces an evidence-backed report under `docs/audit/yyyy-mm-dd-simplification-audit.md` with per-candidate consumer evidence (`file:line`) and a disposition backlog. It does not rewrite production code.
+- Dispositions reuse the existing pipeline: small fixes are fixed directly (exemption list), behavior-changing removals go through `docs/specs/` SDD, structural decisions go through an ADR. Never invent a new proposal-note tree for this.
+- Respect the protected surfaces listed in the skill (ADR-decided boundaries, `scripts/check-architecture.sh` whitelist, pinned Zed/GPUI and Lucide revisions, hard-won defensive patterns in `docs/engineering-notes/`). A simplification that collapses one must beat the recorded rationale, not ignore it.
+
 ## Sandbox-Aware Command Execution
 
 - The workspace sandbox may permit source changes while denying writes to `.git` and external network access.
