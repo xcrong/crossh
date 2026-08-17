@@ -57,7 +57,7 @@ ADR 0012）：spec 的行为契约条目就是测试的输入，测试名带 spe
 
 | 功能 | 必须受保护的行为 |
 | --- | --- |
-| Workspace | 打开/切换/关闭 tab，active index 合法，关闭时清理订阅和后台任务；启动/同步时清理失效最近目录，竞态点击不打开根目录；本地状态栏当前路径可复制完整 `cwd`，路径更新后不复用旧值；应用内 Toaster 支持四种语气，单条通知 2 秒自动消失，重复通知替换旧条目且旧计时任务不误清理新条目 |
+| Workspace | 打开/切换/关闭 tab，active index 合法，关闭时清理订阅和后台任务；启动/同步时清理失效最近目录，竞态点击不打开根目录；本地状态栏当前路径可复制完整 `cwd`，路径更新后不复用旧值；应用内 Toaster 支持四种语气，单条通知 2 秒自动消失，重复通知替换旧条目且旧计时任务不误清理新条目；Git Push/Pull 成功显示 Success Toast（`git.push_success`/`git.pull_success`），失败显示 Error Toast（`git.push_failed`/`git.pull_failed`）且错误保留在按钮 tooltip，running 期间重复点击不产生新 Toast |
 | Terminal | chunk 边界等价，alternate screen/mouse/keyboard mode，resize，退出和通知 |
 | Connection | 连接状态，host-key/credential 应答只能消费一次，断线后可重新获取连接 |
 | SFTP | list/read/write/upload/download，dirty editor，保存失败，关闭确认 |

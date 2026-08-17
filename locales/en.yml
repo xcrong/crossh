@@ -271,6 +271,10 @@ git:
   commit_files: "Commit %{count} files"
   push: Push
   pull: Pull
+  push_success: Push succeeded
+  pull_success: Pull succeeded
+  push_failed: Push failed
+  pull_failed: Pull failed
   stash_changes: Stash changes
   apply_stash: Apply
   pop_stash: Pop

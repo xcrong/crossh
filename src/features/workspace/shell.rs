@@ -33,6 +33,7 @@ use crate::features::workspace::quick_commands_rail::render_quick_commands_rail;
 use crate::features::workspace::registry::WorkspaceState;
 use crate::features::workspace::settings::WorkspaceSettings;
 use crate::features::workspace::sidebar::{render_sidebar, render_sidebar_rail};
+use crate::features::workspace::toaster::{ToastNotice, ToastTone};
 use crate::features::workspace::view::{
     ActiveView, LocalDir, LocalSession, LocalSessionId, Tab, rebuild_local_dirs, render_main,
     render_quick_command_editor, render_quick_commands, render_workspace_status_bar,
@@ -1420,6 +1421,16 @@ impl AppShell {
                     Ok(()) => {
                         // 成功后清除状态，按钮是否保留由 ahead/behind 徽章决定。
                         this.git_sync.remove(&session_id);
+                        this.show_toast(
+                            ToastNotice::new(
+                                i18n::text(match operation {
+                                    GitSyncOperation::Push => "git.push_success",
+                                    GitSyncOperation::Pull => "git.pull_success",
+                                }),
+                                ToastTone::Success,
+                            ),
+                            cx,
+                        );
                     }
                     Err(error) => {
                         let Some(state) = this.git_sync.get_mut(&session_id) else {
@@ -1427,6 +1438,16 @@ impl AppShell {
                         };
                         state.running = false;
                         state.error = Some(error.to_string());
+                        this.show_toast(
+                            ToastNotice::new(
+                                i18n::text(match operation {
+                                    GitSyncOperation::Push => "git.push_failed",
+                                    GitSyncOperation::Pull => "git.pull_failed",
+                                }),
+                                ToastTone::Error,
+                            ),
+                            cx,
+                        );
                     }
                 }
                 this.refresh_git_status(session_id, false, cx);
@@ -1937,6 +1958,9 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+#[path = "git_sync_toast_tests.rs"]
+mod git_sync_toast_tests;
 #[cfg(test)]
 #[path = "shell_notification_tests.rs"]
 mod shell_notification_tests;

@@ -271,6 +271,10 @@ git:
   commit_files: "提交 %{count} 个文件"
   push: 推送
   pull: 拉取
+  push_success: 推送成功
+  pull_success: 拉取成功
+  push_failed: 推送失败
+  pull_failed: 拉取失败
   stash_changes: 暂存当前修改
   apply_stash: 应用
   pop_stash: 应用并删除
