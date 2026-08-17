@@ -4,7 +4,7 @@ pub mod session;
 pub mod shell;
 pub mod title;
 
-pub use session::{InputCmd, SessionEvent, TerminalProcessInfo};
+pub use session::TerminalProcessInfo;
 pub use shell::{
     LocalShellEnvironment, RemoteShell, ShellCommandMarker, ShellPromptMarker,
     command_marker_from_title, prompt_marker_from_title, remote_shell_bootstrap_command,

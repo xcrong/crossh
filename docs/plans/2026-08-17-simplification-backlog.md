@@ -9,6 +9,12 @@
 
 ### S-B1 删除 `InputCmd`/`SessionEvent` 死终端契约（联动 loopback spec）
 
+> **状态：已完成（2026-08-17，spec: `docs/specs/20260817-remove-dead-terminal-contract.md`）**
+> 删除清单全部落地：session.rs 两符号、mod.rs re-export、connection.rs cfg(test)
+> 终端设施（OpenTerminal 变体、open_terminal_channel、detect_remote_shell、
+> relay_terminal、drive_input、cfg(test) bootstrap 连带死代码）+ 3 个 `#[ignore]`
+> 测试。`TerminalProcessInfo` 保留。人工验证定位由 loopback spec 承接。
+
 - **位置**：
   - `crates/crossh-core/src/terminal/session.rs:4,23` —— `#[allow(dead_code)] pub enum InputCmd` / `SessionEvent`（生产零消费）
   - `crates/crossh-core/src/terminal/mod.rs:7` —— 对应 re-export
@@ -29,6 +35,11 @@
 - **语义差异（必须保留）**：bash 测试版用进程替换 `<(printf ...)`，生产版写 temp 文件 + `--rcfile`——shell.rs:392-399 注释明确论证进程替换式嵌套引号会被远端 /bin/sh 变体误解析；zsh 测试版内联进 `.zshrc`，生产版用 `.zshenv` + ZDOTDIR + deferred precmd；fish 类似。
 - **建议做法**：提取 per-shell 生成函数 `remote_shell_bootstrap_command_for(shell)` 到 shell.rs，生产 selector 分分支复用、测试版改调该函数。这是行为变化（测试路径语义升级为生产版）。
 - **联动**：3 个 `#[ignore]` 测试 CI 不执行、无法本地验证等价性，须与 loopback 落地联动或明确接受"测试路径不再独立验证生产路径"。
+  **更新（2026-08-17）：** S-B1 已删除 connection.rs 的 cfg(test) 版
+  `remote_shell_bootstrap_command`，"测试版统一"对象不复存在；本项剩余工作仅为
+  生产版（shell.rs）内部 per-shell 提取 refactor，属行为不变重构（按 AGENTS
+  豁免）或可关闭——除非 loopback spec 需要测试版命令形态，届时在 loopback 侧
+  直接依赖生产版即可。
 - **验收**：单元测试覆盖各 shell 生成的命令形态；生产消费点字节流不变。
 
 ### S-B2 删除 `AuthChoice::Password` 零构造变体
