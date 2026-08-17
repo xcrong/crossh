@@ -17,6 +17,7 @@ use gpui::{
 
 use crate::features::workspace::pane::{PaneRisk, TerminalPaneInfo, WorkspacePane};
 use crate::shared::i18n;
+use crate::shared::text_editing::TextEditingState;
 use crossh_ssh::{MAX_EDITOR_FILE_BYTES, RemoteEntry, SftpCmd, SftpEvent};
 use crossh_ui::context_menu::{
     ContextMenuState, MenuEntry, MenuItem, SftpMenuAction, render_context_menu,
@@ -54,16 +55,13 @@ const VIRTUAL_LIST_OVERSCAN: usize = 6;
 struct RemoteEditor {
     remote: String,
     name: String,
-    content: String,
-    cursor: usize,
+    state: TextEditingState,
     read_only: bool,
     dirty: bool,
     loading: bool,
     saving: bool,
     error: Option<String>,
     focus: FocusHandle,
-    ime_marked_text: String,
-    ime_replacement: Option<(usize, usize)>,
 }
 
 impl RemoteEditor {
@@ -71,43 +69,40 @@ impl RemoteEditor {
         Self {
             remote,
             name,
-            content: String::new(),
-            cursor: 0,
+            state: TextEditingState::new(String::new()),
             read_only: true,
             dirty: false,
             loading: true,
             saving: false,
             error: None,
             focus,
-            ime_marked_text: String::new(),
-            ime_replacement: None,
         }
     }
 
     fn insert(&mut self, text: &str) {
-        if insert_text(&mut self.content, &mut self.cursor, text) {
+        if self.state.replace_selection(text) {
             self.dirty = true;
         }
     }
 
     fn backspace(&mut self) {
-        if backspace_char(&mut self.content, &mut self.cursor) {
+        if self.state.backspace() {
             self.dirty = true;
         }
     }
 
     fn delete(&mut self) {
-        if delete_char(&mut self.content, &mut self.cursor) {
+        if self.state.delete() {
             self.dirty = true;
         }
     }
 
     fn move_horizontal(&mut self, direction: i8) {
-        move_cursor_horizontal(&self.content, &mut self.cursor, direction);
+        self.state.move_horizontal(direction, false);
     }
 
     fn move_vertical(&mut self, direction: i8) {
-        move_cursor_vertical(&self.content, &mut self.cursor, direction);
+        move_cursor_vertical(&self.state.value, &mut self.state.cursor, direction);
     }
 }
 
@@ -279,10 +274,9 @@ impl SftpPane {
                                 editor.loading = false;
                                 match String::from_utf8(contents) {
                                     Ok(content) => {
-                                        editor.content = content;
-                                        editor.cursor = 0;
-                                        editor.ime_marked_text.clear();
-                                        editor.ime_replacement = None;
+                                        editor.state.value = content;
+                                        editor.state.cursor = 0;
+                                        editor.state.clear_composition();
                                         editor.error = None;
                                     }
                                     Err(_) => {
@@ -512,8 +506,12 @@ impl SftpPane {
 
     fn save_editor(&mut self, cx: &mut Context<Self>) {
         let Some((remote, contents)) = self.editor.as_ref().and_then(|editor| {
-            (!editor.read_only && editor.dirty && !editor.saving)
-                .then(|| (editor.remote.clone(), editor.content.as_bytes().to_vec()))
+            (!editor.read_only && editor.dirty && !editor.saving).then(|| {
+                (
+                    editor.remote.clone(),
+                    editor.state.value.as_bytes().to_vec(),
+                )
+            })
         }) else {
             return;
         };
@@ -561,8 +559,7 @@ impl SftpPane {
         if editor.read_only || editor.loading || editor.error.is_some() || editor.saving {
             return;
         }
-        editor.ime_marked_text.clear();
-        editor.ime_replacement = None;
+        editor.state.clear_composition();
         if let Some(text) = pasted {
             editor.insert(&text);
             cx.notify();
@@ -576,8 +573,8 @@ impl SftpPane {
             "right" => editor.move_horizontal(1),
             "up" => editor.move_vertical(-1),
             "down" => editor.move_vertical(1),
-            "home" => editor.cursor = line_bounds(&editor.content, editor.cursor).0,
-            "end" => editor.cursor = line_bounds(&editor.content, editor.cursor).1,
+            "home" => editor.state.cursor = line_bounds(&editor.state.value, editor.state.cursor).0,
+            "end" => editor.state.cursor = line_bounds(&editor.state.value, editor.state.cursor).1,
             "enter" | "return" => editor.insert("\n"),
             "tab" => editor.insert("\t"),
             "escape" => editor.read_only = true,
@@ -929,11 +926,11 @@ impl SftpPane {
         let saving = editor.saving;
         let loading = editor.loading;
         let error = editor.error.clone();
-        let content = editor.content.clone();
-        let cursor = editor.cursor;
+        let content = editor.state.value.clone();
+        let cursor = editor.state.cursor;
         let focus = editor.focus.clone();
-        let ime_marked_text = editor.ime_marked_text.clone();
-        let ime_replacement = editor.ime_replacement;
+        let ime_marked_text = editor.state.ime_marked_text.clone();
+        let ime_replacement = editor.state.ime_replacement;
         let cursor_line = content[..cursor]
             .bytes()
             .filter(|byte| *byte == b'\n')
@@ -1243,6 +1240,103 @@ mod tests {
             line_bounds(text, text.len()),
             (end_of_first_line + 1, text.len())
         );
+    }
+
+    #[gpui::test]
+    fn spec_20260818_merge_sftp_text_editing_remote_editor_edits_keep_utf8_semantics(
+        cx: &mut TestAppContext,
+    ) {
+        let focus = cx.update(|cx| cx.focus_handle());
+        let make = || {
+            let mut editor = RemoteEditor::loading("srv".into(), "f.txt".into(), focus.clone());
+            editor.read_only = false;
+            editor.loading = false;
+            editor
+        };
+
+        let mut editor = make();
+        editor.insert("a✓b");
+        assert!(editor.dirty);
+        assert_eq!(editor.state.value, "a✓b");
+        assert_eq!(editor.state.cursor, "a✓b".len());
+
+        editor.dirty = false;
+        editor.insert("");
+        assert!(!editor.dirty);
+        assert_eq!(editor.state.value, "a✓b");
+        assert_eq!(editor.state.cursor, "a✓b".len());
+
+        editor.backspace();
+        assert!(editor.dirty);
+        assert_eq!(editor.state.value, "a✓");
+        assert_eq!(editor.state.cursor, "a✓".len());
+
+        editor.dirty = false;
+        editor.state.cursor = 0;
+        editor.backspace();
+        assert!(!editor.dirty);
+        assert_eq!(editor.state.value, "a✓");
+
+        editor.state.cursor = 1;
+        editor.delete();
+        assert!(editor.dirty);
+        assert_eq!(editor.state.value, "a");
+        assert_eq!(editor.state.cursor, 1);
+
+        editor.dirty = false;
+        editor.state.cursor = 1;
+        editor.delete();
+        assert!(!editor.dirty);
+        assert_eq!(editor.state.value, "a");
+
+        editor.state.cursor = 0;
+        editor.delete();
+        assert!(editor.dirty);
+        assert_eq!(editor.state.value, "");
+        assert_eq!(editor.state.cursor, 0);
+
+        editor.dirty = false;
+        editor.state.cursor = 0;
+        editor.delete();
+        assert!(!editor.dirty);
+        assert_eq!(editor.state.value, "");
+
+        let mut editor = make();
+        editor.insert("ab你好\nxyz");
+        assert_eq!(editor.state.cursor, "ab你好\nxyz".len());
+        editor.move_horizontal(-1);
+        assert_eq!(editor.state.cursor, "ab你好\nxy".len());
+        editor.move_horizontal(1);
+        assert_eq!(editor.state.cursor, "ab你好\nxyz".len());
+        editor.move_vertical(-1);
+        assert_eq!(editor.state.cursor, "ab你".len());
+        editor.move_vertical(1);
+        assert_eq!(editor.state.cursor, "ab你好\nxyz".len());
+    }
+
+    #[gpui::test]
+    fn spec_20260818_merge_sftp_text_editing_remote_editor_ime_state_round_trip(
+        cx: &mut TestAppContext,
+    ) {
+        let focus = cx.update(|cx| cx.focus_handle());
+        let mut editor = RemoteEditor::loading("srv".into(), "f.txt".into(), focus);
+        editor.read_only = false;
+        editor.loading = false;
+        editor.insert("ab");
+
+        let replacement = (1, 2);
+        editor.state.ime_replacement = Some(replacement);
+        editor.state.cursor = replacement.0;
+        editor.state.ime_marked_text.clear();
+        editor.state.ime_marked_text.push('中');
+
+        if let Some((_, end)) = editor.state.ime_replacement.take() {
+            editor.state.cursor = end;
+        }
+        editor.state.ime_marked_text.clear();
+        assert_eq!(editor.state.cursor, 2);
+        assert!(editor.state.ime_marked_text.is_empty());
+        assert_eq!(editor.state.ime_replacement, None);
     }
 
     #[gpui::test]

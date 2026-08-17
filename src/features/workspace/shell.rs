@@ -826,7 +826,7 @@ impl AppShell {
         if primary && ks.key == "a" {
             if let Some(editor) = &mut self.quick_command_editor {
                 editor.state.clear_composition();
-                editor.select_all();
+                editor.state.select_all();
             }
             cx.notify();
             return;
@@ -834,12 +834,12 @@ impl AppShell {
 
         if primary && matches!(ks.key.as_str(), "c" | "x") {
             if let Some(editor) = &mut self.quick_command_editor
-                && let Some(text) = editor.selected_text()
+                && let Some(text) = editor.state.selected_text()
             {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
                 if ks.key == "x" {
                     editor.state.clear_composition();
-                    editor.replace_selection("");
+                    editor.state.replace_selection("");
                 }
             }
             cx.notify();
@@ -857,7 +857,7 @@ impl AppShell {
                 && let Some(text) = pasted
             {
                 editor.state.clear_composition();
-                editor.replace_selection(&text);
+                editor.state.replace_selection(&text);
             }
             cx.notify();
             return;
@@ -869,42 +869,42 @@ impl AppShell {
             "backspace" => {
                 if let Some(editor) = &mut self.quick_command_editor {
                     editor.state.clear_composition();
-                    editor.backspace();
+                    editor.state.backspace();
                 }
                 cx.notify();
             }
             "delete" => {
                 if let Some(editor) = &mut self.quick_command_editor {
                     editor.state.clear_composition();
-                    editor.delete();
+                    editor.state.delete();
                 }
                 cx.notify();
             }
             "left" => {
                 if let Some(editor) = &mut self.quick_command_editor {
                     editor.state.clear_composition();
-                    editor.move_horizontal(-1, extend);
+                    editor.state.move_horizontal(-1, extend);
                 }
                 cx.notify();
             }
             "right" => {
                 if let Some(editor) = &mut self.quick_command_editor {
                     editor.state.clear_composition();
-                    editor.move_horizontal(1, extend);
+                    editor.state.move_horizontal(1, extend);
                 }
                 cx.notify();
             }
             "home" => {
                 if let Some(editor) = &mut self.quick_command_editor {
                     editor.state.clear_composition();
-                    editor.move_to_boundary(false, extend);
+                    editor.state.move_to_boundary(false, extend);
                 }
                 cx.notify();
             }
             "end" => {
                 if let Some(editor) = &mut self.quick_command_editor {
                     editor.state.clear_composition();
-                    editor.move_to_boundary(true, extend);
+                    editor.state.move_to_boundary(true, extend);
                 }
                 cx.notify();
             }
@@ -913,7 +913,7 @@ impl AppShell {
                     && let Some(editor) = &mut self.quick_command_editor
                 {
                     editor.state.clear_composition();
-                    editor.replace_selection(&ch.to_string());
+                    editor.state.replace_selection(&ch.to_string());
                     cx.notify();
                 }
             }

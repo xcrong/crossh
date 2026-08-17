@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 
 use async_channel::Sender;
 
-use crate::shared::text_editing::{next_char_boundary, previous_char_boundary};
 use crossh_ssh::SftpCmd;
 
 const SUPPORTED_TEXT_EXTENSIONS: &[&str] = &[
@@ -49,63 +48,6 @@ pub(crate) fn is_supported_text_file(name: &str) -> bool {
         .extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| SUPPORTED_TEXT_EXTENSIONS.contains(&extension))
-}
-
-/// 在光标处插入文本，返回是否发生了修改。
-///
-/// 前置条件：`cursor` 必须是 `content` 的字符边界，否则 `insert_str` 会 panic。
-pub(crate) fn insert_text(content: &mut String, cursor: &mut usize, text: &str) -> bool {
-    debug_assert!(content.is_char_boundary(*cursor));
-    if text.is_empty() {
-        return false;
-    }
-    content.insert_str(*cursor, text);
-    *cursor += text.len();
-    true
-}
-
-/// 删除光标前一字符，返回是否发生了修改。
-///
-/// 前置条件：`cursor` 必须是 `content` 的字符边界。
-pub(crate) fn backspace_char(content: &mut String, cursor: &mut usize) -> bool {
-    debug_assert!(content.is_char_boundary(*cursor));
-    let start = previous_char_boundary(content, *cursor);
-    if start == *cursor {
-        return false;
-    }
-    content.replace_range(start..*cursor, "");
-    *cursor = start;
-    true
-}
-
-/// 删除光标处字符，返回是否发生了修改。
-///
-/// 前置条件：`cursor` 必须是 `content` 的字符边界。
-pub(crate) fn delete_char(content: &mut String, cursor: &mut usize) -> bool {
-    debug_assert!(content.is_char_boundary(*cursor));
-    let end = next_char_boundary(content, *cursor);
-    if end == *cursor {
-        return false;
-    }
-    content.replace_range(*cursor..end, "");
-    true
-}
-
-/// 左右移动光标；无法移动时返回 false。
-///
-/// 前置条件：`cursor` 必须是 `content` 的字符边界。
-pub(crate) fn move_cursor_horizontal(content: &str, cursor: &mut usize, direction: i8) -> bool {
-    debug_assert!(content.is_char_boundary(*cursor));
-    let next = if direction < 0 {
-        previous_char_boundary(content, *cursor)
-    } else {
-        next_char_boundary(content, *cursor)
-    };
-    if next == *cursor {
-        return false;
-    }
-    *cursor = next;
-    true
 }
 
 /// 上下移动光标（按列对齐）；到达首行/末行时返回 false，目标行更短时收缩到行尾。
@@ -227,52 +169,6 @@ pub(crate) fn format_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn insert_marks_change_and_updates_cursor() {
-        let mut content = "ab".to_string();
-        let mut cursor = 2;
-        assert!(insert_text(&mut content, &mut cursor, "c"));
-        assert_eq!(content, "abc");
-        assert_eq!(cursor, 3);
-        assert!(!insert_text(&mut content, &mut cursor, ""));
-    }
-
-    #[test]
-    fn backspace_removes_previous_char() {
-        let mut content = "a✓".to_string();
-        let mut cursor = 4;
-        assert!(backspace_char(&mut content, &mut cursor));
-        assert_eq!(content, "a");
-        assert_eq!(cursor, 1);
-        assert!(backspace_char(&mut content, &mut cursor));
-        assert_eq!(content, "");
-        assert_eq!(cursor, 0);
-        assert!(!backspace_char(&mut content, &mut cursor));
-    }
-
-    #[test]
-    fn delete_removes_char_at_cursor() {
-        let mut content = "a✓b".to_string();
-        let mut cursor = 1;
-        assert!(delete_char(&mut content, &mut cursor));
-        assert_eq!(content, "ab");
-        assert_eq!(cursor, 1);
-        assert!(delete_char(&mut content, &mut cursor));
-        assert_eq!(content, "a");
-        assert!(!delete_char(&mut content, &mut cursor));
-    }
-
-    #[test]
-    fn horizontal_movement_stops_at_edges() {
-        let mut cursor = 2;
-        let content = "ab".to_string();
-        assert!(move_cursor_horizontal(&content, &mut cursor, -1));
-        assert_eq!(cursor, 1);
-        assert!(move_cursor_horizontal(&content, &mut cursor, -1));
-        assert_eq!(cursor, 0);
-        assert!(!move_cursor_horizontal(&content, &mut cursor, -1));
-    }
 
     #[test]
     fn vertical_movement_aligns_column_and_stops_at_edges() {

@@ -1138,7 +1138,7 @@ pub fn render_quick_command_editor(
     let focus = editor.focus.clone();
     let value = editor.state.value.clone();
     let ime_marked_text = editor.state.ime_marked_text.clone();
-    let selection = editor.selection();
+    let selection = editor.state.selection();
     let (selection_start, selection_end) =
         selection.unwrap_or((editor.state.cursor, editor.state.cursor));
     let scroll = editor.scroll.clone();

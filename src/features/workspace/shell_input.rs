@@ -76,6 +76,7 @@ impl EntityInputHandler for AppShell {
             AppShellInputField::QuickCommand => {
                 let editor = self.quick_command_editor.as_ref()?;
                 let (start, end) = editor
+                    .state
                     .selection()
                     .unwrap_or((editor.state.cursor, editor.state.cursor));
                 Some(UTF16Selection {
@@ -173,6 +174,7 @@ impl EntityInputHandler for AppShell {
                         )
                     } else {
                         editor
+                            .state
                             .selection()
                             .unwrap_or((editor.state.cursor, editor.state.cursor))
                     };
@@ -209,6 +211,7 @@ impl EntityInputHandler for AppShell {
                 if let Some(editor) = &mut self.quick_command_editor {
                     if editor.state.ime_replacement.is_none() {
                         let replacement = editor
+                            .state
                             .selection()
                             .unwrap_or((editor.state.cursor, editor.state.cursor));
                         editor.state.ime_replacement = Some(replacement);

@@ -62,10 +62,18 @@ impl GitWindow {
                     self.history_query.clear_composition();
                     self.history_query.delete();
                 }
-                "left" => self.history_query.move_horizontal(-1, extend),
-                "right" => self.history_query.move_horizontal(1, extend),
-                "home" => self.history_query.move_to_boundary(false, extend),
-                "end" => self.history_query.move_to_boundary(true, extend),
+                "left" => {
+                    self.history_query.move_horizontal(-1, extend);
+                }
+                "right" => {
+                    self.history_query.move_horizontal(1, extend);
+                }
+                "home" => {
+                    self.history_query.move_to_boundary(false, extend);
+                }
+                "end" => {
+                    self.history_query.move_to_boundary(true, extend);
+                }
                 _ => {
                     if let Some(character) = printable_char(keystroke) {
                         self.history_query.clear_composition();
@@ -97,14 +105,14 @@ impl GitWindow {
         let mut handled = true;
 
         if primary && keystroke.key == "a" {
-            self.commit_editor.clear_composition();
-            self.commit_editor.select_all();
+            self.commit_editor.state.clear_composition();
+            self.commit_editor.state.select_all();
         } else if primary && matches!(keystroke.key.as_str(), "c" | "x") {
-            if let Some(text) = self.commit_editor.selected_text() {
+            if let Some(text) = self.commit_editor.state.selected_text() {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
                 if keystroke.key == "x" {
-                    self.commit_editor.clear_composition();
-                    self.commit_editor.replace_selection("");
+                    self.commit_editor.state.clear_composition();
+                    self.commit_editor.state.replace_selection("");
                 }
             }
         } else if primary && keystroke.key == "v" {
@@ -115,32 +123,42 @@ impl GitWindow {
                 })
             });
             if let Some(text) = pasted {
-                self.commit_editor.clear_composition();
-                self.commit_editor.replace_selection(&text);
+                self.commit_editor.state.clear_composition();
+                self.commit_editor.state.replace_selection(&text);
             }
         } else {
             match keystroke.key.as_str() {
                 "enter" | "return" if primary => self.commit_changes(cx),
                 "enter" | "return" => {
-                    self.commit_editor.clear_composition();
-                    self.commit_editor.replace_selection("\n");
+                    self.commit_editor.state.clear_composition();
+                    self.commit_editor.state.replace_selection("\n");
                 }
                 "backspace" => {
-                    self.commit_editor.clear_composition();
-                    self.commit_editor.backspace();
+                    self.commit_editor.state.clear_composition();
+                    self.commit_editor.state.backspace();
                 }
                 "delete" => {
-                    self.commit_editor.clear_composition();
-                    self.commit_editor.delete();
+                    self.commit_editor.state.clear_composition();
+                    self.commit_editor.state.delete();
                 }
-                "left" => self.commit_editor.move_horizontal(-1, extend),
-                "right" => self.commit_editor.move_horizontal(1, extend),
-                "home" => self.commit_editor.move_to_boundary(false, extend),
-                "end" => self.commit_editor.move_to_boundary(true, extend),
+                "left" => {
+                    self.commit_editor.state.move_horizontal(-1, extend);
+                }
+                "right" => {
+                    self.commit_editor.state.move_horizontal(1, extend);
+                }
+                "home" => {
+                    self.commit_editor.state.move_to_boundary(false, extend);
+                }
+                "end" => {
+                    self.commit_editor.state.move_to_boundary(true, extend);
+                }
                 _ => {
                     if let Some(character) = printable_char(keystroke) {
-                        self.commit_editor.clear_composition();
-                        self.commit_editor.replace_selection(&character.to_string());
+                        self.commit_editor.state.clear_composition();
+                        self.commit_editor
+                            .state
+                            .replace_selection(&character.to_string());
                     } else {
                         handled = false;
                     }
@@ -182,7 +200,7 @@ impl EntityInputHandler for GitWindow {
                 .selection()
                 .unwrap_or((self.history_query.cursor, self.history_query.cursor))
         } else {
-            self.commit_editor.selection().unwrap_or((
+            self.commit_editor.state.selection().unwrap_or((
                 self.commit_editor.state.cursor,
                 self.commit_editor.state.cursor,
             ))

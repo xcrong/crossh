@@ -67,6 +67,18 @@
 
 ### S-A1 合并 sftp 字符编辑与 `text_editing.rs` 重复实现
 
+> **状态：已完成（2026-08-18，spec: `docs/specs/20260818-merge-sftp-text-editing.md`）**
+> `RemoteEditor` 合并为持有 `TextEditingState`（content/cursor/ime 四字段收敛）；
+> `TextEditingState::backspace/delete/move_horizontal/replace_selection` 返回
+> bool（"是否实际发生修改"，供脏标记使用）+ 字符边界 debug_assert 上移；
+> 删除 logic.rs 的 `insert_text`/`backspace_char`/`delete_char`/
+> `move_cursor_horizontal` 及其测试。S-A10 联动一并落地：删除
+> QuickCommandEditor/CommitEditor 薄委托方法，调用点（shell.rs、git/input.rs、
+> workspace/view.rs、git/render.rs、shell_input.rs）全部直连 `state`。
+> 契约测试 7 条（spec 前缀命名）覆盖 bool 语义、选区端跳跃、幽灵锚点清除、
+> sftp UTF-8 编辑与脏标记、IME 状态承载。rg 零残留；fmt/architecture/clippy
+> 全绿；全 workspace 测试通过。
+
 - **位置**：`src/features/sftp/logic.rs:72-111`（`backspace_char`/`delete_char`/`move_cursor_horizontal`，无选区自由函数 `&mut String, &mut usize -> bool`）vs `src/shared/text_editing.rs:71-120`（`TextEditingState` 结构体方法，含选区/IME）。
 - **消费者证据**：sftp 版生产消费 `src/features/sftp/view.rs:584-585,946`、`view_input.rs` 的 EntityInputHandler(114/150/190)；shared 版消费 `features/git/input.rs:57-68`、`settings/agent.rs:552-556`、`workspace/shell.rs:870-908`。无选区退格/删除/横向移动语义逐行相同；`move_cursor_vertical`/`line_bounds` 是 sftp 独有。
 - **建议做法**：给 `TextEditingState` 增加无选区便捷语义或让 RemoteEditor 复用状态机；bool 返回值语义、调试断言是行为契约。

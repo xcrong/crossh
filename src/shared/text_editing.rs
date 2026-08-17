@@ -58,65 +58,84 @@ impl TextEditingState {
         selection_bounds(self.anchor, self.cursor)
     }
 
-    /// 用 `text` 替换当前选区（无选区则插入到光标处），光标移到插入文本末尾。
-    pub fn replace_selection(&mut self, text: &str) {
+    /// 用 `text` 替换当前选区（无选区则插入到光标处），光标移到插入文本末尾；
+    /// 返回文本是否实际发生变化（选区非空或 `text` 非空）。
+    pub fn replace_selection(&mut self, text: &str) -> bool {
+        debug_assert!(self.value.is_char_boundary(self.cursor));
         let (start, end) = self.selection().unwrap_or((self.cursor, self.cursor));
         self.value.replace_range(start..end, text);
         self.cursor = start + text.len();
         self.anchor = None;
+        !text.is_empty() || start != end
     }
 
     /// 退格：有选区则删除选区；否则删除光标前一字符。实际删除后清除锚点，
-    /// 避免光标与锚点重合时的陈旧锚点演变成幽灵选区。
-    pub fn backspace(&mut self) {
+    /// 避免光标与锚点重合时的陈旧锚点演变成幽灵选区。返回是否实际发生了删除。
+    pub fn backspace(&mut self) -> bool {
+        debug_assert!(self.value.is_char_boundary(self.cursor));
         if let Some((start, end)) = self.selection() {
             self.value.replace_range(start..end, "");
             self.cursor = start;
             self.anchor = None;
-            return;
+            return true;
         }
         let start = previous_char_boundary(&self.value, self.cursor);
         if start != self.cursor {
             self.value.replace_range(start..self.cursor, "");
             self.cursor = start;
             self.anchor = None;
+            true
+        } else {
+            false
         }
     }
 
     /// 删除：有选区则删除选区；否则删除光标处字符。实际删除后同样清除锚点。
-    pub fn delete(&mut self) {
+    /// 返回是否实际发生了删除。
+    pub fn delete(&mut self) -> bool {
+        debug_assert!(self.value.is_char_boundary(self.cursor));
         if let Some((start, end)) = self.selection() {
             self.value.replace_range(start..end, "");
             self.cursor = start;
             self.anchor = None;
-            return;
+            return true;
         }
         let end = next_char_boundary(&self.value, self.cursor);
         if end != self.cursor {
             self.value.replace_range(self.cursor..end, "");
             self.anchor = None;
+            true
+        } else {
+            false
         }
     }
 
     /// 左右移动光标；`extend` 时扩展选区，否则从选区两端跳出并清除选区。
-    pub fn move_horizontal(&mut self, direction: i8, extend: bool) {
+    /// 返回光标是否实际移动（选区端跳跃无条件返回 `true`）。
+    pub fn move_horizontal(&mut self, direction: i8, extend: bool) -> bool {
+        debug_assert!(self.value.is_char_boundary(self.cursor));
         if !extend && let Some((start, end)) = self.selection() {
             self.cursor = if direction < 0 { start } else { end };
             self.anchor = None;
-            return;
+            return true;
         }
 
         if extend && self.anchor.is_none() {
             self.anchor = Some(self.cursor);
         }
-        self.cursor = if direction < 0 {
+        let next = if direction < 0 {
             previous_char_boundary(&self.value, self.cursor)
         } else {
             next_char_boundary(&self.value, self.cursor)
         };
+        if next == self.cursor {
+            return false;
+        }
+        self.cursor = next;
         if !extend {
             self.anchor = None;
         }
+        true
     }
 
     /// 跳到文本首（`end = false`）或文本尾（`end = true`）；`extend` 时保留锚点。
@@ -299,5 +318,98 @@ mod tests {
         assert_eq!(clamp_char_boundary("model", 99), 5);
         assert_eq!(clamp_char_boundary("模型", 2), 0);
         assert_eq!(clamp_char_boundary("模型", 3), 3);
+    }
+
+    #[test]
+    fn spec_20260818_merge_sftp_text_editing_backspace_reports_actual_change() {
+        let mut editor = TextEditingState::new("a中b");
+        editor.cursor = 0;
+        assert!(!editor.backspace());
+        assert_eq!(editor.value, "a中b");
+        assert_eq!(editor.cursor, 0);
+
+        editor.cursor = "a中".len();
+        assert!(editor.backspace());
+        assert_eq!(editor.value, "ab");
+        assert_eq!(editor.cursor, 1);
+        assert_eq!(editor.anchor, None);
+
+        editor.value = "ab".to_string();
+        editor.cursor = 1;
+        editor.anchor = Some(2);
+        assert!(editor.backspace());
+        assert_eq!(editor.value, "a");
+        assert_eq!(editor.cursor, 1);
+        assert_eq!(editor.anchor, None);
+    }
+
+    #[test]
+    fn spec_20260818_merge_sftp_text_editing_delete_reports_actual_change() {
+        let mut editor = TextEditingState::new("a中b");
+        editor.cursor = editor.value.len();
+        assert!(!editor.delete());
+        assert_eq!(editor.value, "a中b");
+
+        editor.cursor = 1;
+        assert!(editor.delete());
+        assert_eq!(editor.value, "ab");
+        assert_eq!(editor.cursor, 1);
+        assert_eq!(editor.anchor, None);
+    }
+
+    #[test]
+    fn spec_20260818_merge_sftp_text_editing_horizontal_move_reports_actual_change() {
+        let mut editor = TextEditingState::new("a中b");
+        editor.cursor = 0;
+        assert!(!editor.move_horizontal(-1, false));
+        assert_eq!(editor.cursor, 0);
+
+        assert!(editor.move_horizontal(1, false));
+        assert_eq!(editor.cursor, 1);
+        editor.cursor = editor.value.len();
+        assert!(!editor.move_horizontal(1, false));
+        assert_eq!(editor.cursor, editor.value.len());
+
+        editor.cursor = "a中".len();
+        editor.anchor = Some(1);
+        assert!(editor.move_horizontal(1, false));
+        assert_eq!(editor.cursor, "a中".len());
+        assert_eq!(editor.anchor, None);
+
+        editor.anchor = Some("a中".len());
+        editor.cursor = "a中".len();
+        assert!(editor.move_horizontal(-1, false));
+        assert_eq!(editor.cursor, 1);
+        assert_eq!(editor.anchor, None);
+    }
+
+    #[test]
+    fn spec_20260818_merge_sftp_text_editing_replace_selection_reports_actual_change() {
+        let mut editor = TextEditingState::new("a中b");
+        assert!(!editor.replace_selection(""));
+        assert_eq!(editor.value, "a中b");
+        assert_eq!(editor.cursor, "a中b".len());
+
+        assert!(editor.replace_selection("x"));
+        assert_eq!(editor.value, "a中bx");
+        assert_eq!(editor.cursor, "a中bx".len());
+
+        editor.cursor = 1;
+        editor.anchor = Some("a中".len());
+        assert!(editor.replace_selection(""));
+        assert_eq!(editor.value, "abx");
+        assert_eq!(editor.cursor, 1);
+        assert_eq!(editor.anchor, None);
+    }
+
+    #[test]
+    fn spec_20260818_merge_sftp_text_editing_empty_replace_selection_clears_stale_anchor() {
+        let mut editor = TextEditingState::new("ab");
+        editor.cursor = 1;
+        editor.anchor = Some(1);
+        assert!(!editor.replace_selection(""));
+        assert_eq!(editor.value, "ab");
+        assert_eq!(editor.cursor, 1);
+        assert_eq!(editor.anchor, None);
     }
 }

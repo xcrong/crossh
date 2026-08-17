@@ -60,7 +60,7 @@ impl EntityInputHandler for SftpPane {
         _cx: &mut Context<Self>,
     ) -> Option<String> {
         match self.active_input_field(window)? {
-            SftpInputField::Editor => Some(utf16_slice(&self.editor.as_ref()?.content, range)),
+            SftpInputField::Editor => Some(utf16_slice(&self.editor.as_ref()?.state.value, range)),
             field => Some(self.active_end_caret_input(field)?.text_for_range(range)),
         }
     }
@@ -74,7 +74,7 @@ impl EntityInputHandler for SftpPane {
         match self.active_input_field(window)? {
             SftpInputField::Editor => {
                 let editor = self.editor.as_ref()?;
-                let position = utf16_offset_for_byte(&editor.content, editor.cursor);
+                let position = utf16_offset_for_byte(&editor.state.value, editor.state.cursor);
                 Some(UTF16Selection {
                     range: position..position,
                     reversed: false,
@@ -93,11 +93,12 @@ impl EntityInputHandler for SftpPane {
             SftpInputField::Editor => {
                 let editor = self.editor.as_ref()?;
                 let (start, _) = editor
+                    .state
                     .ime_replacement
-                    .unwrap_or((editor.cursor, editor.cursor));
-                (!editor.ime_marked_text.is_empty()).then(|| {
-                    let start = utf16_offset_for_byte(&editor.content, start);
-                    start..start + utf16_len(&editor.ime_marked_text)
+                    .unwrap_or((editor.state.cursor, editor.state.cursor));
+                (!editor.state.ime_marked_text.is_empty()).then(|| {
+                    let start = utf16_offset_for_byte(&editor.state.value, start);
+                    start..start + utf16_len(&editor.state.ime_marked_text)
                 })
             }
             field => self.active_end_caret_input(field)?.marked_range(),
@@ -108,10 +109,10 @@ impl EntityInputHandler for SftpPane {
         match self.active_input_field(window) {
             Some(SftpInputField::Editor) => {
                 if let Some(editor) = &mut self.editor {
-                    if let Some((_, end)) = editor.ime_replacement.take() {
-                        editor.cursor = end;
+                    if let Some((_, end)) = editor.state.ime_replacement.take() {
+                        editor.state.cursor = end;
                     }
-                    editor.ime_marked_text.clear();
+                    editor.state.ime_marked_text.clear();
                 }
             }
             field => {
@@ -135,19 +136,21 @@ impl EntityInputHandler for SftpPane {
             Some(SftpInputField::Editor) => {
                 if let Some(editor) = &mut self.editor {
                     let range = editor
+                        .state
                         .ime_replacement
                         .take()
                         .map(|(start, end)| {
-                            utf16_offset_for_byte(&editor.content, start)
-                                ..utf16_offset_for_byte(&editor.content, end)
+                            utf16_offset_for_byte(&editor.state.value, start)
+                                ..utf16_offset_for_byte(&editor.state.value, end)
                         })
                         .or(replacement_range)
                         .unwrap_or_else(|| {
-                            let position = utf16_offset_for_byte(&editor.content, editor.cursor);
+                            let position =
+                                utf16_offset_for_byte(&editor.state.value, editor.state.cursor);
                             position..position
                         });
-                    editor.cursor = replace_utf16_range(&mut editor.content, range, text);
-                    editor.ime_marked_text.clear();
+                    editor.state.cursor = replace_utf16_range(&mut editor.state.value, range, text);
+                    editor.state.ime_marked_text.clear();
                     editor.dirty = true;
                 }
             }
@@ -174,21 +177,22 @@ impl EntityInputHandler for SftpPane {
             Some(SftpInputField::Editor) => {
                 if let Some(editor) = &mut self.editor {
                     let replacement = editor
+                        .state
                         .ime_replacement
                         .take()
                         .or_else(|| {
                             range.map(|range| {
                                 (
-                                    byte_index_for_utf16(&editor.content, range.start),
-                                    byte_index_for_utf16(&editor.content, range.end),
+                                    byte_index_for_utf16(&editor.state.value, range.start),
+                                    byte_index_for_utf16(&editor.state.value, range.end),
                                 )
                             })
                         })
-                        .unwrap_or((editor.cursor, editor.cursor));
-                    editor.ime_replacement = Some(replacement);
-                    editor.cursor = replacement.0;
-                    editor.ime_marked_text.clear();
-                    editor.ime_marked_text.push_str(new_text);
+                        .unwrap_or((editor.state.cursor, editor.state.cursor));
+                    editor.state.ime_replacement = Some(replacement);
+                    editor.state.cursor = replacement.0;
+                    editor.state.ime_marked_text.clear();
+                    editor.state.ime_marked_text.push_str(new_text);
                 }
             }
             field => {
@@ -213,14 +217,15 @@ impl EntityInputHandler for SftpPane {
             SftpInputField::Editor => {
                 let editor = self.editor.as_ref()?;
                 let cursor = editor
+                    .state
                     .ime_replacement
                     .map(|(start, _)| start)
-                    .unwrap_or_else(|| byte_index_for_utf16(&editor.content, range.start));
-                let line_start = super::line_bounds(&editor.content, cursor).0;
+                    .unwrap_or_else(|| byte_index_for_utf16(&editor.state.value, range.start));
+                let line_start = super::line_bounds(&editor.state.value, cursor).0;
                 Some(ime_caret_bounds(
                     window,
                     element_bounds,
-                    &editor.content[line_start..cursor],
+                    &editor.state.value[line_start..cursor],
                     px(12.),
                     px(42.),
                     self.editor_scroll.offset().x,
@@ -253,7 +258,7 @@ impl EntityInputHandler for SftpPane {
             SftpInputField::Editor => self
                 .editor
                 .as_ref()
-                .map(|editor| utf16_len(&editor.content)),
+                .map(|editor| utf16_len(&editor.state.value)),
             field => Some(self.active_end_caret_input(field)?.length()),
         }
     }

@@ -1215,7 +1215,7 @@ fn render_commit_editor_text(editor: &CommitEditor, focused: bool) -> AnyElement
         return row.into_any_element();
     }
 
-    let selection = editor.selection();
+    let selection = editor.state.selection();
     let mut content = div().flex().flex_col();
     let mut line_start = 0;
     for line in editor.state.value.split('\n') {
