@@ -18,10 +18,7 @@ pub use policy::{
     AgentModel, AgentModelRef, AgentProtocol, AgentProvider, AgentReviewResult, AgentSettings,
     AgentThinkingLevel, ResolvedModel, review_tool,
 };
-pub use providers::{
-    AgentAuthStyle, AgentWireRequest, complete, complete_stream, complete_stream_with_options,
-    decode_response, decode_stream_event, encode_request,
-};
+pub use providers::{complete, complete_stream, complete_stream_with_options};
 pub use tools::{AgentToolDefinition, builtin_tools, execute_tool, execute_tool_with_cancel};
 
 pub use session::{
@@ -33,9 +30,7 @@ pub use session::{
 #[cfg(test)]
 use policy::{MAX_TOOL_OUTPUT_BYTES, parse_review_result};
 #[cfg(test)]
-use providers::{
-    StreamAccumulator, Utf8StreamDecoder, apply_model_options, apply_thinking_option, wire_messages,
-};
+use providers::{Utf8StreamDecoder, apply_model_options, apply_thinking_option, wire_messages};
 #[cfg(test)]
 use serde_json::json;
 #[cfg(test)]

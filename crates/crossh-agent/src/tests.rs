@@ -1,4 +1,5 @@
 use super::*;
+use crossh_ai_sdk as sdk;
 
 fn configured_settings() -> AgentSettings {
     let provider = AgentProvider {
@@ -30,11 +31,19 @@ fn configured_settings() -> AgentSettings {
     }
 }
 
-fn messages() -> Vec<AgentMessage> {
+fn sdk_messages() -> Vec<sdk::Message> {
     vec![
-        AgentMessage::new(AgentRole::System, "be useful"),
-        AgentMessage::new(AgentRole::User, "hello"),
+        sdk::Message::new(sdk::Role::System, "be useful"),
+        sdk::Message::new(sdk::Role::User, "hello"),
     ]
+}
+
+fn to_sdk_protocol(protocol: AgentProtocol) -> sdk::Protocol {
+    match protocol {
+        AgentProtocol::OpenAiChat => sdk::Protocol::OpenAiChat,
+        AgentProtocol::OpenAiResponses => sdk::Protocol::OpenAiResponses,
+        AgentProtocol::AnthropicMessages => sdk::Protocol::AnthropicMessages,
+    }
 }
 
 #[test]
@@ -158,7 +167,17 @@ fn model_output_limit_maps_to_each_protocol() {
         (AgentProtocol::OpenAiResponses, "max_output_tokens"),
         (AgentProtocol::AnthropicMessages, "max_tokens"),
     ] {
-        let mut wire = encode_request(protocol, &model.id, &messages());
+        let request = sdk::CompletionRequest::new(
+            to_sdk_protocol(protocol),
+            "",
+            &model.id,
+            4_096,
+            Vec::new(),
+            Vec::new(),
+        );
+        let mut wire = sdk::builtin_adapter(to_sdk_protocol(protocol))
+            .encode_request(&request)
+            .expect("built-in adapter request should be valid");
         apply_model_options(&mut wire.body, protocol, &model);
         assert_eq!(wire.body[key], 1_234);
     }
@@ -166,9 +185,18 @@ fn model_output_limit_maps_to_each_protocol() {
 
 #[test]
 fn adapters_encode_the_same_canonical_messages() {
-    let chat = encode_request(AgentProtocol::OpenAiChat, "model", &messages());
-    let responses = encode_request(AgentProtocol::OpenAiResponses, "model", &messages());
-    let anthropic = encode_request(AgentProtocol::AnthropicMessages, "model", &messages());
+    let request = |protocol| {
+        sdk::CompletionRequest::new(protocol, "", "model", 4_096, sdk_messages(), Vec::new())
+    };
+    let chat = sdk::builtin_adapter(sdk::Protocol::OpenAiChat)
+        .encode_request(&request(sdk::Protocol::OpenAiChat))
+        .expect("built-in adapter request should be valid");
+    let responses = sdk::builtin_adapter(sdk::Protocol::OpenAiResponses)
+        .encode_request(&request(sdk::Protocol::OpenAiResponses))
+        .expect("built-in adapter request should be valid");
+    let anthropic = sdk::builtin_adapter(sdk::Protocol::AnthropicMessages)
+        .encode_request(&request(sdk::Protocol::AnthropicMessages))
+        .expect("built-in adapter request should be valid");
     assert_eq!(chat.body["messages"][1]["content"], "hello");
     assert_eq!(responses.body["input"][1]["content"], "hello");
     assert_eq!(anthropic.body["system"], "be useful");
@@ -210,24 +238,26 @@ fn responses_replay_original_output_items() {
 
 #[test]
 fn streamed_responses_capture_completed_output_items() {
-    let mut accumulator = StreamAccumulator::default();
+    let adapter = sdk::builtin_adapter(sdk::Protocol::OpenAiResponses);
+    let mut accumulator = sdk::StreamAccumulator::new(sdk::Protocol::OpenAiResponses);
     let item = json!({
         "id":"rs_1",
         "type":"reasoning",
         "summary":[{"type":"summary_text","text":"think"}]
     });
-    accumulator.capture_protocol_event(
-        AgentProtocol::OpenAiResponses,
+    adapter.capture_stream_event(
+        &mut accumulator,
         &json!({"type":"response.output_item.done","output_index":0,"item":item}),
     );
-    accumulator.push(&AgentEvent::ReasoningDelta("think".into()));
-    let response = accumulator.finish(AgentProtocol::OpenAiResponses).unwrap();
+    accumulator.push(&sdk::Event::ReasoningDelta("think".into()));
+    let response = accumulator.finish().unwrap();
     assert_eq!(response.protocol_items, vec![item]);
 }
 
 #[test]
 fn responses_tool_events_keep_the_final_call_and_arguments() {
-    let mut accumulator = StreamAccumulator::default();
+    let adapter = sdk::builtin_adapter(sdk::Protocol::OpenAiResponses);
+    let mut accumulator = sdk::StreamAccumulator::new(sdk::Protocol::OpenAiResponses);
     let events = [
         json!({
             "type":"response.output_item.added",
@@ -263,16 +293,16 @@ fn responses_tool_events_keep_the_final_call_and_arguments() {
         }),
     ];
     for event in events {
-        accumulator.capture_protocol_event(AgentProtocol::OpenAiResponses, &event);
-        for decoded in decode_stream_event(AgentProtocol::OpenAiResponses, &event) {
+        adapter.capture_stream_event(&mut accumulator, &event);
+        for decoded in adapter.decode_stream_event(&event) {
             accumulator.push(&decoded);
         }
     }
 
-    let response = accumulator.finish(AgentProtocol::OpenAiResponses).unwrap();
+    let response = accumulator.finish().unwrap();
     assert_eq!(
         response.content,
-        vec![AgentContentBlock::ToolCall(AgentToolCall {
+        vec![sdk::ContentBlock::ToolCall(sdk::ToolCall {
             id: "call_1".into(),
             name: "read".into(),
             arguments: r#"{"path":"README.md"}"#.into(),
@@ -282,7 +312,8 @@ fn responses_tool_events_keep_the_final_call_and_arguments() {
 
 #[test]
 fn responses_output_item_done_can_create_a_tool_call() {
-    let mut accumulator = StreamAccumulator::default();
+    let adapter = sdk::builtin_adapter(sdk::Protocol::OpenAiResponses);
+    let mut accumulator = sdk::StreamAccumulator::new(sdk::Protocol::OpenAiResponses);
     let event = json!({
         "type":"response.output_item.done",
         "output_index":2,
@@ -294,12 +325,12 @@ fn responses_output_item_done_can_create_a_tool_call() {
             "arguments":"{\"path\":null}"
         }
     });
-    accumulator.capture_protocol_event(AgentProtocol::OpenAiResponses, &event);
+    adapter.capture_stream_event(&mut accumulator, &event);
 
-    let response = accumulator.finish(AgentProtocol::OpenAiResponses).unwrap();
+    let response = accumulator.finish().unwrap();
     assert_eq!(
         response.content,
-        vec![AgentContentBlock::ToolCall(AgentToolCall {
+        vec![sdk::ContentBlock::ToolCall(sdk::ToolCall {
             id: "call_2".into(),
             name: "ls".into(),
             arguments: r#"{"path":null}"#.into(),
@@ -310,59 +341,56 @@ fn responses_output_item_done_can_create_a_tool_call() {
 #[test]
 fn adapters_decode_protocol_responses() {
     assert_eq!(
-        decode_response(
-            AgentProtocol::OpenAiChat,
-            &json!({"choices":[{"message":{"content":"a"}}]})
-        ),
-        Ok(AgentResponse {
-            content: vec![AgentContentBlock::Text("a".into())],
+        sdk::builtin_adapter(sdk::Protocol::OpenAiChat)
+            .decode_response(&json!({"choices":[{"message":{"content":"a"}}]}))
+            .unwrap(),
+        sdk::Response {
+            content: vec![sdk::ContentBlock::Text("a".into())],
             protocol_items: Vec::new()
-        })
+        }
     );
     assert_eq!(
-        decode_response(
-            AgentProtocol::OpenAiResponses,
-            &json!({"output":[
+        sdk::builtin_adapter(sdk::Protocol::OpenAiResponses)
+            .decode_response(&json!({"output":[
                 {"type":"reasoning","summary":[{"type":"summary_text","text":"think b"}]},
                 {"type":"message","content":[{"type":"output_text","text":"b"}]}
-            ]})
-        ),
-        Ok(AgentResponse {
+            ]}))
+            .unwrap(),
+        sdk::Response {
             content: vec![
-                AgentContentBlock::Reasoning("think b".into()),
-                AgentContentBlock::Text("b".into())
+                sdk::ContentBlock::Reasoning("think b".into()),
+                sdk::ContentBlock::Text("b".into())
             ],
             protocol_items: vec![
                 json!({"type":"reasoning","summary":[{"type":"summary_text","text":"think b"}]}),
                 json!({"type":"message","content":[{"type":"output_text","text":"b"}]})
             ]
-        })
+        }
     );
     assert_eq!(
-        decode_response(
-            AgentProtocol::AnthropicMessages,
-            &json!({"content":[
+        sdk::builtin_adapter(sdk::Protocol::AnthropicMessages)
+            .decode_response(&json!({"content":[
                 {"type":"thinking","thinking":"think c","signature":"sig"},
                 {"type":"text","text":"c"}
-            ]})
-        ),
-        Ok(AgentResponse {
+            ]}))
+            .unwrap(),
+        sdk::Response {
             content: vec![
-                AgentContentBlock::Reasoning("think c".into()),
-                AgentContentBlock::Text("c".into())
+                sdk::ContentBlock::Reasoning("think c".into()),
+                sdk::ContentBlock::Text("c".into())
             ],
             protocol_items: Vec::new()
-        })
+        }
     );
 }
 
 #[test]
 fn chat_reasoning_content_is_separate_from_visible_text() {
-    let response = decode_response(
-        AgentProtocol::OpenAiChat,
-        &json!({"choices":[{"message":{"reasoning_content":"think a","content":"a"}}]}),
-    )
-    .unwrap();
+    let response = sdk::builtin_adapter(sdk::Protocol::OpenAiChat)
+        .decode_response(
+            &json!({"choices":[{"message":{"reasoning_content":"think a","content":"a"}}]}),
+        )
+        .unwrap();
     assert_eq!(response.reasoning(), "think a");
     assert_eq!(response.text(), "a");
 }
@@ -370,37 +398,31 @@ fn chat_reasoning_content_is_separate_from_visible_text() {
 #[test]
 fn stream_events_normalize_text_reasoning_and_tool_arguments() {
     assert_eq!(
-        decode_stream_event(
-            AgentProtocol::OpenAiChat,
-            &json!({"choices":[{"delta":{"reasoning_content":"think","content":"answer","tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{\"path\":"}}]}}]})
-        ),
+        sdk::builtin_adapter(sdk::Protocol::OpenAiChat)
+            .decode_stream_event(&json!({"choices":[{"delta":{"reasoning_content":"think","content":"answer","tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{\"path\":"}}]}}]})),
         vec![
-            AgentEvent::ReasoningDelta("think".into()),
-            AgentEvent::TextDelta("answer".into()),
-            AgentEvent::ToolCallStart {
+            sdk::Event::ReasoningDelta("think".into()),
+            sdk::Event::TextDelta("answer".into()),
+            sdk::Event::ToolCallStart {
                 index: 0,
                 id: "call_1".into(),
                 name: "read".into()
             },
-            AgentEvent::ToolCallArgumentsDelta {
+            sdk::Event::ToolCallArgumentsDelta {
                 index: 0,
                 delta: "{\"path\":".into()
             },
         ]
     );
     assert_eq!(
-        decode_stream_event(
-            AgentProtocol::OpenAiResponses,
-            &json!({"type":"response.reasoning_summary_text.delta","delta":"summary","output_index":0})
-        ),
-        vec![AgentEvent::ReasoningDelta("summary".into())]
+        sdk::builtin_adapter(sdk::Protocol::OpenAiResponses)
+            .decode_stream_event(&json!({"type":"response.reasoning_summary_text.delta","delta":"summary","output_index":0})),
+        vec![sdk::Event::ReasoningDelta("summary".into())]
     );
     assert_eq!(
-        decode_stream_event(
-            AgentProtocol::AnthropicMessages,
-            &json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}})
-        ),
-        vec![AgentEvent::ToolCallArgumentsDelta {
+        sdk::builtin_adapter(sdk::Protocol::AnthropicMessages)
+            .decode_stream_event(&json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}})),
+        vec![sdk::Event::ToolCallArgumentsDelta {
             index: 2,
             delta: "{\"path\":".into()
         }]
@@ -563,7 +585,13 @@ fn explicit_thinking_options_map_to_provider_wire_fields() {
         context_window: 10_000,
         max_tokens: 4_000,
     };
-    let mut chat = encode_request(AgentProtocol::OpenAiChat, &model.id, &messages()).body;
+    let request = |protocol| {
+        sdk::CompletionRequest::new(protocol, "", &model.id, 4_096, Vec::new(), Vec::new())
+    };
+    let mut chat = sdk::builtin_adapter(sdk::Protocol::OpenAiChat)
+        .encode_request(&request(sdk::Protocol::OpenAiChat))
+        .expect("built-in adapter request should be valid")
+        .body;
     apply_thinking_option(
         &mut chat,
         AgentProtocol::OpenAiChat,
@@ -572,7 +600,10 @@ fn explicit_thinking_options_map_to_provider_wire_fields() {
     );
     assert_eq!(chat["reasoning_effort"], "high");
 
-    let mut responses = encode_request(AgentProtocol::OpenAiResponses, &model.id, &messages()).body;
+    let mut responses = sdk::builtin_adapter(sdk::Protocol::OpenAiResponses)
+        .encode_request(&request(sdk::Protocol::OpenAiResponses))
+        .expect("built-in adapter request should be valid")
+        .body;
     apply_thinking_option(
         &mut responses,
         AgentProtocol::OpenAiResponses,
@@ -582,8 +613,10 @@ fn explicit_thinking_options_map_to_provider_wire_fields() {
     assert_eq!(responses["reasoning"]["effort"], "high");
     assert!(responses.get("reasoning_effort").is_none());
 
-    let mut anthropic =
-        encode_request(AgentProtocol::AnthropicMessages, &model.id, &messages()).body;
+    let mut anthropic = sdk::builtin_adapter(sdk::Protocol::AnthropicMessages)
+        .encode_request(&request(sdk::Protocol::AnthropicMessages))
+        .expect("built-in adapter request should be valid")
+        .body;
     apply_thinking_option(
         &mut anthropic,
         AgentProtocol::AnthropicMessages,

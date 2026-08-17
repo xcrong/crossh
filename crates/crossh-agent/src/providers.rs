@@ -8,23 +8,11 @@ use super::policy::{
 };
 use super::tools::builtin_tools;
 use crossh_ai_sdk as sdk;
+#[cfg(test)]
 use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
 use std::time::Duration;
-
-/// Protocol-specific HTTP metadata. The transport remains independent of the
-/// agent loop and only applies these already-normalized headers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AgentAuthStyle {
-    Bearer,
-    Anthropic,
-}
-
-pub struct AgentWireRequest {
-    pub body: Value,
-    pub auth_style: AgentAuthStyle,
-}
 
 pub async fn complete(
     settings: &AgentSettings,
@@ -254,60 +242,6 @@ impl Utf8StreamDecoder {
     }
 }
 
-/// Compatibility accumulator retained for callers of the original
-/// `crossh-agent` protocol helpers. The implementation lives in the SDK.
-#[cfg(test)]
-#[derive(Default)]
-pub(super) struct StreamAccumulator {
-    inner: sdk::StreamAccumulator,
-    protocol: AgentProtocol,
-}
-
-#[cfg(test)]
-impl StreamAccumulator {
-    pub(super) fn set_protocol(&mut self, protocol: AgentProtocol) {
-        if self.protocol != protocol {
-            self.protocol = protocol;
-            self.inner.set_protocol(to_sdk_protocol(protocol));
-        }
-    }
-
-    pub(super) fn capture_protocol_event(&mut self, protocol: AgentProtocol, event: &Value) {
-        self.set_protocol(protocol);
-        sdk::builtin_adapter(to_sdk_protocol(protocol))
-            .capture_stream_event(&mut self.inner, event);
-    }
-
-    pub(super) fn push(&mut self, event: &AgentEvent) {
-        self.inner.push(&to_sdk_event(event));
-    }
-
-    pub(super) fn finish(mut self, protocol: AgentProtocol) -> Result<AgentResponse, String> {
-        self.set_protocol(protocol);
-        Ok(from_sdk_response(
-            self.inner.finish().map_err(|error| error.to_string())?,
-        ))
-    }
-}
-
-#[cfg(test)]
-fn to_sdk_event(event: &AgentEvent) -> sdk::Event {
-    match event {
-        AgentEvent::TextDelta(delta) => sdk::Event::TextDelta(delta.clone()),
-        AgentEvent::ReasoningDelta(delta) => sdk::Event::ReasoningDelta(delta.clone()),
-        AgentEvent::ToolCallStart { index, id, name } => sdk::Event::ToolCallStart {
-            index: *index,
-            id: id.clone(),
-            name: name.clone(),
-        },
-        AgentEvent::ToolCallArgumentsDelta { index, delta } => sdk::Event::ToolCallArgumentsDelta {
-            index: *index,
-            delta: delta.clone(),
-        },
-        AgentEvent::Stop(reason) => sdk::Event::Stop(reason.clone()),
-    }
-}
-
 fn sdk_tool_definitions() -> Vec<sdk::ToolDefinition> {
     builtin_tools()
         .into_iter()
@@ -322,6 +256,7 @@ fn sdk_tool_definitions() -> Vec<sdk::ToolDefinition> {
         .collect()
 }
 
+#[cfg(test)]
 fn sdk_request_for_messages(
     protocol: AgentProtocol,
     model: &str,
@@ -336,24 +271,6 @@ fn sdk_request_for_messages(
         messages.iter().map(to_sdk_message).collect(),
         sdk_tool_definitions(),
     )
-}
-
-pub fn encode_request(
-    protocol: AgentProtocol,
-    model: &str,
-    messages: &[AgentMessage],
-) -> AgentWireRequest {
-    let request = sdk_request_for_messages(protocol, model, messages, 4_096);
-    let wire = sdk::builtin_adapter(request.protocol)
-        .encode_request(&request)
-        .expect("built-in adapter request should be valid");
-    AgentWireRequest {
-        body: wire.body,
-        auth_style: match wire.auth_style {
-            sdk::AuthStyle::Anthropic => AgentAuthStyle::Anthropic,
-            sdk::AuthStyle::Bearer | sdk::AuthStyle::None => AgentAuthStyle::Bearer,
-        },
-    }
 }
 
 #[cfg(test)]
@@ -408,26 +325,6 @@ pub(super) fn apply_thinking_option(
             };
         }
     }
-}
-
-pub fn decode_response(
-    protocol: AgentProtocol,
-    body: &Value,
-) -> Result<AgentResponse, &'static str> {
-    let response = sdk::builtin_adapter(to_sdk_protocol(protocol))
-        .decode_response(body)
-        .map_err(|_| "protocol response did not contain text or reasoning content")?;
-    Ok(from_sdk_response(response))
-}
-
-/// Normalize one decoded SSE `data:` object. Tool argument fragments remain
-/// fragments and are assembled by the agent loop using their stable index.
-pub fn decode_stream_event(protocol: AgentProtocol, event: &Value) -> Vec<AgentEvent> {
-    sdk::builtin_adapter(to_sdk_protocol(protocol))
-        .decode_stream_event(event)
-        .iter()
-        .map(from_sdk_event)
-        .collect()
 }
 
 #[cfg(test)]
