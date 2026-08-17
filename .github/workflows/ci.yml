@@ -37,8 +37,8 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: Test
-        run: cargo test --release
+      - name: Test (workspace)
+        run: cargo test --release --workspace
 
   terminal-compat:
     name: terminal replay / platform smoke (${{ matrix.os }})
@@ -69,8 +69,8 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Run workspace library tests
-        run: cargo test --release --workspace --lib
+      - name: Run workspace tests
+        run: cargo test --release --workspace
 
       - name: Run terminal replay tests
         run: cargo test --release --test terminal_replay -- --test-threads=1

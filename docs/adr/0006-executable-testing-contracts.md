@@ -40,3 +40,8 @@ Crossh 采用分层的可执行测试契约：
 - `docs/testing.md`
 - `.github/workflows/ci.yml`
 - `scripts/check-architecture.sh`
+
+2026-08-17 修订：CI 门禁曾有两处静默排除（macOS job 缺 `--workspace`、
+terminal-compat 的 `--workspace --lib` 跳过根 crate bin 测试），由
+`docs/specs/20260817-ci-full-test-gates.md` 修复；此后全量门禁命令统一为
+`cargo test --release --workspace`。
