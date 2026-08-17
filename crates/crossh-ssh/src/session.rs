@@ -8,7 +8,6 @@ use std::path::PathBuf;
 use crossh_core::config::HostConfig;
 /// 用户选择的认证方式。
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub enum AuthChoice {
     /// ssh-agent（读取 SSH_AUTH_SOCK）。
     Agent { user: String },
@@ -18,8 +17,6 @@ pub enum AuthChoice {
         path: PathBuf,
         passphrase: Option<String>,
     },
-    /// 密码。
-    Password { user: String, password: String },
 }
 
 /// 从 HostConfig 推导认证方式候选列表（依次尝试，首个成功即用）。
@@ -83,4 +80,60 @@ fn whoami() -> String {
     std::env::var("USER")
         .or_else(|_| std::env::var("LOGNAME"))
         .unwrap_or_else(|_| "root".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn host_with_key(dir: &std::path::Path) -> HostConfig {
+        HostConfig {
+            aliases: vec!["t".to_string()],
+            host_name: None,
+            user: Some("alice".to_string()),
+            port: None,
+            identity_files: vec![dir.join("id_test").to_string_lossy().into_owned()],
+            identities_only: Some(true),
+            proxy_jump: None,
+            local_forwards: Vec::new(),
+            remote_forwards: Vec::new(),
+            dynamic_forwards: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn spec_20260817_remove_auth_choice_password_default_auth_never_yields_password() {
+        let old_sock = std::env::var_os("SSH_AUTH_SOCK");
+        unsafe { std::env::remove_var("SSH_AUTH_SOCK") };
+
+        let dir = std::env::temp_dir().join(format!("crossh-auth-choice-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("id_test"), b"unused").unwrap();
+
+        let host = host_with_key(&dir);
+        let mut methods = default_auth_for(&host);
+        // 穷尽匹配：任何不在 Key/Agent 内的变体（含未来的 Password）都会编译或断言失败。
+        assert!(
+            methods
+                .iter()
+                .all(|m| matches!(m, AuthChoice::Key { .. } | AuthChoice::Agent { .. }))
+        );
+        assert_eq!(methods.len(), 1);
+        assert!(matches!(&methods[0], AuthChoice::Key { user, .. } if user == "alice"));
+
+        // agent 可用时追加 Agent，顺序在显式密钥之后。
+        unsafe { std::env::set_var("SSH_AUTH_SOCK", "/dev/null") };
+        methods = default_auth_for(&host);
+        assert!(matches!(
+            methods.as_slice(),
+            [AuthChoice::Key { .. }, AuthChoice::Agent { .. }]
+        ));
+        match old_sock {
+            Some(v) => unsafe { std::env::set_var("SSH_AUTH_SOCK", v) },
+            None => unsafe { std::env::remove_var("SSH_AUTH_SOCK") },
+        }
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

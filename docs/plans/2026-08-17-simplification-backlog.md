@@ -56,10 +56,14 @@
 
 ### S-B2 删除 `AuthChoice::Password` 零构造变体
 
-- **位置**：`crates/crossh-ssh/src/session.rs:11`（allow 豁免）、`:22-23`（变体定义）；`crates/crossh-ssh/src/connection.rs:590-598`（authenticate() 唯一 match 分支）；`crates/crossh-ssh/src/lib.rs:18`（re-export 注释同步）。
-- **消费者证据**：全仓库零构造。`default_auth_for` 只产出 `Key`/`Agent`（session.rs:43,71）；生产消费方 `src/features/connections/manager.rs:47`、`proxyjump.rs:44` 只调 `default_auth_for`。真实密码路径是 `request_credential(CredentialKind::Password)` 兜底（connection.rs:602-611），不受删除影响。
-- **风险**：公共 API 变更；未来若 UI 要注入密码需加回变体。
-- **验收**：删除后编译通过；密码认证语义由兜底路径相关测试覆盖（或补一个测试固定该路径）。
+> **状态：已完成（2026-08-17，spec: `docs/specs/20260817-remove-auth-choice-password.md`）**
+> 删除 `AuthChoice::Password` 变体 + `#[allow(dead_code)]`（session.rs）+ 不可达
+> match 分支（connection.rs）；lib.rs re-export 不变。契约测试 3 条：
+> `default_auth_never_yields_password`（候选穷尽 Key/Agent + 顺序）与
+> `password_fallback_roundtrip`/`password_fallback_none_when_ui_unreachable`
+> （UI 凭据兜底往返与取消）。`rg` 全仓库零引用；fmt/architecture/clippy
+> 全绿；全 workspace 测试通过（164+ 用例）。testing.md Connection 矩阵追加
+> 认证候选与密码兜底契约。
 
 ### S-A1 合并 sftp 字符编辑与 `text_editing.rs` 重复实现
 

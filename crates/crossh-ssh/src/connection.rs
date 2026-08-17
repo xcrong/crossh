@@ -552,15 +552,6 @@ async fn authenticate(
                     return Ok(true);
                 }
             }
-            AuthChoice::Password { user, password } => {
-                if handle
-                    .authenticate_password(user.clone(), password.clone())
-                    .await?
-                    .success()
-                {
-                    return Ok(true);
-                }
-            }
         }
     }
 
@@ -894,5 +885,39 @@ mod tests {
         append_remote_output(&mut output, b"tail");
         assert!(output.len() <= MAX_REMOTE_COMMAND_OUTPUT);
         assert!(output.ends_with("tail"));
+    }
+
+    #[tokio::test]
+    async fn spec_20260817_remove_auth_choice_password_password_fallback_roundtrip() {
+        let (tx, rx) = async_channel::unbounded::<ConnEvent>();
+        let task = tokio::spawn(async move {
+            request_credential(&tx, CredentialKind::Password, "Password for alice".into()).await
+        });
+
+        let event = rx.recv().await.unwrap();
+        let ConnEvent::NeedCredential {
+            kind,
+            prompt,
+            reply,
+        } = event
+        else {
+            panic!("expected NeedCredential, got a different ConnEvent");
+        };
+        assert_eq!(kind, CredentialKind::Password);
+        assert_eq!(prompt, "Password for alice");
+
+        reply.send(Some("s3cret".to_string())).unwrap();
+        assert_eq!(task.await.unwrap(), Some("s3cret".to_string()));
+    }
+
+    #[tokio::test]
+    async fn spec_20260817_remove_auth_choice_password_password_fallback_none_when_ui_unreachable()
+    {
+        let (tx, rx) = async_channel::unbounded::<ConnEvent>();
+        drop(rx);
+        assert_eq!(
+            request_credential(&tx, CredentialKind::Password, "p".into()).await,
+            None
+        );
     }
 }
