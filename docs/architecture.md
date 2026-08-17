@@ -105,3 +105,4 @@ and quick verification command for focused validation.
 - [0009: Standalone agent binary](adr/0009-standalone-agent-binary.md)
 - [0010: Git workbench layering](adr/0010-git-workbench-layering.md)
 - [0011: Terminal split ownership](adr/0011-terminal-split-ownership.md)
+- [0012: Spec-driven development loop](adr/0012-spec-driven-development-loop.md)
