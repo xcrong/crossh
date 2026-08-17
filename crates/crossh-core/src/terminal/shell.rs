@@ -330,29 +330,29 @@ __crossh_deferred_init() {{
 /// Start a remote interactive shell with Crossh hooks without changing the
 /// user's shell configuration files.
 pub fn remote_shell_bootstrap_command() -> String {
-    let bash_rc = format!(
-        "source ~/.bashrc\n{}",
-        remote_shell_setup_script(RemoteShell::Bash)
-    );
-    let zsh_integration = zsh_deferred_setup_script();
-    let zshenv = r#"if [[ ${CROSSH_USER_ZDOTDIR_SET:-0} == 1 ]]; then
-    builtin export ZDOTDIR="$CROSSH_USER_ZDOTDIR"
-else
-    builtin unset ZDOTDIR
-fi
-builtin unset CROSSH_USER_ZDOTDIR CROSSH_USER_ZDOTDIR_SET
-if [[ -r "${ZDOTDIR:-$HOME}/.zshenv" ]]; then
-    builtin source "${ZDOTDIR:-$HOME}/.zshenv"
-fi
-builtin source "$CROSSH_ZSH_INTEGRATION"
-builtin unset CROSSH_ZSH_INTEGRATION
-    "#;
-    let fish_setup = remote_shell_setup_script(RemoteShell::Fish);
-    let bash_rc_encoded = BASE64.encode(bash_rc.as_bytes());
-    let zsh_integration_encoded = BASE64.encode(zsh_integration.as_bytes());
-    let zshenv_encoded = BASE64.encode(zshenv.as_bytes());
-    let fish_setup_encoded = BASE64.encode(fish_setup.as_bytes());
-    let selector = format!(
+    let encoded = BASE64.encode(remote_shell_bootstrap_selector().as_bytes());
+    format!(
+        "d=$(mktemp -d \"${{TMPDIR:-/tmp}}/crossh-bootstrap.XXXXXX\") || exit 1; trap 'rm -rf \"$d\"' 0; printf %s {encoded} | base64 -d > \"$d/boot.sh\" || exit 1; . \"$d/boot.sh\""
+    )
+}
+
+/// One-per-shell launcher that dispatches on the remote `$SHELL` at runtime
+/// and sources each shell's startup payload from a fresh temp directory.
+///
+/// SSH servers pass the remote command through the user's login shell. Do
+/// not embed the multi-line selector in another layer of shell quoting:
+/// OpenSSH joins command arguments before the server parses them, and the
+/// nested quotes can be interpreted differently by `/bin/sh` variants.
+/// The payload is shell-safe base64, so only a small, portable decoder is
+/// parsed remotely. Decode into a temporary script before sourcing it;
+/// piping directly into `sh` would steal the SSH PTY's stdin and make an
+/// interactive shell exit immediately on EOF.
+fn remote_shell_bootstrap_selector() -> String {
+    let bash_rc_encoded = BASE64.encode(remote_bash_startup_script().as_bytes());
+    let zsh_integration_encoded = BASE64.encode(zsh_deferred_setup_script().as_bytes());
+    let zshenv_encoded = BASE64.encode(remote_zsh_launcher_script().as_bytes());
+    let fish_setup_encoded = BASE64.encode(remote_fish_startup_script().as_bytes());
+    format!(
         "case \"${{SHELL##*/}}\" in\n\
 bash)\n\
     d=$(mktemp -d \"${{TMPDIR:-/tmp}}/crossh-shell.XXXXXX\") || exit 1\n\
@@ -388,19 +388,39 @@ fish)\n\
     ;;\n\
 esac",
         bash_rc_encoded, zsh_integration_encoded, zshenv_encoded, fish_setup_encoded,
-    );
-    // SSH servers pass the remote command through the user's login shell. Do
-    // not embed the multi-line selector in another layer of shell quoting:
-    // OpenSSH joins command arguments before the server parses them, and the
-    // nested quotes can be interpreted differently by `/bin/sh` variants.
-    // The payload is shell-safe base64, so only a small, portable decoder is
-    // parsed remotely. Decode into a temporary script before sourcing it;
-    // piping directly into `sh` would steal the SSH PTY's stdin and make an
-    // interactive shell exit immediately on EOF.
-    let encoded = BASE64.encode(selector.as_bytes());
-    format!(
-        "d=$(mktemp -d \"${{TMPDIR:-/tmp}}/crossh-bootstrap.XXXXXX\") || exit 1; trap 'rm -rf \"$d\"' 0; printf %s {encoded} | base64 -d > \"$d/boot.sh\" || exit 1; . \"$d/boot.sh\""
     )
+}
+
+/// Startup payload written to the temporary `.bashrc` for a remote bash.
+fn remote_bash_startup_script() -> String {
+    format!(
+        "source ~/.bashrc\n{}",
+        remote_shell_setup_script(RemoteShell::Bash)
+    )
+}
+
+/// Startup payload written to the temporary `.zshenv` for a remote zsh: it
+/// restores the user ZDOTDIR, sources the user `.zshenv`, then loads the
+/// deferred Crossh integration script.
+fn remote_zsh_launcher_script() -> String {
+    r#"if [[ ${CROSSH_USER_ZDOTDIR_SET:-0} == 1 ]]; then
+    builtin export ZDOTDIR="$CROSSH_USER_ZDOTDIR"
+else
+    builtin unset ZDOTDIR
+fi
+builtin unset CROSSH_USER_ZDOTDIR CROSSH_USER_ZDOTDIR_SET
+if [[ -r "${ZDOTDIR:-$HOME}/.zshenv" ]]; then
+    builtin source "${ZDOTDIR:-$HOME}/.zshenv"
+fi
+builtin source "$CROSSH_ZSH_INTEGRATION"
+builtin unset CROSSH_ZSH_INTEGRATION
+    "#
+    .to_string()
+}
+
+/// Startup payload sourced by a remote fish through `--init-command`.
+fn remote_fish_startup_script() -> String {
+    remote_shell_setup_script(RemoteShell::Fish).to_string()
 }
 
 fn shell_quote(value: &str) -> String {
@@ -581,6 +601,40 @@ mod tests {
         assert!(command.contains("base64 -d > \"$d/boot.sh\""));
         assert!(command.contains(". \"$d/boot.sh\""));
         assert!(command.contains("base64 -d"));
+    }
+
+    #[test]
+    fn remote_bootstrap_payloads_cover_each_shell() {
+        let bash_payload = remote_bash_startup_script();
+        assert!(bash_payload.starts_with("source ~/.bashrc\n"));
+        assert!(bash_payload.contains("__crossh_report_command"));
+
+        let zsh_integration = zsh_deferred_setup_script();
+        assert!(zsh_integration.contains("precmd_functions+=(__crossh_deferred_init)"));
+        let zsh_launcher = remote_zsh_launcher_script();
+        assert!(zsh_launcher.contains("CROSSH_USER_ZDOTDIR_SET"));
+        assert!(zsh_launcher.contains("${ZDOTDIR:-$HOME}/.zshenv"));
+
+        let fish_payload = remote_fish_startup_script();
+        assert!(fish_payload.contains("__crossh_report_pwd"));
+        assert!(fish_payload.contains("--on-event fish_preexec"));
+    }
+
+    #[test]
+    fn remote_bootstrap_selector_embeds_unchanged_shell_payloads() {
+        let payloads: Vec<String> = remote_shell_bootstrap_selector()
+            .split("printf %s ")
+            .skip(1)
+            .map(|part| {
+                let encoded = part.split(" | base64 -d >").next().unwrap();
+                String::from_utf8(BASE64.decode(encoded).unwrap()).unwrap()
+            })
+            .collect();
+        assert_eq!(payloads.len(), 4);
+        assert_eq!(payloads[0], remote_bash_startup_script());
+        assert_eq!(payloads[1], zsh_deferred_setup_script());
+        assert_eq!(payloads[2], remote_zsh_launcher_script());
+        assert_eq!(payloads[3], remote_fish_startup_script());
     }
 
     #[cfg(unix)]

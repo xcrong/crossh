@@ -28,6 +28,18 @@
 
 ### S-B4 统一两份 shell bootstrap 生成逻辑（联动 loopback spec）
 
+> **状态：已完成（2026-08-17）**
+> S-B1 已删掉 cfg(test) 版，无第二份逻辑可统一；剩余工作为生产版
+> shell.rs 内部 per-shell 提取重构（行为不变）：拆出
+> `remote_bash_startup_script`/`remote_zsh_launcher_script`/`remote_fish_startup_script`
+> 三个 per-shell payload 生成函数，`remote_shell_bootstrap_selector()` 组装运行时
+> selector，`remote_shell_bootstrap_command()` 仅做 base64 包装。重构前后
+> 生产字节流经临时 dump 比对 **逐字节一致**。新增两条单元测试：
+> `remote_bootstrap_payloads_cover_each_shell`（各 shell 命令形态）与
+> `remote_bootstrap_selector_embeds_unchanged_shell_payloads`（selector 内嵌
+> 字节与生成函数一致，防漂移回归）。若 loopback spec 日后需要测试版命令
+> 形态，直接在 loopback 侧依赖生产版即可。
+
 - **位置**：
   - 生产版：`crates/crossh-core/src/terminal/shell.rs:332-404`（`remote_shell_bootstrap_command()`，无参，base64 编码 selector，运行时按 `$SHELL` 分派）
   - 测试版：`crates/crossh-ssh/src/connection.rs:740-762`（`#[cfg(test)] fn remote_shell_bootstrap_command(shell: RemoteShell)`）
