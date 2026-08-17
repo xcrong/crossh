@@ -18,8 +18,7 @@ use std::time::Duration;
 use gpui::{
     App, AppContext, ClipboardEntry, Context, Entity, EntityId, FocusHandle, InteractiveElement,
     IntoElement, KeyDownEvent, ParentElement, PathPromptOptions, Pixels, Point, Render, Styled,
-    SystemNotificationResponse, Task, TitlebarOptions, Window, WindowBounds, WindowOptions, div,
-    px, size,
+    Task, TitlebarOptions, Window, WindowBounds, WindowOptions, div, px, size,
 };
 
 use crate::features::connections::{Connection, ConnectionManager, HostEntry, PendingPrompt};
@@ -60,6 +59,8 @@ use super::local_paths::{current_local_cwd, normalize_local_cwd, normalize_recen
 #[cfg(test)]
 use crate::shared::text_editing::{next_char_boundary, previous_char_boundary, selection_bounds};
 
+#[path = "notifications.rs"]
+mod notifications;
 #[path = "quit.rs"]
 mod quit;
 #[path = "shell_input.rs"]
@@ -541,68 +542,6 @@ impl AppShell {
             self.refocus_active_terminal(cx);
         }
         cx.notify();
-    }
-
-    fn handle_system_notification_response(
-        &mut self,
-        response: SystemNotificationResponse,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let mut handled_remote = false;
-        let mut remote_focus = None;
-        for (index, tab) in self.workspace.sessions.remote_tabs.iter().enumerate() {
-            let Some(focus) = tab.pane.handle_system_notification_response(&response, cx) else {
-                continue;
-            };
-            handled_remote = true;
-            if focus {
-                tab.pane.request_focus(cx);
-                remote_focus = Some(ActiveView::RemoteTab(index));
-            }
-            break;
-        }
-        if handled_remote {
-            if let Some(view) = remote_focus
-                && !self.workspace.focus_split_view(view)
-            {
-                self.workspace.active_view = Some(view);
-            }
-            if remote_focus.is_some() {
-                cx.notify();
-            }
-            return true;
-        }
-
-        let mut handled_local = false;
-        let mut local_focus = None;
-        for (&session_id, session) in &self.workspace.sessions.local_sessions {
-            let handled = session.terminal.update(cx, |terminal, cx| {
-                terminal.handle_system_notification_response(&response, cx)
-            });
-            let Some(focus) = handled else {
-                continue;
-            };
-            handled_local = true;
-            if focus {
-                session
-                    .terminal
-                    .update(cx, |terminal, _cx| terminal.request_focus());
-                local_focus = Some(ActiveView::LocalSession(session_id));
-            }
-            break;
-        }
-        if handled_local {
-            if let Some(view) = local_focus
-                && !self.workspace.focus_split_view(view)
-            {
-                self.workspace.active_view = Some(view);
-            }
-            if local_focus.is_some() {
-                cx.notify();
-            }
-            return true;
-        }
-        false
     }
 
     fn record_command(&mut self, scope: String, command: String, cx: &mut Context<Self>) {
@@ -1997,3 +1936,7 @@ mod tests {
         assert_eq!(available_main_width(px(400.), 216., 240.), px(0.));
     }
 }
+
+#[cfg(test)]
+#[path = "shell_notification_tests.rs"]
+mod shell_notification_tests;

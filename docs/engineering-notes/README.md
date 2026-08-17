@@ -15,3 +15,4 @@
 | 命令历史测试只在 windows-latest 上断言 2 vs 3 | `commands.rs`, `aggregates_commands_and_returns_top_thirty`, `last_used`, 秒级时间戳, 时间竞态 | [命令历史测试的时间精度竞态](command-history-test-timing.md) |
 | 跨终端 TUI splash 颜色对不上;白色刺眼、阴影过渡"细线"消失,但字节流一致 | `opencode`, `VT Code`, `OSC 11`, `38;2 真彩`, `canvas`, 自适应主题, `splashShadow`, `ColorRequest`, 256 色, 细线消失 | [终端自适应颜色与主题底色偏差](terminal-adaptive-colors.md) |
 | CI/local 全绿但某 crate 测试从不执行；`--workspace --lib` 静默跳过 bin 测试 | `cargo test`, `--workspace`, `--lib`, 测试没跑, bin target, 静默跳过 | [Cargo 测试选择陷阱](cargo-test-workspace-selection.md) |
+| 分屏(左 X/右 Y)跑 Codex,切到另一 tab 再点完成通知跳回后右终端独占全屏、左终端被盖住 | `分屏丢失`, `split`, `active_view`, `右窗格全屏`, `Codex`, `完成通知`, `SkyComputerUseClient`, `windowDidResignKey`, `on_active_status_change`, `focus_out`, `system notifications disabled`, `not running from an app bundle`, `jump_back_to_split_pane`, `PTY reader`, `test_scheduler` | [终端分屏与系统通知:窗口激活链路](terminal-split-notification-window-activation.md) |
