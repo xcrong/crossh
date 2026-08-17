@@ -79,9 +79,9 @@
 
 | 优先级 | 编号 | 问题 | 处置 | 说明 |
 | --- | --- | --- | --- | --- |
-| P0 | S-D3 | SDK 迁移兼容层整组死代码 | 直接修 | 收益最大的一刀：删 2 类型 + 3 函数 + 导出，测试改直连 SDK |
-| P0 | S-D2, S-D4 | 便捷入口无消费者 | 直接修 | 各删一个函数与导出 |
-| P0 | S-D12 | 根 assets 依赖冗余（C-4） | 直接修 | 移入 dev-dependencies，与 visual_capture 决策联动 |
+| P0 | S-D3 | SDK 迁移兼容层整组死代码 | 直接修 ✅ | 已提交 `a90b465`：删 2 类型 + 3 函数 + 导出，10 个测试改写为 SDK 直连 |
+| P0 | S-D2, S-D4 | 便捷入口无消费者 | 直接修 ✅ | 已提交 `bed7e92`：删 `complete_stream`/`execute_tool` 与导出，14 处测试改走 `execute_tool_with_cancel` |
+| P0 | S-D12 | 根 assets 依赖冗余（C-4） | 直接修 ✅ | 已提交 `bed7e92`：移入 `[dev-dependencies]`，visual_capture 待 B-6 裁定 |
 | P1 | S-B1, S-B4 | 死终端契约 / 双 bootstrap（C-2/C-3） | spec | 均与 loopback spec 联动，删除/合并是行为变化 |
 | P1 | S-B2 | AuthChoice::Password 零构造变体 | spec | 公共 API 变更 + 删不可达分支 |
 | P1 | S-A1 | sftp 字符编辑与 text_editing 重复 | spec | 行为契约变更 |
