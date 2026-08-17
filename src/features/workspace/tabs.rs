@@ -7,6 +7,7 @@ use task::Shell;
 use crossh_core::terminal::remote_shell_bootstrap_command;
 
 use super::*;
+use crate::features::workspace::local_paths::{current_local_cwd, normalize_local_cwd};
 
 /// 单个标签页关闭时可能被打断的活动；任何一项存在都需要确认。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -427,7 +428,7 @@ impl AppShell {
                     .read(cx)
                     .cwd
                     .as_deref()
-                    .map(|cwd| normalize_local_cwd(PathBuf::from(cwd)))
+                    .and_then(|cwd| normalize_local_cwd(PathBuf::from(cwd)))
                     .unwrap_or_else(|| session.cwd.clone())
             })
             .unwrap_or_else(current_local_cwd)

@@ -16,14 +16,14 @@ impl AppShell {
         project_dir: PathBuf,
         cwd: PathBuf,
         cx: &mut Context<Self>,
-    ) -> ActiveView {
-        let view = self.create_local_session(project_dir, cwd, cx);
+    ) -> Option<ActiveView> {
+        let view = self.create_local_session(project_dir, cwd, cx)?;
         if let ActiveView::LocalSession(session_id) = view {
             self.refresh_git_status(session_id, false, cx);
         }
         self.status = None;
         cx.notify();
-        view
+        Some(view)
     }
 
     pub(crate) fn toggle_terminal_split(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -172,7 +172,7 @@ impl AppShell {
             ActiveView::LocalSession(session_id) => {
                 let project_dir = self.local_session_project_dir(session_id);
                 let cwd = self.local_session_cwd(session_id, cx);
-                Some(self.open_local_session_for_split(project_dir, cwd, cx))
+                self.open_local_session_for_split(project_dir, cwd, cx)
             }
             ActiveView::RemoteTab(index) => {
                 let tab = self.workspace.sessions.remote_tabs.get(index)?;

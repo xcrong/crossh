@@ -56,6 +56,7 @@ use crossh_ui::theme;
 use crossh_ui::widgets::printable_char;
 
 use super::command_editor::QuickCommandEditor;
+use super::local_paths::{current_local_cwd, normalize_local_cwd, normalize_recent_dirs};
 #[cfg(test)]
 use crate::shared::text_editing::{next_char_boundary, previous_char_boundary, selection_bounds};
 
@@ -184,7 +185,14 @@ impl AppShell {
             }
         };
         let config = Arc::new(config);
-        let snapshot = settings::load();
+        let mut snapshot = settings::load();
+        let recent_dirs = normalize_recent_dirs(snapshot.workspace.recent_dirs.clone());
+        if recent_dirs != snapshot.workspace.recent_dirs {
+            snapshot.workspace.recent_dirs = recent_dirs;
+            if let Err(error) = settings::save(&snapshot) {
+                log::warn!("failed to save cleaned recent directories: {error}");
+            }
+        }
         let language_preference = snapshot.language;
         let terminal_settings = snapshot.terminal;
         TerminalView::apply_zed_settings(&terminal_settings, cx);
@@ -195,16 +203,14 @@ impl AppShell {
         // 启动时把最近的本地目录记录恢复到侧栏 Local 分组（无活动会话，点击即重开）。
         let mut local_dirs = BTreeMap::new();
         for cwd in &workspace_settings.recent_dirs {
-            if cwd.is_dir() {
-                local_dirs.insert(
-                    normalize_local_cwd(cwd.clone()),
-                    LocalDir {
-                        project_dir: normalize_local_cwd(cwd.clone()),
-                        sessions: Vec::new(),
-                        active_session: None,
-                    },
-                );
-            }
+            local_dirs.insert(
+                cwd.clone(),
+                LocalDir {
+                    project_dir: cwd.clone(),
+                    sessions: Vec::new(),
+                    active_session: None,
+                },
+            );
         }
 
         let shell = cx.new(|cx| Self {
@@ -344,7 +350,11 @@ impl AppShell {
         cwd: PathBuf,
         cx: &mut Context<Self>,
     ) {
-        let view = self.create_local_session(project_dir, cwd, cx);
+        let Some(view) = self.create_local_session(project_dir, cwd, cx) else {
+            self.sync_local_dirs(cx);
+            cx.notify();
+            return;
+        };
         if let ActiveView::LocalSession(session_id) = view {
             self.select_local_session(session_id, cx);
             self.refresh_git_status(session_id, false, cx);
@@ -358,9 +368,9 @@ impl AppShell {
         project_dir: PathBuf,
         cwd: PathBuf,
         cx: &mut Context<Self>,
-    ) -> ActiveView {
-        let project_dir = normalize_local_cwd(project_dir);
-        let cwd = normalize_local_cwd(cwd);
+    ) -> Option<ActiveView> {
+        let project_dir = normalize_local_cwd(project_dir)?;
+        let cwd = normalize_local_cwd(cwd)?;
         self.remember_local_dir(&project_dir, cx);
         let cwd_text = cwd.to_string_lossy().to_string();
         let terminal =
@@ -393,8 +403,9 @@ impl AppShell {
                 }
             }
             TerminalEvent::CommandStarted { command, cwd } => {
-                if let Some(cwd) = cwd {
-                    let cwd = normalize_local_cwd(PathBuf::from(cwd));
+                if let Some(cwd) = cwd
+                    && let Some(cwd) = normalize_local_cwd(PathBuf::from(cwd))
+                {
                     this.record_command(local_scope(&cwd), command.clone(), cx);
                 }
             }
@@ -429,12 +440,15 @@ impl AppShell {
         );
         self.ensure_git_status_refresh_task(cx);
         self.sync_local_dirs(cx);
-        ActiveView::LocalSession(session_id)
+        Some(ActiveView::LocalSession(session_id))
     }
 
     pub(crate) fn activate_local_dir(&mut self, project_dir: PathBuf, cx: &mut Context<Self>) {
-        let project_dir = normalize_local_cwd(project_dir);
         self.sync_local_dirs(cx);
+        let Some(project_dir) = normalize_local_cwd(project_dir) else {
+            cx.notify();
+            return;
+        };
         let session_id = self
             .workspace
             .sessions
@@ -619,7 +633,7 @@ impl AppShell {
                     .clone()
                     .map(PathBuf::from)
                     .unwrap_or_else(|| session.cwd.clone());
-                let cwd = normalize_local_cwd(cwd);
+                let cwd = normalize_local_cwd(cwd)?;
                 Some(ActiveCommandContext {
                     scope: local_scope(&cwd),
                     cwd: cwd.to_string_lossy().to_string(),
@@ -671,7 +685,9 @@ impl AppShell {
                 let connection = self.connections.acquire(resolved, methods, cx);
                 self.start_remote_background(connection, owner, scope, context.cwd, command, cx);
             } else {
-                let cwd = normalize_local_cwd(PathBuf::from(context.cwd));
+                let Some(cwd) = normalize_local_cwd(PathBuf::from(context.cwd)) else {
+                    return;
+                };
                 let (id, event_rx) = self.background_tasks.start(scope, cwd, command, owner);
                 cx.spawn(async move |weak, cx| {
                     let Ok(event) = event_rx.recv().await else {
@@ -1325,6 +1341,7 @@ impl AppShell {
 
     /// 把本地会话按创建时的项目归属目录重建目录视图（打开/关闭/`cd` 时调用）。
     pub(crate) fn sync_local_dirs(&mut self, cx: &Context<Self>) {
+        self.prune_missing_recent_dirs();
         let previous = std::mem::take(&mut self.workspace.sessions.local_dirs);
         let active_local_session = match self.workspace.active_view {
             Some(ActiveView::LocalSession(session_id)) => Some(session_id),
@@ -1336,8 +1353,10 @@ impl AppShell {
             .local_sessions
             .iter_mut()
             .map(|(&session_id, session)| {
-                if let Some(cwd) = session.terminal.read(cx).cwd.as_deref() {
-                    session.cwd = normalize_local_cwd(PathBuf::from(cwd));
+                if let Some(cwd) = session.terminal.read(cx).cwd.as_deref()
+                    && let Some(cwd) = normalize_local_cwd(PathBuf::from(cwd))
+                {
+                    session.cwd = cwd;
                 }
                 (session_id, session.project_dir.clone())
             })
@@ -1538,7 +1557,9 @@ impl AppShell {
 
     /// 把目录记入「最近本地目录」历史（最近优先、去重、截断到上限）并持久化。
     fn remember_local_dir(&mut self, project_dir: &Path, _cx: &mut Context<Self>) {
-        let project_dir = normalize_local_cwd(project_dir.to_path_buf());
+        let Some(project_dir) = normalize_local_cwd(project_dir.to_path_buf()) else {
+            return;
+        };
         self.workspace_settings
             .recent_dirs
             .retain(|existing| existing != &project_dir);
@@ -1551,7 +1572,9 @@ impl AppShell {
 
     /// 从「最近本地目录」历史中移除一个目录并持久化。
     pub(crate) fn forget_local_dir(&mut self, cwd: PathBuf, cx: &mut Context<Self>) {
-        let cwd = normalize_local_cwd(cwd);
+        let Some(cwd) = normalize_local_cwd(cwd) else {
+            return;
+        };
         if !self.workspace_settings.recent_dirs.contains(&cwd) {
             return;
         }
@@ -1561,6 +1584,15 @@ impl AppShell {
         self.persist_settings();
         self.sync_local_dirs(cx);
         cx.notify();
+    }
+
+    fn prune_missing_recent_dirs(&mut self) {
+        let recent_dirs = normalize_recent_dirs(self.workspace_settings.recent_dirs.clone());
+        if recent_dirs == self.workspace_settings.recent_dirs {
+            return;
+        }
+        self.workspace_settings.recent_dirs = recent_dirs;
+        self.persist_settings();
     }
 
     /// 清空「最近本地目录」历史。
@@ -1850,25 +1882,6 @@ fn available_main_width(
     quick_commands_width: f32,
 ) -> Pixels {
     px((viewport_width.as_f32() - sidebar_width - quick_commands_width).max(0.))
-}
-
-fn current_local_cwd() -> PathBuf {
-    normalize_local_cwd(std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")))
-}
-
-fn normalize_local_cwd(path: PathBuf) -> PathBuf {
-    let path = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map(|base| base.join(&path))
-            .unwrap_or(path)
-    };
-    if path.is_dir() {
-        path.canonicalize().unwrap_or(path)
-    } else {
-        PathBuf::from("/")
-    }
 }
 
 fn host_entry_matches(entry: &HostEntry, query: &str) -> bool {

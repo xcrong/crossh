@@ -1521,6 +1521,9 @@ pub fn rebuild_local_dirs(
 ) -> BTreeMap<PathBuf, LocalDir> {
     let mut next = BTreeMap::new();
     for project_dir in remembered {
+        if !project_dir.is_dir() {
+            continue;
+        }
         next.entry(project_dir.clone()).or_insert_with(|| LocalDir {
             project_dir,
             sessions: Vec::new(),
@@ -1652,19 +1655,40 @@ mod tests {
     #[test]
     fn remembered_dirs_stay_without_live_sessions() {
         let previous = BTreeMap::new();
-        let remembered = vec![
-            PathBuf::from("/Users/me/one"),
-            PathBuf::from("/Users/me/two"),
-        ];
-        let current = vec![(1, PathBuf::from("/Users/me/one"))];
+        let root =
+            std::env::temp_dir().join(format!("crossh-remembered-dir-test-{}", std::process::id()));
+        let one = root.join("one");
+        let two = root.join("two");
+        std::fs::create_dir_all(&one).expect("first test directory should be created");
+        std::fs::create_dir_all(&two).expect("second test directory should be created");
+        let remembered = vec![one.clone(), two.clone()];
+        let current = vec![(1, one.clone())];
 
         let dirs = rebuild_local_dirs(&previous, current, remembered, Some(1));
-        assert_eq!(dirs[&PathBuf::from("/Users/me/one")].sessions, vec![1]);
-        assert_eq!(
-            dirs[&PathBuf::from("/Users/me/two")].sessions,
-            Vec::<LocalSessionId>::new()
+        assert_eq!(dirs[&one].sessions, vec![1]);
+        assert_eq!(dirs[&two].sessions, Vec::<LocalSessionId>::new());
+        assert_eq!(dirs[&two].active_session, None);
+        std::fs::remove_dir_all(root).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn spec_20260817_recent_local_dir_recovery_missing_remembered_dir_is_not_restored() {
+        let root =
+            std::env::temp_dir().join(format!("crossh-recent-dir-recovery-{}", std::process::id()));
+        let existing = root.join("existing");
+        let missing = root.join("missing");
+        std::fs::create_dir_all(&existing).expect("test directory should be created");
+
+        let dirs = rebuild_local_dirs(
+            &BTreeMap::new(),
+            Vec::new(),
+            vec![existing.clone(), missing.clone()],
+            None,
         );
-        assert_eq!(dirs[&PathBuf::from("/Users/me/two")].active_session, None);
+
+        assert!(dirs.contains_key(&existing));
+        assert!(!dirs.contains_key(&missing));
+        std::fs::remove_dir_all(root).expect("test directory should be removed");
     }
 
     #[test]

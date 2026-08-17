@@ -57,7 +57,7 @@ ADR 0012）：spec 的行为契约条目就是测试的输入，测试名带 spe
 
 | 功能 | 必须受保护的行为 |
 | --- | --- |
-| Workspace | 打开/切换/关闭 tab，active index 合法，关闭时清理订阅和后台任务 |
+| Workspace | 打开/切换/关闭 tab，active index 合法，关闭时清理订阅和后台任务；启动/同步时清理失效最近目录，竞态点击不打开根目录 |
 | Terminal | chunk 边界等价，alternate screen/mouse/keyboard mode，resize，退出和通知 |
 | Connection | 连接状态，host-key/credential 应答只能消费一次，断线后可重新获取连接 |
 | SFTP | list/read/write/upload/download，dirty editor，保存失败，关闭确认 |
