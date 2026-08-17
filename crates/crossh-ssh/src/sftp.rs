@@ -22,7 +22,6 @@ pub struct RemoteEntry {
 }
 
 /// UI → worker 命令。
-#[allow(dead_code)]
 pub enum SftpCmd {
     /// 列目录。
     List { path: String },

@@ -29,33 +29,12 @@ pub mod theme {
     pub use crossh_ui::theme::*;
 }
 
-pub mod prelude {
-    pub use crate::avatar::{Avatar, AvatarKind};
-    pub use crate::badge::{Badge, BadgeTone};
-    pub use crate::button::{Button, ButtonSize, ButtonVariant};
-    pub use crate::count_badge::CountBadge;
-    pub use crate::hint::Hint;
-    pub use crate::layout::{h_flex, scroll_y, v_flex};
-    pub use crate::modal::ModalDialog;
-    pub use crate::separator::{Separator, SeparatorOrientation};
-    pub use crate::split_resizer::{SplitHandleSide, SplitResizer};
-    pub use crate::status_bar::StatusBar;
-    pub use crate::status_dot::StatusDot;
-    pub use crate::status_metric::StatusMetric;
-    pub use crate::stepper::Stepper;
-    pub use crate::tab::{TabItem, TabStrip};
-    pub use crate::text_input::TextInput;
-    pub use crate::toast::{Toast, ToastTone, Toaster};
-    pub use crate::toggle::ToggleSwitch;
-    pub use crate::tooltip::Tooltip;
-}
-
 pub use avatar::{Avatar, AvatarKind};
 pub use badge::{Badge, BadgeTone};
 pub use button::{Button, ButtonSize, ButtonVariant};
 pub use count_badge::CountBadge;
 pub use hint::Hint;
-pub use layout::{h_flex, scroll_y, v_flex};
+pub use layout::{h_flex, scroll_y};
 pub use modal::ModalDialog;
 pub use separator::{Separator, SeparatorOrientation};
 pub use split_resizer::{SplitHandleSide, SplitResizer};

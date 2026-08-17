@@ -24,22 +24,6 @@ pub enum Protocol {
     AnthropicMessages,
 }
 
-impl Protocol {
-    pub const ALL: [Self; 3] = [
-        Self::OpenAiChat,
-        Self::OpenAiResponses,
-        Self::AnthropicMessages,
-    ];
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::OpenAiChat => "openai-chat",
-            Self::OpenAiResponses => "openai-responses",
-            Self::AnthropicMessages => "anthropic-messages",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub enum ThinkingLevel {
     Off,
@@ -52,15 +36,6 @@ pub enum ThinkingLevel {
 }
 
 impl ThinkingLevel {
-    pub const ALL: [Self; 6] = [
-        Self::Off,
-        Self::Minimal,
-        Self::Low,
-        Self::Medium,
-        Self::High,
-        Self::XHigh,
-    ];
-
     pub const fn label(self) -> &'static str {
         match self {
             Self::Off => "off",
@@ -112,26 +87,6 @@ impl Message {
             text: text.into(),
             tool_calls: Vec::new(),
             tool_result: None,
-            protocol_items: Vec::new(),
-        }
-    }
-
-    pub fn assistant_tool_calls(tool_calls: Vec<ToolCall>) -> Self {
-        Self {
-            role: Role::Assistant,
-            text: String::new(),
-            tool_calls,
-            tool_result: None,
-            protocol_items: Vec::new(),
-        }
-    }
-
-    pub fn tool_result(result: ToolResult) -> Self {
-        Self {
-            role: Role::User,
-            text: String::new(),
-            tool_calls: Vec::new(),
-            tool_result: Some(result),
             protocol_items: Vec::new(),
         }
     }
@@ -258,34 +213,6 @@ pub struct Response {
     pub content: Vec<ContentBlock>,
     /// Raw output items are populated for OpenAI Responses when available.
     pub protocol_items: Vec<Value>,
-}
-
-impl Response {
-    pub fn text(&self) -> String {
-        join_blocks(&self.content, |block| match block {
-            ContentBlock::Text(text) => Some(text),
-            ContentBlock::Reasoning(_) | ContentBlock::ToolCall(_) => None,
-        })
-    }
-
-    pub fn reasoning(&self) -> String {
-        join_blocks(&self.content, |block| match block {
-            ContentBlock::Reasoning(text) => Some(text),
-            ContentBlock::Text(_) | ContentBlock::ToolCall(_) => None,
-        })
-    }
-}
-
-fn join_blocks(
-    blocks: &[ContentBlock],
-    select: impl Fn(&ContentBlock) -> Option<&String>,
-) -> String {
-    blocks
-        .iter()
-        .filter_map(select)
-        .map(String::as_str)
-        .collect::<Vec<_>>()
-        .join("\n\n")
 }
 
 #[derive(Debug)]
@@ -1435,8 +1362,13 @@ mod tests {
             {"type":"message","content":[{"type":"output_text","text":"answer"}]}
         ]});
         let response = OpenAiResponsesAdapter.decode_response(&body).unwrap();
-        assert_eq!(response.reasoning(), "think");
-        assert_eq!(response.text(), "answer");
+        assert_eq!(
+            response.content,
+            vec![
+                ContentBlock::Reasoning("think".into()),
+                ContentBlock::Text("answer".into()),
+            ]
+        );
         assert_eq!(
             response.protocol_items,
             body["output"].as_array().unwrap().clone()
@@ -1460,7 +1392,10 @@ mod tests {
             }
         }
         let response = accumulator.finish().unwrap();
-        assert_eq!(response.reasoning(), "summary");
+        assert_eq!(
+            response.content[0],
+            ContentBlock::Reasoning("summary".into())
+        );
         assert_eq!(
             response.content[1],
             ContentBlock::ToolCall(ToolCall {

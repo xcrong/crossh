@@ -36,10 +36,10 @@ pub(crate) trait WorkspacePane {
         cx: &mut App,
     ) -> Option<bool>;
     fn request_focus(&self, cx: &mut App);
-    fn request_close(&self, cx: &mut App);
+    fn request_close(&self, _cx: &mut App) {}
     /// Release feature-owned resources when a remote tab is removed.
     fn cleanup(&self, _cx: &mut App) {}
-    fn apply_terminal_settings(&self, settings: TerminalSettings, cx: &mut App);
-    fn notify_language(&self, cx: &mut App);
+    fn apply_terminal_settings(&self, _settings: TerminalSettings, _cx: &mut App) {}
+    fn notify_language(&self, _cx: &mut App) {}
     fn risk(&self, cx: &App) -> PaneRisk;
 }

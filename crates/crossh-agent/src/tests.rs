@@ -392,8 +392,13 @@ fn chat_reasoning_content_is_separate_from_visible_text() {
             &json!({"choices":[{"message":{"reasoning_content":"think a","content":"a"}}]}),
         )
         .unwrap();
-    assert_eq!(response.reasoning(), "think a");
-    assert_eq!(response.text(), "a");
+    assert_eq!(
+        response.content,
+        vec![
+            sdk::ContentBlock::Reasoning("think a".into()),
+            sdk::ContentBlock::Text("a".into()),
+        ]
+    );
 }
 
 #[test]

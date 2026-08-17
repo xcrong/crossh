@@ -1,3 +1,6 @@
+use super::render::{
+    agent_layout, cursor_position, input_height, markdown_content, visual_line_count, wrap_content,
+};
 use super::*;
 use crossh_agent::{AgentModel, AgentModelRef, AgentProtocol, AgentProvider};
 

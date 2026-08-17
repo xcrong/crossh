@@ -4,7 +4,6 @@
 pub use crossh_core::connection::ConnectionState as ConnState;
 
 /// Events emitted by a terminal entity to its workspace owner.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub enum TerminalEvent {
     /// The local shell reported the command that is about to execute.

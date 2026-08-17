@@ -7,8 +7,6 @@ use async_channel::Sender;
 use crate::shared::text_editing::{next_char_boundary, previous_char_boundary};
 use crossh_ssh::SftpCmd;
 
-pub(crate) const SFTP_CHANNEL_UNAVAILABLE: &str = "sftp channel unavailable";
-
 const SUPPORTED_TEXT_EXTENSIONS: &[&str] = &[
     "bash", "c", "cc", "conf", "config", "cpp", "css", "csv", "fish", "go", "h", "hh", "hpp",
     "htm", "html", "ini", "java", "js", "json", "jsonl", "jsx", "kts", "kt", "log", "lua",
@@ -208,7 +206,7 @@ pub(crate) fn unique_local_path(path: &Path) -> Option<PathBuf> {
 }
 
 pub(crate) fn try_send_command(tx: &Sender<SftpCmd>, command: SftpCmd) -> Result<(), &'static str> {
-    tx.try_send(command).map_err(|_| SFTP_CHANNEL_UNAVAILABLE)
+    tx.try_send(command).map_err(|_| "sftp channel unavailable")
 }
 
 pub(crate) fn format_size(bytes: u64) -> String {

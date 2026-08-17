@@ -15,7 +15,7 @@ use crate::features::workspace::pane::{PaneRisk, TerminalPaneInfo, WorkspacePane
 use crate::shared::i18n;
 use crossh_core::config::ForwardSpec;
 use crossh_ssh::ForwardKind;
-use crossh_terminal::settings::TerminalSettings;
+
 use crossh_ui::{icons, theme};
 use crossh_ui_component::StatusDot;
 
@@ -145,8 +145,6 @@ impl WorkspacePane for ForwardWorkspacePane {
     fn cleanup(&self, cx: &mut App) {
         self.0.update(cx, |pane, cx| pane.stop_all(cx));
     }
-
-    fn apply_terminal_settings(&self, _settings: TerminalSettings, _cx: &mut App) {}
 
     fn notify_language(&self, cx: &mut App) {
         self.0.update(cx, |_, cx| cx.notify());

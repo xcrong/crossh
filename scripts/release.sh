@@ -64,24 +64,10 @@ git remote get-url origin >/dev/null 2>&1 || die "remote 'origin' is not configu
 
 manifest_paths=(Cargo.toml crates/*/Cargo.toml)
 
-read_package_version() {
-    awk '
-        /^\[package\][[:space:]]*$/ { in_package = 1; next }
-        /^\[/ { in_package = 0 }
-        in_package && /^version[[:space:]]*=/ {
-            value = $0
-            sub(/^[^\"]*\"/, "", value)
-            sub(/\".*$/, "", value)
-            print value
-            exit
-        }
-    ' "$1"
-}
-
 ensure_versions_match() {
     local manifest current reference=''
     for manifest in "${manifest_paths[@]}"; do
-        current="$(read_package_version "$manifest")"
+        current="$(bash scripts/package-version.sh "$manifest")"
         [[ -n "$current" ]] || die "no package version found in $manifest"
         if [[ -z "$reference" ]]; then
             reference=$current
@@ -93,7 +79,7 @@ ensure_versions_match() {
 
 is_allowed_path() {
     case "$1" in
-        Cargo.lock|Cargo.toml|README.md|scripts/release.sh|crates/*/Cargo.toml)
+        Cargo.lock|Cargo.toml|README.md|scripts/package-version.sh|scripts/release.sh|crates/*/Cargo.toml)
             return 0
             ;;
         *)
@@ -148,7 +134,7 @@ fi
 [[ -z "$remote_tag" ]] || die "remote tag already exists: $tag"
 
 echo "==> stage release files"
-git add -- Cargo.lock README.md scripts/release.sh "${manifest_paths[@]}"
+git add -- Cargo.lock README.md scripts/package-version.sh scripts/release.sh "${manifest_paths[@]}"
 git diff --cached --check
 
 echo "==> commit release"

@@ -18,7 +18,6 @@ use gpui::{
 use crate::features::workspace::pane::{PaneRisk, TerminalPaneInfo, WorkspacePane};
 use crate::shared::i18n;
 use crossh_ssh::{MAX_EDITOR_FILE_BYTES, RemoteEntry, SftpCmd, SftpEvent};
-use crossh_terminal::settings::TerminalSettings;
 use crossh_ui::context_menu::{
     ContextMenuState, MenuEntry, MenuItem, SftpMenuAction, render_context_menu,
 };
@@ -201,10 +200,6 @@ impl WorkspacePane for SftpWorkspacePane {
             cx.notify();
         });
     }
-
-    fn request_close(&self, _cx: &mut App) {}
-
-    fn apply_terminal_settings(&self, _settings: TerminalSettings, _cx: &mut App) {}
 
     fn notify_language(&self, cx: &mut App) {
         self.0.update(cx, |_, cx| cx.notify());
@@ -1198,10 +1193,16 @@ mod tests {
         };
 
         assert_eq!(try_send_command(&tx, list()), Ok(()));
-        assert_eq!(try_send_command(&tx, list()), Err(SFTP_CHANNEL_UNAVAILABLE));
+        assert_eq!(
+            try_send_command(&tx, list()),
+            Err("sftp channel unavailable")
+        );
 
         drop(rx);
-        assert_eq!(try_send_command(&tx, list()), Err(SFTP_CHANNEL_UNAVAILABLE));
+        assert_eq!(
+            try_send_command(&tx, list()),
+            Err("sftp channel unavailable")
+        );
     }
 
     #[test]

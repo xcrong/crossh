@@ -42,11 +42,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[path = "agent_cli_render.rs"]
 mod render;
-#[allow(unused_imports)]
-use render::{
-    agent_layout, cursor_position, input_height, markdown_content, render, scroll_conversation,
-    session_name, visual_line_count, wrap_content,
-};
+use render::{render, scroll_conversation, session_name};
 
 const SYSTEM_PROMPT: &str = "You are Crossh Agent, a careful coding assistant running in the user's terminal. Inspect the workspace before making claims, use the smallest appropriate tool, keep changes scoped to the request, and report what you changed and how it was verified. For multi-line changes, prefer the patch tool with a unified diff; use edit only for a short exact replacement. For file and directory tool arguments, always generate workspace-relative paths such as `.` or `README.md`. Do not generate absolute paths; the executor tolerates an in-workspace absolute path only for compatibility. Never use paths outside the workspace.";
 const SPINNER: [&str; 4] = ["|", "/", "-", "\\"];

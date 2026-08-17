@@ -999,8 +999,6 @@ impl TerminalView {
         cx.dismiss_system_notification(response.tag.as_ref());
         Some(true)
     }
-
-    pub(crate) fn notify_language(&mut self, _cx: &mut Context<Self>) {}
 }
 
 pub(crate) struct TerminalWorkspacePane(pub(crate) Entity<TerminalView>);
@@ -1076,11 +1074,6 @@ impl WorkspacePane for TerminalWorkspacePane {
     fn apply_terminal_settings(&self, settings: TerminalSettings, cx: &mut App) {
         self.0
             .update(cx, |terminal, cx| terminal.apply_settings(settings, cx));
-    }
-
-    fn notify_language(&self, cx: &mut App) {
-        self.0
-            .update(cx, |terminal, cx| terminal.notify_language(cx));
     }
 
     fn risk(&self, _cx: &App) -> PaneRisk {
