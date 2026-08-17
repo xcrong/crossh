@@ -1812,6 +1812,7 @@ impl Render for AppShell {
                 .track_focus(&self.shell_focus)
                 .flex()
                 .flex_col()
+                .relative()
                 .size_full()
                 .bg(theme::canvas())
                 .text_color(theme::text())
@@ -1833,6 +1834,8 @@ impl Render for AppShell {
                 .on_key_down(cx.listener(AppShell::handle_shell_key_down))
                 .child(workspace)
                 .child(status_bar);
+
+        root = root.children(self.render_toaster());
 
         if matches!(
             prompt,

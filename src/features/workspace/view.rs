@@ -1,12 +1,12 @@
 //! 工作区：标签条 + 终端/SFTP/转发主区，以及会话/标签的数据类型。
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui::{
-    AnyElement, AppContext, ClickEvent, Context, ElementId, Entity, FontWeight, InteractiveElement,
-    IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, px,
+    AnyElement, App, AppContext, ClickEvent, Context, ElementId, Entity, FontWeight,
+    InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
 use crate::features::connections::Connection;
@@ -19,6 +19,7 @@ use crate::features::workspace::shell::{AppShell, GitSyncOperation, GitSyncState
 use crate::features::workspace::status::{
     background_task_color, background_task_label, conn_state_dot_color, local_tab_dot_color,
 };
+use crate::features::workspace::toaster::{ToastNotice, ToastTone};
 use crate::shared::i18n;
 use crossh_core::commands::{BackgroundTask, BackgroundTaskStatus, CommandRecord};
 use crossh_core::git_status::GitStatus;
@@ -369,6 +370,50 @@ fn workspace_view_has_terminal(shell: &AppShell, view: ActiveView) -> bool {
     }
 }
 
+fn copy_status_path_to_clipboard(path: &Path, cx: &App) {
+    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+        path.to_string_lossy().into_owned(),
+    ));
+}
+
+fn render_status_path(cwd: PathBuf, cx: &mut Context<AppShell>) -> AnyElement {
+    let path_text = cwd.to_string_lossy().into_owned();
+
+    div()
+        .id("status-path")
+        .ml_2()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap_2()
+        .px(px(6.))
+        .py(px(2.))
+        .rounded(px(theme::RADIUS_SM))
+        .cursor_pointer()
+        .text_color(theme::muted_text())
+        .hover(|style| style.bg(theme::raised()).text_color(theme::text()))
+        .on_click(cx.listener(move |this, _event, _window, cx| {
+            copy_status_path_to_clipboard(&cwd, cx);
+            this.show_toast(
+                ToastNotice::new(i18n::text("toast.path_copied"), ToastTone::Success),
+                cx,
+            );
+            cx.stop_propagation();
+        }))
+        .child(
+            icons::icon(icons::IconName::FolderOpen, 12.)
+                .flex_shrink_0()
+                .text_color(theme::faint_text()),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .child(SharedString::from(path_text)),
+        )
+        .into_any_element()
+}
+
 pub(crate) fn render_workspace_status_bar(
     shell: &AppShell,
     available_width: Pixels,
@@ -412,20 +457,7 @@ pub(crate) fn render_workspace_status_bar(
     if let Some(ActiveView::LocalSession(session_id)) = focused_view
         && let Some(session) = shell.workspace.sessions.local_sessions.get(&session_id)
     {
-        let cwd = session.cwd.to_string_lossy().to_string();
-        left = left.child(
-            div()
-                .ml_2()
-                .min_w_0()
-                .flex()
-                .items_center()
-                .gap_2()
-                .truncate()
-                .child(
-                    icons::icon(icons::IconName::FolderOpen, 12.).text_color(theme::faint_text()),
-                )
-                .child(div().min_w_0().truncate().child(SharedString::from(cwd))),
-        );
+        left = left.child(render_status_path(session.cwd.clone(), cx));
         if let Some(status) = &session.git_status {
             let sync = shell.git_sync.get(&session_id);
             left = left.child(render_git_status(status, session, session_id, sync, cx));
@@ -1572,6 +1604,26 @@ fn state_priority(state: &ConnState) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{ClipboardEntry, TestAppContext};
+
+    #[gpui::test]
+    fn spec_20260817_workspace_status_path_copy_copies_full_current_path_to_clipboard(
+        cx: &mut TestAppContext,
+    ) {
+        let path = PathBuf::from(
+            "/Users/me/projects/crossh/a-very-long-directory-name-that-must-not-be-truncated",
+        );
+
+        cx.update(|cx| copy_status_path_to_clipboard(&path, cx));
+
+        let copied = cx.read_from_clipboard().and_then(|item| {
+            item.into_entries().find_map(|entry| match entry {
+                ClipboardEntry::String(value) => Some(value.text),
+                _ => None,
+            })
+        });
+        assert_eq!(copied, Some(path.to_string_lossy().into_owned()));
+    }
 
     #[test]
     fn terminal_split_requires_two_usable_columns() {

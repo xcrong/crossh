@@ -172,6 +172,9 @@ tooltip:
   split_terminal_narrow: The window is too narrow for two terminal columns
   pin_command: Pin or unpin command
 
+toast:
+  path_copied: Path copied
+
 context_menu:
   open_terminal: Open Terminal
   open_sftp: Open SFTP

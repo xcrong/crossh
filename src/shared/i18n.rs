@@ -174,6 +174,14 @@ mod tests {
             "检查更新…"
         );
         assert_eq!(
+            text_for("toast.path_copied", Locale::English),
+            "Path copied"
+        );
+        assert_eq!(
+            text_for("toast.path_copied", Locale::SimplifiedChinese),
+            "路径已复制"
+        );
+        assert_eq!(
             rust_i18n::t!(
                 "git.selection_count",
                 locale = Locale::English.code(),

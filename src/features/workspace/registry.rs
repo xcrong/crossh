@@ -6,8 +6,9 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use gpui::Subscription;
+use gpui::{Subscription, Task};
 
+use super::toaster::ToasterState;
 use super::view::{ActiveView, LocalDir, LocalSession, LocalSessionId, Tab};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,6 +84,8 @@ impl SessionRegistry {
 pub(crate) struct WorkspaceState {
     pub(crate) sessions: SessionRegistry,
     pub(crate) active_view: Option<ActiveView>,
+    pub(crate) toaster: ToasterState,
+    pub(crate) _toast_task: Option<Task<()>>,
     /// 每个属主 Tab/会话至多一个分栏、相互独立共存（ADR 0011）。
     /// key 即分栏属主（创建时的活动视图，等于 `split.left`）。
     pub(crate) terminal_splits: BTreeMap<ActiveView, TerminalSplitState>,
@@ -93,6 +96,8 @@ impl WorkspaceState {
         Self {
             sessions: SessionRegistry::new(local_dirs),
             active_view: None,
+            toaster: ToasterState::default(),
+            _toast_task: None,
             terminal_splits: BTreeMap::new(),
         }
     }

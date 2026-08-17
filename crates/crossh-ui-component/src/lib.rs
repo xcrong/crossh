@@ -20,6 +20,7 @@ pub mod status_metric;
 pub mod stepper;
 pub mod tab;
 pub mod text_input;
+pub mod toast;
 pub mod toggle;
 pub mod tooltip;
 
@@ -44,6 +45,7 @@ pub mod prelude {
     pub use crate::stepper::Stepper;
     pub use crate::tab::{TabItem, TabStrip};
     pub use crate::text_input::TextInput;
+    pub use crate::toast::{Toast, ToastTone, Toaster};
     pub use crate::toggle::ToggleSwitch;
     pub use crate::tooltip::Tooltip;
 }
@@ -63,5 +65,6 @@ pub use status_metric::StatusMetric;
 pub use stepper::Stepper;
 pub use tab::{TabItem, TabStrip};
 pub use text_input::TextInput;
+pub use toast::{Toast, ToastTone, Toaster};
 pub use toggle::ToggleSwitch;
 pub use tooltip::Tooltip;

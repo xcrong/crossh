@@ -53,7 +53,7 @@ shared resources  -> external `crossh-assets` directory loaded by every binary
 - `crossh-update`: release manifest validation, HTTPS downloads, checksum verification, archive installation, and the standalone updater hand-off.
 - `crossh-assets`: UI-neutral Lucide SVG storage, shared external-resource discovery, debug embedded fallback, shared icon identifiers, and asset integrity tests. Its files live under `crates/crossh-assets/assets/icons/`.
 - `crossh-ui`: reusable GPUI widgets, context menus, the GPUI adapter for `crossh-theme`, icon rendering, and the `AssetSource` adapter backed by the shared external resource directory.
-- `crossh-ui-component`: reusable stateless GPUI control kit (buttons, badges, status metrics, avatars, separators, tooltips, layout helpers, shared tabs, and status-bar shells) layered on `crossh-ui`.
+- `crossh-ui-component`: reusable stateless GPUI control kit (buttons, badges, status metrics, avatars, separators, tooltips, toasts, layout helpers, shared tabs, and status-bar shells) layered on `crossh-ui`.
 - `crossh`: process startup plus user-facing feature views and GPUI adapters. `crossh git` and the workspace status-bar Git entry delegate to the sibling `crossh-git` binary; `crossh agent` delegates to the sibling `crossh-agent` binary; `features/terminal/view.rs` is the `terminal_view`-style host around Zed's terminal foundation; `features/connections/entity.rs` is the adapter around `crossh-ssh::ConnectionHandle`.
 - `crossh-git`: standalone Git Viewer entry point. It owns the Git window source and reuses the same GPUI and UI dependencies, but does not initialize SSH, terminal, agent, workspace, or settings features.
 - `crossh-agent` binary: standalone interactive terminal agent entry point. It reuses `src/agent_cli.rs` and needs no GPUI; it reads the agent section of the shared `settings.toml` through `crossh_agent::load_agent_settings` and depends only on the pure crates.
@@ -84,7 +84,7 @@ engine remains in `crossh-ssh`.
 6. The updater binary depends on `crossh-update` directly. It must not include application source with `#[path]`.
 7. `crossh-git` and the `crossh-agent` binary are the only standalone entry points allowed to include application modules with `#[path]`; each must keep its boot path limited to the feature it owns. Release packaging places all binaries beside one shared `crossh-assets` directory; non-arm64-macOS packaging is built and verified only by GitHub Actions.
 8. Git protocol parsing and repository operations, including branch switching, stash lifecycle, and conflict resolution, belong in `crossh-core`; Git Viewer state transitions belong in the UI-independent session layer; GPUI views must not become the owner of Git semantics.
-9. Shared GPUI chrome such as `TabStrip`, `TabItem`, `StatusBar`, and `StatusMetric` belongs in `crossh-ui-component`; the component layer owns layout and visual tokens, while feature views own state, content, and callbacks.
+9. Shared GPUI chrome such as `TabStrip`, `TabItem`, `StatusBar`, `StatusMetric`, and Toast/Toaster visuals belongs in `crossh-ui-component`; the component layer owns layout and visual tokens, while feature views own state, content, and callbacks.
 
 The crate graph is the enforcement mechanism. A logic change that attempts to
 reach into GPUI fails at dependency resolution or compilation instead of
@@ -106,3 +106,4 @@ and quick verification command for focused validation.
 - [0010: Git workbench layering](adr/0010-git-workbench-layering.md)
 - [0011: Terminal split ownership](adr/0011-terminal-split-ownership.md)
 - [0012: Spec-driven development loop](adr/0012-spec-driven-development-loop.md)
+- [0013: Application Toaster ownership](adr/0013-application-toaster-ownership.md)

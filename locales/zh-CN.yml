@@ -172,6 +172,9 @@ tooltip:
   split_terminal_narrow: 窗口太窄，无法使用两栏终端
   pin_command: 固定或取消固定命令
 
+toast:
+  path_copied: 路径已复制
+
 context_menu:
   open_terminal: 打开终端
   open_sftp: 打开 SFTP
