@@ -96,11 +96,6 @@ pub fn builtin_tools() -> Vec<AgentToolDefinition> {
     ]
 }
 
-pub fn execute_tool(call: &AgentToolCall, workspace: &Path) -> AgentToolResult {
-    let cancel = AtomicBool::new(false);
-    execute_tool_with_cancel(call, workspace, &cancel)
-}
-
 pub fn execute_tool_with_cancel(
     call: &AgentToolCall,
     workspace: &Path,

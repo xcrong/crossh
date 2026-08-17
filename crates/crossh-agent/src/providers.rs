@@ -67,15 +67,6 @@ pub(super) async fn complete_target_with_timeout(
     Ok(from_sdk_response(response))
 }
 
-pub async fn complete_stream(
-    settings: &AgentSettings,
-    api_key: Option<&str>,
-    messages: &[AgentMessage],
-    on_event: impl FnMut(&AgentEvent),
-) -> Result<AgentResponse, String> {
-    complete_stream_with_options(settings, api_key, messages, None, on_event).await
-}
-
 pub async fn complete_stream_with_options(
     settings: &AgentSettings,
     api_key: Option<&str>,

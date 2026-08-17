@@ -18,8 +18,8 @@ pub use policy::{
     AgentModel, AgentModelRef, AgentProtocol, AgentProvider, AgentReviewResult, AgentSettings,
     AgentThinkingLevel, ResolvedModel, review_tool,
 };
-pub use providers::{complete, complete_stream, complete_stream_with_options};
-pub use tools::{AgentToolDefinition, builtin_tools, execute_tool, execute_tool_with_cancel};
+pub use providers::{complete, complete_stream_with_options};
+pub use tools::{AgentToolDefinition, builtin_tools, execute_tool_with_cancel};
 
 pub use session::{
     AgentContextFile, AgentPrompt, AgentSession, AgentSessionSummary, AgentSkill, context_prompt,

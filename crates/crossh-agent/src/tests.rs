@@ -1,5 +1,6 @@
 use super::*;
 use crossh_ai_sdk as sdk;
+use std::path::Path;
 
 fn configured_settings() -> AgentSettings {
     let provider = AgentProvider {
@@ -429,6 +430,14 @@ fn stream_events_normalize_text_reasoning_and_tool_arguments() {
     );
 }
 
+/// 运行工具调用，取消标志永不自旋。
+/// `execute_tool` 便捷入口已删除，测试统一走 `execute_tool_with_cancel`，
+/// 取消语义仍由 `cancelled_tool_does_not_start_a_shell` 等测试单独覆盖。
+fn run_tool(call: &AgentToolCall, workspace: &Path) -> AgentToolResult {
+    let cancel = AtomicBool::new(false);
+    execute_tool_with_cancel(call, workspace, &cancel)
+}
+
 #[test]
 fn tool_results_encode_for_each_protocol() {
     let message = AgentMessage::tool_result(AgentToolResult {
@@ -457,7 +466,7 @@ fn tool_results_encode_for_each_protocol() {
 fn read_tool_is_workspace_scoped() {
     let workspace = tempfile::tempdir().unwrap();
     fs::write(workspace.path().join("notes.txt"), "one\ntwo\nthree\n").unwrap();
-    let result = execute_tool(
+    let result = run_tool(
         &AgentToolCall {
             id: "1".into(),
             name: "read".into(),
@@ -468,7 +477,7 @@ fn read_tool_is_workspace_scoped() {
     assert!(!result.is_error);
     assert_eq!(result.output, "2: two");
 
-    let absolute = execute_tool(
+    let absolute = run_tool(
         &AgentToolCall {
             id: "absolute".into(),
             name: "read".into(),
@@ -482,7 +491,7 @@ fn read_tool_is_workspace_scoped() {
     assert!(!absolute.is_error);
     assert_eq!(absolute.output, "1: one\n2: two\n3: three");
 
-    let escaped = execute_tool(
+    let escaped = run_tool(
         &AgentToolCall {
             id: "2".into(),
             name: "read".into(),
@@ -502,7 +511,7 @@ fn patch_tool_applies_unified_hunks_and_keeps_failed_patches_atomic() {
         "path": "notes.txt",
         "patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+updated\n three\n"
     });
-    let result = execute_tool(
+    let result = run_tool(
         &AgentToolCall {
             id: "patch".into(),
             name: "patch".into(),
@@ -517,7 +526,7 @@ fn patch_tool_applies_unified_hunks_and_keeps_failed_patches_atomic() {
         "path": "notes.txt",
         "patch": "@@ -1,3 +1,3 @@\n one\n-missing\n+broken\n three\n"
     });
-    let result = execute_tool(
+    let result = run_tool(
         &AgentToolCall {
             id: "patch-failed".into(),
             name: "patch".into(),
@@ -541,7 +550,7 @@ fn discovery_tools_search_and_list_without_leaving_workspace() {
     .unwrap();
     fs::write(workspace.path().join("README.md"), "needle\n").unwrap();
 
-    let grep = execute_tool(
+    let grep = run_tool(
         &AgentToolCall {
             id: "grep".into(),
             name: "grep".into(),
@@ -553,7 +562,7 @@ fn discovery_tools_search_and_list_without_leaving_workspace() {
     assert!(grep.output.contains("README.md"));
     assert!(grep.output.contains("main.rs"));
 
-    let find = execute_tool(
+    let find = run_tool(
         &AgentToolCall {
             id: "find".into(),
             name: "find".into(),
@@ -564,7 +573,7 @@ fn discovery_tools_search_and_list_without_leaving_workspace() {
     assert!(!find.is_error);
     assert!(find.output.contains("main.rs"));
 
-    let listing = execute_tool(
+    let listing = run_tool(
         &AgentToolCall {
             id: "ls".into(),
             name: "ls".into(),
@@ -711,7 +720,7 @@ fn discovery_does_not_follow_symlink_cycles() {
     let workspace = tempfile::tempdir().unwrap();
     fs::write(workspace.path().join("file.txt"), "content").unwrap();
     symlink(".", workspace.path().join("loop")).unwrap();
-    let result = execute_tool(
+    let result = run_tool(
         &AgentToolCall {
             id: "find".into(),
             name: "find".into(),
@@ -733,7 +742,7 @@ fn write_rejects_dangling_symlink_escape() {
     fs::create_dir(&workspace).unwrap();
     symlink(&outside, workspace.join("escape.txt")).unwrap();
 
-    let result = execute_tool(
+    let result = run_tool(
         &AgentToolCall {
             id: "write".into(),
             name: "write".into(),
@@ -762,7 +771,7 @@ fn write_rejects_symlink_pointing_outside_workspace() {
     symlink(&outside, workspace.join("escape.txt")).unwrap();
     fs::write(&outside, "original").unwrap();
 
-    let result = execute_tool(
+    let result = run_tool(
         &AgentToolCall {
             id: "write".into(),
             name: "write".into(),
@@ -795,7 +804,7 @@ fn write_rejects_dangling_two_hop_symlink_chain() {
     symlink("hop2", workspace.join("hop1")).unwrap();
     symlink(&outside, workspace.join("hop2")).unwrap();
 
-    let result = execute_tool(
+    let result = run_tool(
         &AgentToolCall {
             id: "write".into(),
             name: "write".into(),
@@ -827,7 +836,7 @@ fn write_rejects_two_hop_symlink_chain_to_existing_outside_dir() {
     symlink("hop2", workspace.join("hop1")).unwrap();
     symlink(&outside_dir, workspace.join("hop2")).unwrap();
 
-    let result = execute_tool(
+    let result = run_tool(
         &AgentToolCall {
             id: "write".into(),
             name: "write".into(),
@@ -852,7 +861,7 @@ fn write_resolves_symlink_inside_workspace() {
     let workspace = tempfile::tempdir().unwrap();
     symlink("real.txt", workspace.path().join("alias.txt")).unwrap();
 
-    let result = execute_tool(
+    let result = run_tool(
         &AgentToolCall {
             id: "write".into(),
             name: "write".into(),
