@@ -145,6 +145,10 @@ fn open_navigation_target(target: &zed_terminal::MaybeNavigationTarget, cx: &mut
 impl EventEmitter<TerminalEvent> for TerminalView {}
 
 /// UI-only requests emitted by a terminal view and handled by the workspace.
+///
+/// Kept as an event enum rather than a direct method call so future UI-only
+/// requests (e.g. copy-all, reopen session) can be added without growing the
+/// workspace's match arms or coupling the terminal view to concrete consumers.
 #[derive(Clone, Debug)]
 pub(crate) enum TerminalViewEvent {
     SendSelectionToAdjacent { text: String },

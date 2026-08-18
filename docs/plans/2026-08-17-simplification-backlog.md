@@ -170,6 +170,13 @@
 
 ### S-A9 `TerminalViewEvent` 单变体枚举
 
+> **状态：已完成（2026-08-18，按裁定 A）**
+> 保留 `TerminalViewEvent` 枚举（事件类型扩展点）并补注释：此类事件以枚举
+> 形式承载而非直接方法调用，便于未来新增 UI-only 请求（如 copy-all、
+> reopen session）而不必扩展 workspace match 分支或让终端视图耦合具体
+> 消费者。属行为不变文档改动（豁免 spec）：fmt/architecture/clippy
+> （workspace --all-targets -D warnings）全绿；全 workspace 测试通过。
+
 - **位置**：`src/features/terminal/view.rs:149`（唯一变体 `SendSelectionToAdjacent`；emit view.rs:932；订阅 tabs.rs:145、shell.rs:421 —— 有监听者，非死代码）。
 - **选项**：A. 保留（事件类型扩展点）+ 注释；B. 塌缩为 `send_to_adjacent` 方法调用。
 - **建议**：A。
