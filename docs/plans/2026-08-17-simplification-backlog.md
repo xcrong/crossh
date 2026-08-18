@@ -244,6 +244,17 @@
 
 ### S-C8 `SplitHandleSide` 及 `handle_side()/handle_left()/line()` 无外部消费者
 
+> **状态：已完成（2026-08-18，按裁定 B）**
+> 核实发现 backlog 记录已过时：生产消费点实为 **5 处**（非 4 处），且
+> Quick Commands 面板（view.rs:652-660）真实调用 `.handle_left()`（面板
+> 固定在窗口右侧、手柄贴左边缘），`.line()` 亦有 3 处消费者（终端分栏/
+> 侧边栏/Quick Commands）。仅 `handle_side()` 无直接外部消费点（是
+> `handle_left()` 的内部实现基础）。按裁定 B 保留全部 API 并补注释：
+> `SplitHandleSide` 枚举注明两侧均为真实契约、禁止按"单侧够用"收紧；
+> `handle_side()` 注明对称 API 定位；`handle_left()`/`line()` 各注明生产
+> 消费者。属行为不变文档改动（豁免 spec）：fmt/architecture/clippy
+> （workspace --all-targets -D warnings）全绿；全 workspace 测试通过。
+
 - **位置**：`crates/crossh-ui-component/src/split_resizer.rs:16-22,70-84`；`SplitResizer` 本身 4 处生产使用但全用默认 Right + min/max_width。
 - **选项**：A. 收紧 API 固定右侧手柄；B. 保留（组件 API 完整性）。
 - **建议**：B。
