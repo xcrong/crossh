@@ -24,7 +24,7 @@ jobs:
     # ci.yml 的 check job 在 main push 与 PR 上执行，tag 均从已验证的 main
     # 提交打出，这里刻意不重复执行，避免发布时重复消耗 macOS runner 时间。
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Verify release metadata
         shell: bash
@@ -115,7 +115,7 @@ jobs:
             glob: dist/*windows-aarch64.zip
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -147,7 +147,7 @@ jobs:
         run: ${{ matrix.package }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.glob }}
@@ -159,7 +159,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -167,7 +167,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           pattern: crossh-*
           path: dist
@@ -210,7 +210,7 @@ jobs:
         run: cargo run --quiet --package crossh-update --bin crossh-sign-manifest -- verify dist/stable.json
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*.zip
