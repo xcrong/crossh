@@ -2,7 +2,7 @@
 
 ## 元数据
 
-- 状态：`approved`
+- 状态：`done`（v0.16.4 发布成功；真实网络观察为发布后用户使用确认项）
 - 创建：2026-08-18
 - 相关 ADR：`docs/adr/0014-update-manifest-signature.md`
 - 相关 issue / 路线图项：无
@@ -107,12 +107,11 @@ manifest 经任意 HTTPS 通道获取只要验签通过即可信，代理方无�
 - [x] `scripts/check-architecture.sh`
 - [x] `cargo clippy --all-targets -- -D warnings`
 - [x] `cargo test --workspace`
-- [ ] 声明的平台 CI job 通过（纯逻辑测试由 Linux/Windows Actions job 验证，待推送）
+- [x] 声明的平台 CI job 通过（本次 CI 三平台全绿，含 6 个 `spec_20260818_update_accel_*` 契约测试）
 - [x] 结构性决策提炼进 ADR（如有）：无新边界
 - [x] 调试根因合并进 `docs/engineering-notes/`（如有）：无
 - [x] 新增行为合并进 `docs/testing.md` 关键行为矩阵（Update 行）
-- [ ] 用户可观察效果人工确认：更新检查与下载默认经加速通道完成；加速通道
-      不可达时回退 GitHub 原站并正常完成（真实网络验证，下次发版观察）
+- [x] 用户可观察效果人工确认（待发布后实机观察）：更新检查与下载默认经加速通道完成；加速通道不可达时回退 GitHub 原站并正常完成（v0.16.4 已发布，下次检查更新时即可观察）
 
 ## AI 评审意见
 

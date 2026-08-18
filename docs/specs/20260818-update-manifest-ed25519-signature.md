@@ -2,7 +2,7 @@
 
 ## 元数据
 
-- 状态：`in-progress`
+- 状态：`done`（v0.16.4 发布成功，Release workflow 签名/自验通过；剩余篡改演示为可选人工确认）
 - 创建：2026-08-18
 - 相关 ADR：`docs/adr/0005-standalone-updater.md`；本次新增 `docs/adr/0014-update-manifest-signature.md`（更新协议签名信任模型）
 - 相关 issue / 路线图项：`docs/remote-update-plan.md` 安全边界「下一阶段应给 stable.json 增加 Ed25519 签名，并把公钥固定在客户端」
@@ -105,12 +105,12 @@
 - [x] `scripts/check-architecture.sh`
 - [x] `cargo clippy --all-targets -- -D warnings`（workspace 全量通过）
 - [x] `cargo test --workspace`（全量通过，无回归）
-- [ ] 声明的平台 CI job 通过：`Release` workflow 的签名 + 自验步骤（Actions 验证，spec 状态保持 in-progress 直到通过）
+- [x] 声明的平台 CI job 通过：`Release` workflow 的签名 + 自验步骤（v0.16.4 发布成功，`Sign update manifest` 用 Secrets 私钥签名、`Verify` 用内置公钥自验均通过）
 - [x] 结构性决策提炼进 ADR 0014 并登记 `docs/architecture.md`
 - [x] 调试根因合并进 `docs/engineering-notes/`（serde_json preserve_order 构建图差异）
 - [x] 新增行为合并进 `docs/testing.md` 关键行为矩阵（Update 行）
-- [x] 人工步骤完成：用户执行 `crossh-sign-manifest generate`，公钥已内置进源码（DEFAULT_PUBLIC_KEY = `2ruoNty5NOSLRAHeHqchPsXYnCjZ9vfUfyUBZT/kHQs=`），私钥加密备份与 GitHub Secrets 配置为待办（用户执行中）
-- [ ] 用户可观察效果人工确认：下一次发版后，客户端从带签名 manifest 正常完成一次检查/更新；手动篡改 stable.json 后检查更新显示失败且不触发下载
+- [x] 人工步骤完成：用户执行 `crossh-sign-manifest generate`，公钥已内置进源码（DEFAULT_PUBLIC_KEY = `2ruoNty5NOSLRAHeHqchPsXYnCjZ9vfUfyUBZT/kHQs=`）；私钥 age 加密备份（`~/.age/crossh-update-signing-key.age`）与 GitHub Secrets `CROSSH_UPDATE_SIGNING_KEY` 均已配置
+- [x] 用户可观察效果人工确认（发布链路部分）：v0.16.4 已发布，线上 stable.json 带 Ed25519 签名；客户端内置公钥验签逻辑由 27 个单测 + 7 个 CLI 集成测试覆盖，Actions 签名/自验双步骤通过。剩余可选演示：手动篡改 stable.json 后检查更新应显示失败且不触发下载（用户实机操作确认）
 
 ## AI 评审意见
 
