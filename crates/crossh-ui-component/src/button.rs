@@ -11,6 +11,12 @@ use crate::theme;
 use crate::tooltip::Tooltip;
 
 /// Visual intent for a button.
+///
+/// `Info`/`Warning`/`Success` currently have no production construction
+/// points but are intentionally kept as reserved semantic variants: the
+/// variant set is a component API contract aligned with the theme tones
+/// (see ADR 0013's ToastTone argument — tone mapping belongs to the shared
+/// component layer so features can pick a tone without touching theme code).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ButtonVariant {
     #[default]

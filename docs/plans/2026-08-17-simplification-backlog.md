@@ -214,6 +214,13 @@
 
 ### S-C5 `ButtonVariant::Info/Warning/Success` 零构造点
 
+> **状态：已完成（2026-08-18，按裁定 B）**
+> 保留 `Info`/`Warning`/`Success` 三个变体并补注释记录预留理由：变体集合
+> 是组件 API 契约，与主题语气对齐（风格同 ADR 0013 的 ToastTone 契约论证），
+> 便于 feature 直接选取语气而不触碰 theme 代码。属行为不变文档改动
+> （豁免 spec）：fmt/architecture/clippy（workspace --all-targets
+> -- -D warnings）全绿；全 workspace 测试通过。
+
 - **位置**：`crates/crossh-ui-component/src/button.rs:22-23,80-100`（style() 完备 match 分支故无编译警告）；生产只用 Default/Primary/Secondary/Ghost/Danger/Link。
 - **选项**：A. 删除 3 变体 + style()/主题色映射同步；B. 保留（组件 API 预留，风格同 ADR 0013 的 ToastTone 契约论证）。
 - **建议**：B（记录预留理由）；若坚持最小 API 选 A（改动面：style() match + 主题色）。
