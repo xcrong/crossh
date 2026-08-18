@@ -198,6 +198,15 @@
 
 ### S-C3 `Separator` 组件整个模块零消费者
 
+> **状态：已完成（2026-08-18，按裁定 A）**
+> 删除 `crates/crossh-ui-component/src/separator.rs` 整个模块（`Separator`/
+> `SeparatorOrientation`/`horizontal`/`vertical`/`orientation`）、lib.rs 的 mod
+> 声明与 re-export 两行，同步 `docs/architecture.md:56` 描述（去掉 separators）。
+> 属行为不变死代码删除（豁免 spec）。`MenuEntry::Separator`（crossh-ui
+> context_menu.rs:131）确认为无关独立变体，未触碰；ADR 0009 实际未提及
+> separators，无需更新。rg 全仓库零引用；fmt/architecture/clippy
+> （workspace --all-targets -D warnings）全绿；全 workspace 测试通过（425 例）。
+
 - **位置**：`crates/crossh-ui-component/src/separator.rs`（`Separator`/`SeparatorOrientation`/`horizontal`/`vertical`/`orientation`；仅 lib.rs:40,60 re-export + 自身 cfg(test)）；注意 `MenuEntry::Separator`（crossh-ui context_menu.rs:131）是无关独立变体。
 - **选项**：A. 删除模块 + 同步 `docs/architecture.md:56` 描述；B. 为它安排真实消费者。
 - **建议**：A。
