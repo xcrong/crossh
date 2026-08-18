@@ -11,6 +11,10 @@ pub mod signature;
 pub const DEFAULT_MANIFEST_URL: &str =
     "https://github.com/xcrong/crossh/releases/latest/download/stable.json";
 
+/// 更新加速前缀：manifest 与 artifact 请求默认优先经此前缀转发，
+/// 加速通道不可达时回退 GitHub 原站（见 docs/specs/20260818-update-gh-proxy-acceleration.md）。
+pub const DEFAULT_ACCELERATE_PREFIX: &str = "https://gh-proxy.com/";
+
 pub use client::{UpdateError, download_artifact, fetch_manifest};
 pub use installer::{InstallerError, run_from_args, spawn_updater};
 pub use model::{
