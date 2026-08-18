@@ -275,6 +275,16 @@
 
 ### S-D11 `update_result_path` pub 无外部消费者
 
+> **状态：已完成（2026-08-18，按裁定 B）**
+> 核查发现 `update_result_path`（model.rs:210）**内部也零调用**——选项 A
+> （改 pub(crate)）会因无内部调用者触发 dead_code 警告导致 clippy
+> `-D warnings` 失败，故按选项 B 直接删除：函数体删除，`pub(crate)
+> update_result_path_in`（record/take 两条落盘读路径的唯一实现）保留，
+> lib.rs 导出同步移除；`PathBuf` 导入仍被 `update_result_path_in` 返回类型
+> 使用，无需清理。属行为不变死代码删除（豁免 spec）：rg 全仓库零引用；
+> fmt/architecture/clippy（workspace --all-targets -- -D warnings）全绿；
+> 全 workspace 测试通过（429 例）。
+
 - **位置**：`crates/crossh-update/src/model.rs:210`；内部实现走 `pub(crate) update_result_path_in`；lib.rs:17 导出。
 - **选项**：A. 改 `pub(crate)` + 删导出；B. 删除（若内部也无调用）。
 - **建议**：A（最小改动；先确认 pub(crate) 覆盖全部内部调用）。

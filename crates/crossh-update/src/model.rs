@@ -206,12 +206,6 @@ pub struct UpdateResult {
     pub error: Option<String>,
 }
 
-/// 结果文件路径（缓存目录，跨平台由 `dirs` 解析）。
-pub fn update_result_path() -> PathBuf {
-    let cache = dirs::cache_dir().unwrap_or_else(std::env::temp_dir);
-    update_result_path_in(&cache)
-}
-
 pub(crate) fn update_result_path_in(cache_root: &Path) -> PathBuf {
     cache_root.join("crossh").join("update-result.json")
 }
