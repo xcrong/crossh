@@ -2,13 +2,13 @@ use super::render::{
     agent_layout, cursor_position, input_height, markdown_content, visual_line_count, wrap_content,
 };
 use super::*;
-use crossh_agent::{AgentModel, AgentModelRef, AgentProtocol, AgentProvider};
+use crossh_agent::{AgentModel, AgentModelRef, AgentProvider, Protocol};
 
 fn test_settings() -> AgentSettings {
     let provider = AgentProvider {
         id: "local".into(),
         name: "Local".into(),
-        protocol: AgentProtocol::OpenAiChat,
+        protocol: Protocol::OpenAiChat,
         url: "http://127.0.0.1:11434/v1/chat/completions".into(),
         api_key_env: String::new(),
         api_key: String::new(),
@@ -54,7 +54,7 @@ fn app() -> App {
         max_scroll: 40,
         show_tool_details: false,
         show_reasoning: false,
-        thinking: AgentThinkingLevel::Medium,
+        thinking: ThinkingLevel::Medium,
         thinking_explicit: false,
         status: String::new(),
         started_at: Instant::now(),
@@ -73,7 +73,7 @@ fn parse_options_supports_session_and_model_controls() {
     .unwrap();
     assert!(options.continue_recent);
     assert_eq!(options.model.as_deref(), Some("local/qwen3-coder"));
-    assert_eq!(options.thinking, Some(AgentThinkingLevel::High));
+    assert_eq!(options.thinking, Some(ThinkingLevel::High));
 }
 
 #[test]
@@ -196,10 +196,10 @@ fn system_prompt_is_capped_to_the_active_input_budget() {
 fn tree_rewind_keeps_the_selected_turn_complete() {
     let mut app = app();
     app.session.messages = vec![
-        AgentMessage::new(AgentRole::User, "first"),
-        AgentMessage::new(AgentRole::Assistant, "first answer"),
-        AgentMessage::new(AgentRole::User, "second"),
-        AgentMessage::new(AgentRole::Assistant, "second answer"),
+        Message::new(MessageRole::User, "first"),
+        Message::new(MessageRole::Assistant, "first answer"),
+        Message::new(MessageRole::User, "second"),
+        Message::new(MessageRole::Assistant, "second answer"),
     ];
     rewind_session(&mut app, 1);
     assert_eq!(app.session.messages.len(), 2);

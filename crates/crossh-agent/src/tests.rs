@@ -6,7 +6,7 @@ fn configured_settings() -> AgentSettings {
     let provider = AgentProvider {
         id: "local".into(),
         name: "Local".into(),
-        protocol: AgentProtocol::OpenAiChat,
+        protocol: Protocol::OpenAiChat,
         url: "http://127.0.0.1:11434/v1/chat/completions".into(),
         api_key_env: String::new(),
         api_key: String::new(),
@@ -39,14 +39,6 @@ fn sdk_messages() -> Vec<sdk::Message> {
     ]
 }
 
-fn to_sdk_protocol(protocol: AgentProtocol) -> sdk::Protocol {
-    match protocol {
-        AgentProtocol::OpenAiChat => sdk::Protocol::OpenAiChat,
-        AgentProtocol::OpenAiResponses => sdk::Protocol::OpenAiResponses,
-        AgentProtocol::AnthropicMessages => sdk::Protocol::AnthropicMessages,
-    }
-}
-
 #[test]
 fn reviewer_denials_preserve_a_reason() {
     assert_eq!(
@@ -69,15 +61,15 @@ fn reviewer_denials_preserve_a_reason() {
 #[test]
 fn protocol_ids_match_the_public_api_format_names() {
     assert_eq!(
-        serde_json::to_string(&AgentProtocol::OpenAiChat).unwrap(),
+        serde_json::to_string(&Protocol::OpenAiChat).unwrap(),
         r#""openai-chat""#
     );
     assert_eq!(
-        serde_json::to_string(&AgentProtocol::OpenAiResponses).unwrap(),
+        serde_json::to_string(&Protocol::OpenAiResponses).unwrap(),
         r#""openai-responses""#
     );
     assert_eq!(
-        serde_json::to_string(&AgentProtocol::AnthropicMessages).unwrap(),
+        serde_json::to_string(&Protocol::AnthropicMessages).unwrap(),
         r#""anthropic-messages""#
     );
 }
@@ -101,7 +93,7 @@ fn multi_provider_models_resolve_independently() {
     settings.providers.push(AgentProvider {
         id: "reviewer".into(),
         name: "Reviewer".into(),
-        protocol: AgentProtocol::AnthropicMessages,
+        protocol: Protocol::AnthropicMessages,
         url: "https://example.test/messages".into(),
         api_key_env: "REVIEWER_API_KEY".into(),
         api_key: String::new(),
@@ -164,19 +156,13 @@ fn model_output_limit_maps_to_each_protocol() {
         max_tokens: 1_234,
     };
     for (protocol, key) in [
-        (AgentProtocol::OpenAiChat, "max_tokens"),
-        (AgentProtocol::OpenAiResponses, "max_output_tokens"),
-        (AgentProtocol::AnthropicMessages, "max_tokens"),
+        (Protocol::OpenAiChat, "max_tokens"),
+        (Protocol::OpenAiResponses, "max_output_tokens"),
+        (Protocol::AnthropicMessages, "max_tokens"),
     ] {
-        let request = sdk::CompletionRequest::new(
-            to_sdk_protocol(protocol),
-            "",
-            &model.id,
-            4_096,
-            Vec::new(),
-            Vec::new(),
-        );
-        let mut wire = sdk::builtin_adapter(to_sdk_protocol(protocol))
+        let request =
+            sdk::CompletionRequest::new(protocol, "", &model.id, 4_096, Vec::new(), Vec::new());
+        let mut wire = sdk::builtin_adapter(protocol)
             .encode_request(&request)
             .expect("built-in adapter request should be valid");
         apply_model_options(&mut wire.body, protocol, &model);
@@ -205,6 +191,58 @@ fn adapters_encode_the_same_canonical_messages() {
 }
 
 #[test]
+fn spec_20260818_sdk_agent_path_wire_bytes_are_stable() {
+    // 行为快照：agent 消息经 SDK 适配层编码后的 wire 输出在类型收敛前后必须
+    // 逐字节一致（serde_json::Value 以 BTreeMap 存储，键序规范化后值相等即字节相等）。
+    let messages = vec![
+        Message::new(Role::System, "be useful"),
+        Message::new(Role::User, "hello"),
+        Message::assistant_tool_calls(vec![ToolCall {
+            id: "call_1".into(),
+            name: "read".into(),
+            arguments: r#"{"path":"README.md"}"#.into(),
+        }]),
+        Message::tool_result(ToolResult {
+            call_id: "call_1".into(),
+            output: "done".into(),
+            is_error: false,
+        }),
+    ];
+    assert_eq!(
+        serde_json::Value::Array(wire_messages(Protocol::OpenAiChat, &messages)),
+        json!([
+            {"role":"system","content":"be useful"},
+            {"role":"user","content":"hello"},
+            {"role":"assistant","content":null,"tool_calls":[
+                {"id":"call_1","type":"function","function":{"name":"read","arguments":"{\"path\":\"README.md\"}"}}
+            ]},
+            {"role":"tool","tool_call_id":"call_1","content":"done"}
+        ])
+    );
+    assert_eq!(
+        serde_json::Value::Array(wire_messages(Protocol::OpenAiResponses, &messages)),
+        json!([
+            {"role":"system","content":"be useful"},
+            {"role":"user","content":"hello"},
+            {"type":"function_call","call_id":"call_1","name":"read","arguments":"{\"path\":\"README.md\"}"},
+            {"type":"function_call_output","call_id":"call_1","output":"done"}
+        ])
+    );
+    assert_eq!(
+        serde_json::Value::Array(wire_messages(Protocol::AnthropicMessages, &messages)),
+        json!([
+            {"role":"user","content":"hello"},
+            {"role":"assistant","content":[
+                {"type":"tool_use","id":"call_1","name":"read","input":{"path":"README.md"}}
+            ]},
+            {"role":"user","content":[
+                {"type":"tool_result","tool_use_id":"call_1","content":"done","is_error":false}
+            ]}
+        ])
+    );
+}
+
+#[test]
 fn strict_tool_schemas_require_every_declared_property() {
     for tool in builtin_tools() {
         let properties = tool.input_schema["properties"]
@@ -224,17 +262,14 @@ fn responses_replay_original_output_items() {
         json!({"type":"reasoning","summary":[{"type":"summary_text","text":"think"}],"id":"rs_1"}),
         json!({"type":"function_call","call_id":"call_1","name":"read","arguments":"{\"path\":\"README.md\"}"}),
     ];
-    let message = AgentMessage {
-        role: AgentRole::Assistant,
+    let message = Message {
+        role: Role::Assistant,
         text: "".into(),
         tool_calls: vec![],
         tool_result: None,
         protocol_items: raw.clone(),
     };
-    assert_eq!(
-        wire_messages(AgentProtocol::OpenAiResponses, &[message]),
-        raw
-    );
+    assert_eq!(wire_messages(Protocol::OpenAiResponses, &[message]), raw);
 }
 
 #[test]
@@ -438,31 +473,28 @@ fn stream_events_normalize_text_reasoning_and_tool_arguments() {
 /// 运行工具调用，取消标志永不自旋。
 /// `execute_tool` 便捷入口已删除，测试统一走 `execute_tool_with_cancel`，
 /// 取消语义仍由 `cancelled_tool_does_not_start_a_shell` 等测试单独覆盖。
-fn run_tool(call: &AgentToolCall, workspace: &Path) -> AgentToolResult {
+fn run_tool(call: &ToolCall, workspace: &Path) -> ToolResult {
     let cancel = AtomicBool::new(false);
     execute_tool_with_cancel(call, workspace, &cancel)
 }
 
 #[test]
 fn tool_results_encode_for_each_protocol() {
-    let message = AgentMessage::tool_result(AgentToolResult {
+    let message = Message::tool_result(ToolResult {
         call_id: "call_1".into(),
         output: "done".into(),
         is_error: false,
     });
     assert_eq!(
-        wire_messages(AgentProtocol::OpenAiChat, std::slice::from_ref(&message))[0]["role"],
+        wire_messages(Protocol::OpenAiChat, std::slice::from_ref(&message))[0]["role"],
         "tool"
     );
     assert_eq!(
-        wire_messages(
-            AgentProtocol::OpenAiResponses,
-            std::slice::from_ref(&message)
-        )[0]["type"],
+        wire_messages(Protocol::OpenAiResponses, std::slice::from_ref(&message))[0]["type"],
         "function_call_output"
     );
     assert_eq!(
-        wire_messages(AgentProtocol::AnthropicMessages, &[message])[0]["content"][0]["type"],
+        wire_messages(Protocol::AnthropicMessages, &[message])[0]["content"][0]["type"],
         "tool_result"
     );
 }
@@ -472,7 +504,7 @@ fn read_tool_is_workspace_scoped() {
     let workspace = tempfile::tempdir().unwrap();
     fs::write(workspace.path().join("notes.txt"), "one\ntwo\nthree\n").unwrap();
     let result = run_tool(
-        &AgentToolCall {
+        &ToolCall {
             id: "1".into(),
             name: "read".into(),
             arguments: r#"{"path":"notes.txt","offset":2,"limit":1}"#.into(),
@@ -483,7 +515,7 @@ fn read_tool_is_workspace_scoped() {
     assert_eq!(result.output, "2: two");
 
     let absolute = run_tool(
-        &AgentToolCall {
+        &ToolCall {
             id: "absolute".into(),
             name: "read".into(),
             arguments: json!({
@@ -497,7 +529,7 @@ fn read_tool_is_workspace_scoped() {
     assert_eq!(absolute.output, "1: one\n2: two\n3: three");
 
     let escaped = run_tool(
-        &AgentToolCall {
+        &ToolCall {
             id: "2".into(),
             name: "read".into(),
             arguments: r#"{"path":"../secret"}"#.into(),
@@ -517,7 +549,7 @@ fn patch_tool_applies_unified_hunks_and_keeps_failed_patches_atomic() {
         "patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+updated\n three\n"
     });
     let result = run_tool(
-        &AgentToolCall {
+        &ToolCall {
             id: "patch".into(),
             name: "patch".into(),
             arguments: patch.to_string(),
@@ -532,7 +564,7 @@ fn patch_tool_applies_unified_hunks_and_keeps_failed_patches_atomic() {
         "patch": "@@ -1,3 +1,3 @@\n one\n-missing\n+broken\n three\n"
     });
     let result = run_tool(
-        &AgentToolCall {
+        &ToolCall {
             id: "patch-failed".into(),
             name: "patch".into(),
             arguments: failed_patch.to_string(),
@@ -556,7 +588,7 @@ fn discovery_tools_search_and_list_without_leaving_workspace() {
     fs::write(workspace.path().join("README.md"), "needle\n").unwrap();
 
     let grep = run_tool(
-        &AgentToolCall {
+        &ToolCall {
             id: "grep".into(),
             name: "grep".into(),
             arguments: r#"{"pattern":"needle"}"#.into(),
@@ -568,7 +600,7 @@ fn discovery_tools_search_and_list_without_leaving_workspace() {
     assert!(grep.output.contains("main.rs"));
 
     let find = run_tool(
-        &AgentToolCall {
+        &ToolCall {
             id: "find".into(),
             name: "find".into(),
             arguments: r#"{"pattern":"main"}"#.into(),
@@ -579,7 +611,7 @@ fn discovery_tools_search_and_list_without_leaving_workspace() {
     assert!(find.output.contains("main.rs"));
 
     let listing = run_tool(
-        &AgentToolCall {
+        &ToolCall {
             id: "ls".into(),
             name: "ls".into(),
             arguments: r#"{"path":"src"}"#.into(),
@@ -606,12 +638,7 @@ fn explicit_thinking_options_map_to_provider_wire_fields() {
         .encode_request(&request(sdk::Protocol::OpenAiChat))
         .expect("built-in adapter request should be valid")
         .body;
-    apply_thinking_option(
-        &mut chat,
-        AgentProtocol::OpenAiChat,
-        &model,
-        AgentThinkingLevel::High,
-    );
+    apply_thinking_option(&mut chat, Protocol::OpenAiChat, &model, ThinkingLevel::High);
     assert_eq!(chat["reasoning_effort"], "high");
 
     let mut responses = sdk::builtin_adapter(sdk::Protocol::OpenAiResponses)
@@ -620,9 +647,9 @@ fn explicit_thinking_options_map_to_provider_wire_fields() {
         .body;
     apply_thinking_option(
         &mut responses,
-        AgentProtocol::OpenAiResponses,
+        Protocol::OpenAiResponses,
         &model,
-        AgentThinkingLevel::High,
+        ThinkingLevel::High,
     );
     assert_eq!(responses["reasoning"]["effort"], "high");
     assert!(responses.get("reasoning_effort").is_none());
@@ -633,9 +660,9 @@ fn explicit_thinking_options_map_to_provider_wire_fields() {
         .body;
     apply_thinking_option(
         &mut anthropic,
-        AgentProtocol::AnthropicMessages,
+        Protocol::AnthropicMessages,
         &model,
-        AgentThinkingLevel::Low,
+        ThinkingLevel::Low,
     );
     assert_eq!(anthropic["thinking"]["type"], "enabled");
     assert!(
@@ -682,7 +709,7 @@ fn cancelled_tool_does_not_start_a_shell() {
     let workspace = tempfile::tempdir().unwrap();
     let cancel = AtomicBool::new(true);
     let result = execute_tool_with_cancel(
-        &AgentToolCall {
+        &ToolCall {
             id: "1".into(),
             name: "bash".into(),
             arguments: r#"{"command":"sleep 60"}"#.into(),
@@ -702,7 +729,7 @@ fn cancelling_running_shell_terminates_the_process_group() {
     let worker_cancel = cancel.clone();
     let worker = std::thread::spawn(move || {
         execute_tool_with_cancel(
-            &AgentToolCall {
+            &ToolCall {
                 id: "1".into(),
                 name: "bash".into(),
                 arguments: r#"{"command":"sleep 60"}"#.into(),
@@ -726,7 +753,7 @@ fn discovery_does_not_follow_symlink_cycles() {
     fs::write(workspace.path().join("file.txt"), "content").unwrap();
     symlink(".", workspace.path().join("loop")).unwrap();
     let result = run_tool(
-        &AgentToolCall {
+        &ToolCall {
             id: "find".into(),
             name: "find".into(),
             arguments: r#"{"pattern":"file"}"#.into(),
@@ -748,7 +775,7 @@ fn write_rejects_dangling_symlink_escape() {
     symlink(&outside, workspace.join("escape.txt")).unwrap();
 
     let result = run_tool(
-        &AgentToolCall {
+        &ToolCall {
             id: "write".into(),
             name: "write".into(),
             arguments: json!({"path": "escape.txt", "content": "pwned"}).to_string(),
@@ -777,7 +804,7 @@ fn write_rejects_symlink_pointing_outside_workspace() {
     fs::write(&outside, "original").unwrap();
 
     let result = run_tool(
-        &AgentToolCall {
+        &ToolCall {
             id: "write".into(),
             name: "write".into(),
             arguments: json!({"path": "escape.txt", "content": "pwned"}).to_string(),
@@ -810,7 +837,7 @@ fn write_rejects_dangling_two_hop_symlink_chain() {
     symlink(&outside, workspace.join("hop2")).unwrap();
 
     let result = run_tool(
-        &AgentToolCall {
+        &ToolCall {
             id: "write".into(),
             name: "write".into(),
             arguments: json!({"path": "hop1/x", "content": "pwned"}).to_string(),
@@ -842,7 +869,7 @@ fn write_rejects_two_hop_symlink_chain_to_existing_outside_dir() {
     symlink(&outside_dir, workspace.join("hop2")).unwrap();
 
     let result = run_tool(
-        &AgentToolCall {
+        &ToolCall {
             id: "write".into(),
             name: "write".into(),
             arguments: json!({"path": "hop1/x", "content": "pwned"}).to_string(),
@@ -867,7 +894,7 @@ fn write_resolves_symlink_inside_workspace() {
     symlink("real.txt", workspace.path().join("alias.txt")).unwrap();
 
     let result = run_tool(
-        &AgentToolCall {
+        &ToolCall {
             id: "write".into(),
             name: "write".into(),
             arguments: json!({"path": "alias.txt", "content": "hello"}).to_string(),

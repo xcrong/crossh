@@ -568,7 +568,7 @@ impl SettingsWindow {
         self.agent_draft.providers.push(AgentProvider {
             id: id.clone(),
             name: format!("Provider {number}"),
-            protocol: AgentProtocol::OpenAiChat,
+            protocol: Protocol::OpenAiChat,
             url: String::new(),
             api_key_env: String::new(),
             api_key: String::new(),

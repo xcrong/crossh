@@ -45,8 +45,8 @@ shared resources  -> external `crossh-assets` directory loaded by every binary
 ## Crate Ownership
 
 - `crossh-core`: OpenSSH config parsing, terminal-neutral contracts and title helpers, command history/background tasks, Git command/diff parsing, local branch inspection/switching, stash and conflict operations, the shared `git_status`, `git_branch`, `git_history`, `git_stash`, and `git_conflict` parsers, and shared connection state.
-- `crossh-agent`: workspace-scoped tools, project context/skill/prompt discovery, JSONL session persistence, persisted agent configuration, and the agent loop. Resource discovery stays UI-neutral; the terminal CLI owns command presentation and prompt injection.
-- `crossh-ai-sdk`: canonical provider-neutral messages, HTTP and SSE transport, OpenAI Chat/Responses and Anthropic Messages adapters, reasoning-summary normalization, and the `ProviderAdapter` extension point for future compatible providers.
+- `crossh-agent`: workspace-scoped tools, project context/skill/prompt discovery, JSONL session persistence, persisted agent configuration, and the agent loop. It consumes the SDK canonical types directly (re-exported for the app layer) and keeps approval policy and tool-approval flags at its own layer. Resource discovery stays UI-neutral; the terminal CLI owns command presentation and prompt injection.
+- `crossh-ai-sdk`: canonical 单一事实来源（消息、工具、协议、思考级别）与 provider-neutral 通用适配层：HTTP 和 SSE 传输、OpenAI Chat/Responses 和 Anthropic Messages 适配、推理摘要归一化，以及面向未来 provider 的 `ProviderAdapter` 扩展点。`crossh-agent` 是它的消费方，直接消费 canonical 类型，不维护镜像类型或转换胶水。
 - `crossh-theme`: renderer-independent Crossh color tokens shared by the GPUI and ratatui surfaces.
 - `crossh-ssh`: `russh` authentication and channels, connection pooling, SFTP, port forwarding, ProxyJump, and the Tokio runtime. Its public API is re-exported from the crate root; implementation modules stay private.
 - `crossh-terminal`: terminal-owned settings and events. It is the model boundary consumed by the GPUI terminal view.

@@ -18,7 +18,9 @@ use crate::features::settings::{self, SettingsSnapshot};
 use crate::features::updates::{UpdateController, UpdateStatus};
 use crate::features::workspace::AppShell;
 use crate::shared::i18n::{self, LanguagePreference};
-use crossh_agent::{AgentModel, AgentModelRef, AgentProtocol, AgentProvider, AgentSettings};
+use crossh_agent::{
+    ALL_PROTOCOLS, AgentModel, AgentModelRef, AgentProvider, AgentSettings, Protocol, ProtocolExt,
+};
 use crossh_ui::widgets::{ime_input_canvas, printable_char, text_caret, text_span, text_width};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{Button, ButtonSize, ButtonVariant, Stepper, ToggleSwitch, scroll_y};
@@ -917,7 +919,7 @@ impl SettingsWindow {
             .gap_1()
             .flex_wrap()
             .justify_end();
-        for protocol in AgentProtocol::ALL {
+        for protocol in ALL_PROTOCOLS {
             let selected = protocol == self.agent_draft.providers[provider_index].protocol;
             protocols = protocols.child(
                 div()

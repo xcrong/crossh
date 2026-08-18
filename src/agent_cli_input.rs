@@ -96,7 +96,7 @@ pub(super) fn move_history(app: &mut App, up: bool) {
         .session
         .messages
         .iter()
-        .filter(|message| message.role == AgentRole::User)
+        .filter(|message| message.role == MessageRole::User)
         .filter_map(|message| (!message.text.is_empty()).then_some(message.text.clone()))
         .collect::<Vec<_>>();
     if history.is_empty() {

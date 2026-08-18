@@ -1,12 +1,8 @@
-use super::messages::{
-    AgentContentBlock, AgentEvent, AgentMessage, AgentResponse, AgentRole, AgentToolCall,
-};
 #[cfg(test)]
 use super::policy::AgentModel;
-use super::policy::{
-    AgentProtocol, AgentSettings, AgentThinkingLevel, MODEL_REQUEST_TIMEOUT, ResolvedModel,
-};
+use super::policy::{AgentSettings, MODEL_REQUEST_TIMEOUT, ResolvedModel};
 use super::tools::builtin_tools;
+use crate::{Event, Message, Response, ThinkingLevel};
 use crossh_ai_sdk as sdk;
 #[cfg(test)]
 use serde_json::Value;
@@ -17,27 +13,26 @@ use std::time::Duration;
 pub(super) async fn complete_target_with_timeout(
     target: ResolvedModel<'_>,
     api_key: Option<&str>,
-    messages: &[AgentMessage],
+    messages: &[Message],
     include_tools: bool,
     timeout: Duration,
-) -> Result<AgentResponse, String> {
+) -> Result<Response, String> {
     let request = sdk_request(target, api_key, messages, include_tools, None, false);
     let adapter = sdk::builtin_adapter(request.protocol);
     let client = sdk::Client::new(timeout).map_err(|error| error.to_string())?;
-    let response = client
+    client
         .complete(adapter, &request)
         .await
-        .map_err(|error| error.to_string())?;
-    Ok(from_sdk_response(response))
+        .map_err(|error| error.to_string())
 }
 
 pub async fn complete_stream_with_options(
     settings: &AgentSettings,
     api_key: Option<&str>,
-    messages: &[AgentMessage],
-    thinking: Option<AgentThinkingLevel>,
-    mut on_event: impl FnMut(&AgentEvent),
-) -> Result<AgentResponse, String> {
+    messages: &[Message],
+    thinking: Option<ThinkingLevel>,
+    mut on_event: impl FnMut(&Event),
+) -> Result<Response, String> {
     let target = settings
         .resolve(&settings.active_model)
         .map_err(str::to_string)?;
@@ -45,121 +40,35 @@ pub async fn complete_stream_with_options(
     let request = sdk_request(target, api_key, messages, true, thinking, true);
     let adapter = sdk::builtin_adapter(request.protocol);
     let client = sdk::Client::new(MODEL_REQUEST_TIMEOUT).map_err(|error| error.to_string())?;
-    let response = client
-        .stream(adapter, &request, |event| {
-            let event = from_sdk_event(event);
-            on_event(&event);
-        })
+    client
+        .stream(adapter, &request, |event| on_event(event))
         .await
-        .map_err(|error| error.to_string())?;
-    Ok(from_sdk_response(response))
+        .map_err(|error| error.to_string())
 }
 
 fn sdk_request(
     target: ResolvedModel<'_>,
     api_key: Option<&str>,
-    messages: &[AgentMessage],
+    messages: &[Message],
     include_tools: bool,
-    thinking: Option<AgentThinkingLevel>,
+    thinking: Option<ThinkingLevel>,
     stream: bool,
 ) -> sdk::CompletionRequest {
-    let protocol = to_sdk_protocol(target.provider.protocol);
-    let tools = sdk_tool_definitions();
+    let tools = builtin_tools().into_iter().map(|tool| tool.tool).collect();
     let mut request = sdk::CompletionRequest::new(
-        protocol,
+        target.provider.protocol,
         target.provider.url.clone(),
         target.model.id.clone(),
         target.model.max_tokens,
-        messages.iter().map(to_sdk_message).collect(),
+        messages.to_vec(),
         tools,
     );
     request.api_key = api_key.map(str::to_owned);
     request.reasoning = target.model.reasoning;
-    request.thinking = thinking.map(to_sdk_thinking);
+    request.thinking = thinking;
     request.include_tools = include_tools;
     request.stream = stream;
     request
-}
-
-fn to_sdk_protocol(protocol: AgentProtocol) -> sdk::Protocol {
-    match protocol {
-        AgentProtocol::OpenAiChat => sdk::Protocol::OpenAiChat,
-        AgentProtocol::OpenAiResponses => sdk::Protocol::OpenAiResponses,
-        AgentProtocol::AnthropicMessages => sdk::Protocol::AnthropicMessages,
-    }
-}
-
-fn to_sdk_thinking(thinking: AgentThinkingLevel) -> sdk::ThinkingLevel {
-    match thinking {
-        AgentThinkingLevel::Off => sdk::ThinkingLevel::Off,
-        AgentThinkingLevel::Minimal => sdk::ThinkingLevel::Minimal,
-        AgentThinkingLevel::Low => sdk::ThinkingLevel::Low,
-        AgentThinkingLevel::Medium => sdk::ThinkingLevel::Medium,
-        AgentThinkingLevel::High => sdk::ThinkingLevel::High,
-        AgentThinkingLevel::XHigh => sdk::ThinkingLevel::XHigh,
-    }
-}
-
-fn to_sdk_message(message: &AgentMessage) -> sdk::Message {
-    sdk::Message {
-        role: match message.role {
-            AgentRole::System => sdk::Role::System,
-            AgentRole::User => sdk::Role::User,
-            AgentRole::Assistant => sdk::Role::Assistant,
-        },
-        text: message.text.clone(),
-        tool_calls: message
-            .tool_calls
-            .iter()
-            .map(|call| sdk::ToolCall {
-                id: call.id.clone(),
-                name: call.name.clone(),
-                arguments: call.arguments.clone(),
-            })
-            .collect(),
-        tool_result: message.tool_result.as_ref().map(|result| sdk::ToolResult {
-            call_id: result.call_id.clone(),
-            output: result.output.clone(),
-            is_error: result.is_error,
-        }),
-        protocol_items: message.protocol_items.clone(),
-    }
-}
-
-fn from_sdk_response(response: sdk::Response) -> AgentResponse {
-    AgentResponse {
-        content: response
-            .content
-            .into_iter()
-            .map(|block| match block {
-                sdk::ContentBlock::Text(text) => AgentContentBlock::Text(text),
-                sdk::ContentBlock::Reasoning(text) => AgentContentBlock::Reasoning(text),
-                sdk::ContentBlock::ToolCall(call) => AgentContentBlock::ToolCall(AgentToolCall {
-                    id: call.id,
-                    name: call.name,
-                    arguments: call.arguments,
-                }),
-            })
-            .collect(),
-        protocol_items: response.protocol_items,
-    }
-}
-
-fn from_sdk_event(event: &sdk::Event) -> AgentEvent {
-    match event {
-        sdk::Event::TextDelta(delta) => AgentEvent::TextDelta(delta.clone()),
-        sdk::Event::ReasoningDelta(delta) => AgentEvent::ReasoningDelta(delta.clone()),
-        sdk::Event::ToolCallStart { index, id, name } => AgentEvent::ToolCallStart {
-            index: *index,
-            id: id.clone(),
-            name: name.clone(),
-        },
-        sdk::Event::ToolCallArgumentsDelta { index, delta } => AgentEvent::ToolCallArgumentsDelta {
-            index: *index,
-            delta: delta.clone(),
-        },
-        sdk::Event::Stop(reason) => AgentEvent::Stop(reason.clone()),
-    }
 }
 
 #[cfg(test)]
@@ -197,38 +106,25 @@ impl Utf8StreamDecoder {
     }
 }
 
-fn sdk_tool_definitions() -> Vec<sdk::ToolDefinition> {
-    builtin_tools()
-        .into_iter()
-        .map(|tool| sdk::ToolDefinition::new(tool.name, tool.description, tool.input_schema))
-        .collect()
-}
-
 #[cfg(test)]
 fn sdk_request_for_messages(
-    protocol: AgentProtocol,
+    protocol: sdk::Protocol,
     model: &str,
-    messages: &[AgentMessage],
+    messages: &[Message],
     max_tokens: u32,
 ) -> sdk::CompletionRequest {
-    sdk::CompletionRequest::new(
-        to_sdk_protocol(protocol),
-        "",
-        model,
-        max_tokens,
-        messages.iter().map(to_sdk_message).collect(),
-        sdk_tool_definitions(),
-    )
+    let tools = builtin_tools().into_iter().map(|tool| tool.tool).collect();
+    sdk::CompletionRequest::new(protocol, "", model, max_tokens, messages.to_vec(), tools)
 }
 
 #[cfg(test)]
-pub(super) fn apply_model_options(body: &mut Value, protocol: AgentProtocol, model: &AgentModel) {
+pub(super) fn apply_model_options(body: &mut Value, protocol: sdk::Protocol, model: &AgentModel) {
     let key = match protocol {
-        AgentProtocol::OpenAiChat | AgentProtocol::AnthropicMessages => "max_tokens",
-        AgentProtocol::OpenAiResponses => "max_output_tokens",
+        sdk::Protocol::OpenAiChat | sdk::Protocol::AnthropicMessages => "max_tokens",
+        sdk::Protocol::OpenAiResponses => "max_output_tokens",
     };
     body[key] = Value::from(model.max_tokens);
-    if protocol == AgentProtocol::OpenAiResponses && model.reasoning {
+    if protocol == sdk::Protocol::OpenAiResponses && model.reasoning {
         body["reasoning"] = json!({"summary": "auto"});
     }
 }
@@ -236,37 +132,37 @@ pub(super) fn apply_model_options(body: &mut Value, protocol: AgentProtocol, mod
 #[cfg(test)]
 pub(super) fn apply_thinking_option(
     body: &mut Value,
-    protocol: AgentProtocol,
+    protocol: sdk::Protocol,
     model: &AgentModel,
-    thinking: AgentThinkingLevel,
+    thinking: ThinkingLevel,
 ) {
     apply_model_options(body, protocol, model);
     match protocol {
-        AgentProtocol::OpenAiChat => {
-            if thinking == AgentThinkingLevel::Off {
+        sdk::Protocol::OpenAiChat => {
+            if thinking == ThinkingLevel::Off {
                 body.as_object_mut()
                     .map(|body| body.remove("reasoning_effort"));
             } else {
                 let effort = match thinking {
-                    AgentThinkingLevel::XHigh => "high",
+                    ThinkingLevel::XHigh => "high",
                     other => other.label(),
                 };
                 body["reasoning_effort"] = Value::from(effort);
             }
         }
-        AgentProtocol::OpenAiResponses => {
-            if thinking == AgentThinkingLevel::Off {
+        sdk::Protocol::OpenAiResponses => {
+            if thinking == ThinkingLevel::Off {
                 body.as_object_mut().map(|body| body.remove("reasoning"));
             } else {
                 let effort = match thinking {
-                    AgentThinkingLevel::XHigh => "high",
+                    ThinkingLevel::XHigh => "high",
                     other => other.label(),
                 };
                 body["reasoning"] = json!({"effort": effort, "summary": "auto"});
             }
         }
-        AgentProtocol::AnthropicMessages => {
-            body["thinking"] = if thinking == AgentThinkingLevel::Off {
+        sdk::Protocol::AnthropicMessages => {
+            body["thinking"] = if thinking == ThinkingLevel::Off {
                 json!({"type":"disabled"})
             } else {
                 json!({"type":"enabled","budget_tokens":thinking.budget(model.max_tokens)})
@@ -276,15 +172,15 @@ pub(super) fn apply_thinking_option(
 }
 
 #[cfg(test)]
-pub(super) fn wire_messages(protocol: AgentProtocol, messages: &[AgentMessage]) -> Vec<Value> {
+pub(super) fn wire_messages(protocol: sdk::Protocol, messages: &[Message]) -> Vec<Value> {
     let request = sdk_request_for_messages(protocol, "model", messages, 4_096);
     let body = sdk::builtin_adapter(request.protocol)
         .encode_request(&request)
         .expect("built-in adapter request should be valid")
         .body;
     let key = match protocol {
-        AgentProtocol::OpenAiResponses => "input",
-        AgentProtocol::OpenAiChat | AgentProtocol::AnthropicMessages => "messages",
+        sdk::Protocol::OpenAiResponses => "input",
+        sdk::Protocol::OpenAiChat | sdk::Protocol::AnthropicMessages => "messages",
     };
     body.get(key)
         .and_then(Value::as_array)

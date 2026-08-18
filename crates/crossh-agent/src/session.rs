@@ -1,6 +1,6 @@
 //! Persistent conversations and project context discovery for the agent.
 
-use crate::{AgentMessage, AgentRole};
+use crate::{Message, Role};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, hash_map::DefaultHasher};
 use std::fs::{self, OpenOptions};
@@ -27,7 +27,7 @@ pub struct AgentSession {
     pub name: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
-    pub messages: Vec<AgentMessage>,
+    pub messages: Vec<Message>,
 }
 
 impl AgentSession {
@@ -45,7 +45,7 @@ impl AgentSession {
         }
     }
 
-    pub fn append(&mut self, message: AgentMessage) {
+    pub fn append(&mut self, message: Message) {
         self.messages.push(message);
         self.updated_at = unix_millis();
     }
@@ -67,7 +67,7 @@ impl AgentSession {
         let mut groups = Vec::new();
         let mut current = Vec::new();
         for message in &self.messages {
-            let starts_turn = message.role == AgentRole::User
+            let starts_turn = message.role == Role::User
                 && message.tool_result.is_none()
                 && !message.text.is_empty();
             if starts_turn && !current.is_empty() {
@@ -95,8 +95,8 @@ impl AgentSession {
         self.messages = kept;
         self.messages.insert(
             0,
-            AgentMessage::new(
-                AgentRole::System,
+            Message::new(
+                Role::System,
                 format!(
                     "Earlier context was compacted before this turn. {removed} messages were removed; rely on the remaining recent history and inspect files again when needed."
                 ),
@@ -171,7 +171,7 @@ struct SessionHeader<'a> {
 #[derive(Serialize)]
 struct SessionMessage<'a> {
     kind: &'static str,
-    message: &'a AgentMessage,
+    message: &'a Message,
 }
 
 pub fn create_session(cwd: &Path) -> Result<(PathBuf, AgentSession), String> {
@@ -325,9 +325,9 @@ pub fn export_markdown(session: &AgentSession, path: &Path) -> Result<(), String
     output.push_str("`\n\n");
     for message in &session.messages {
         let role = match message.role {
-            AgentRole::System => "System",
-            AgentRole::User => "You",
-            AgentRole::Assistant => "Agent",
+            Role::System => "System",
+            Role::User => "You",
+            Role::Assistant => "Agent",
         };
         if !message.text.is_empty() {
             output.push_str("## ");
@@ -566,7 +566,7 @@ fn project_key(cwd: &Path) -> String {
     format!("{safe}-{hash:016x}", hash = hasher.finish())
 }
 
-fn message_size(message: &AgentMessage) -> usize {
+fn message_size(message: &Message) -> usize {
     message.text.len()
         + message
             .tool_calls
@@ -625,7 +625,9 @@ fn unix_millis() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AgentRole, AgentToolResult};
+    use crate::{MessageExt, Role, ToolCall, ToolResult};
+    use serde_json::{Value, json};
+    use std::collections::BTreeSet;
     use tempfile::tempdir;
 
     #[test]
@@ -633,14 +635,101 @@ mod tests {
         let directory = tempdir().unwrap();
         let path = directory.path().join("session.jsonl");
         let mut session = AgentSession::new(directory.path());
-        session.append(AgentMessage::new(AgentRole::User, "hello"));
-        session.append(AgentMessage::tool_result(AgentToolResult {
+        session.append(Message::new(Role::User, "hello"));
+        session.append(Message::tool_result(ToolResult {
             call_id: "call".into(),
             output: "done".into(),
             is_error: false,
         }));
         save_session(&path, &session).unwrap();
         assert_eq!(load_session(&path).unwrap(), session);
+    }
+
+    #[test]
+    fn spec_20260818_sdk_jsonl_record_shape_is_stable() {
+        // 行为快照：会话 JSONL 记录的结构（字段名与嵌套）在 SDK 类型收敛前后
+        // 必须保持不变，保证既有会话可被原样读取、新写入记录结构等价。
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        let mut session = AgentSession::new(directory.path());
+        session.append(Message {
+            role: Role::Assistant,
+            text: "answer".into(),
+            tool_calls: vec![ToolCall {
+                id: "call_1".into(),
+                name: "read".into(),
+                arguments: r#"{"path":"README.md"}"#.into(),
+            }],
+            tool_result: None,
+            protocol_items: vec![json!({"type":"function_call","call_id":"call_1"})],
+        });
+        session.append(Message::tool_result(ToolResult {
+            call_id: "call_1".into(),
+            output: "done".into(),
+            is_error: false,
+        }));
+        save_session(&path, &session).unwrap();
+        let records = fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0]["kind"], "session");
+        assert_eq!(records[1]["kind"], "message");
+        assert_eq!(records[2]["kind"], "message");
+
+        let message = &records[1]["message"];
+        assert_eq!(
+            message
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "role",
+                "text",
+                "tool_calls",
+                "tool_result",
+                "protocol_items"
+            ])
+        );
+        assert_eq!(message["role"], "Assistant");
+        assert_eq!(message["text"], "answer");
+        assert_eq!(
+            message["tool_calls"][0]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["id", "name", "arguments"])
+        );
+        assert_eq!(message["tool_calls"][0]["id"], "call_1");
+        assert_eq!(message["tool_calls"][0]["name"], "read");
+        assert_eq!(
+            message["tool_calls"][0]["arguments"],
+            r#"{"path":"README.md"}"#
+        );
+        assert!(message["tool_result"].is_null());
+        assert!(message["protocol_items"].is_array());
+        assert_eq!(message["protocol_items"][0]["type"], "function_call");
+
+        let result = &records[2]["message"]["tool_result"];
+        assert_eq!(
+            result
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["call_id", "output", "is_error"])
+        );
+        assert_eq!(result["call_id"], "call_1");
+        assert_eq!(result["output"], "done");
+        assert_eq!(result["is_error"], false);
     }
 
     #[cfg(unix)]
@@ -670,10 +759,7 @@ mod tests {
     fn compaction_keeps_the_newest_messages() {
         let mut session = AgentSession::new("/tmp/project");
         for index in 0..5 {
-            session.append(AgentMessage::new(
-                AgentRole::User,
-                "0123456789".repeat(index + 1),
-            ));
+            session.append(Message::new(Role::User, "0123456789".repeat(index + 1)));
         }
         let removed = session.compact(1_024);
         assert_eq!(removed, 0);
@@ -693,28 +779,24 @@ mod tests {
     #[test]
     fn compaction_keeps_tool_calls_and_results_as_one_turn() {
         let mut session = AgentSession::new("/tmp/project");
-        session.append(AgentMessage::new(AgentRole::User, "old request"));
-        session.append(AgentMessage::assistant_tool_calls(vec![
-            crate::AgentToolCall {
-                id: "old-call".into(),
-                name: "read".into(),
-                arguments: "{}".into(),
-            },
-        ]));
-        session.append(AgentMessage::tool_result(AgentToolResult {
+        session.append(Message::new(Role::User, "old request"));
+        session.append(Message::assistant_tool_calls(vec![ToolCall {
+            id: "old-call".into(),
+            name: "read".into(),
+            arguments: "{}".into(),
+        }]));
+        session.append(Message::tool_result(ToolResult {
             call_id: "old-call".into(),
             output: "old result".into(),
             is_error: false,
         }));
-        session.append(AgentMessage::new(AgentRole::User, "new request"));
-        session.append(AgentMessage::assistant_tool_calls(vec![
-            crate::AgentToolCall {
-                id: "new-call".into(),
-                name: "read".into(),
-                arguments: "{}".into(),
-            },
-        ]));
-        session.append(AgentMessage::tool_result(AgentToolResult {
+        session.append(Message::new(Role::User, "new request"));
+        session.append(Message::assistant_tool_calls(vec![ToolCall {
+            id: "new-call".into(),
+            name: "read".into(),
+            arguments: "{}".into(),
+        }]));
+        session.append(Message::tool_result(ToolResult {
             call_id: "new-call".into(),
             output: "new result".into(),
             is_error: false,

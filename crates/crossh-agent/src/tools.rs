@@ -1,13 +1,15 @@
-use super::messages::{AgentToolCall, AgentToolResult};
 use super::policy::{
     MAX_DIRECTORY_ENTRIES, MAX_DISCOVERED_PATHS, MAX_FILE_BYTES, MAX_FILE_SCAN_BYTES,
     MAX_LINE_BYTES, MAX_TOOL_ARGUMENT_BYTES, MAX_TOOL_OUTPUT_BYTES, TOOL_TIMEOUT,
 };
+use crate::{ToolCall, ToolResult};
+use crossh_ai_sdk as sdk;
 use regex::Regex;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
+use std::ops::Deref;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -35,75 +37,99 @@ impl<'a> ToolControl<'a> {
     }
 }
 
+/// An agent-layer tool definition: the name, description, and argument schema
+/// are single-sourced from the SDK [`sdk::ToolDefinition`] (dereferenced for
+/// field access), while `requires_approval` is agent-layer policy that never
+/// reaches the wire.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AgentToolDefinition {
-    pub name: &'static str,
-    pub description: &'static str,
-    pub input_schema: Value,
+    pub tool: sdk::ToolDefinition,
     pub requires_approval: bool,
+}
+
+impl AgentToolDefinition {
+    pub fn new(
+        name: &'static str,
+        description: &'static str,
+        input_schema: Value,
+        requires_approval: bool,
+    ) -> Self {
+        Self {
+            tool: sdk::ToolDefinition::new(name, description, input_schema),
+            requires_approval,
+        }
+    }
+}
+
+impl Deref for AgentToolDefinition {
+    type Target = sdk::ToolDefinition;
+
+    fn deref(&self) -> &Self::Target {
+        &self.tool
+    }
 }
 
 pub fn builtin_tools() -> Vec<AgentToolDefinition> {
     vec![
-        AgentToolDefinition {
-            name: "read",
-            description: "Read a UTF-8 file inside the current workspace; prefer a workspace-relative path such as README.md",
-            input_schema: json!({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":["integer","null"],"minimum":1},"limit":{"type":["integer","null"],"minimum":1}},"required":["path","offset","limit"],"additionalProperties":false}),
-            requires_approval: false,
-        },
-        AgentToolDefinition {
-            name: "grep",
-            description: "Search workspace files for a text or regular expression; prefer a workspace-relative path",
-            input_schema: json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":["string","null"]},"limit":{"type":["integer","null"],"minimum":1}},"required":["pattern","path","limit"],"additionalProperties":false}),
-            requires_approval: false,
-        },
-        AgentToolDefinition {
-            name: "find",
-            description: "Find files and directories in the current workspace; prefer a workspace-relative path",
-            input_schema: json!({"type":"object","properties":{"pattern":{"type":["string","null"]},"path":{"type":["string","null"]},"limit":{"type":["integer","null"],"minimum":1}},"required":["pattern","path","limit"],"additionalProperties":false}),
-            requires_approval: false,
-        },
-        AgentToolDefinition {
-            name: "ls",
-            description: "List entries in a workspace directory; prefer a workspace-relative path such as .",
-            input_schema: json!({"type":"object","properties":{"path":{"type":["string","null"]}},"required":["path"],"additionalProperties":false}),
-            requires_approval: false,
-        },
-        AgentToolDefinition {
-            name: "write",
-            description: "Create or replace a UTF-8 file inside the current workspace; prefer a workspace-relative path",
-            input_schema: json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}),
-            requires_approval: true,
-        },
-        AgentToolDefinition {
-            name: "edit",
-            description: "Replace one exact text occurrence in a workspace file; prefer a workspace-relative path",
-            input_schema: json!({"type":"object","properties":{"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"}},"required":["path","old_text","new_text"],"additionalProperties":false}),
-            requires_approval: true,
-        },
-        AgentToolDefinition {
-            name: "patch",
-            description: "Apply a unified-diff patch to one existing UTF-8 workspace file; provide the file path separately and include @@ hunks with context lines",
-            input_schema: json!({"type":"object","properties":{"path":{"type":"string"},"patch":{"type":"string"}},"required":["path","patch"],"additionalProperties":false}),
-            requires_approval: true,
-        },
-        AgentToolDefinition {
-            name: "bash",
-            description: "Run a shell command in the current workspace",
-            input_schema: json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}),
-            requires_approval: true,
-        },
+        AgentToolDefinition::new(
+            "read",
+            "Read a UTF-8 file inside the current workspace; prefer a workspace-relative path such as README.md",
+            json!({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":["integer","null"],"minimum":1},"limit":{"type":["integer","null"],"minimum":1}},"required":["path","offset","limit"],"additionalProperties":false}),
+            false,
+        ),
+        AgentToolDefinition::new(
+            "grep",
+            "Search workspace files for a text or regular expression; prefer a workspace-relative path",
+            json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":["string","null"]},"limit":{"type":["integer","null"],"minimum":1}},"required":["pattern","path","limit"],"additionalProperties":false}),
+            false,
+        ),
+        AgentToolDefinition::new(
+            "find",
+            "Find files and directories in the current workspace; prefer a workspace-relative path",
+            json!({"type":"object","properties":{"pattern":{"type":["string","null"]},"path":{"type":["string","null"]},"limit":{"type":["integer","null"],"minimum":1}},"required":["pattern","path","limit"],"additionalProperties":false}),
+            false,
+        ),
+        AgentToolDefinition::new(
+            "ls",
+            "List entries in a workspace directory; prefer a workspace-relative path such as .",
+            json!({"type":"object","properties":{"path":{"type":["string","null"]}},"required":["path"],"additionalProperties":false}),
+            false,
+        ),
+        AgentToolDefinition::new(
+            "write",
+            "Create or replace a UTF-8 file inside the current workspace; prefer a workspace-relative path",
+            json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}),
+            true,
+        ),
+        AgentToolDefinition::new(
+            "edit",
+            "Replace one exact text occurrence in a workspace file; prefer a workspace-relative path",
+            json!({"type":"object","properties":{"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"}},"required":["path","old_text","new_text"],"additionalProperties":false}),
+            true,
+        ),
+        AgentToolDefinition::new(
+            "patch",
+            "Apply a unified-diff patch to one existing UTF-8 workspace file; provide the file path separately and include @@ hunks with context lines",
+            json!({"type":"object","properties":{"path":{"type":"string"},"patch":{"type":"string"}},"required":["path","patch"],"additionalProperties":false}),
+            true,
+        ),
+        AgentToolDefinition::new(
+            "bash",
+            "Run a shell command in the current workspace",
+            json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}),
+            true,
+        ),
     ]
 }
 
 pub fn execute_tool_with_cancel(
-    call: &AgentToolCall,
+    call: &ToolCall,
     workspace: &Path,
     cancel: &AtomicBool,
-) -> AgentToolResult {
+) -> ToolResult {
     let control = ToolControl::new(cancel);
     let result = execute_tool_inner(call, workspace, &control);
-    AgentToolResult {
+    ToolResult {
         call_id: call.id.clone(),
         is_error: result.is_err(),
         output: truncate_output(&result.unwrap_or_else(|error| error)),
@@ -111,7 +137,7 @@ pub fn execute_tool_with_cancel(
 }
 
 fn execute_tool_inner(
-    call: &AgentToolCall,
+    call: &ToolCall,
     workspace: &Path,
     control: &ToolControl<'_>,
 ) -> Result<String, String> {

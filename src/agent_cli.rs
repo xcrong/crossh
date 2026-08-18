@@ -17,11 +17,11 @@ use std::{
 };
 
 use crossh_agent::{
-    AgentContentBlock, AgentEvent, AgentMessage, AgentPrompt, AgentRole, AgentSession,
-    AgentSessionSummary, AgentSettings, AgentSkill, AgentThinkingLevel, AgentToolCall,
-    AgentToolResult, complete_stream_with_options, context_prompt, create_session, export_markdown,
-    latest_session, list_sessions, load_context_files, load_prompts, load_session, load_skills,
-    review_tool, save_session,
+    ALL_THINKING_LEVELS, AgentPrompt, AgentSession, AgentSessionSummary, AgentSettings, AgentSkill,
+    ContentBlock, Event as ModelEvent, Message, MessageExt, ResponseExt, Role as MessageRole,
+    ThinkingLevel, ToolCall, ToolResult, complete_stream_with_options, context_prompt,
+    create_session, export_markdown, latest_session, list_sessions, load_context_files,
+    load_prompts, load_session, load_skills, review_tool, save_session,
 };
 use crossh_theme as theme;
 use crossterm::{
@@ -59,8 +59,8 @@ const MAX_FILE_REFERENCE_TOTAL_BYTES: u64 = 128 * 1024;
 const MAX_FILE_REFERENCE_COUNT: usize = 32;
 
 enum ModelUpdate {
-    Event(AgentEvent),
-    Complete(Result<crossh_agent::AgentResponse, String>),
+    Event(ModelEvent),
+    Complete(Result<crossh_agent::Response, String>),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -69,7 +69,7 @@ pub(crate) struct AgentOptions {
     pub resume: Option<String>,
     pub no_session: bool,
     pub model: Option<String>,
-    pub thinking: Option<AgentThinkingLevel>,
+    pub thinking: Option<ThinkingLevel>,
 }
 
 pub(crate) fn parse_options(
@@ -154,7 +154,7 @@ struct App {
     max_scroll: u16,
     show_tool_details: bool,
     show_reasoning: bool,
-    thinking: AgentThinkingLevel,
+    thinking: ThinkingLevel,
     thinking_explicit: bool,
     status: String,
     started_at: Instant,
@@ -205,7 +205,7 @@ pub(crate) fn run_with_options(
         max_scroll: 0,
         show_tool_details: false,
         show_reasoning: false,
-        thinking: options.thinking.unwrap_or(AgentThinkingLevel::Medium),
+        thinking: options.thinking.unwrap_or(ThinkingLevel::Medium),
         thinking_explicit: options.thinking.is_some(),
         status: "Ready  Enter send  Ctrl-T thinking  Ctrl-O tools  Esc quit".into(),
         started_at: Instant::now(),
@@ -376,7 +376,7 @@ fn process_prompt(
 ) -> io::Result<bool> {
     let user_request = prompt.clone();
     app.session
-        .append(AgentMessage::new(AgentRole::User, prompt.clone()));
+        .append(Message::new(MessageRole::User, prompt.clone()));
     app.messages.push((Role::User, prompt));
     app.scroll = u16::MAX;
     persist_session(app);
@@ -394,7 +394,7 @@ fn process_prompt(
     if let Some(message) = request_messages
         .iter_mut()
         .rev()
-        .find(|message| message.role == AgentRole::User && !message.text.is_empty())
+        .find(|message| message.role == MessageRole::User && !message.text.is_empty())
     {
         message.text = expand_file_references(&app.workspace, &message.text);
     }
@@ -452,13 +452,13 @@ fn process_prompt(
             .content
             .iter()
             .filter_map(|block| match block {
-                AgentContentBlock::ToolCall(call) => Some(call.clone()),
+                ContentBlock::ToolCall(call) => Some(call.clone()),
                 _ => None,
             })
             .collect::<Vec<_>>();
         if calls.is_empty() {
-            app.session.append(AgentMessage {
-                role: AgentRole::Assistant,
+            app.session.append(Message {
+                role: MessageRole::Assistant,
                 text,
                 tool_calls: Vec::new(),
                 tool_result: None,
@@ -469,8 +469,8 @@ fn process_prompt(
             return Ok(true);
         }
 
-        let assistant_message = AgentMessage {
-            role: AgentRole::Assistant,
+        let assistant_message = Message {
+            role: MessageRole::Assistant,
             text,
             tool_calls: calls.clone(),
             tool_result: None,
@@ -548,7 +548,7 @@ fn process_prompt(
                     }
                 }
             } else {
-                AgentToolResult {
+                ToolResult {
                     call_id: call.id.clone(),
                     output: if let Some(reason) = reviewer_denial_reason {
                         format!("Tool execution denied by the language-model reviewer: {reason}")
@@ -559,8 +559,8 @@ fn process_prompt(
                 }
             };
             app.messages.push((Role::Tool, format_tool_result(&result)));
-            request_messages.push(AgentMessage::tool_result(result.clone()));
-            app.session.append(AgentMessage::tool_result(result));
+            request_messages.push(Message::tool_result(result.clone()));
+            app.session.append(Message::tool_result(result));
             persist_session(app);
         }
         app.status = format!("Completed tool round {}", round + 1);
@@ -572,7 +572,7 @@ fn process_prompt(
 }
 
 enum WaitResult {
-    Complete(Result<crossh_agent::AgentResponse, String>),
+    Complete(Result<crossh_agent::Response, String>),
     Cancelled,
 }
 
@@ -587,12 +587,12 @@ fn wait_for_model(
         while let Ok(update) = receiver.try_recv() {
             match update {
                 ModelUpdate::Event(event) => match event {
-                    AgentEvent::TextDelta(delta) => append_delta(app, Role::Agent, &delta),
-                    AgentEvent::ReasoningDelta(delta) => append_delta(app, Role::Reasoning, &delta),
-                    AgentEvent::ToolCallStart { name, .. } => {
+                    ModelEvent::TextDelta(delta) => append_delta(app, Role::Agent, &delta),
+                    ModelEvent::ReasoningDelta(delta) => append_delta(app, Role::Reasoning, &delta),
+                    ModelEvent::ToolCallStart { name, .. } => {
                         app.status = format!("Preparing tool: {name}")
                     }
-                    AgentEvent::ToolCallArgumentsDelta { .. } | AgentEvent::Stop(_) => {}
+                    ModelEvent::ToolCallArgumentsDelta { .. } | ModelEvent::Stop(_) => {}
                 },
                 ModelUpdate::Complete(result) => return Ok(WaitResult::Complete(result)),
             }
@@ -639,7 +639,7 @@ fn wait_for_model(
 fn confirm_tool(
     terminal: &mut DefaultTerminal,
     app: &mut App,
-    call: &AgentToolCall,
+    call: &ToolCall,
 ) -> io::Result<bool> {
     let previous_details = app.show_tool_details;
     app.show_tool_details = true;
@@ -704,7 +704,7 @@ fn tool_approval_source(settings: &AgentSettings, tool_name: &str) -> ToolApprov
 fn review_tool_animated(
     terminal: &mut DefaultTerminal,
     app: &mut App,
-    call: &AgentToolCall,
+    call: &ToolCall,
     user_request: &str,
 ) -> io::Result<BackgroundResult<ReviewDecision>> {
     let settings = app.settings.clone();
@@ -741,7 +741,7 @@ fn run_shell_shortcut(
     command: String,
     send_to_agent: bool,
 ) -> io::Result<()> {
-    let call = AgentToolCall {
+    let call = ToolCall {
         id: format!("shell-{}", app.session.messages.len()),
         name: "bash".into(),
         arguments: serde_json::json!({"command": command}).to_string(),
@@ -770,9 +770,9 @@ fn run_shell_shortcut(
 fn execute_tool_animated(
     terminal: &mut DefaultTerminal,
     app: &mut App,
-    call: AgentToolCall,
+    call: ToolCall,
     workspace: PathBuf,
-) -> io::Result<BackgroundResult<AgentToolResult>> {
+) -> io::Result<BackgroundResult<ToolResult>> {
     let label = call.name.clone();
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -872,7 +872,7 @@ fn handle_command(
                     format!(
                         "Thinking: {}\nAvailable: {}",
                         app.thinking.label(),
-                        AgentThinkingLevel::ALL
+                        ALL_THINKING_LEVELS
                             .iter()
                             .map(|level| level.label())
                             .collect::<Vec<_>>()
@@ -1341,7 +1341,7 @@ fn tree_text(app: &App) -> String {
     let mut lines = vec!["Conversation tree (user turns):".to_string()];
     let mut turn = 0;
     for message in &app.session.messages {
-        if message.role != AgentRole::User || message.text.is_empty() {
+        if message.role != MessageRole::User || message.text.is_empty() {
             continue;
         }
         turn += 1;
@@ -1364,7 +1364,7 @@ fn rewind_session(app: &mut App, turn: usize) {
             .messages
             .iter()
             .enumerate()
-            .filter(|(_, message)| message.role == AgentRole::User && !message.text.is_empty())
+            .filter(|(_, message)| message.role == MessageRole::User && !message.text.is_empty())
             .map(|(index, _)| index)
             .collect::<Vec<_>>();
         let Some(message_index) = user_turns.get(turn.saturating_sub(1)).copied() else {
@@ -1384,8 +1384,8 @@ fn rewind_session(app: &mut App, turn: usize) {
     app.status = format!("Rewound to user turn {turn}");
 }
 
-fn request_messages(app: &App) -> Vec<AgentMessage> {
-    let mut messages = vec![AgentMessage::new(AgentRole::System, system_prompt(app))];
+fn request_messages(app: &App) -> Vec<Message> {
+    let mut messages = vec![Message::new(MessageRole::System, system_prompt(app))];
     messages.extend(app.session.messages.iter().cloned());
     messages
 }
@@ -1498,17 +1498,17 @@ fn expand_file_references(workspace: &Path, prompt: &str) -> String {
     }
 }
 
-fn restore_visible_messages(messages: &[AgentMessage]) -> Vec<(Role, String)> {
+fn restore_visible_messages(messages: &[Message]) -> Vec<(Role, String)> {
     let mut visible = Vec::new();
     for message in messages {
         match message.role {
-            AgentRole::System => visible.push((Role::Notice, message.text.clone())),
-            AgentRole::User => {
+            MessageRole::System => visible.push((Role::Notice, message.text.clone())),
+            MessageRole::User => {
                 if !message.text.is_empty() {
                     visible.push((Role::User, message.text.clone()));
                 }
             }
-            AgentRole::Assistant => {
+            MessageRole::Assistant => {
                 if !message.text.is_empty() {
                     visible.push((Role::Agent, message.text.clone()));
                 }
@@ -1607,8 +1607,8 @@ fn set_spinner_status(app: &mut App, label: &str, frame: usize) {
     );
 }
 
-fn parse_thinking(value: &str) -> Option<AgentThinkingLevel> {
-    AgentThinkingLevel::ALL
+fn parse_thinking(value: &str) -> Option<ThinkingLevel> {
+    ALL_THINKING_LEVELS
         .into_iter()
         .find(|level| level.label().eq_ignore_ascii_case(value.trim()))
 }
@@ -1651,7 +1651,7 @@ fn compaction_limit(app: &App) -> usize {
         .max(1_024)
 }
 
-fn estimate_tokens(messages: &[AgentMessage]) -> usize {
+fn estimate_tokens(messages: &[Message]) -> usize {
     messages
         .iter()
         .map(|message| {
@@ -1676,11 +1676,11 @@ fn tool_requires_approval(name: &str) -> bool {
         .is_some_and(|tool| tool.requires_approval)
 }
 
-fn format_tool_call(call: &AgentToolCall) -> String {
+fn format_tool_call(call: &ToolCall) -> String {
     format!("$ {} {}", call.name, compact_json(&call.arguments))
 }
 
-fn format_tool_result(result: &AgentToolResult) -> String {
+fn format_tool_result(result: &ToolResult) -> String {
     let prefix = if result.is_error { "x" } else { "ok" };
     format!("[{prefix}] {}", result.output)
 }
