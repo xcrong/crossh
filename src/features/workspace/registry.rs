@@ -85,6 +85,10 @@ pub(crate) struct WorkspaceState {
     pub(crate) sessions: SessionRegistry,
     pub(crate) active_view: Option<ActiveView>,
     pub(crate) toaster: ToasterState,
+    /// Toast 消除定时任务的「生命周期锚」：只写不读。show_toast 覆盖
+    /// 该句柄会取消前一个 toast 的计时器（toaster 单活动 toast，旧
+    /// dismiss 本就返回 false）；保留句柄使任务随 AppShell 销毁自动
+    /// 取消——若改 detach，窗口关闭后任务仍会空转完 2 秒计时。
     pub(crate) _toast_task: Option<Task<()>>,
     /// 每个属主 Tab/会话至多一个分栏、相互独立共存（ADR 0011）。
     /// key 即分栏属主（创建时的活动视图，等于 `split.left`）。

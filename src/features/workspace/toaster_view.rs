@@ -16,6 +16,8 @@ fn visual_tone(tone: ToastTone) -> VisualToastTone {
 impl AppShell {
     pub(crate) fn show_toast(&mut self, notice: ToastNotice, cx: &mut Context<Self>) {
         let toast_id = self.workspace.toaster.show(notice);
+        // 覆盖句柄即取消前一个 toast 的计时器（toaster 单活动 toast，
+        // 旧 dismiss 本就失效）；句柄保留到任务完成或 AppShell 销毁。
         self.workspace._toast_task = Some(cx.spawn(async move |weak, cx| {
             cx.background_executor().timer(TOAST_DURATION).await;
             let _ = weak.update(cx, |this, cx| {

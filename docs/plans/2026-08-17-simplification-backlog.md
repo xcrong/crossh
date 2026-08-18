@@ -227,6 +227,17 @@
 
 ### S-C7 `_toast_task` 字段只写不读
 
+> **状态：已完成（2026-08-18，按裁定 B）**
+> 查证 pinned GPUI（rev `90d024b`）`Task::detach` 语义
+> （crates/scheduler/src/executor.rs:359-366）：detach 让任务**运行到完成、
+> 与调用者生命周期解耦**，与保存句柄不等价——保存句柄在 AppShell 销毁时
+> 随 drop 取消定时器，detach 则会让窗口关闭后的任务空转完 2 秒。故选 B：
+> 保留 `_toast_task` 字段并补注释说明「生命周期锚」意图（registry.rs:88
+> 字段注释 + toaster_view.rs:19 覆盖点注释，说明覆盖句柄即取消前一个
+> toast 计时器、toaster 单活动 toast 旧 dismiss 本就失效）。属行为不变
+> 文档改动（豁免 spec）：fmt/architecture/clippy（workspace --all-targets
+> -- -D warnings）全绿；全 workspace 测试通过（429 例）。
+
 - **位置**：`src/features/workspace/registry.rs:88,100`；唯一写入 `toaster_view.rs:19`；下划线表示保存 Task 句柄防 drop 取消。
 - **选项**：A. 改 `cx.spawn(...).detach()` 删字段（需确认 GPUI detach 语义与保存句柄等价）；B. 保留 + 补注释说明"生命周期锚"意图。
 - **建议**：先查 GPUI 版本 detach 语义，等价则 A，否则 B。
