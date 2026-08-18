@@ -144,6 +144,12 @@
 
 ### S-A5 `git/window.rs` 的 `_refresh_task` 永不置回 None、从不读结果
 
+> **状态：已完成（2026-08-18，按裁定 A）**
+> `_refresh_task` 重命名为 `refresh_task` 并补注释：字段是"刷新循环已启动"
+> 标记（仅防重入 is_some 检查），从不置回 None，持有 Task 句柄使循环随
+> 实体 drop 自动取消。属行为不变重构（豁免 spec）：fmt/architecture/
+> clippy（workspace --all-targets -D warnings）全绿；全 workspace 测试通过。
+
 - **位置**：`src/features/git/window.rs:52,647-658`（字段仅 init/is_some 防重入/赋值三处使用；Task 作用为随实体 drop 取消）。
 - **选项**：A. 保持设计 + 去掉下划线前缀命名 + 补注释（"刷新循环已启动"标记 + drop 取消语义）；B. 简化为 bool + 明确取消策略（需 verify Task drop 取消）。
 - **建议**：A（最小改动，行为不变）。

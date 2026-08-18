@@ -49,7 +49,9 @@ pub struct GitWindow {
     pub(super) history_search_focus: FocusHandle,
     pub(super) branch_focus: FocusHandle,
     pub(super) stash_focus: FocusHandle,
-    pub(super) _refresh_task: Option<Task<()>>,
+    /// 刷新循环已启动标记。仅用于防重入（is_some 检查），从不置回 None：
+    /// 持有 Task 句柄使循环随实体 drop 自动取消。
+    pub(super) refresh_task: Option<Task<()>>,
     pub(super) changes_scroll: UniformListScrollHandle,
     pub(super) diff_scroll: UniformListScrollHandle,
     pub(super) history_scroll: UniformListScrollHandle,
@@ -79,7 +81,7 @@ impl GitWindow {
             history_search_focus: cx.focus_handle(),
             branch_focus: cx.focus_handle(),
             stash_focus: cx.focus_handle(),
-            _refresh_task: None,
+            refresh_task: None,
             changes_scroll: UniformListScrollHandle::new(),
             diff_scroll: UniformListScrollHandle::new(),
             history_scroll: UniformListScrollHandle::new(),
@@ -644,10 +646,10 @@ impl GitWindow {
     }
 
     fn ensure_refresh_loop(&mut self, cx: &mut Context<Self>) {
-        if self._refresh_task.is_some() {
+        if self.refresh_task.is_some() {
             return;
         }
-        self._refresh_task = Some(cx.spawn(async move |weak, cx| {
+        self.refresh_task = Some(cx.spawn(async move |weak, cx| {
             loop {
                 cx.background_executor().timer(REFRESH_INTERVAL).await;
                 if weak.update(cx, |this, cx| this.refresh_list(cx)).is_err() {
