@@ -14,42 +14,6 @@ use serde_json::Value;
 use serde_json::json;
 use std::time::Duration;
 
-pub async fn complete(
-    settings: &AgentSettings,
-    api_key: Option<&str>,
-    messages: &[AgentMessage],
-) -> Result<AgentResponse, String> {
-    complete_with_tools(settings, api_key, messages, true).await
-}
-
-async fn complete_with_tools(
-    settings: &AgentSettings,
-    api_key: Option<&str>,
-    messages: &[AgentMessage],
-    include_tools: bool,
-) -> Result<AgentResponse, String> {
-    let target = settings
-        .resolve(&settings.active_model)
-        .map_err(str::to_string)?;
-    complete_target(target, api_key, messages, include_tools).await
-}
-
-async fn complete_target(
-    target: ResolvedModel<'_>,
-    api_key: Option<&str>,
-    messages: &[AgentMessage],
-    include_tools: bool,
-) -> Result<AgentResponse, String> {
-    complete_target_with_timeout(
-        target,
-        api_key,
-        messages,
-        include_tools,
-        MODEL_REQUEST_TIMEOUT,
-    )
-    .await
-}
-
 pub(super) async fn complete_target_with_timeout(
     target: ResolvedModel<'_>,
     api_key: Option<&str>,

@@ -88,6 +88,13 @@
 
 ### S-D1 收缩 providers 非流式入口链
 
+> **状态：已完成（2026-08-18）**
+> 删除 `complete`/`complete_with_tools`/`complete_target` 三个零消费者函数
+> （providers.rs），lib.rs 导出同步收紧为 `complete_stream_with_options`；
+> 链尾 `complete_target_with_timeout`（policy.rs:293 消费）保留。属行为不变
+> 死代码删除（豁免 spec）：rg 全仓库零引用；fmt/architecture/clippy
+> （workspace --all-targets -D warnings）全绿；crossh-agent 40 条测试通过。
+
 - **位置**：`crates/crossh-agent/src/providers.rs:29,37,49` —— `complete`/`complete_with_tools`/`complete_target`（pub，lib.rs 导出）。
 - **消费者证据**：无生产调用点；链尾 `complete_target_with_timeout`（pub(super)，`policy.rs:293` 消费）**保留**。
 - **建议做法**：删除 3 个函数 + lib.rs 导出更新（当前导出为 `complete, complete_stream_with_options`）。
