@@ -124,6 +124,14 @@
 
 ### S-D13 `release.yml` validate job 与 `ci.yml` check job 重复
 
+> **状态：已完成（2026-08-18，按裁定 B）**
+> 删除 validate job 与 ci.yml check job 重复的 step（fmt/architecture/clippy/
+> 全量测试/Cargo.lock 同步校验及其支撑的 toolchain/cache step），仅保留发布
+> 专属的 tag 版本一致性校验；job 注释说明意图：通用门禁由 ci.yml 在 main
+> push 与 PR 上执行，tag 均从已验证的 main 提交打出，发布时不重复消耗
+> macOS runner 时间。裁定依据：main 分支未开 branch protection，validate
+> 仅是冗余保险而非强制门禁。yaml 语法验证通过。
+
 - **位置**：`.github/workflows/release.yml:19-69` vs `.github/workflows/ci.yml:11-41`（fmt/check-architecture/clippy/全量测试/Cargo.lock 校验无差异化 step）。
 - **选项**：A. 保留（发布前强制验证属刻意冗余）+ 注释说明；B. 删除 validate 中重复项，仅保留发布专属 step。
 - **建议**：倾向 A 的保守变体——先加注释说明意图；若确认 CI 已强制 check 通过才能发布则做 B。**默认不要动 release 关键路径**。
