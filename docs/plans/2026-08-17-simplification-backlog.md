@@ -156,6 +156,14 @@
 
 ### S-A7 `app/mod.rs` 的 `LaunchTarget` 单变体枚举 + `open_launch_target` 薄包装
 
+> **状态：已完成（2026-08-18，按裁定 A）**
+> 保留 `LaunchTarget` 枚举与 `open_launch_target` 转发函数并补注释：
+> 启动目标是 CLI 参数解析的产物，`on_reopen` 回调复用同一目标恢复启动
+> 入口；未来 CLI 新增直接打开项目/SSH 会话等入口时扩展变体即可，main 与
+> on_reopen 闭包无需感知具体目标。属行为不变文档改动（豁免 spec）：
+> fmt/architecture/clippy（workspace --all-targets）全绿；全 workspace
+> 测试通过。
+
 - **位置**：`src/app/mod.rs:7-16`；消费点 `main.rs:91,99-107,125`。
 - **选项**：A. 保留（未来多启动目标扩展点）+ 注释说明；B. 塌缩为 `open_main_window` 直接调用。
 - **建议**：倾向 A（reopen 分支有真实用途，枚举成本极低）；若坚持 YAGNI 选 B。
