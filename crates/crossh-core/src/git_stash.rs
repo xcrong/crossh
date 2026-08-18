@@ -155,17 +155,26 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].selector, "stash@{0}");
         assert!(entries[0].message.contains("initial"));
-        assert_eq!(fs::read_to_string(dir.join("note.txt")).unwrap(), "base\n");
+        assert_eq!(
+            fs::read_to_string(dir.join("note.txt"))
+                .unwrap()
+                .replace("\r\n", "\n"),
+            "base\n"
+        );
         assert!(!dir.join("untracked.txt").exists());
 
         apply_stash(&dir, &entries[0].selector).unwrap();
 
         assert_eq!(
-            fs::read_to_string(dir.join("note.txt")).unwrap(),
+            fs::read_to_string(dir.join("note.txt"))
+                .unwrap()
+                .replace("\r\n", "\n"),
             "changed\n"
         );
         assert_eq!(
-            fs::read_to_string(dir.join("untracked.txt")).unwrap(),
+            fs::read_to_string(dir.join("untracked.txt"))
+                .unwrap()
+                .replace("\r\n", "\n"),
             "new\n"
         );
         assert_eq!(list_stashes(&dir).unwrap().len(), 1);
@@ -181,7 +190,9 @@ mod tests {
         pop_stash(&dir, "stash@{0}").unwrap();
         assert!(list_stashes(&dir).unwrap().is_empty());
         assert_eq!(
-            fs::read_to_string(dir.join("note.txt")).unwrap(),
+            fs::read_to_string(dir.join("note.txt"))
+                .unwrap()
+                .replace("\r\n", "\n"),
             "changed\n"
         );
 

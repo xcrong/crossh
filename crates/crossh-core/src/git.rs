@@ -1197,7 +1197,9 @@ mod tests {
         discard_worktree(dir.path(), &["note.txt".to_string()]).unwrap();
 
         assert_eq!(
-            fs::read_to_string(dir.path().join("note.txt")).unwrap(),
+            fs::read_to_string(dir.path().join("note.txt"))
+                .unwrap()
+                .replace("\r\n", "\n"),
             "staged\n"
         );
         assert!(

@@ -100,7 +100,9 @@ mod tests {
             resolve_conflict(&dir, "conflict.txt", resolution).unwrap();
 
             assert_eq!(
-                fs::read_to_string(dir.join("conflict.txt")).unwrap(),
+                fs::read_to_string(dir.join("conflict.txt"))
+                    .unwrap()
+                    .replace("\r\n", "\n"),
                 expected
             );
             assert!(
