@@ -200,14 +200,7 @@ impl Utf8StreamDecoder {
 fn sdk_tool_definitions() -> Vec<sdk::ToolDefinition> {
     builtin_tools()
         .into_iter()
-        .map(|tool| {
-            sdk::ToolDefinition::new(
-                tool.name,
-                tool.description,
-                tool.input_schema,
-                tool.requires_approval,
-            )
-        })
+        .map(|tool| sdk::ToolDefinition::new(tool.name, tool.description, tool.input_schema))
         .collect()
 }
 

@@ -134,7 +134,6 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub input_schema: Value,
-    pub requires_approval: bool,
 }
 
 impl ToolDefinition {
@@ -142,13 +141,11 @@ impl ToolDefinition {
         name: impl Into<String>,
         description: impl Into<String>,
         input_schema: Value,
-        requires_approval: bool,
     ) -> Self {
         Self {
             name: name.into(),
             description: description.into(),
             input_schema,
-            requires_approval,
         }
     }
 }
@@ -1311,24 +1308,34 @@ mod tests {
                 "read",
                 "Read a file",
                 json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}),
-                false,
             )],
         )
     }
 
     #[test]
-    fn adapters_encode_canonical_messages_and_tools() {
+    fn spec_20260818_remove_sdk_tool_approval_field_adapters_encode_tools_without_approval_metadata()
+     {
         let chat = OpenAiChatAdapter
             .encode_request(&request(Protocol::OpenAiChat))
             .unwrap();
         assert_eq!(chat.body["messages"][0]["content"], "hello");
         assert_eq!(chat.body["tools"][0]["function"]["name"], "read");
+        assert!(
+            chat.body["tools"][0]["function"]
+                .get("requires_approval")
+                .is_none()
+        );
 
         let responses = OpenAiResponsesAdapter
             .encode_request(&request(Protocol::OpenAiResponses))
             .unwrap();
         assert_eq!(responses.body["input"][0]["content"], "hello");
         assert_eq!(responses.body["tools"][0]["strict"], true);
+        assert!(
+            responses.body["tools"][0]
+                .get("requires_approval")
+                .is_none()
+        );
         assert_eq!(responses.body["max_output_tokens"], 4_000);
 
         let anthropic = AnthropicMessagesAdapter
@@ -1336,6 +1343,11 @@ mod tests {
             .unwrap();
         assert_eq!(anthropic.body["messages"][0]["content"], "hello");
         assert_eq!(anthropic.body["max_tokens"], 4_000);
+        assert!(
+            anthropic.body["tools"][0]
+                .get("requires_approval")
+                .is_none()
+        );
     }
 
     #[test]
