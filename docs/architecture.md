@@ -107,3 +107,4 @@ and quick verification command for focused validation.
 - [0011: Terminal split ownership](adr/0011-terminal-split-ownership.md)
 - [0012: Spec-driven development loop](adr/0012-spec-driven-development-loop.md)
 - [0013: Application Toaster ownership](adr/0013-application-toaster-ownership.md)
+- [0014: Update manifest signature](adr/0014-update-manifest-signature.md)

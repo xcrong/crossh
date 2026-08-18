@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
+use crate::signature::verify_manifest_signature_with_key;
+
 pub const MANIFEST_SCHEMA: u32 = 1;
 pub const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 pub const MAX_DOWNLOAD_BYTES: u64 = 1024 * 1024 * 1024;
@@ -22,6 +24,10 @@ pub struct UpdateManifest {
     #[serde(default)]
     pub release_url: Option<String>,
     pub targets: BTreeMap<String, UpdateArtifact>,
+    // Ed25519 签名（base64 编码 64 字节），覆盖去掉本字段后的 canonical 序列化。
+    // 新客户端强制要求签名（缺省即拒绝更新）；旧客户端忽略该字段照常更新。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -132,14 +138,29 @@ pub enum ManifestError {
     InvalidChecksum,
     #[error("release notes are too large")]
     NotesTooLarge,
+    #[error("release manifest is missing its signature")]
+    MissingSignature,
+    #[error("release manifest signature is invalid: {0}")]
+    InvalidSignature(String),
 }
 
 pub fn parse_manifest(bytes: &[u8]) -> Result<UpdateManifest, ManifestError> {
+    let key = crate::signature::pinned_verifying_key()?;
+    parse_manifest_with_key(bytes, &key)
+}
+
+/// `parse_manifest` 的内核：用显式公钥验签（测试与工具复用同一验证逻辑）。
+pub(crate) fn parse_manifest_with_key(
+    bytes: &[u8],
+    key: &ed25519_dalek::VerifyingKey,
+) -> Result<UpdateManifest, ManifestError> {
     if bytes.len() > MAX_MANIFEST_BYTES {
         return Err(ManifestError::ManifestTooLarge);
     }
     let manifest: UpdateManifest = serde_json::from_slice(bytes)?;
     manifest.validate()?;
+    // 签名验证是协议的安全门槛：缺失或无效签名一律拒绝，即使结构校验通过。
+    verify_manifest_signature_with_key(&manifest, key)?;
     Ok(manifest)
 }
 
@@ -274,6 +295,12 @@ impl UpdateArtifact {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::signature::{parse_signing_key, parse_verifying_key, sign_manifest};
+    use base64::Engine;
+
+    fn test_signing_key() -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[0x42; 32])
+    }
 
     fn artifact(format: ArtifactFormat, filename: &str) -> UpdateArtifact {
         UpdateArtifact {
@@ -287,7 +314,7 @@ mod tests {
     }
 
     fn manifest(version: &str) -> UpdateManifest {
-        UpdateManifest {
+        let unsigned = UpdateManifest {
             schema: MANIFEST_SCHEMA,
             version: version.into(),
             notes: "notes".into(),
@@ -296,7 +323,9 @@ mod tests {
                 "macos-aarch64".into(),
                 artifact(ArtifactFormat::Zip, "crossh-1.0.1-aarch64-macos.zip"),
             )]),
-        }
+            signature: None,
+        };
+        sign_manifest(&unsigned, &test_signing_key()).expect("test signing must succeed")
     }
 
     #[test]
@@ -398,5 +427,248 @@ mod tests {
         record_update_result_in(&cache_root, &ok);
         assert_eq!(take_update_result_in(&cache_root), Some(ok));
         let _ = fs::remove_dir_all(&cache_root);
+    }
+
+    // ── spec 20260818-update-manifest-ed25519-signature ──────────────────────
+
+    fn signed_manifest_bytes(version: &str) -> Vec<u8> {
+        serde_json::to_vec(&manifest(version)).expect("signed manifest must serialize")
+    }
+
+    fn tamper(original: &[u8], mutate: impl FnOnce(&mut serde_json::Value)) -> Vec<u8> {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(original).expect("tamper input must be JSON");
+        mutate(&mut value);
+        serde_json::to_vec(&value).expect("tampered manifest must serialize")
+    }
+
+    #[test]
+    fn spec_20260818_manifest_sig_valid_signature_parses() {
+        // 契约 1：合法签名 + 匹配公钥 → 完整解析。parse_manifest 与
+        // parse_manifest_with_key 共享同一验证逻辑（with_key 为内核，
+        // 全局公钥路径由 spec_20260818_manifest_sig_global_default_key_is_enforced
+        // 单独证明）。
+        let key = test_signing_key().verifying_key();
+        let parsed = parse_manifest_with_key(&signed_manifest_bytes("1.0.1"), &key)
+            .expect("a manifest signed with the matching key must parse");
+        assert_eq!(parsed.version, "1.0.1");
+        assert!(
+            parsed.signature.is_some(),
+            "signature must survive a roundtrip"
+        );
+    }
+
+    #[test]
+    fn spec_20260818_manifest_sig_global_default_key_is_enforced() {
+        // 全局路径回归：parse_manifest 必须使用 DEFAULT_PUBLIC_KEY 验签，
+        // 测试密钥签名的 manifest 在默认公钥下必须被拒绝（正式公钥 ≠ 测试公钥）。
+        assert!(matches!(
+            parse_manifest(&signed_manifest_bytes("1.0.1")),
+            Err(ManifestError::InvalidSignature(_))
+        ));
+    }
+
+    #[test]
+    fn spec_20260818_manifest_sig_tampered_fields_rejected() {
+        let original = signed_manifest_bytes("1.0.1");
+        type TamperCase = (&'static str, fn(&mut serde_json::Value));
+        let cases: Vec<TamperCase> = vec![
+            ("version", |value| value["version"] = "9.9.9".into()),
+            ("notes", |value| value["notes"] = "evil notes".into()),
+            ("release_url", |value| {
+                value["release_url"] = "https://evil.example".into()
+            }),
+            ("target.url", |value| {
+                value["targets"]["macos-aarch64"]["url"] = "https://evil.example/crossh.zip".into()
+            }),
+            ("target.filename", |value| {
+                value["targets"]["macos-aarch64"]["filename"] =
+                    "crossh-9.9.9-aarch64-macos.zip".into()
+            }),
+            ("target.format+filename", |value| {
+                value["targets"]["macos-aarch64"]["filename"] = "crossh-9.9.9.tar.gz".into();
+                value["targets"]["macos-aarch64"]["format"] = "tar.gz".into();
+            }),
+            ("target.sha256", |value| {
+                value["targets"]["macos-aarch64"]["sha256"] = "11".repeat(32).into()
+            }),
+            ("target.size", |value| {
+                value["targets"]["macos-aarch64"]["size"] = 2u64.into()
+            }),
+        ];
+        for (name, mutate) in cases {
+            let bytes = tamper(&original, mutate);
+            assert!(
+                matches!(
+                    parse_manifest(&bytes),
+                    Err(ManifestError::InvalidSignature(_))
+                ),
+                "tampered field {name} must fail signature verification"
+            );
+        }
+    }
+
+    #[test]
+    fn spec_20260818_manifest_sig_missing_signature_rejected() {
+        let mut unsigned = manifest("1.0.1");
+        unsigned.signature = None;
+        let bytes = serde_json::to_vec(&unsigned).expect("serialize");
+        assert!(matches!(
+            parse_manifest(&bytes),
+            Err(ManifestError::MissingSignature)
+        ));
+    }
+
+    #[test]
+    fn spec_20260818_manifest_sig_malformed_signature_rejected() {
+        let mut invalid_base64 = manifest("1.0.1");
+        invalid_base64.signature = Some("!!!not-base64!!!".into());
+        assert!(matches!(
+            parse_manifest(&serde_json::to_vec(&invalid_base64).unwrap()),
+            Err(ManifestError::InvalidSignature(_))
+        ));
+
+        let mut too_short = manifest("1.0.1");
+        too_short.signature = Some(base64::engine::general_purpose::STANDARD.encode([1u8; 63]));
+        assert!(matches!(
+            parse_manifest(&serde_json::to_vec(&too_short).unwrap()),
+            Err(ManifestError::InvalidSignature(_))
+        ));
+
+        let mut too_long = manifest("1.0.1");
+        too_long.signature = Some(base64::engine::general_purpose::STANDARD.encode([1u8; 65]));
+        assert!(matches!(
+            parse_manifest(&serde_json::to_vec(&too_long).unwrap()),
+            Err(ManifestError::InvalidSignature(_))
+        ));
+    }
+
+    #[test]
+    fn spec_20260818_manifest_sig_semantically_equivalent_bytes_verify() {
+        // 契约 5：签名作用于语义（canonical 序列化）而非原始字节。
+        // 显式构造两种「语义等价、字节不同」的表示，不依赖 serde_json 的
+        // 字段排序实现（preserve_order 会随构建图变化）。
+        let key = test_signing_key().verifying_key();
+        let original = String::from_utf8(signed_manifest_bytes("1.0.1")).unwrap();
+
+        // 变体 1：空白/缩进变化。
+        let value: serde_json::Value = serde_json::from_str(&original).expect("parse");
+        let pretty = serde_json::to_string_pretty(&value).expect("serialize");
+        assert_ne!(pretty, original, "pretty printing must change the bytes");
+        parse_manifest_with_key(pretty.as_bytes(), &key)
+            .expect("whitespace variations must verify against the same signature");
+
+        // 变体 2：顶层字段顺序打乱（JSON 对象字段无序，语义相同）。
+        let signature = value["signature"]
+            .as_str()
+            .expect("signed fixture has a signature");
+        let shuffled = format!(
+            r#"{{"signature":"{signature}","version":"1.0.1","targets":{{"macos-aarch64":{{"size":1,"sha256":"0000000000000000000000000000000000000000000000000000000000000000","format":"zip","filename":"crossh-1.0.1-aarch64-macos.zip","url":"https://github.com/xcrong/crossh/releases/download/v1/crossh-1.0.1-aarch64-macos.zip"}}}},"schema":1,"notes":"notes","release_url":null}}"#
+        );
+        assert_ne!(
+            shuffled, original,
+            "shuffled field order must change the bytes"
+        );
+        parse_manifest_with_key(shuffled.as_bytes(), &key)
+            .expect("reordered fields must verify against the same signature");
+    }
+
+    #[test]
+    fn spec_20260818_manifest_sig_wrong_key_rejected() {
+        let signed = manifest("1.0.1");
+        let other_key = ed25519_dalek::SigningKey::from_bytes(&[0x24; 32]);
+        assert!(matches!(
+            crate::signature::verify_manifest_signature_with_key(
+                &signed,
+                &other_key.verifying_key()
+            ),
+            Err(ManifestError::InvalidSignature(_))
+        ));
+        let unrelated = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        assert!(matches!(
+            crate::signature::verify_manifest_signature_with_key(
+                &signed,
+                &unrelated.verifying_key()
+            ),
+            Err(ManifestError::InvalidSignature(_))
+        ));
+    }
+
+    #[test]
+    fn spec_20260818_manifest_sig_signed_old_version_still_rejected_by_candidate() {
+        // 重放攻击：旧版本合法签名的 manifest 仍被版本比较拒绝。
+        let signed = manifest("1.0.0");
+        let current = Version::parse("1.0.1").unwrap();
+        assert!(
+            signed
+                .candidate(&current, UpdateTarget::MacosAarch64)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn spec_20260818_manifest_sig_legacy_client_ignores_signature_field() {
+        // 模拟不认识 signature 字段的旧解析逻辑（serde 忽略未知字段）。
+        #[derive(Deserialize)]
+        struct LegacyManifest {
+            schema: u32,
+            version: String,
+            #[serde(default)]
+            notes: String,
+            #[serde(default)]
+            release_url: Option<String>,
+            targets: BTreeMap<String, LegacyArtifact>,
+        }
+        #[derive(Deserialize)]
+        struct LegacyArtifact {
+            url: String,
+            filename: String,
+            format: ArtifactFormat,
+            sha256: String,
+            size: u64,
+        }
+        let parsed: LegacyManifest =
+            serde_json::from_slice(&signed_manifest_bytes("1.0.1")).expect("legacy parse");
+        assert_eq!(parsed.schema, MANIFEST_SCHEMA);
+        assert_eq!(parsed.version, "1.0.1");
+        assert_eq!(parsed.notes, "notes");
+        assert!(parsed.release_url.is_none());
+        let artifact = &parsed.targets["macos-aarch64"];
+        assert_eq!(
+            artifact.url,
+            "https://github.com/xcrong/crossh/releases/download/v1/crossh-1.0.1-aarch64-macos.zip"
+        );
+        assert_eq!(artifact.filename, "crossh-1.0.1-aarch64-macos.zip");
+        assert_eq!(artifact.format, ArtifactFormat::Zip);
+        assert_eq!(artifact.sha256, "00".repeat(32));
+        assert_eq!(artifact.size, 1);
+    }
+
+    #[test]
+    fn spec_20260818_manifest_sig_sign_verify_roundtrip() {
+        let key = test_signing_key();
+        let mut unsigned = manifest("1.0.1");
+        unsigned.signature = None;
+        let signed = sign_manifest(&unsigned, &key).expect("signing cannot fail");
+        assert!(signed.signature.is_some(), "sign must attach a signature");
+        crate::signature::verify_manifest_signature_with_key(&signed, &key.verifying_key())
+            .expect("roundtrip must verify");
+    }
+
+    #[test]
+    fn spec_20260818_manifest_sig_invalid_signing_key_rejected() {
+        assert!(parse_signing_key("not-base64").is_err());
+        assert!(
+            parse_signing_key(&base64::engine::general_purpose::STANDARD.encode([1u8; 31]))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn spec_20260818_manifest_sig_default_public_key_is_wellformed() {
+        let key = parse_verifying_key(crate::signature::DEFAULT_PUBLIC_KEY)
+            .expect("pinned public key must be valid base64 of 32 bytes");
+        assert_eq!(key.to_bytes().len(), 32);
     }
 }

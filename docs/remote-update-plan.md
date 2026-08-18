@@ -8,7 +8,7 @@ macOS 暂时没有 Developer ID，因此当前发布未签名 `.app`。更新流
 
 ## 已实施的第一阶段
 
-- 发布 workflow 生成 `dist/stable.json`，包含版本、平台、产物格式、文件名、下载 URL、大小和 SHA-256。
+- 发布 workflow 生成 `dist/stable.json`，包含版本、平台、产物格式、文件名、下载 URL、大小和 SHA-256，并用发布者私钥做 Ed25519 签名后发布；客户端用内置公钥验签，缺失或无效签名一律拒绝（见 `docs/adr/0014-update-manifest-signature.md`）。
 - 客户端只接受 HTTPS 清单和 HTTPS 产物 URL。
 - 版本比较使用 semver，忽略相同版本和降级版本。
 - 清单大小限制为 1 MiB，单个下载限制为 1 GiB。
@@ -72,28 +72,28 @@ updater 在主进程退出后替换 `crossh.exe`。Windows zip 中包含 `crossh
 当前实现提供：
 
 - HTTPS 传输；
+- manifest 的 Ed25519 签名验证（公钥固定在客户端，`CROSSH_UPDATE_PUBLIC_KEY` 编译期覆盖仅用于测试）；
 - artifact URL、文件名、格式、大小和 SHA-256 校验；
 - semver 降级保护；
 - archive 路径穿越防护；
 - 临时文件和备份替换。
 
-SHA-256 不能抵抗发布源被恶意改写。下一阶段应给 `stable.json` 增加 Ed25519 签名，并把公钥固定在客户端；签名属于更新协议安全，不等同于 macOS Developer ID 代码签名。
+签名覆盖整个 manifest（版本号、URL、checksum 等全部字段），缺失或验签失败即拒绝更新；发布流水线签名后用内置公钥自验，失败则中止发布。签名属于更新协议安全，不等同于 macOS Developer ID 代码签名。
 
 ## 后续实施顺序
 
-1. 给 `stable.json` 增加 Ed25519 签名和 CI 私钥保护。
-2. 增加 ETag/Last-Modified 缓存、检查退避和离线状态。
-3. 增加下载进度、取消下载和缓存清理。
-4. 在真实发布目录验证 macOS `.app` 替换、Linux AppImage 替换和 Windows exe 替换。
-5. 为 updater 增加安装失败日志和明确的回滚标记。
-6. 获得 Developer ID 后再启用 macOS notarization/Sparkle，不改变当前清单字段。
+1. 增加 ETag/Last-Modified 缓存、检查退避和离线状态。
+2. 增加下载进度、取消下载和缓存清理。
+3. 在真实发布目录验证 macOS `.app` 替换、Linux AppImage 替换和 Windows exe 替换。
+4. 为 updater 增加安装失败日志和明确的回滚标记。
+5. 获得 Developer ID 后再启用 macOS notarization/Sparkle，不改变当前清单字段。
 
 ## 验收清单
 
-- [ ] 打 tag 后所有必需产物和 `stable.json` 出现在同一个 GitHub Release。
+- [ ] 打 tag 后所有必需产物和 `stable.json`（已签名）出现在同一个 GitHub Release。
 - [ ] 清单中每个必需 target 的文件名、大小和 SHA-256 与 Release 文件一致。
 - [ ] 当前版本检查到旧版本时不显示可更新状态。
-- [ ] 篡改清单 JSON、URL、文件名、格式、大小或 SHA-256 时拒绝更新。
+- [ ] 篡改清单 JSON、URL、文件名、格式、大小或 SHA-256 时拒绝更新；篡改签名或缺失签名同样拒绝。
 - [ ] 下载中断或 hash 不一致时不替换安装目录。
 - [ ] 用户取消退出或安装器启动失败时保留当前版本。
 - [ ] 更新后应用重新启动，设置和 SSH 配置不受影响。

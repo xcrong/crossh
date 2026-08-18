@@ -163,6 +163,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -194,6 +197,17 @@ jobs:
         env:
           VERSION: ${{ github.ref_name }}
         run: bash scripts/generate-update-manifest.sh "${VERSION#v}" "$GITHUB_REPOSITORY"
+
+      # Ed25519 签名：私钥只存在于 GitHub Secrets，经环境变量注入；
+      # 自验使用与客户端完全相同的固定公钥，签名或自验失败即中止发布，
+      # 绝不产出未签名 manifest（fail-closed，见 docs/adr/0014-update-manifest-signature.md）。
+      - name: Sign update manifest
+        env:
+          CROSSH_UPDATE_SIGNING_KEY: ${{ secrets.CROSSH_UPDATE_SIGNING_KEY }}
+        run: cargo run --quiet --package crossh-update --bin crossh-sign-manifest -- sign dist/stable.json
+
+      - name: Verify update manifest signature
+        run: cargo run --quiet --package crossh-update --bin crossh-sign-manifest -- verify dist/stable.json
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2

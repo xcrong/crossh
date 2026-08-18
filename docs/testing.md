@@ -64,7 +64,7 @@ ADR 0012）：spec 的行为契约条目就是测试的输入，测试名带 spe
 | Forwarding | start/stop，启动后立即停止，旧回执不得重新激活，关闭 pane 停止全部规则 |
 | Settings | 默认值、规范化、持久化迁移，provider/model 引用修复，Unicode/IME 输入 |
 | Agent | provider wire contract，SSE 分块，tool call 聚合，取消和 workspace 路径隔离 |
-| Update | manifest 校验，大小/checksum，归档安全，原子替换和失败回滚 |
+| Update | manifest 结构/签名校验（缺失或无效签名拒绝，篡改任意字段拒绝，语义等价字节通过，旧客户端忽略签名字段）、大小/checksum，归档安全，原子替换和失败回滚；`crossh-sign-manifest` generate/sign/verify 端到端行为（签名后验签通过、篡改/缺签名/无私钥或非法私钥失败且不改文件、私钥可从环境变量读取） |
 
 ## CI 规则
 
