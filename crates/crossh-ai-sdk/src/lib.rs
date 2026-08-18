@@ -482,10 +482,6 @@ impl StreamAccumulator {
         }
     }
 
-    pub fn set_protocol(&mut self, protocol: Protocol) {
-        self.protocol = protocol;
-    }
-
     pub fn push(&mut self, event: &Event) {
         match event {
             Event::TextDelta(delta) => self.text.push_str(delta),

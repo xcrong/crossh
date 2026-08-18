@@ -261,6 +261,14 @@
 
 ### S-D7 sdk `StreamAccumulator::set_protocol` 仅测试消费者
 
+> **状态：已完成（2026-08-18，按裁定 A）**
+> 删除 `StreamAccumulator::set_protocol`（lib.rs:485-487，方法体仅一行字段赋值）。
+> 核查发现 backlog 描述的 providers.rs cfg(test) wrapper 调用已随 S-D3 删除，
+> 全仓库（含测试）零调用点，无需连带改动；生产路径与 crossh-agent 测试均经
+> `StreamAccumulator::new(protocol)` 初始化。属行为不变死代码删除（豁免 spec）：
+> rg 全仓库零引用；fmt/architecture/clippy（workspace --all-targets
+> -- -D warnings）全绿；全 workspace 测试通过。
+
 - **位置**：`crates/crossh-ai-sdk/src/lib.rs:558`；生产路径经 `StreamAccumulator::new(adapter.protocol())` 初始化。
 - **选项**：A. 删除（连同 providers.rs cfg(test) wrapper 里的调用）；B. 保留为 SDK 扩展 API。
 - **建议**：A（零消费者，SDK 面越窄越好；S-D3 已把兼容 wrapper 删掉，删除后无残留）。
