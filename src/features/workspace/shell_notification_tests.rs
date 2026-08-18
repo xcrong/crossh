@@ -224,6 +224,17 @@ fn spec_notification_response_from_remote_split_right_pane_keeps_the_split(
         assert_eq!(split.right, right_view);
         assert_eq!(split.focused, SplitSide::Right);
     });
+
+    // 关闭 remote tabs：与 local 测试的 cleanup_local_sessions 对称。
+    // 不清理会留下存活的 PTY；Windows(conpty) 下 PTY reader 线程在
+    // 测试窗口内活动会触发 test_scheduler 的非确定性守卫（时稳时不稳）。
+    cx.update(|cx| {
+        shell.update(cx, |shell, cx| {
+            while !shell.workspace.sessions.remote_tabs.is_empty() {
+                shell.close_remote_tab(0, cx);
+            }
+        })
+    });
 }
 
 #[gpui::test]
