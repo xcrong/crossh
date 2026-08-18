@@ -183,6 +183,15 @@
 
 ### S-A10 QuickCommandEditor / CommitEditor 薄委托层
 
+> **状态：已完成（2026-08-18，联动 S-A1 spec：`docs/specs/20260818-merge-sftp-text-editing.md`）**
+> 随 S-A1 一并落地（commit `3113257`）：删除 QuickCommandEditor/CommitEditor 全部
+> 薄委托方法（原 command_editor.rs:30-60、git/editor.rs:18-54 的 8+1 个单行转发），
+> 两类编辑器仅保留 UI 侧字段（scope/original/focus/scroll 与 focus），调用方
+> （shell.rs、git/input.rs、workspace/view.rs、git/render.rs、shell_input.rs、
+> sftp/view.rs）全部直连 `editor.state`，与 `TextEditingState` 直接 pub 字段风格统一；
+> 测试随状态机迁移至 shared/text_editing.rs。验证结果同 S-A1 关闭记录
+> （契约测试 7 条、rg 零残留、fmt/architecture/clippy 全绿、全 workspace 测试通过）。
+
 - **位置**：`src/features/workspace/command_editor.rs:30-60`、`src/features/git/editor.rs:18-54`（8+1 个单行转发方法，全部有生产调用点）；与 `TextEditingState` 直接 pub 字段形成两种封装风格。
 - **选项**：A. 随 S-A1 spec 一并设计（让调用方直接操作 `editor.state` 或收紧字段可见性）；B. 保持现状。
 - **建议**：A。**不要单独行动**，等 S-A1。
