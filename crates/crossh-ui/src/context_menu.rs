@@ -59,6 +59,12 @@ pub enum ShellMenuAction {
     CloseAllRemoteTabs,
     /// 切换到本地会话。
     SelectLocalSession(u64),
+    /// 固定本地会话（分配持久化 pin_id）。
+    PinLocalSession(u64),
+    /// 取消固定本地会话（移除持久化记录）。
+    UnpinLocalSession(u64),
+    /// 打开本地会话重命名弹窗。
+    RenameLocalSession(u64),
     /// 关闭本地会话。
     CloseLocalSession(u64),
     /// 关闭同目录下的其他本地会话。

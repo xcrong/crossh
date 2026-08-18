@@ -1,5 +1,8 @@
 //! AppShell terminal tab and session navigation.
 
+use std::collections::BTreeSet;
+use std::path::Path;
+
 use gpui::{PromptButton, PromptLevel};
 
 use task::Shell;
@@ -8,6 +11,9 @@ use crossh_core::terminal::remote_shell_bootstrap_command;
 
 use super::*;
 use crate::features::workspace::local_paths::{current_local_cwd, normalize_local_cwd};
+use crate::features::workspace::pinned::{next_pin_id, pinned_tabs_for_project};
+use crate::features::workspace::rename_editor::RenameEditor;
+use crate::features::workspace::settings::PinnedLocalTab;
 
 /// 单个标签页关闭时可能被打断的活动；任何一项存在都需要确认。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -395,7 +401,7 @@ impl AppShell {
             Some(ActiveView::LocalSession(session_id)) => {
                 let project_dir = self.local_session_project_dir(session_id);
                 let cwd = self.local_session_cwd(session_id, cx);
-                self.open_local_session(project_dir, cwd, cx);
+                let _ = self.open_local_session(project_dir, cwd, cx);
                 return;
             }
             Some(ActiveView::RemoteTab(idx)) => {
@@ -529,6 +535,178 @@ impl AppShell {
             self.close_local_session(session_id, cx);
         }
         self.select_local_session(keep, cx);
+    }
+
+    /// 固定本地会话：分配持久化 `pin_id` 并追加到固定记录末尾。
+    /// 同一会话重复固定不新增记录（契约 9）。
+    pub(crate) fn pin_local_session(&mut self, session_id: LocalSessionId, cx: &mut Context<Self>) {
+        let Some(session) = self.workspace.sessions.local_sessions.get_mut(&session_id) else {
+            return;
+        };
+        if session.pin_id.is_some() {
+            return;
+        }
+        let pin_id = next_pin_id(&self.workspace_settings.pinned_local_tabs);
+        session.pin_id = Some(pin_id);
+        self.workspace_settings
+            .pinned_local_tabs
+            .push(PinnedLocalTab {
+                pin_id,
+                project_dir: session.project_dir.clone(),
+                cwd: self.local_session_cwd(session_id, cx),
+                custom_name: None,
+            });
+        self.persist_settings();
+        cx.notify();
+    }
+
+    /// 取消固定：会话保持打开但回到普通标签行为，持久化记录移除。
+    pub(crate) fn unpin_local_session(
+        &mut self,
+        session_id: LocalSessionId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.workspace.sessions.local_sessions.get_mut(&session_id) else {
+            return;
+        };
+        let Some(pin_id) = session.pin_id.take() else {
+            return;
+        };
+        self.workspace_settings
+            .pinned_local_tabs
+            .retain(|tab| tab.pin_id != pin_id);
+        self.persist_settings();
+        cx.notify();
+    }
+
+    /// 打开固定标签的重命名弹窗（初始值取当前自定义名称；空白表示回退默认标题）。
+    /// 与 Quick Command 编辑器互斥，打开时静默关闭另一个模态。
+    pub(crate) fn open_rename_local_session(
+        &mut self,
+        session_id: LocalSessionId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) else {
+            return;
+        };
+        let focus = cx.focus_handle();
+        self.quick_command_editor = None;
+        self.rename_editor = Some(RenameEditor::new(
+            session_id,
+            session.custom_name.clone().unwrap_or_default(),
+            focus.clone(),
+        ));
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    /// 提交重命名：空白清除名称（契约 4），否则覆盖并持久化到固定记录。
+    pub(crate) fn submit_rename_local_session(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.rename_editor.take() else {
+            return;
+        };
+        let name = editor.state.value.clone();
+        let Some(session) = self
+            .workspace
+            .sessions
+            .local_sessions
+            .get_mut(&editor.session_id)
+        else {
+            // 弹窗期间会话已关闭：静默忽略，不写持久化。
+            cx.notify();
+            return;
+        };
+        let custom_name = (!name.trim().is_empty()).then(|| name.trim().to_string());
+        session.custom_name = custom_name.clone();
+        if let Some(pin_id) = session.pin_id
+            && let Some(tab) = self
+                .workspace_settings
+                .pinned_local_tabs
+                .iter_mut()
+                .find(|tab| tab.pin_id == pin_id)
+        {
+            tab.custom_name = custom_name;
+            self.persist_settings();
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn cancel_rename_local_session(&mut self, cx: &mut Context<Self>) {
+        if self.rename_editor.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// 按固定记录顺序重开会话（契约 11 恢复路径）：把 `pin_id` 与自定义
+    /// 名称应用到**本次恢复创建的新会话**（显式会话 id），目录已失效的
+    /// 记录跳过并即时从持久化设置清理（契约 11 Rev-4）。
+    pub(super) fn restore_pinned_local_tabs(
+        &mut self,
+        tabs: Vec<PinnedLocalTab>,
+        cx: &mut Context<Self>,
+    ) {
+        let mut removed_stale = false;
+        for tab in tabs {
+            let pin_id = tab.pin_id;
+            let custom_name = tab.custom_name.clone();
+            let Some(session_id) =
+                self.open_local_session(tab.project_dir.clone(), tab.cwd.clone(), cx)
+            else {
+                // 记录目录已失效（删除/改名/不可访问）：跳过恢复并即时
+                // 清理，等价契约 8 的关闭清理，不等待下次启动。
+                self.workspace_settings
+                    .pinned_local_tabs
+                    .retain(|entry| entry.pin_id != pin_id);
+                removed_stale = true;
+                continue;
+            };
+            self.apply_pin_to_session(session_id, pin_id, custom_name, cx);
+        }
+        if removed_stale {
+            self.persist_settings();
+        }
+    }
+
+    /// 激活项目时恢复该项目尚无会话的固定记录（契约 11）。
+    /// 幂等：已有对应 `pin_id` 会话的记录（用户手动固定或先前已恢复）
+    /// 不重复打开，也不改写既有会话内容。
+    pub(super) fn restore_pinned_tabs_for_project(
+        &mut self,
+        project_dir: &Path,
+        cx: &mut Context<Self>,
+    ) {
+        let open_pin_ids = self
+            .workspace
+            .sessions
+            .local_sessions
+            .values()
+            .filter_map(|session| session.pin_id)
+            .collect::<BTreeSet<_>>();
+        let pending =
+            pinned_tabs_for_project(&self.workspace_settings.pinned_local_tabs, project_dir)
+                .into_iter()
+                .filter(|tab| !open_pin_ids.contains(&tab.pin_id))
+                .cloned()
+                .collect::<Vec<_>>();
+        self.restore_pinned_local_tabs(pending, cx);
+    }
+
+    /// 把固定记录的状态应用到指定的本地会话（恢复路径专用；会话创建由
+    /// `open_local_session` 完成）。以显式 `session_id` 为目标，不依赖
+    /// 「当前活动会话」，避免失效记录污染其他会话（契约 11 Rev-4）。
+    pub(super) fn apply_pin_to_session(
+        &mut self,
+        session_id: LocalSessionId,
+        pin_id: u64,
+        custom_name: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(session) = self.workspace.sessions.local_sessions.get_mut(&session_id) {
+            session.pin_id = Some(pin_id);
+            session.custom_name = custom_name;
+            cx.notify();
+        }
     }
 
     pub(super) fn first_local_view(&self) -> Option<ActiveView> {

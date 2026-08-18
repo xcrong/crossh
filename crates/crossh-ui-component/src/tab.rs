@@ -81,6 +81,7 @@ pub struct TabItem {
     label: SharedString,
     active: bool,
     dot_color: Option<Rgba>,
+    leading_icon: Option<AnyElement>,
     max_label_width: Pixels,
     children: Vec<AnyElement>,
     on_select: Option<ClickHandler>,
@@ -96,6 +97,7 @@ impl TabItem {
             label: label.into(),
             active: false,
             dot_color: None,
+            leading_icon: None,
             max_label_width: px(220.),
             children: Vec::new(),
             on_select: None,
@@ -115,6 +117,12 @@ impl TabItem {
 
     pub fn dot_color(mut self, color: impl Into<Rgba>) -> Self {
         self.dot_color = Some(color.into());
+        self
+    }
+
+    /// 渲染在状态点之后、标签名之前的前置图标（如固定标签的图钉）。
+    pub fn leading_icon(mut self, icon: impl IntoElement) -> Self {
+        self.leading_icon = Some(icon.into_any_element());
         self
     }
 
@@ -154,6 +162,7 @@ impl RenderOnce for TabItem {
             label,
             active,
             dot_color,
+            leading_icon,
             max_label_width,
             children,
             on_select,
@@ -174,6 +183,7 @@ impl RenderOnce for TabItem {
             })
             .hover(|style| style.text_color(theme::accent()))
             .when_some(dot_color, |view, color| view.child(StatusDot::new(color)))
+            .when_some(leading_icon, |view, icon| view.child(icon))
             .child(
                 div()
                     .min_w_0()

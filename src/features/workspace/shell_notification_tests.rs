@@ -94,7 +94,7 @@ fn spec_notification_response_from_split_right_pane_keeps_the_split(cx: &mut gpu
 
     let (left_view, right_view) = cx.update(|cx| {
         shell.update(cx, |shell, cx| {
-            shell.open_local_session(dir.clone(), dir.clone(), cx);
+            let _ = shell.open_local_session(dir.clone(), dir.clone(), cx);
             let left = shell.workspace.active_view.expect("left pane is active");
             let right = shell
                 .open_local_session_for_split(dir.clone(), dir.clone(), cx)
@@ -258,7 +258,7 @@ fn spec_notification_click_in_rendered_window_keeps_the_split(cx: &mut gpui::Tes
             .expect("main window root")
             .expect("main window root is AppShell");
         let (left_view, right_view) = shell.update(cx, |shell, cx| {
-            shell.open_local_session(dir.clone(), dir.clone(), cx);
+            let _ = shell.open_local_session(dir.clone(), dir.clone(), cx);
             let left = shell.workspace.active_view.expect("left pane is active");
             let right = shell
                 .open_local_session_for_split(dir.clone(), dir.clone(), cx)
@@ -349,7 +349,7 @@ fn spec_notification_from_split_right_pane_while_other_tab_active_returns_to_spl
 
     let (left_view, right_view) = cx.update(|cx| {
         shell.update(cx, |shell, cx| {
-            shell.open_local_session(dir_a.clone(), dir_a.clone(), cx);
+            let _ = shell.open_local_session(dir_a.clone(), dir_a.clone(), cx);
             let left = shell.workspace.active_view.expect("left pane is active");
             let right = shell
                 .open_local_session_for_split(dir_a.clone(), dir_a.clone(), cx)
@@ -362,7 +362,7 @@ fn spec_notification_from_split_right_pane_while_other_tab_active_returns_to_spl
 
     let other_tab = cx.update(|cx| {
         shell.update(cx, |shell, cx| {
-            shell.open_local_session(dir_b.clone(), dir_b.clone(), cx);
+            let _ = shell.open_local_session(dir_b.clone(), dir_b.clone(), cx);
             let other = shell.workspace.active_view.expect("other tab is active");
             assert_ne!(other, left_view);
             other

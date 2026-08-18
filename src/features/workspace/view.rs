@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    AnyElement, App, AppContext, ClickEvent, Context, ElementId, Entity, FontWeight,
-    InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, px,
+    AnyElement, App, AppContext, ClickEvent, Context, Entity, FontWeight, InteractiveElement,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, px,
 };
 
 use crate::features::connections::Connection;
@@ -16,9 +16,8 @@ use crate::features::workspace::empty_state;
 use crate::features::workspace::pane::WorkspacePane;
 use crate::features::workspace::registry::{SplitSide, TerminalSplitState};
 use crate::features::workspace::shell::{AppShell, GitSyncOperation, GitSyncState};
-use crate::features::workspace::status::{
-    background_task_color, background_task_label, conn_state_dot_color, local_tab_dot_color,
-};
+use crate::features::workspace::status::{background_task_color, background_task_label};
+use crate::features::workspace::tab_strip;
 use crate::features::workspace::toaster::{ToastNotice, ToastTone};
 use crate::shared::i18n;
 use crossh_core::commands::{BackgroundTask, BackgroundTaskStatus, CommandRecord};
@@ -28,7 +27,7 @@ use crossh_ui::widgets::{ime_input_canvas, marked_text_span, text_caret, text_sp
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
     BadgeTone, Button, ButtonSize, ButtonVariant, CountBadge, ModalDialog, SplitResizer, StatusBar,
-    StatusDot, StatusMetric, TabItem, TabStrip, Tooltip,
+    StatusDot, StatusMetric, Tooltip,
 };
 
 const TERMINAL_SPLIT_MIN_PANE_WIDTH: f32 = 160.0;
@@ -62,6 +61,10 @@ pub struct LocalSession {
     pub terminal: Entity<TerminalView>,
     pub git_status: Option<GitStatus>,
     pub git_refresh: GitStatusRefresh,
+    /// 固定状态：持久化 `pin_id`（`Some` 即固定，与设置中记录一一对应）。
+    pub pin_id: Option<u64>,
+    /// 固定标签的自定义名称；覆盖终端标题显示，重启后保留。
+    pub custom_name: Option<String>,
 }
 
 /// 每个本地会话最多运行一个 Git 状态查询；期间的刷新请求只合并为一次后续检查。
@@ -110,7 +113,7 @@ pub fn render_main(
         .flex_col();
 
     // 标签条。
-    pane = pane.child(render_tab_strip(shell, cx));
+    pane = pane.child(tab_strip::render_tab_strip(shell, cx));
 
     // 终端/SFTP 区。
     let mut content = div().flex_1().min_h_0().flex().relative();
@@ -1169,7 +1172,7 @@ pub fn render_quick_command_editor(
             let focus = focus.clone();
             move |_ev, window, cx| window.focus(&focus, cx)
         })
-        .on_key_down(cx.listener(AppShell::handle_quick_command_editor_key));
+        .on_key_down(cx.listener(AppShell::handle_modal_editor_key));
 
     if value.is_empty() {
         if focused {
@@ -1252,295 +1255,131 @@ pub fn render_quick_command_editor(
     .into_any_element()
 }
 
-fn status_metric(text: impl Into<SharedString>, tone: BadgeTone) -> AnyElement {
-    StatusMetric::new(text).tone(tone).into_any_element()
-}
-
-// 容器不绑定 click；标签名与关闭按钮分别绑定，避免事件叠加。
-#[allow(clippy::too_many_arguments)]
-fn render_tab_chip<M, S, C>(
+/// 固定标签重命名弹窗：ModalDialog + 自绘文本输入（IME 支持），
+/// 模式与 Quick Command 编辑器一致。
+pub fn render_rename_editor(
+    shell: &mut AppShell,
+    window: &Window,
     cx: &mut Context<AppShell>,
-    container_id: impl Into<gpui::ElementId>,
-    dot_color: gpui::Rgba,
-    label: impl Into<SharedString>,
-    is_active: bool,
-    label_id: impl Into<ElementId>,
-    menu: M,
-    on_select: S,
-    close_id: impl Into<gpui::ElementId>,
-    on_close: C,
-) -> AnyElement
-where
-    M: Fn(&MouseDownEvent, &mut AppShell, &mut Window, &mut Context<AppShell>) + 'static,
-    S: Fn(&ClickEvent, &mut AppShell, &mut Window, &mut Context<AppShell>) + 'static,
-    C: Fn(&ClickEvent, &mut AppShell, &mut Window, &mut Context<AppShell>) + 'static,
-{
-    TabItem::new(container_id, label)
-        .label_id(label_id)
-        .active(is_active)
-        .dot_color(dot_color)
-        .on_mouse_down(
-            MouseButton::Right,
-            cx.listener(move |this, ev: &MouseDownEvent, window, cx| menu(ev, this, window, cx)),
-        )
-        .on_select(
-            cx.listener(move |this, ev: &ClickEvent, window, cx| on_select(ev, this, window, cx)),
+) -> AnyElement {
+    let Some(editor) = &shell.rename_editor else {
+        return div().into_any_element();
+    };
+    let focus = editor.focus.clone();
+    let value = editor.state.value.clone();
+    let ime_marked_text = editor.state.ime_marked_text.clone();
+    let selection = editor.state.selection();
+    let (selection_start, selection_end) =
+        selection.unwrap_or((editor.state.cursor, editor.state.cursor));
+    let focused = focus.is_focused(window);
+    let mut input = div()
+        .id("rename-editor-input")
+        .w_full()
+        .min_w_0()
+        .min_h(px(38.))
+        .px_3()
+        .py_2()
+        .flex()
+        .items_center()
+        .bg(theme::canvas())
+        .border_1()
+        .border_color(theme::border_strong())
+        .rounded(px(theme::RADIUS_SM))
+        .relative()
+        .text_sm()
+        .text_color(theme::text())
+        .track_focus(&focus)
+        .tab_stop(true)
+        .focus(|style| style.border_color(theme::focus_ring()))
+        .on_click({
+            let focus = focus.clone();
+            move |_ev, window, cx| window.focus(&focus, cx)
+        })
+        .on_key_down(cx.listener(AppShell::handle_modal_editor_key));
+
+    if value.is_empty() {
+        if focused {
+            input = input.child(text_caret(px(20.)));
+        }
+        if ime_marked_text.is_empty() {
+            input = input.child(
+                div()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .text_color(theme::faint_text())
+                    .child(SharedString::from(i18n::text(
+                        "rename_tab.name_placeholder",
+                    ))),
+            );
+        } else {
+            input = input.child(marked_text_span(ime_marked_text.clone()));
+        }
+    } else {
+        input = input.child(text_span(value[..selection_start].to_string()));
+        if let Some((start, end)) = selection {
+            input = input.child(
+                div()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .bg(theme::accent_soft())
+                    .text_color(theme::text())
+                    .child(SharedString::from(value[start..end].to_string())),
+            );
+        } else {
+            if focused {
+                input = input.child(text_caret(px(20.)));
+            }
+            if !ime_marked_text.is_empty() {
+                input = input.child(marked_text_span(ime_marked_text.clone()));
+            }
+        }
+        input = input.child(text_span(value[selection_end..].to_string()));
+    }
+    input = input.child(ime_input_canvas(focus, cx.entity()));
+
+    let buttons = div()
+        .flex()
+        .flex_row()
+        .gap_2()
+        .child(
+            Button::new("rename-editor-save")
+                .size(ButtonSize::Medium)
+                .variant(ButtonVariant::Primary)
+                .icon(icons::icon(icons::IconName::Check, 13.).text_color(theme::canvas()))
+                .label(i18n::text("rename_tab.save"))
+                .on_click(cx.listener(|this, _ev, _window, cx| {
+                    this.submit_rename_local_session(cx);
+                })),
         )
         .child(
-            Button::new(close_id)
-                .size(ButtonSize::Icon(px(24.)))
-                .variant(ButtonVariant::Ghost)
+            Button::new("rename-editor-cancel")
+                .size(ButtonSize::Medium)
+                .variant(ButtonVariant::Secondary)
                 .icon(icons::icon(icons::IconName::X, 13.).text_color(theme::muted_text()))
-                .tooltip(i18n::text("tooltip.close_tab"))
-                .on_click(
-                    cx.listener(move |this, ev: &ClickEvent, w, cx| on_close(ev, this, w, cx)),
-                ),
-        )
-        .into_any_element()
-}
+                .label(i18n::text("prompt.cancel"))
+                .on_click(cx.listener(|this, _ev, _window, cx| {
+                    this.cancel_rename_local_session(cx);
+                })),
+        );
 
-fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoElement {
-    let mut strip = TabStrip::new("tab-strip").track_scroll(&shell.tab_scroll);
-
-    match shell.workspace.active_view {
-        Some(ActiveView::RemoteTab(active_idx)) => {
-            for idx in 0..shell.workspace.sessions.remote_tabs.len() {
-                if shell
-                    .workspace
-                    .is_split_secondary(ActiveView::RemoteTab(idx))
-                {
-                    continue;
-                }
-                let tab = &shell.workspace.sessions.remote_tabs[idx];
-                let is_active = active_idx == idx;
-                let state = shell.connections.state_for_key(&tab.host_key, cx);
-                let alias = tab_label(tab, cx);
-                let single = shell.workspace.sessions.remote_tabs.len() == 1;
-                let (has_terminal, low_latency_enabled, low_latency_available) = tab
-                    .pane
-                    .terminal_info(cx)
-                    .map(|info| (true, info.low_latency_enabled, info.low_latency_available))
-                    .unwrap_or((false, false, false));
-                let target = tab.target.clone();
-                strip = strip.child(render_tab_chip(
-                    cx,
-                    ("remote-tab-container", idx),
-                    conn_state_dot_color(&state),
-                    alias,
-                    is_active,
-                    ("remote-tab", idx),
-                    move |ev: &MouseDownEvent, this, _window, cx| {
-                        let mut entries = vec![MenuEntry::Item(MenuItem {
-                            id: "switch".into(),
-                            label: i18n::text("context_menu.switch"),
-                            shortcut_hint: None,
-                            disabled: is_active,
-                            danger: false,
-                            action: ShellMenuAction::SelectRemoteTab(idx),
-                        })];
-                        if has_terminal {
-                            entries.push(MenuEntry::CheckedItem {
-                                item: MenuItem {
-                                    id: "low-latency-shell-input".into(),
-                                    label: i18n::text("context_menu.low_latency_shell_input"),
-                                    shortcut_hint: None,
-                                    disabled: !low_latency_available,
-                                    danger: false,
-                                    action: ShellMenuAction::ToggleLowLatencyShellInput(idx),
-                                },
-                                checked: low_latency_enabled,
-                            });
-                        }
-                        entries.extend([
-                            MenuEntry::Item(MenuItem {
-                                id: "close".into(),
-                                label: i18n::text("context_menu.close"),
-                                shortcut_hint: None,
-                                disabled: false,
-                                danger: false,
-                                action: ShellMenuAction::CloseRemoteTab(idx),
-                            }),
-                            MenuEntry::Item(MenuItem {
-                                id: "close-others".into(),
-                                label: i18n::text("context_menu.close_others"),
-                                shortcut_hint: None,
-                                disabled: single,
-                                danger: false,
-                                action: ShellMenuAction::CloseOtherRemoteTabs(idx),
-                            }),
-                            MenuEntry::Item(MenuItem {
-                                id: "close-all".into(),
-                                label: i18n::text("context_menu.close_all"),
-                                shortcut_hint: None,
-                                disabled: false,
-                                danger: false,
-                                action: ShellMenuAction::CloseAllRemoteTabs,
-                            }),
-                            MenuEntry::Separator,
-                            MenuEntry::Item(MenuItem {
-                                id: "copy-target".into(),
-                                label: i18n::text("context_menu.copy_target"),
-                                shortcut_hint: None,
-                                disabled: false,
-                                danger: false,
-                                action: ShellMenuAction::CopyText(target.clone()),
-                            }),
-                        ]);
-                        this.open_context_menu(ev.position, entries, cx);
-                    },
-                    move |_ev: &ClickEvent, this, _window, cx| {
-                        this.switch_remote_tab(idx, cx);
-                    },
-                    ("remote-tab-close", idx),
-                    move |_ev: &ClickEvent, this, w, cx| {
-                        this.request_close_remote_tab(idx, w, cx);
-                    },
-                ));
-            }
-        }
-        Some(ActiveView::LocalSession(active_session_id)) => {
-            let session_ids = shell
-                .local_dir_for_session(active_session_id)
-                .map(|dir| dir.sessions.clone())
-                .unwrap_or_default();
-            for (idx, session_id) in session_ids.iter().copied().enumerate() {
-                if shell
-                    .workspace
-                    .is_split_secondary(ActiveView::LocalSession(session_id))
-                {
-                    continue;
-                }
-                let is_active = active_session_id == session_id;
-                let state = shell
-                    .workspace
-                    .sessions
-                    .local_sessions
-                    .get(&session_id)
-                    .map(|session| session.terminal.read(cx).state.clone());
-                let command_running = shell
-                    .workspace
-                    .sessions
-                    .local_sessions
-                    .get(&session_id)
-                    .is_some_and(|session| session.terminal.read(cx).is_command_running(cx));
-                let fallback = format!("ses{}", idx + 1);
-                let label = match shell.workspace.sessions.local_sessions.get(&session_id) {
-                    Some(session) => session.terminal.read(cx).tab_title(&fallback),
-                    None => fallback,
-                };
-                let cwd = shell
-                    .workspace
-                    .sessions
-                    .local_sessions
-                    .get(&session_id)
-                    .map(|session| session.cwd.clone())
-                    .unwrap_or_default();
-                let single = session_ids.len() == 1;
-                strip = strip.child(render_tab_chip(
-                    cx,
-                    ("local-tab-container", session_id),
-                    local_tab_dot_color(&state, command_running),
-                    label,
-                    is_active,
-                    ("local-tab", session_id),
-                    move |ev: &MouseDownEvent, this, _window, cx| {
-                        let entries = vec![
-                            MenuEntry::Item(MenuItem {
-                                id: "switch".into(),
-                                label: i18n::text("context_menu.switch"),
-                                shortcut_hint: None,
-                                disabled: is_active,
-                                danger: false,
-                                action: ShellMenuAction::SelectLocalSession(session_id),
-                            }),
-                            MenuEntry::Item(MenuItem {
-                                id: "close".into(),
-                                label: i18n::text("context_menu.close"),
-                                shortcut_hint: None,
-                                disabled: false,
-                                danger: false,
-                                action: ShellMenuAction::CloseLocalSession(session_id),
-                            }),
-                            MenuEntry::Item(MenuItem {
-                                id: "close-others".into(),
-                                label: i18n::text("context_menu.close_others"),
-                                shortcut_hint: None,
-                                disabled: single,
-                                danger: false,
-                                action: ShellMenuAction::CloseOtherLocalSessions(session_id),
-                            }),
-                            MenuEntry::Separator,
-                            MenuEntry::Item(MenuItem {
-                                id: "copy-path".into(),
-                                label: i18n::text("context_menu.copy_path"),
-                                shortcut_hint: None,
-                                disabled: false,
-                                danger: false,
-                                action: ShellMenuAction::CopyText(
-                                    cwd.to_string_lossy().to_string(),
-                                ),
-                            }),
-                            MenuEntry::Item(MenuItem {
-                                id: "reveal-finder".into(),
-                                label: i18n::text("context_menu.reveal_in_finder"),
-                                shortcut_hint: None,
-                                disabled: false,
-                                danger: false,
-                                action: ShellMenuAction::RevealInFinder(cwd.clone()),
-                            }),
-                        ];
-                        this.open_context_menu(ev.position, entries, cx);
-                    },
-                    move |_ev: &ClickEvent, this, _window, cx| {
-                        this.select_local_session(session_id, cx);
-                    },
-                    ("local-tab-close", session_id),
-                    move |_ev: &ClickEvent, this, w, cx| {
-                        this.request_close_local_session(session_id, w, cx);
-                    },
-                ));
-            }
-        }
-        None => {}
-    }
-
-    strip.child(
-        div()
-            .id("new-tab")
-            .flex_shrink_0()
-            .w(px(28.))
-            .h(px(28.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(theme::RADIUS_SM))
-            .cursor_pointer()
-            .bg(theme::raised())
-            .border_1()
-            .border_color(theme::border())
-            .text_color(theme::accent())
-            .hover(|s| {
-                s.bg(theme::accent())
-                    .border_color(theme::accent())
-                    .text_color(theme::canvas())
-            })
-            .tooltip(|_window, cx| {
-                cx.new(|_| Tooltip::new(i18n::text("tooltip.new_terminal")))
-                    .into()
-            })
-            .child(
-                icons::icon(icons::IconName::Plus, 15.)
-                    .text_color(theme::accent())
-                    .hover(|s| s.text_color(theme::canvas())),
-            )
-            .on_click(cx.listener(|this, _ev, window, cx| {
-                this.new_tab(window, cx);
-            })),
+    ModalDialog::new(
+        i18n::text("rename_tab.title"),
+        icons::icon(icons::IconName::Pencil, 16.).text_color(theme::info()),
     )
+    .width(px(420.))
+    .scrim_id("rename-editor-scrim")
+    .card_id("rename-editor-card")
+    .blocks_card_clicks()
+    .on_backdrop_click(cx.listener(|this, _ev, _window, cx| {
+        this.cancel_rename_local_session(cx);
+    }))
+    .child(input)
+    .actions(buttons)
+    .into_any_element()
 }
 
-fn tab_label(tab: &Tab, cx: &mut Context<AppShell>) -> String {
-    tab.pane.title(cx)
+fn status_metric(text: impl Into<SharedString>, tone: BadgeTone) -> AnyElement {
+    StatusMetric::new(text).tone(tone).into_any_element()
 }
 
 /// 把会话按项目归属目录重建目录视图：同一项目的会话合并，保留上一次的活动会话。

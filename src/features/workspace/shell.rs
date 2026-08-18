@@ -16,9 +16,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext, ClipboardEntry, Context, Entity, EntityId, FocusHandle, InteractiveElement,
-    IntoElement, KeyDownEvent, ParentElement, PathPromptOptions, Pixels, Point, Render, Styled,
-    Task, TitlebarOptions, Window, WindowBounds, WindowOptions, div, px, size,
+    App, AppContext, Context, Entity, EntityId, FocusHandle, InteractiveElement, IntoElement,
+    KeyDownEvent, ParentElement, PathPromptOptions, Pixels, Point, Render, Styled, Task,
+    TitlebarOptions, Window, WindowBounds, WindowOptions, div, px, size,
 };
 
 use crate::features::connections::{Connection, ConnectionManager, HostEntry, PendingPrompt};
@@ -29,14 +29,17 @@ use crate::features::sftp::SftpPane;
 use crate::features::terminal::{TerminalEvent, TerminalView, TerminalViewEvent};
 use crate::features::updates::{UpdateController, UpdateSettings};
 use crate::features::workspace::empty_state::EmptyStateFilter;
+use crate::features::workspace::pinned::{pinned_tabs_for_project, prune_missing_pinned_tabs};
 use crate::features::workspace::quick_commands_rail::render_quick_commands_rail;
 use crate::features::workspace::registry::WorkspaceState;
+use crate::features::workspace::rename_editor::RenameEditor;
 use crate::features::workspace::settings::WorkspaceSettings;
 use crate::features::workspace::sidebar::{render_sidebar, render_sidebar_rail};
 use crate::features::workspace::toaster::{ToastNotice, ToastTone};
 use crate::features::workspace::view::{
     ActiveView, LocalDir, LocalSession, LocalSessionId, Tab, rebuild_local_dirs, render_main,
-    render_quick_command_editor, render_quick_commands, render_workspace_status_bar,
+    render_quick_command_editor, render_quick_commands, render_rename_editor,
+    render_workspace_status_bar,
 };
 use crate::shared::i18n::{self, LanguagePreference};
 use crossh_agent::AgentSettings;
@@ -166,6 +169,8 @@ pub struct AppShell {
     remote_background_controls: BTreeMap<u64, (Entity<Connection>, u64)>,
     pending_background_restarts: BTreeMap<u64, PendingBackgroundRestart>,
     pub(crate) quick_command_editor: Option<QuickCommandEditor>,
+    /// 固定标签重命名弹窗状态；与 quick command 编辑器互斥（都是模态弹窗）。
+    pub(crate) rename_editor: Option<RenameEditor>,
     /// 周期性刷新本地会话的 Git 状态，覆盖 shell 空闲时的外部文件变更。
     _git_status_refresh_task: Option<Task<()>>,
     /// 最近一次状态栏 Git 同步操作的进行/错误状态，按会话独立记录。
@@ -195,11 +200,23 @@ impl AppShell {
                 log::warn!("failed to save cleaned recent directories: {error}");
             }
         }
+        // 启动时清理固定标签记录中已失效的目录；不存在的目录不得阻碍启动，
+        // 也不得在每次启动时反复恢复（契约 6）。
+        let pinned_restore =
+            prune_missing_pinned_tabs(snapshot.workspace.pinned_local_tabs.clone());
+        if pinned_restore != snapshot.workspace.pinned_local_tabs {
+            snapshot.workspace.pinned_local_tabs = pinned_restore.clone();
+            if let Err(error) = settings::save(&snapshot) {
+                log::warn!("failed to save cleaned pinned tabs: {error}");
+            }
+        }
         let language_preference = snapshot.language;
         let terminal_settings = snapshot.terminal;
         TerminalView::apply_zed_settings(&terminal_settings, cx);
         let update_settings = snapshot.updates;
         let workspace_settings = snapshot.workspace;
+        // 启动不自动打开任何会话（契约 5 Rev-2）：固定记录保留在持久化
+        // 列表中，待用户打开对应项目时由契约 11 恢复。
         let agent_settings = snapshot.agent;
         let updates = cx.new(|_| UpdateController::new(update_settings.clone()));
         // 启动时把最近的本地目录记录恢复到侧栏 Local 分组（无活动会话，点击即重开）。
@@ -252,6 +269,7 @@ impl AppShell {
             remote_background_controls: BTreeMap::new(),
             pending_background_restarts: BTreeMap::new(),
             quick_command_editor: None,
+            rename_editor: None,
             _git_status_refresh_task: None,
             git_sync: BTreeMap::new(),
             quit_confirmation_open: false,
@@ -346,23 +364,27 @@ impl AppShell {
     /// `project_dir` 决定侧栏归属，`cwd` 只决定 shell 的初始工作目录。
     ///
     /// 打开新会话不取消源 Tab 的分栏：分栏跟随其属主 Tab。
+    /// 返回新会话 id；目录失效无法创建时返回 `None`（固定恢复路径据此
+    /// 跳过失效记录，契约 11 Rev-4）。
     pub(crate) fn open_local_session(
         &mut self,
         project_dir: PathBuf,
         cwd: PathBuf,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Option<LocalSessionId> {
         let Some(view) = self.create_local_session(project_dir, cwd, cx) else {
             self.sync_local_dirs(cx);
             cx.notify();
-            return;
+            return None;
         };
         if let ActiveView::LocalSession(session_id) = view {
             self.select_local_session(session_id, cx);
             self.refresh_git_status(session_id, false, cx);
+            self.status = None;
+            cx.notify();
+            return Some(session_id);
         }
-        self.status = None;
-        cx.notify();
+        None
     }
 
     fn create_local_session(
@@ -438,6 +460,8 @@ impl AppShell {
                 terminal,
                 git_status: None,
                 git_refresh: Default::default(),
+                pin_id: None,
+                custom_name: None,
             },
         );
         self.ensure_git_status_refresh_task(cx);
@@ -460,7 +484,27 @@ impl AppShell {
         if let Some(session_id) = session_id {
             self.select_local_session(session_id, cx);
         } else {
-            self.open_local_session(project_dir.clone(), project_dir, cx);
+            // 有固定记录的项目：固定标签即代表该项目的工作会话集合，
+            // 只恢复固定标签，不额外打开普通会话（契约 11 Rev-3）。
+            let has_pinned_records =
+                !pinned_tabs_for_project(&self.workspace_settings.pinned_local_tabs, &project_dir)
+                    .is_empty();
+            if !has_pinned_records {
+                let _ = self.open_local_session(project_dir.clone(), project_dir.clone(), cx);
+            }
+        }
+        // 激活项目时恢复该项目尚无会话的固定记录（契约 11）。
+        self.restore_pinned_tabs_for_project(&project_dir, cx);
+        // 契约 11 Rev-4：记录全部失效（已即时清理）导致项目仍无任何
+        // 会话时，兜底打开一个普通会话，保证激活必有会话。
+        let has_session_now = self
+            .workspace
+            .sessions
+            .local_dirs
+            .get(&project_dir)
+            .is_some_and(|dir| !dir.sessions.is_empty());
+        if !has_session_now {
+            let _ = self.open_local_session(project_dir.clone(), project_dir.clone(), cx);
         }
     }
 
@@ -495,6 +539,20 @@ impl AppShell {
     ) {
         let owner = local_background_owner(session_id);
         self.stop_background_tasks_for_owner(&owner, cx);
+        // 关闭即取消固定（契约 8）：任何关闭路径（按钮/关闭其他/进程退出）
+        // 都移除持久化记录，重启后不再恢复。
+        let pin_id = self
+            .workspace
+            .sessions
+            .local_sessions
+            .get(&session_id)
+            .and_then(|session| session.pin_id);
+        if let Some(pin_id) = pin_id {
+            self.workspace_settings
+                .pinned_local_tabs
+                .retain(|tab| tab.pin_id != pin_id);
+            self.persist_settings();
+        }
         let Some(cwd) = self
             .workspace
             .sessions
@@ -785,141 +843,6 @@ impl AppShell {
         }
     }
 
-    pub(crate) fn open_quick_command_editor(
-        &mut self,
-        scope: String,
-        command: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let focus = cx.focus_handle();
-        self.quick_command_editor = Some(QuickCommandEditor::new(scope, command, focus.clone()));
-        window.focus(&focus, cx);
-        cx.notify();
-    }
-
-    pub(crate) fn submit_quick_command_editor(&mut self, cx: &mut Context<Self>) {
-        let Some(editor) = self.quick_command_editor.take() else {
-            return;
-        };
-        self.command_history
-            .edit(&editor.scope, &editor.original, &editor.state.value);
-        cx.notify();
-    }
-
-    pub(crate) fn cancel_quick_command_editor(&mut self, cx: &mut Context<Self>) {
-        if self.quick_command_editor.take().is_some() {
-            cx.notify();
-        }
-    }
-
-    pub(crate) fn handle_quick_command_editor_key(
-        &mut self,
-        ev: &KeyDownEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let ks = &ev.keystroke;
-        let primary = ks.modifiers.control || ks.modifiers.platform;
-        let extend = ks.modifiers.shift;
-
-        if primary && ks.key == "a" {
-            if let Some(editor) = &mut self.quick_command_editor {
-                editor.state.clear_composition();
-                editor.state.select_all();
-            }
-            cx.notify();
-            return;
-        }
-
-        if primary && matches!(ks.key.as_str(), "c" | "x") {
-            if let Some(editor) = &mut self.quick_command_editor
-                && let Some(text) = editor.state.selected_text()
-            {
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-                if ks.key == "x" {
-                    editor.state.clear_composition();
-                    editor.state.replace_selection("");
-                }
-            }
-            cx.notify();
-            return;
-        }
-
-        if primary && ks.key == "v" {
-            let pasted = cx.read_from_clipboard().and_then(|item| {
-                item.into_entries().find_map(|entry| match entry {
-                    ClipboardEntry::String(value) => Some(value.text),
-                    _ => None,
-                })
-            });
-            if let Some(editor) = &mut self.quick_command_editor
-                && let Some(text) = pasted
-            {
-                editor.state.clear_composition();
-                editor.state.replace_selection(&text);
-            }
-            cx.notify();
-            return;
-        }
-
-        match ks.key.as_str() {
-            "enter" | "return" => self.submit_quick_command_editor(cx),
-            "escape" => self.cancel_quick_command_editor(cx),
-            "backspace" => {
-                if let Some(editor) = &mut self.quick_command_editor {
-                    editor.state.clear_composition();
-                    editor.state.backspace();
-                }
-                cx.notify();
-            }
-            "delete" => {
-                if let Some(editor) = &mut self.quick_command_editor {
-                    editor.state.clear_composition();
-                    editor.state.delete();
-                }
-                cx.notify();
-            }
-            "left" => {
-                if let Some(editor) = &mut self.quick_command_editor {
-                    editor.state.clear_composition();
-                    editor.state.move_horizontal(-1, extend);
-                }
-                cx.notify();
-            }
-            "right" => {
-                if let Some(editor) = &mut self.quick_command_editor {
-                    editor.state.clear_composition();
-                    editor.state.move_horizontal(1, extend);
-                }
-                cx.notify();
-            }
-            "home" => {
-                if let Some(editor) = &mut self.quick_command_editor {
-                    editor.state.clear_composition();
-                    editor.state.move_to_boundary(false, extend);
-                }
-                cx.notify();
-            }
-            "end" => {
-                if let Some(editor) = &mut self.quick_command_editor {
-                    editor.state.clear_composition();
-                    editor.state.move_to_boundary(true, extend);
-                }
-                cx.notify();
-            }
-            _ => {
-                if let Some(ch) = printable_char(ks)
-                    && let Some(editor) = &mut self.quick_command_editor
-                {
-                    editor.state.clear_composition();
-                    editor.state.replace_selection(&ch.to_string());
-                    cx.notify();
-                }
-            }
-        }
-    }
-
     fn open_query(&mut self, cx: &mut Context<Self>) {
         let query = self.host_query.trim().to_string();
         if query.is_empty() {
@@ -1104,7 +1027,11 @@ impl AppShell {
             }
             ShellMenuAction::ForgetLocalDir(cwd) => self.forget_local_dir(cwd, cx),
             ShellMenuAction::OpenLocalTerminal(cwd) => {
-                self.open_local_session(cwd.clone(), cwd, cx)
+                let _ = self.open_local_session(cwd.clone(), cwd.clone(), cx);
+                // 「打开本地终端」即打开项目：同步恢复该项目尚无会话的
+                // 固定记录（契约 11 Rev-1）。不能放进 open_local_session
+                // 自身，否则恢复路径会递归（恢复内部也调用 open）。
+                self.restore_pinned_tabs_for_project(&cwd, cx);
             }
             ShellMenuAction::SelectRemoteTab(idx) => self.switch_remote_tab(idx, cx),
             ShellMenuAction::ToggleLowLatencyShellInput(idx) => {
@@ -1115,6 +1042,13 @@ impl AppShell {
             ShellMenuAction::CloseAllRemoteTabs => self.close_all_remote_tabs(cx),
             ShellMenuAction::SelectLocalSession(session_id) => {
                 self.select_local_session(session_id, cx);
+            }
+            ShellMenuAction::PinLocalSession(session_id) => self.pin_local_session(session_id, cx),
+            ShellMenuAction::UnpinLocalSession(session_id) => {
+                self.unpin_local_session(session_id, cx)
+            }
+            ShellMenuAction::RenameLocalSession(session_id) => {
+                self.open_rename_local_session(session_id, window, cx)
             }
             ShellMenuAction::CloseLocalSession(session_id) => {
                 self.request_close_local_session(session_id, window, cx);
@@ -1806,6 +1740,9 @@ impl Render for AppShell {
         if self.quick_command_editor.is_some() {
             root = root.child(render_quick_command_editor(self, window, cx));
         }
+        if self.rename_editor.is_some() {
+            root = root.child(render_rename_editor(self, window, cx));
+        }
         if let Some(menu) = self.context_menu.clone() {
             root = root.child(render_context_menu(
                 &menu,
@@ -1961,6 +1898,9 @@ mod tests {
 #[cfg(test)]
 #[path = "git_sync_toast_tests.rs"]
 mod git_sync_toast_tests;
+#[cfg(test)]
+#[path = "pinned_tab_tests.rs"]
+mod pinned_tab_tests;
 #[cfg(test)]
 #[path = "shell_notification_tests.rs"]
 mod shell_notification_tests;

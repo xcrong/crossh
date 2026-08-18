@@ -798,7 +798,7 @@ fn render_local_dir(
             .tooltip(i18n::text("tooltip.new_terminal"))
             .on_click(cx.listener(move |this, _ev, _window, cx| {
                 cx.stop_propagation();
-                this.open_local_session(
+                let _ = this.open_local_session(
                     project_dir_for_new.clone(),
                     project_dir_for_new.clone(),
                     cx,

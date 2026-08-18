@@ -190,6 +190,9 @@ context_menu:
   close: Close
   close_others: Close Others
   close_all: Close All
+  pin_tab: Pin Tab
+  unpin_tab: Unpin Tab
+  rename_tab: Rename…
   copy: Copy
   paste: Paste
   select_all: Select All
@@ -421,3 +424,8 @@ quick_commands:
   failed: Failed
   terminated: Stopped
   stop: Stop task
+
+rename_tab:
+  title: Rename Tab
+  name_placeholder: Tab name (empty restores the default)
+  save: Save

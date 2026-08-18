@@ -190,6 +190,9 @@ context_menu:
   close: 关闭
   close_others: 关闭其他
   close_all: 关闭全部
+  pin_tab: 固定标签
+  unpin_tab: 取消固定
+  rename_tab: 重命名…
   copy: 复制
   paste: 粘贴
   select_all: 全选
@@ -421,3 +424,8 @@ quick_commands:
   failed: 失败
   terminated: 已停止
   stop: 停止任务
+
+rename_tab:
+  title: 重命名标签
+  name_placeholder: 标签名称（留空恢复默认）
+  save: 保存

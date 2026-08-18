@@ -101,7 +101,30 @@ pub(crate) fn save(snapshot: &SettingsSnapshot) -> std::io::Result<()> {
 }
 
 fn settings_path() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = test_settings_path() {
+        return Some(path);
+    }
     dirs::home_dir().map(|home| settings_path_from_home(&home))
+}
+
+/// 测试隔离：把设置读写重定向到指定路径（`None` 恢复默认目录）。
+/// `thread_local` 保证并行测试互不干扰；重定向只作用于当前测试线程。
+#[cfg(test)]
+pub(crate) fn set_test_settings_path(path: Option<PathBuf>) {
+    TEST_SETTINGS_PATH.with(|cell| *cell.borrow_mut() = path);
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_SETTINGS_PATH: std::cell::RefCell<Option<PathBuf>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+#[cfg(test)]
+fn test_settings_path() -> Option<PathBuf> {
+    TEST_SETTINGS_PATH.with(|cell| cell.borrow().clone())
 }
 
 fn settings_path_from_home(home: &Path) -> PathBuf {
@@ -128,6 +151,20 @@ mod tests {
                 show_quick_commands: false,
                 recent_dirs: vec![PathBuf::from("/a"), PathBuf::from("/b")],
                 recent_dirs_max: 2,
+                pinned_local_tabs: vec![
+                    crate::features::workspace::settings::PinnedLocalTab {
+                        pin_id: 1,
+                        project_dir: PathBuf::from("/a"),
+                        cwd: PathBuf::from("/a"),
+                        custom_name: Some("work".into()),
+                    },
+                    crate::features::workspace::settings::PinnedLocalTab {
+                        pin_id: 2,
+                        project_dir: PathBuf::from("/b"),
+                        cwd: PathBuf::from("/b"),
+                        custom_name: None,
+                    },
+                ],
             },
             agent: AgentSettings::default(),
         };
@@ -159,11 +196,21 @@ mod tests {
                 .lines()
                 .any(|line| line == "updates_check_on_startup = true")
         );
+        assert!(encoded.contains("pin_id = 1"));
+        assert!(encoded.contains("custom_name = \"work\""));
 
         let decoded: SettingsSnapshot = toml::from_str::<SettingsFile>(&encoded)
             .expect("settings should deserialize")
             .into();
         assert_eq!(decoded, snapshot);
+    }
+
+    #[test]
+    fn legacy_settings_without_pinned_tabs_default_to_an_empty_list() {
+        let snapshot: SettingsSnapshot = toml::from_str::<SettingsFile>("language = \"English\"")
+            .expect("legacy settings should deserialize")
+            .into();
+        assert!(snapshot.workspace.pinned_local_tabs.is_empty());
     }
 
     #[test]
