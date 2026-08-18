@@ -4,12 +4,6 @@ use gpui::{AnyElement, App, EntityId, SystemNotificationResponse};
 
 use crossh_terminal::settings::TerminalSettings;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct TerminalPaneInfo {
-    pub(crate) low_latency_enabled: bool,
-    pub(crate) low_latency_available: bool,
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PaneRisk {
     pub(crate) sftp_writes: usize,
@@ -22,11 +16,9 @@ pub(crate) struct PaneRisk {
 pub(crate) trait WorkspacePane {
     fn render(&self) -> AnyElement;
     fn title(&self, cx: &App) -> String;
-    fn terminal_info(&self, cx: &App) -> Option<TerminalPaneInfo>;
     fn terminal_entity_id(&self) -> Option<EntityId>;
     fn cwd(&self, cx: &App) -> Option<String>;
     fn is_command_running(&self, cx: &App) -> bool;
-    fn toggle_low_latency(&self, cx: &mut App);
     fn run_command(&self, command: &str, cx: &mut App);
     fn send_text(&self, _text: &str, _cx: &mut App) {}
     fn set_adjacent_terminal_available(&self, _available: bool, _cx: &mut App) {}

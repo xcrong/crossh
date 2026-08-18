@@ -186,7 +186,6 @@ context_menu:
   reveal_in_finder: 在 Finder 中显示
   forget_dir: 忘记此目录
   switch: 切换
-  low_latency_shell_input: 低延迟 Shell 输入
   close: 关闭
   close_others: 关闭其他
   close_all: 关闭全部

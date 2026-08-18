@@ -27,7 +27,7 @@ use terminal::terminal_settings::{
 };
 use theme::ActiveTheme;
 
-use crate::features::workspace::pane::{PaneRisk, TerminalPaneInfo, WorkspacePane};
+use crate::features::workspace::pane::{PaneRisk, WorkspacePane};
 use crate::shared::i18n;
 use crossh_core::terminal::{
     LocalShellEnvironment, ShellCommandMarker, ShellPromptMarker, command_marker_from_title,
@@ -1020,13 +1020,6 @@ impl WorkspacePane for TerminalWorkspacePane {
         self.0.read(cx).tab_title("Terminal")
     }
 
-    fn terminal_info(&self, _cx: &App) -> Option<TerminalPaneInfo> {
-        Some(TerminalPaneInfo {
-            low_latency_enabled: false,
-            low_latency_available: false,
-        })
-    }
-
     fn terminal_entity_id(&self) -> Option<gpui::EntityId> {
         Some(self.0.entity_id())
     }
@@ -1038,8 +1031,6 @@ impl WorkspacePane for TerminalWorkspacePane {
     fn is_command_running(&self, cx: &App) -> bool {
         self.0.read(cx).is_command_running(cx)
     }
-
-    fn toggle_low_latency(&self, _cx: &mut App) {}
 
     fn run_command(&self, command: &str, cx: &mut App) {
         self.0

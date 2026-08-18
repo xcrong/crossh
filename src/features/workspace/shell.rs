@@ -1036,9 +1036,6 @@ impl AppShell {
                 self.restore_pinned_tabs_for_project(&cwd, cx);
             }
             ShellMenuAction::SelectRemoteTab(idx) => self.switch_remote_tab(idx, cx),
-            ShellMenuAction::ToggleLowLatencyShellInput(idx) => {
-                self.toggle_low_latency_shell_input(idx, cx)
-            }
             ShellMenuAction::CloseRemoteTab(idx) => self.request_close_remote_tab(idx, window, cx),
             ShellMenuAction::CloseOtherRemoteTabs(idx) => self.close_other_remote_tabs(idx, cx),
             ShellMenuAction::CloseAllRemoteTabs => self.close_all_remote_tabs(cx),
@@ -1081,19 +1078,6 @@ impl AppShell {
             ShellMenuAction::RestartBackgroundTask(id) => self.restart_background_task(id, cx),
         }
         self.close_context_menu(cx);
-    }
-
-    fn toggle_low_latency_shell_input(&mut self, idx: usize, cx: &mut Context<Self>) {
-        let terminal = self
-            .workspace
-            .sessions
-            .remote_tabs
-            .get(idx)
-            .map(|tab| &tab.pane);
-        if let Some(pane) = terminal {
-            pane.toggle_low_latency(cx);
-            cx.notify();
-        }
     }
 
     pub(crate) fn toggle_settings(&mut self, cx: &mut Context<Self>) {

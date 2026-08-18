@@ -11,7 +11,7 @@ use gpui::{
 };
 
 use crate::features::connections::Connection;
-use crate::features::workspace::pane::{PaneRisk, TerminalPaneInfo, WorkspacePane};
+use crate::features::workspace::pane::{PaneRisk, WorkspacePane};
 use crate::shared::i18n;
 use crossh_core::config::ForwardSpec;
 use crossh_ssh::ForwardKind;
@@ -106,10 +106,6 @@ impl WorkspacePane for ForwardWorkspacePane {
         crossh_core::terminal::remote_pane_title(&i18n::text("tab.forward"))
     }
 
-    fn terminal_info(&self, _cx: &App) -> Option<TerminalPaneInfo> {
-        None
-    }
-
     fn terminal_entity_id(&self) -> Option<gpui::EntityId> {
         None
     }
@@ -121,8 +117,6 @@ impl WorkspacePane for ForwardWorkspacePane {
     fn is_command_running(&self, _cx: &App) -> bool {
         false
     }
-
-    fn toggle_low_latency(&self, _cx: &mut App) {}
 
     fn run_command(&self, _command: &str, _cx: &mut App) {}
 

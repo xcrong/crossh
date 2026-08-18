@@ -186,7 +186,6 @@ context_menu:
   reveal_in_finder: Reveal in Finder
   forget_dir: Forget Directory
   switch: Switch
-  low_latency_shell_input: Low-latency shell input
   close: Close
   close_others: Close Others
   close_all: Close All

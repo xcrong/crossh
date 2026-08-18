@@ -49,8 +49,6 @@ pub enum ShellMenuAction {
     OpenLocalTerminal(PathBuf),
     /// 切换到远程标签。
     SelectRemoteTab(usize),
-    /// Toggle the optional local line editor for a remote terminal tab.
-    ToggleLowLatencyShellInput(usize),
     /// 关闭远程标签。
     CloseRemoteTab(usize),
     /// 关闭除指定索引外的远程标签。

@@ -167,11 +167,6 @@ pub(super) fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> 
                 let state = shell.connections.state_for_key(&tab.host_key, cx);
                 let alias = tab_label(tab, cx);
                 let single = shell.workspace.sessions.remote_tabs.len() == 1;
-                let (has_terminal, low_latency_enabled, low_latency_available) = tab
-                    .pane
-                    .terminal_info(cx)
-                    .map(|info| (true, info.low_latency_enabled, info.low_latency_available))
-                    .unwrap_or((false, false, false));
                 let target = tab.target.clone();
                 strip = strip.child(render_tab_chip(
                     cx,
@@ -190,19 +185,6 @@ pub(super) fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> 
                             danger: false,
                             action: ShellMenuAction::SelectRemoteTab(idx),
                         })];
-                        if has_terminal {
-                            entries.push(MenuEntry::CheckedItem {
-                                item: MenuItem {
-                                    id: "low-latency-shell-input".into(),
-                                    label: i18n::text("context_menu.low_latency_shell_input"),
-                                    shortcut_hint: None,
-                                    disabled: !low_latency_available,
-                                    danger: false,
-                                    action: ShellMenuAction::ToggleLowLatencyShellInput(idx),
-                                },
-                                checked: low_latency_enabled,
-                            });
-                        }
                         entries.extend([
                             MenuEntry::Item(MenuItem {
                                 id: "close".into(),
