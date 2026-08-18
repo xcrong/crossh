@@ -109,6 +109,15 @@
 
 ### S-D10 `UpdateManifest.published_at` / `UpdateArtifact.signature` 字段从未被生产读取
 
+> **状态：已完成（2026-08-18，按裁定"只删 `published_at`"）**
+> 删除 `UpdateManifest.published_at` 字段（model.rs 定义 + 测试置 None 处），
+> 生产/测试零残留；`UpdateArtifact.signature` **保留**并补注释：它是
+> `docs/remote-update-plan.md` 安全边界中已声明的 Ed25519 更新协议签名预留
+> （SHA-256 不能抵抗发布源被恶意改写），不等同于 macOS Developer ID 代码签名。
+> serde 对未知字段默认忽略，删除后旧 manifest 仍可解析。rg 零引用；
+> fmt/architecture/clippy（workspace --all-targets -D warnings）全绿；
+> 全 workspace 测试通过。
+
 - **位置**：`crates/crossh-update/src/model.rs:25,37`；只在测试中置 `None`(291,301)；`generate-update-manifest.sh` 不输出。
 - **选项**：A. 删除两字段；B. 真正启用签名验证（范围扩大，需产品决策）。
 - **建议**：A（`signature` 若确为未来签名预留可只删 `published_at`，spec 或注释说明）。

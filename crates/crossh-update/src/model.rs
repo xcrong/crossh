@@ -21,8 +21,6 @@ pub struct UpdateManifest {
     pub notes: String,
     #[serde(default)]
     pub release_url: Option<String>,
-    #[serde(default)]
-    pub published_at: Option<String>,
     pub targets: BTreeMap<String, UpdateArtifact>,
 }
 
@@ -33,6 +31,8 @@ pub struct UpdateArtifact {
     pub format: ArtifactFormat,
     pub sha256: String,
     pub size: u64,
+    // Ed25519 更新协议签名预留（见 docs/remote-update-plan.md 安全边界）；
+    // SHA-256 不能抵抗发布源被恶意改写，后续在此字段承载签名并把公钥固定在客户端。
     #[serde(default)]
     pub signature: Option<String>,
 }
@@ -298,7 +298,6 @@ mod tests {
             version: version.into(),
             notes: "notes".into(),
             release_url: None,
-            published_at: None,
             targets: BTreeMap::from([(
                 "macos-aarch64".into(),
                 artifact(ArtifactFormat::Zip, "crossh-1.0.1-aarch64-macos.zip"),
