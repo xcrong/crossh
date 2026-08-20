@@ -206,7 +206,9 @@ pub fn render_sidebar(
     if let Some(projects_group) = projects_group {
         list = list.child(projects_group);
     }
-    list = list.child(active_group).child(bank_group);
+    // 活跃/主机分组已隐藏（按需求注释）
+    // list = list.child(active_group).child(bank_group);
+    let _ = (&active_group, &bank_group);
 
     let search = div()
         .id("host-search-wrap")
@@ -333,23 +335,25 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
             }),
         ));
     }
-    for (index, entry) in shell.connections.entries().iter().enumerate() {
-        if !is_active_connection(&shell.connections.state_for_key(&entry.key, cx)) {
-            continue;
-        }
-        let alias = entry.alias.clone();
-        let avatar = Avatar::new(&alias).kind(AvatarKind::Host);
-        let selected = active_remote_key.as_deref() == Some(entry.key.as_str());
-        activity = activity.child(rail_avatar(
-            ("sidebar-rail-host", index),
-            avatar,
-            alias.clone(),
-            selected,
-            cx.listener(move |this, _ev, _window, cx| {
-                this.open_host(index, cx);
-            }),
-        ));
-    }
+    // 主机活跃头像已隐藏（按需求注释）
+    // for (index, entry) in shell.connections.entries().iter().enumerate() {
+    //     if !is_active_connection(&shell.connections.state_for_key(&entry.key, cx)) {
+    //         continue;
+    //     }
+    //     let alias = entry.alias.clone();
+    //     let avatar = Avatar::new(&alias).kind(AvatarKind::Host);
+    //     let selected = active_remote_key.as_deref() == Some(entry.key.as_str());
+    //     activity = activity.child(rail_avatar(
+    //         ("sidebar-rail-host", index),
+    //         avatar,
+    //         alias.clone(),
+    //         selected,
+    //         cx.listener(move |this, _ev, _window, cx| {
+    //             this.open_host(index, cx);
+    //         }),
+    //     ));
+    // }
+    let _ = &active_remote_key;
 
     let add_entries = rail_add_menu_entries(
         shell
