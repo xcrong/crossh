@@ -4,10 +4,13 @@ use std::ops::Range;
 
 use gpui::{Bounds, EntityInputHandler, Pixels, UTF16Selection};
 
-use crossh_ui::widgets::{
-    byte_index_for_utf16, ime_caret_bounds, replace_utf16_range, utf16_len, utf16_offset_for_byte,
-    utf16_slice,
+use crossh_ui::widgets::{byte_index_for_utf16, ime_caret_bounds, utf16_len, utf16_slice};
+
+use crate::shared::input_handler::{
+    editing_mark_text, editing_marked_range, editing_replace, editing_selected_range,
+    editing_unmark, plain_mark, plain_marked_range, plain_replace, plain_selected_range,
 };
+use crate::shared::text_editing::TextEditingState;
 
 use super::*;
 
@@ -56,6 +59,113 @@ impl AppShell {
             None
         }
     }
+
+    fn plain_value(&self, field: AppShellInputField) -> Option<&String> {
+        match field {
+            AppShellInputField::HostSearch => Some(&self.host_query),
+            AppShellInputField::Credential => Some(&self.prompt_input),
+            _ => None,
+        }
+    }
+
+    fn plain_marked(&self, field: AppShellInputField) -> Option<&String> {
+        match field {
+            AppShellInputField::HostSearch => Some(&self.host_ime_marked_text),
+            AppShellInputField::Credential => Some(&self.prompt_ime_marked_text),
+            _ => None,
+        }
+    }
+
+    fn plain_value_and_marked_mut(
+        &mut self,
+        field: AppShellInputField,
+    ) -> Option<(&mut String, &mut String)> {
+        match field {
+            AppShellInputField::HostSearch => {
+                Some((&mut self.host_query, &mut self.host_ime_marked_text))
+            }
+            AppShellInputField::Credential => {
+                Some((&mut self.prompt_input, &mut self.prompt_ime_marked_text))
+            }
+            _ => None,
+        }
+    }
+
+    fn editing_state(&self, field: AppShellInputField) -> Option<&TextEditingState> {
+        match field {
+            AppShellInputField::HostSearch | AppShellInputField::Credential => None,
+            AppShellInputField::QuickCommand => self
+                .quick_command_editor
+                .as_ref()
+                .map(|editor| &editor.state),
+            AppShellInputField::Rename => self.rename_editor.as_ref().map(|editor| &editor.state),
+            AppShellInputField::DefaultCommand => self
+                .default_command_editor
+                .as_ref()
+                .map(|editor| &editor.state),
+            AppShellInputField::Compose => {
+                let view = self.workspace.focused_view()?;
+                self.workspace.compose.get(&view).map(|entry| &entry.state)
+            }
+        }
+    }
+
+    fn editing_state_mut(&mut self, field: AppShellInputField) -> Option<&mut TextEditingState> {
+        match field {
+            AppShellInputField::HostSearch | AppShellInputField::Credential => None,
+            AppShellInputField::QuickCommand => self
+                .quick_command_editor
+                .as_mut()
+                .map(|editor| &mut editor.state),
+            AppShellInputField::Rename => {
+                self.rename_editor.as_mut().map(|editor| &mut editor.state)
+            }
+            AppShellInputField::DefaultCommand => self
+                .default_command_editor
+                .as_mut()
+                .map(|editor| &mut editor.state),
+            AppShellInputField::Compose => {
+                let view = self.workspace.focused_view()?;
+                self.workspace
+                    .compose
+                    .get_mut(&view)
+                    .map(|entry| &mut entry.state)
+            }
+        }
+    }
+
+    fn editing_state_mut_for_replace(
+        &mut self,
+        field: AppShellInputField,
+    ) -> Option<&mut TextEditingState> {
+        match field {
+            AppShellInputField::HostSearch | AppShellInputField::Credential => None,
+            AppShellInputField::Compose => {
+                let view = self.workspace.focused_view()?;
+                Some(&mut self.workspace.compose_entry_mut(view).state)
+            }
+            _ => self.editing_state_mut(field),
+        }
+    }
+
+    fn value_for_field(&self, field: AppShellInputField) -> Option<&String> {
+        if let Some(value) = self.plain_value(field) {
+            return Some(value);
+        }
+        self.editing_state(field).map(|state| &state.value)
+    }
+
+    fn editing_scroll_x(&self, field: AppShellInputField) -> Pixels {
+        match field {
+            AppShellInputField::QuickCommand => self
+                .quick_command_editor
+                .as_ref()
+                .map(|editor| editor.scroll.offset().x)
+                .unwrap_or(px(0.)),
+            AppShellInputField::Compose => self.compose_scroll.offset().x,
+            _ => px(0.),
+        }
+    }
 }
 
 impl EntityInputHandler for AppShell {
@@ -67,22 +177,7 @@ impl EntityInputHandler for AppShell {
         _cx: &mut Context<Self>,
     ) -> Option<String> {
         let field = self.active_input_field(window)?;
-        // 为 Compose 单独处理以避免借用冲突：需通过 workspace 获取终端级状态
-        if let AppShellInputField::Compose = field {
-            let view = self.workspace.focused_view()?;
-            let text = &self.workspace.compose.get(&view)?.state.value;
-            return Some(utf16_slice(text, range));
-        }
-        let text = match field {
-            AppShellInputField::HostSearch => &self.host_query,
-            AppShellInputField::Credential => &self.prompt_input,
-            AppShellInputField::QuickCommand => &self.quick_command_editor.as_ref()?.state.value,
-            AppShellInputField::Rename => &self.rename_editor.as_ref()?.state.value,
-            AppShellInputField::DefaultCommand => {
-                &self.default_command_editor.as_ref()?.state.value
-            }
-            AppShellInputField::Compose => unreachable!(),
-        };
+        let text = self.value_for_field(field)?;
         Some(utf16_slice(text, range))
     }
 
@@ -92,76 +187,12 @@ impl EntityInputHandler for AppShell {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
-        match self.active_input_field(window)? {
-            AppShellInputField::HostSearch => {
-                let position = utf16_len(&self.host_query);
-                Some(UTF16Selection {
-                    range: position..position,
-                    reversed: false,
-                })
-            }
-            AppShellInputField::Credential => {
-                let position = utf16_len(&self.prompt_input);
-                Some(UTF16Selection {
-                    range: position..position,
-                    reversed: false,
-                })
-            }
-            AppShellInputField::QuickCommand => {
-                let editor = self.quick_command_editor.as_ref()?;
-                let (start, end) = editor
-                    .state
-                    .selection()
-                    .unwrap_or((editor.state.cursor, editor.state.cursor));
-                Some(UTF16Selection {
-                    range: utf16_offset_for_byte(&editor.state.value, start)
-                        ..utf16_offset_for_byte(&editor.state.value, end),
-                    reversed: editor
-                        .state
-                        .anchor
-                        .is_some_and(|anchor| anchor > editor.state.cursor),
-                })
-            }
-            AppShellInputField::Rename => {
-                let editor = self.rename_editor.as_ref()?;
-                let (start, end) = editor
-                    .state
-                    .selection()
-                    .unwrap_or((editor.state.cursor, editor.state.cursor));
-                Some(UTF16Selection {
-                    range: utf16_offset_for_byte(&editor.state.value, start)
-                        ..utf16_offset_for_byte(&editor.state.value, end),
-                    reversed: editor
-                        .state
-                        .anchor
-                        .is_some_and(|anchor| anchor > editor.state.cursor),
-                })
-            }
-            AppShellInputField::DefaultCommand => {
-                let editor = self.default_command_editor.as_ref()?;
-                let (start, end) = editor
-                    .state
-                    .selection()
-                    .unwrap_or((editor.state.cursor, editor.state.cursor));
-                Some(UTF16Selection {
-                    range: utf16_offset_for_byte(&editor.state.value, start)
-                        ..utf16_offset_for_byte(&editor.state.value, end),
-                    reversed: editor
-                        .state
-                        .anchor
-                        .is_some_and(|anchor| anchor > editor.state.cursor),
-                })
-            }
-            AppShellInputField::Compose => {
-                let view = self.workspace.focused_view()?;
-                let state = &self.workspace.compose.get(&view)?.state;
-                let (start, end) = state.selection().unwrap_or((state.cursor, state.cursor));
-                Some(UTF16Selection {
-                    range: utf16_offset_for_byte(&state.value, start)
-                        ..utf16_offset_for_byte(&state.value, end),
-                    reversed: state.anchor.is_some_and(|anchor| anchor > state.cursor),
-                })
-            }
+        let field = self.active_input_field(window)?;
+        if let Some(state) = self.editing_state(field) {
+            Some(editing_selected_range(state))
+        } else {
+            let value = self.plain_value(field)?;
+            Some(plain_selected_range(value))
         }
     }
 
@@ -170,96 +201,23 @@ impl EntityInputHandler for AppShell {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
-        match self.active_input_field(window)? {
-            AppShellInputField::HostSearch => (!self.host_ime_marked_text.is_empty()).then(|| {
-                let start = utf16_len(&self.host_query);
-                start..start + utf16_len(&self.host_ime_marked_text)
-            }),
-            AppShellInputField::Credential => {
-                (!self.prompt_ime_marked_text.is_empty()).then(|| {
-                    let start = utf16_len(&self.prompt_input);
-                    start..start + utf16_len(&self.prompt_ime_marked_text)
-                })
-            }
-            AppShellInputField::QuickCommand => {
-                let editor = self.quick_command_editor.as_ref()?;
-                let (start, _) = editor.state.ime_replacement?;
-                (!editor.state.ime_marked_text.is_empty()).then(|| {
-                    let start = utf16_offset_for_byte(&editor.state.value, start);
-                    start..start + utf16_len(&editor.state.ime_marked_text)
-                })
-            }
-            AppShellInputField::Rename => {
-                let editor = self.rename_editor.as_ref()?;
-                let (start, _) = editor.state.ime_replacement?;
-                (!editor.state.ime_marked_text.is_empty()).then(|| {
-                    let start = utf16_offset_for_byte(&editor.state.value, start);
-                    start..start + utf16_len(&editor.state.ime_marked_text)
-                })
-            }
-            AppShellInputField::DefaultCommand => {
-                let editor = self.default_command_editor.as_ref()?;
-                let (start, _) = editor.state.ime_replacement?;
-                (!editor.state.ime_marked_text.is_empty()).then(|| {
-                    let start = utf16_offset_for_byte(&editor.state.value, start);
-                    start..start + utf16_len(&editor.state.ime_marked_text)
-                })
-            }
-            AppShellInputField::Compose => {
-                let view = self.workspace.focused_view()?;
-                let state = &self.workspace.compose.get(&view)?.state;
-                let (start, _) = state.ime_replacement?;
-                (!state.ime_marked_text.is_empty()).then(|| {
-                    let start = utf16_offset_for_byte(&state.value, start);
-                    start..start + utf16_len(&state.ime_marked_text)
-                })
-            }
+        let field = self.active_input_field(window)?;
+        if let Some(state) = self.editing_state(field) {
+            editing_marked_range(state)
+        } else {
+            let value = self.plain_value(field)?;
+            let marked = self.plain_marked(field)?;
+            plain_marked_range(value, marked)
         }
     }
 
     fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.active_input_field(window) {
-            Some(AppShellInputField::HostSearch) => self.host_ime_marked_text.clear(),
-            Some(AppShellInputField::Credential) => self.prompt_ime_marked_text.clear(),
-            Some(AppShellInputField::QuickCommand) => {
-                if let Some(editor) = &mut self.quick_command_editor {
-                    if let Some((start, end)) = editor.state.ime_replacement.take() {
-                        editor.state.cursor = end;
-                        editor.state.anchor = (start != end).then_some(start);
-                    }
-                    editor.state.ime_marked_text.clear();
-                }
+        if let Some(field) = self.active_input_field(window) {
+            if let Some((_, marked)) = self.plain_value_and_marked_mut(field) {
+                marked.clear();
+            } else if let Some(state) = self.editing_state_mut(field) {
+                editing_unmark(state);
             }
-            Some(AppShellInputField::Rename) => {
-                if let Some(editor) = &mut self.rename_editor {
-                    if let Some((start, end)) = editor.state.ime_replacement.take() {
-                        editor.state.cursor = end;
-                        editor.state.anchor = (start != end).then_some(start);
-                    }
-                    editor.state.ime_marked_text.clear();
-                }
-            }
-            Some(AppShellInputField::DefaultCommand) => {
-                if let Some(editor) = &mut self.default_command_editor {
-                    if let Some((start, end)) = editor.state.ime_replacement.take() {
-                        editor.state.cursor = end;
-                        editor.state.anchor = (start != end).then_some(start);
-                    }
-                    editor.state.ime_marked_text.clear();
-                }
-            }
-            Some(AppShellInputField::Compose) => {
-                if let Some(view) = self.workspace.focused_view()
-                    && let Some(entry) = self.workspace.compose.get_mut(&view)
-                {
-                    if let Some((start, end)) = entry.state.ime_replacement.take() {
-                        entry.state.cursor = end;
-                        entry.state.anchor = (start != end).then_some(start);
-                    }
-                    entry.state.ime_marked_text.clear();
-                }
-            }
-            None => {}
         }
         window.invalidate_character_coordinates();
         cx.notify();
@@ -272,112 +230,16 @@ impl EntityInputHandler for AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match self.active_input_field(window) {
-            Some(AppShellInputField::HostSearch) => {
-                let position = utf16_len(&self.host_query);
-                replace_utf16_range(
-                    &mut self.host_query,
-                    replacement_range.unwrap_or(position..position),
-                    text,
-                );
-                self.host_ime_marked_text.clear();
+        if let Some(field) = self.active_input_field(window) {
+            if let Some((value, marked)) = self.plain_value_and_marked_mut(field) {
+                plain_replace(value, marked, replacement_range, text);
+            } else if let Some(state) = self.editing_state_mut_for_replace(field) {
+                editing_replace(state, replacement_range, text);
+            } else {
+                return;
             }
-            Some(AppShellInputField::Credential) => {
-                let position = utf16_len(&self.prompt_input);
-                replace_utf16_range(
-                    &mut self.prompt_input,
-                    replacement_range.unwrap_or(position..position),
-                    text,
-                );
-                self.prompt_ime_marked_text.clear();
-            }
-            Some(AppShellInputField::QuickCommand) => {
-                if let Some(editor) = &mut self.quick_command_editor {
-                    let (start, end) = if let Some(range) = editor.state.ime_replacement.take() {
-                        range
-                    } else if let Some(range) = replacement_range {
-                        (
-                            byte_index_for_utf16(&editor.state.value, range.start),
-                            byte_index_for_utf16(&editor.state.value, range.end),
-                        )
-                    } else {
-                        editor
-                            .state
-                            .selection()
-                            .unwrap_or((editor.state.cursor, editor.state.cursor))
-                    };
-                    editor.state.value.replace_range(start..end, text);
-                    editor.state.cursor = start + text.len();
-                    editor.state.anchor = None;
-                    editor.state.ime_marked_text.clear();
-                }
-            }
-            Some(AppShellInputField::Rename) => {
-                if let Some(editor) = &mut self.rename_editor {
-                    let (start, end) = if let Some(range) = editor.state.ime_replacement.take() {
-                        range
-                    } else if let Some(range) = replacement_range {
-                        (
-                            byte_index_for_utf16(&editor.state.value, range.start),
-                            byte_index_for_utf16(&editor.state.value, range.end),
-                        )
-                    } else {
-                        editor
-                            .state
-                            .selection()
-                            .unwrap_or((editor.state.cursor, editor.state.cursor))
-                    };
-                    editor.state.value.replace_range(start..end, text);
-                    editor.state.cursor = start + text.len();
-                    editor.state.anchor = None;
-                    editor.state.ime_marked_text.clear();
-                }
-            }
-            Some(AppShellInputField::DefaultCommand) => {
-                if let Some(editor) = &mut self.default_command_editor {
-                    let (start, end) = if let Some(range) = editor.state.ime_replacement.take() {
-                        range
-                    } else if let Some(range) = replacement_range {
-                        (
-                            byte_index_for_utf16(&editor.state.value, range.start),
-                            byte_index_for_utf16(&editor.state.value, range.end),
-                        )
-                    } else {
-                        editor
-                            .state
-                            .selection()
-                            .unwrap_or((editor.state.cursor, editor.state.cursor))
-                    };
-                    editor.state.value.replace_range(start..end, text);
-                    editor.state.cursor = start + text.len();
-                    editor.state.anchor = None;
-                    editor.state.ime_marked_text.clear();
-                }
-            }
-            Some(AppShellInputField::Compose) => {
-                let Some(view) = self.workspace.focused_view() else {
-                    return;
-                };
-                let entry = self.workspace.compose_entry_mut(view);
-                let (start, end) = if let Some(range) = entry.state.ime_replacement.take() {
-                    range
-                } else if let Some(range) = replacement_range {
-                    (
-                        byte_index_for_utf16(&entry.state.value, range.start),
-                        byte_index_for_utf16(&entry.state.value, range.end),
-                    )
-                } else {
-                    entry
-                        .state
-                        .selection()
-                        .unwrap_or((entry.state.cursor, entry.state.cursor))
-                };
-                entry.state.value.replace_range(start..end, text);
-                entry.state.cursor = start + text.len();
-                entry.state.anchor = None;
-                entry.state.ime_marked_text.clear();
-            }
-            None => return,
+        } else {
+            return;
         }
         window.invalidate_character_coordinates();
         cx.notify();
@@ -391,78 +253,16 @@ impl EntityInputHandler for AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match self.active_input_field(window) {
-            Some(AppShellInputField::HostSearch) => {
-                self.host_ime_marked_text.clear();
-                self.host_ime_marked_text.push_str(new_text);
+        if let Some(field) = self.active_input_field(window) {
+            if let Some((_, marked)) = self.plain_value_and_marked_mut(field) {
+                plain_mark(marked, new_text);
+            } else if let Some(state) = self.editing_state_mut_for_replace(field) {
+                editing_mark_text(state, new_text);
+            } else {
+                return;
             }
-            Some(AppShellInputField::Credential) => {
-                self.prompt_ime_marked_text.clear();
-                self.prompt_ime_marked_text.push_str(new_text);
-            }
-            Some(AppShellInputField::QuickCommand) => {
-                if let Some(editor) = &mut self.quick_command_editor {
-                    if editor.state.ime_replacement.is_none() {
-                        let replacement = editor
-                            .state
-                            .selection()
-                            .unwrap_or((editor.state.cursor, editor.state.cursor));
-                        editor.state.ime_replacement = Some(replacement);
-                        editor.state.cursor = replacement.0;
-                        editor.state.anchor = None;
-                    }
-                    editor.state.ime_marked_text.clear();
-                    editor.state.ime_marked_text.push_str(new_text);
-                }
-            }
-            Some(AppShellInputField::Rename) => {
-                if let Some(editor) = &mut self.rename_editor {
-                    if editor.state.ime_replacement.is_none() {
-                        let replacement = editor
-                            .state
-                            .selection()
-                            .unwrap_or((editor.state.cursor, editor.state.cursor));
-                        editor.state.ime_replacement = Some(replacement);
-                        editor.state.cursor = replacement.0;
-                        editor.state.anchor = None;
-                    }
-                    editor.state.ime_marked_text.clear();
-                    editor.state.ime_marked_text.push_str(new_text);
-                }
-            }
-            Some(AppShellInputField::DefaultCommand) => {
-                if let Some(editor) = &mut self.default_command_editor {
-                    if editor.state.ime_replacement.is_none() {
-                        let replacement = editor
-                            .state
-                            .selection()
-                            .unwrap_or((editor.state.cursor, editor.state.cursor));
-                        editor.state.ime_replacement = Some(replacement);
-                        editor.state.cursor = replacement.0;
-                        editor.state.anchor = None;
-                    }
-                    editor.state.ime_marked_text.clear();
-                    editor.state.ime_marked_text.push_str(new_text);
-                }
-            }
-            Some(AppShellInputField::Compose) => {
-                let Some(view) = self.workspace.focused_view() else {
-                    return;
-                };
-                let entry = self.workspace.compose_entry_mut(view);
-                if entry.state.ime_replacement.is_none() {
-                    let replacement = entry
-                        .state
-                        .selection()
-                        .unwrap_or((entry.state.cursor, entry.state.cursor));
-                    entry.state.ime_replacement = Some(replacement);
-                    entry.state.cursor = replacement.0;
-                    entry.state.anchor = None;
-                }
-                entry.state.ime_marked_text.clear();
-                entry.state.ime_marked_text.push_str(new_text);
-            }
-            None => return,
+        } else {
+            return;
         }
         window.invalidate_character_coordinates();
         cx.notify();
@@ -475,7 +275,8 @@ impl EntityInputHandler for AppShell {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        match self.active_input_field(window)? {
+        let field = self.active_input_field(window)?;
+        match field {
             AppShellInputField::HostSearch => {
                 let cursor = byte_index_for_utf16(&self.host_query, range.start);
                 Some(ime_caret_bounds(
@@ -500,52 +301,17 @@ impl EntityInputHandler for AppShell {
                     px(0.),
                 ))
             }
-            AppShellInputField::QuickCommand => {
-                let editor = self.quick_command_editor.as_ref()?;
-                let cursor = byte_index_for_utf16(&editor.state.value, range.start);
+            _ => {
+                let state = self.editing_state(field)?;
+                let scroll_x = self.editing_scroll_x(field);
+                let cursor = byte_index_for_utf16(&state.value, range.start);
                 Some(ime_caret_bounds(
                     window,
                     element_bounds,
-                    &editor.state.value[..cursor],
+                    &state.value[..cursor],
                     px(14.),
                     px(12.),
-                    editor.scroll.offset().x,
-                ))
-            }
-            AppShellInputField::Rename => {
-                let editor = self.rename_editor.as_ref()?;
-                let cursor = byte_index_for_utf16(&editor.state.value, range.start);
-                Some(ime_caret_bounds(
-                    window,
-                    element_bounds,
-                    &editor.state.value[..cursor],
-                    px(14.),
-                    px(12.),
-                    px(0.),
-                ))
-            }
-            AppShellInputField::DefaultCommand => {
-                let editor = self.default_command_editor.as_ref()?;
-                let cursor = byte_index_for_utf16(&editor.state.value, range.start);
-                Some(ime_caret_bounds(
-                    window,
-                    element_bounds,
-                    &editor.state.value[..cursor],
-                    px(14.),
-                    px(12.),
-                    px(0.),
-                ))
-            }
-            AppShellInputField::Compose => {
-                let view = self.workspace.focused_view()?;
-                let state = &self.workspace.compose.get(&view)?.state;
-                Some(ime_caret_bounds(
-                    window,
-                    element_bounds,
-                    &state.value[..byte_index_for_utf16(&state.value, range.start)],
-                    px(14.),
-                    px(12.),
-                    self.compose_scroll.offset().x,
+                    scroll_x,
                 ))
             }
         }
@@ -561,26 +327,8 @@ impl EntityInputHandler for AppShell {
     }
 
     fn text_length_utf16(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> Option<usize> {
-        match self.active_input_field(window)? {
-            AppShellInputField::HostSearch => Some(utf16_len(&self.host_query)),
-            AppShellInputField::Credential => Some(utf16_len(&self.prompt_input)),
-            AppShellInputField::QuickCommand => self
-                .quick_command_editor
-                .as_ref()
-                .map(|editor| utf16_len(&editor.state.value)),
-            AppShellInputField::Rename => self
-                .rename_editor
-                .as_ref()
-                .map(|editor| utf16_len(&editor.state.value)),
-            AppShellInputField::DefaultCommand => self
-                .default_command_editor
-                .as_ref()
-                .map(|editor| utf16_len(&editor.state.value)),
-            AppShellInputField::Compose => {
-                let view = self.workspace.focused_view()?;
-                let state = &self.workspace.compose.get(&view)?.state;
-                Some(utf16_len(&state.value))
-            }
-        }
+        let field = self.active_input_field(window)?;
+        let text = self.value_for_field(field)?;
+        Some(utf16_len(text))
     }
 }

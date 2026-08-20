@@ -1,0 +1,62 @@
+# Crossh 简化扫描报告（2026-08-20）
+
+触发原因：用户要求扫描可简化点，重点包括可抽离组件与可用已有轮子（crate / stdlib）替代的手写实现。
+
+扫描方式：读取 `AGENTS.md`、`docs/architecture.md`、全部 ADR（0001-0014）、`docs/engineering-notes/README.md` 与近两轮审计报告（2026-08-17 / 2026-08-18 简化审计、2026-08-18 架构冗余）；按 4 分片并行扫描（根 crate feature/terminal/workspace + `crates/crossh-ssh`/`crossh-core` + `crates/crossh-ui`/`crossh-ui-component`/`crossh-terminal`/`crossh-theme`/`crossh-assets` + settings/updater/infrastructure/scripts），锚点为 `rg "allow(dead_code|unused"`、`wc -l` 文件尺寸、`rg TextEditingState|shlex|glob|split_kv|shell_quote` 与 `Cargo.toml` 依赖复核。未执行网络依赖的 `cargo clippy --workspace`（离线缓存可做但避免扰动），以静态引用核验代替。
+
+## 总体结论
+
+仓库持续收敛：上一轮的 SDK `requires_approval` 已删除、Sftp `format_size`/`format_bytes` 等已在 backlog 中，本轮未发现需要立即删除的整模块或整 crate。**真正的简化空间已从“死代码边角”转向“组件抽离与手写实现换轮子”**：
+
+1. **组件抽离富矿**：`AppShell` 的 IME/文本输入管道在 `shell_input.rs` 对 6 个输入源做 8 轮同型 `match`（S-1，高），`compose.rs` 与 `modal_editor.rs` 对 `TextEditingState` 的按键分发表逐字重复（S-2，高）。
+2. **可用轮子处**：`crossh-core/src/terminal/shell.rs:426` 的 `shell_quote` 手写单引号转义与已依赖的 `shlex::try_quote` 重叠（S-4，中）；`crossh-core/src/config/ssh_config.rs` 609 行手写 `glob`/`split_kv`/`expand_tilde`/`strip_comment` 与 crates.io 的 `ssh-config` / `glob` 能力重叠（S-5，决策类）。
+3. **尺寸与复用**：`shell.rs:1822` / `view.rs:1786` / `agent_cli.rs:1713` 逼近 2000 行红线（S-7，低），`compose.rs:70-74` 手动清字段而未复用已有的 `TextEditingState::clear()`（S-3，低），`allow(dead_code)` 中 `text_editing.rs:42` 已过期（S-8，低）。
+
+## 发现
+
+| 编号 | 问题 | 严重度 | 证据与消费者结论 |
+| --- | --- | --- | --- |
+| S-1 | `shell_input.rs` 对 6 输入源的 8 方法重复 `match`，未抽离组件 ✅ 已完成 2026-08-20 | 高 | `src/features/workspace/shell_input.rs` 围绕 `HostSearch / Credential / QuickCommand / Rename / DefaultCommand / Compose`（`enum AppShellInputField` 31-39）在 `text_for_range:38-78`、`selected_text_range:80-149`、`marked_text_range:151-203`、`unmark_text:205-265`、`replace_text_in_range:267-384`、`replace_and_mark_text_in_range:386-465`、`bounds_for_range:467-560`、`text_length_utf16:562-586` 共 8 个 `EntityInputHandler` 方法中重复 `match`。其中 `QuickCommand/Rename/DefaultCommand/Compose` 4 分支对 `TextEditingState` 的操作逐字相同（`selection().unwrap_or(cursor)`、`utf16_offset_for_byte`、`ime_replacement` 等），`HostSearch/Credential` 对 `String + ime_marked_text` 也是同型拷贝。生产消费者：全部 8 方法均有 GPUI 回调（`EntityInputHandler` 必需），非死代码；问题是抽象缺失导致 580 行文件约 70% 为结构化重复。**已处置**：新增 `src/shared/input_handler.rs` 抽离 `StringField { value, marked }` 与 `EditingField(&mut TextEditingState)` 两类共性（`plain_*` / `editing_*` 8 个纯函数 + 单测），`shell_input.rs` 由 580 行/48 分支收敛为 `value_for_field` + `editing_state`/`editing_state_mut`/`plain_value` 路由与 2 分支分发（`bounds_for_range` 保留 HostSearch/Credential 特化 + 1 个 editing 通路），行数降至 ~310 行，重复消除约 70%；`cargo check` / `cargo test --workspace` / `check-architecture.sh` 均绿。 |
+| S-2 | `compose.rs` 与 `modal_editor.rs` 对 `TextEditingState` 的按键分发表重复，且与 `shell.rs:handle_host_search_key` 的单字符编辑形成第 3 份变体 | 高 | `src/features/workspace/compose.rs:100-200 handle_compose_key` 与 `src/features/workspace/modal_editor.rs:42-168 handle_modal_editor_key` 对同一组键（`ctrl/cmd+a` 全选、`c/x` 复制/剪切、`v` 粘贴、`backspace/delete/left/right/home/end + printable_char`）的 `clear_composition → editing_op → cx.notify → stop_propagation` 模板逐行重复，仅上下文对象不同（`entry.state` vs `active_editor_state()`）。`shell.rs:933-958 handle_host_search_key` 则对 `host_query: String` 用 `push/pop/clear` 手写同类编辑（不支持选区/UTF-8 边界）。三者应收敛到 `shared/text_editing.rs` 的单一分发器。生产消费者：三处均有真实按键入口，非死代码；重复是维护成本。 |
+| S-3 | `compose.rs:70-74` 手动清 5 字段而未复用 `TextEditingState::clear()` | 低 | `src/features/workspace/compose.rs:69-74` `send_compose` 成功后执行 `entry.state.value.clear(); cursor=0; anchor=None; ime_marked_text.clear(); ime_replacement=None;`；`shared/text_editing.rs:42-50` 已提供 `pub fn clear(&mut self)` 语义完全一致，却被 `#[allow(dead_code)]` 压制。`rg "state\.clear\(\)"` 全仓仅命中测试与 `shared/text_editing.rs` 自身，生产零调用。消费者分类：生产未用、测试未用 → 过期豁免 + 错失复用。净收益：1 行替换 5 行，消除幽灵选区回归风险。 |
+| S-4 | `shell_quote` 手写单引号转义与已依赖的 `shlex::try_quote` 重叠 | 中 | `crates/crossh-core/src/terminal/shell.rs:426-428 fn shell_quote(value: &str) -> String { format!("'{}'", value.replace('\'', "'\\''")) }` 仅在 `shell.rs:128,141` 用于 `ZDOTDIR` 与 integration 路径的转义。根 `Cargo.toml:60 shlex = "1"` 已被 `src/features/terminal/view.rs:584 shlex::try_quote` 生产使用，能力覆盖更全（处理换行、非打印字符、空串）。`crossh-core` 当前未依赖 `shlex`，但该 crate 为零传递依赖的纯字符串工具，引入成本低于自维护引号转义。生产消费者：2 处有调用；可轮子化。反方：手写版 1 行满足当前路径场景，引入依赖需评估 `crossh-core` 依赖口味（ADR 未钉住 `shlex`）。 |
+| S-5 | `ssh_config.rs` 609 行手写 `glob`/`split_kv`/`expand_tilde`/`strip_comment`/`pattern_matches` 可由 `ssh-config` / `glob` / `shellexpand` 轮子覆盖 | 中 | `crates/crossh-core/src/config/ssh_config.rs` 自实现：`glob:498-521`（`*`/`?` 递归）、`pattern_matches:480-496`、`expand_tilde:455-478`、`split_kv:523-539`、`strip_comment:541-555`、`glob_includes:390-453`、`parse_forward:380-413`。crates.io `ssh-config = "0.2"` 已覆盖 `Host`/`HostName`/`User`/`Port`/`IdentityFile`/`ProxyJump`/`Include` 与首匹配语义，且维护良好；`glob` crate 覆盖通配展开。当前手写版支持 `LocalForward/RemoteForward/DynamicForward` 累加与 `Include` 循环防护，需确认轮子对转发键的覆盖度再裁定替换范围。生产消费者：`HostConfig::resolve` 在 `connections/manager.rs` 等处有真实调用，非死代码；替换属行为等价性需 spec 验证。严重度为“决策”而非“直接修”。 |
+| S-6 | `truncate_title`/`truncate_path_title`/`shorten_path_components` 手写 Unicode 截断与 Fish 风格压缩 | 低 | `crates/crossh-core/src/terminal/title.rs:10-22 truncate_title`（按 `chars().count()` 截断 + `…`）、`139-218 truncate_path_title/shorten_path_components`（保留末两段、首字母缩写）与 `unicode-width = "0.2"`（已在 `Cargo.toml:59` 依赖）能力部分重叠：显示宽度应以 `unicode_width::UnicodeWidthStr::width` 而非 `chars().count()` 度量，CJK 与 emoji 宽度失真。此外 `pathdiff`/`dirs` 可替代 `path_relative_to_home`。但当前实现与 Zed 的 title 助手保持一致且有 8 个单测覆盖，替换需同步调整阈值 `MAX_TITLE_COMPONENT_CHARS=25` 的语义（字符数 vs 列宽）。归为维护信号，不建议单独 spec。 |
+| S-7 | `shell.rs:1822` / `view.rs:1786` / `agent_cli.rs:1713` 逼近 2000 行红线，违反“文件小而专注”要求 | 低 | `wc -l src/features/workspace/shell.rs` 1822、`src/features/workspace/view.rs` 1786、`src/agent_cli.rs` 1713（`scripts/check-architecture.sh` 阈值 2000，白名单仅 `terminal_element.rs`）。`shell.rs` 已拆出 `shell_input.rs`/`shell_render.rs`/`compose.rs`/`tabs.rs`/`sidebar.rs` 等，但仍承载 `host_query`/`context_menu`/`settings`/`GitSync` 等 10+ 职责；`agent_cli.rs` 则混合了 loop、render、input。生产消费者：三文件均为活跃入口，非死代码；风险是下一次 feature 变更即超限。处置：随功能变更按垂直职责拆分，而非为行数单独重构（与上一轮 S-2 结论一致）。 |
+| S-8 | `#[allow(dead_code)]` 中 `shared/text_editing.rs:42 clear()` 已过期，其余 `git/mod.rs:69-108` 的 5 处为 `visual-tests` feature 的跨编译单元必要豁免 | 低 | `rg allow(dead_code)` 命中 12 处。逐项核验：`shared/text_editing.rs:42 clear` 生产零调用（见 S-3）→ 过期，应删除 `allow` 并复用或删除方法；`src/features/git/mod.rs:69,80,90,99,108` 的 `visual_fixture/*` 仅在 `#[cfg(feature = "visual-tests")]` 下有消费者 `tests/visual_capture.rs`（生产编译单元无调用）→ 豁免必要，保留；`src/features/git_launcher.rs:33,38,49` 的 `print_cli_help/spawn_git_process` 为双 binary `#[path]` 挂载的必要豁免（ADR 0008 保护）→ 保留；`workspace/toaster.rs:13` / `registry.rs:296` / `quick_commands_rail.rs:275` / `shell.rs:1682` 经上一轮裁定保留。 |
+| S-9 | `AppShell` 的 settings 分发 `toggle_*/set_*/adjust_*` 8 方法在 `shell.rs` 堆叠，可抽为 `settings_actions.rs` 组件 | 低 | `src/features/workspace/shell.rs:1200-1350` 连续 8 个 `pub(crate) fn toggle_* / set_* / adjust_font_size / set_scrollback / set_recent_dirs_max / set_editor_command` 仅做 `clone → mutate → apply_* → persist → notify` 模板，逻辑与 `workspace/settings.rs` 的 `WorkspaceSettings` 归属重叠。抽为独立 `settings_actions` 模块可使 `shell.rs` 降 150 行且贴合“feature 自带 settings”规则（ADR 0004）。生产消费者：全部有 UI 调用点，非死代码；属组件抽离而非删除。 |
+| S-10 | `format_size`（GB）与 `format_bytes`（无 GB）仍为两份人类可读字节格式化（沿用上一轮 S-4） | 信息 | `src/features/sftp/logic.rs:154-167 format_size`（调用点 `render.rs:98,322`）与 `crates/crossh-ssh/src/sftp.rs:197-207 format_bytes`（调用点 `sftp.rs:162,183`）为同一事实两份表示，未随上一轮处置合入。建议下沉到 `crossh-core` 共享并补 GB 分支后由 UI 复用。严重度低，随 SFTP 相关变更顺带合入即可。 |
+
+已验证无问题的受保护表面：`crossh-ssh` 的 `run_connection` `select!` 生命周期与 `WeakEntity` 池、`known_hosts` 决策链、`crossh-update` 的 `signature` 二级字段（`model.rs:25,37` 的 `UpdateManifest.signature` / `UpdateArtifact.signature` 为 ADR 0014 明确的 manifest 级签名契约，非死字段）、`crossh-theme` 的 renderer-independent token 与 `crossh-ui` 的 GPUI 颜色适配、logic crate 零 `gpui` 导入（`check-architecture.sh` 全绿）。
+
+## 处置 Backlog
+
+| 优先级 | 编号 | 建议处置 | 说明 |
+| --- | --- | --- | --- |
+| P1 | S-1 | ✅ 已完成 2026-08-20（组件抽离） | 已落地：`src/shared/input_handler.rs` + `src/shared/mod.rs` + `src/features/workspace/shell_input.rs` 重构，将 6×8 `match` 收敛为 `StringField`/`EditingField` 两类路由（`value_for_field`/`editing_state`/`editing_state_mut` + `shared/input_handler::*`），`bounds_for_range` 保留 HostSearch/Credential 特化其余收敛为单一 editing 通路；附带 `input_handler` 单测 5 项，验证 `plain/editing` 选区/标记/替换/取消等价性。 |
+| P1 | S-2 | spec（组件抽离） | 在 `shared/text_editing.rs` 新增 `handle_text_editing_key(state, ks, clipboard) -> bool` 统一分发（覆盖 `backspace/delete/left/right/home/end/ctrl-a/c/x/v/printable`），`compose.rs` 与 `modal_editor.rs` 仅保留 `clear_composition` 与 `cx.notify/stop_propagation` 的 UI 壳；`host_query` 的 `String` 编辑建议同步迁移到 `TextEditingState`（支持选区/UTF-8 边界）或显式注释保留 `String` 的原因。 |
+| P2 | S-3 | 直接修 | `compose.rs:69-74` 5 行手动清字段替换为 `entry.state.clear();`，删除 `text_editing.rs:42` 的 `#[allow(dead_code)]`，补 1 个 `clear` 回归单测（已在 `text_editing.rs:279` 有 `select_all_replace_composition_and_clear_round_trip`，可直接复用）。 |
+| P2 | S-4 | 直接修或决策 | `crossh-core` 新增 `shlex` 依赖（或将 `shell_quote` 上移至 `crossh-core` 外的 UI 侧）并替换 `shell_quote` 为 `shlex::try_quote`；若裁定保持零依赖，则为手写版补充空串与换行用例单测并注释“与 `shlex` 的行为差异”。 |
+| P2 | S-5 | 决策（ADR/spec） | 评估 `ssh-config` crate 对 `LocalForward/RemoteForward/DynamicForward` 与 `IdentitiesOnly` 的覆盖度；若覆盖不足则仅替换 `glob`/`expand_tilde`/`split_kv` 三个手写 helper 为 `glob` + `shellexpand`，保留业务层 `resolve` 首匹配语义。需 spec 明确“不支持 `Match exec`”的边界不变。 |
+| P3 | S-7 | 随功能变更拆分 | `shell.rs` 的 settings 分发抽为 `settings_actions.rs`（即 S-9），`view.rs` 的渲染抽为 `view_render.rs`，`agent_cli.rs` 的 tool loop 抽为 `agent_loop.rs`；不为行数单独立 spec，下一轮相关 feature 变更时顺带完成。 |
+| P3 | S-8 | 直接修 | 删除 `shared/text_editing.rs:42` 的 `#[allow(dead_code)]`，其余 `git/mod.rs` 5 处保留并补充注释“`visual-tests` feature 跨编译单元必要豁免”。 |
+| P3 | S-9 | 直接修 | 新建 `src/features/workspace/settings_actions.rs`，移动 8 个 `toggle/set/adjust` 方法，`shell.rs` 仅保留 `persist_settings` 调用。 |
+| 保留 | S-6 | 不处理 | 与 Zed title 助手保持一致且有单测覆盖；`unicode-width` 替换需同步调整 `MAX_TITLE_COMPONENT_CHARS` 的字符/列宽语义，当前不值得为显示宽度单独重构。 |
+| 保留 | S-10 | 随 SFTP 变更顺带合入 | 上一轮已入 backlog，本轮仍未合入；下一次 SFTP 相关 spec 顺带下沉到 `crossh-core`。 |
+
+与上一轮衔接：
+- 已完成：`2026-08-18` 的 S-1（SDK `requires_approval` 删除）已合入；`S-B3/C-1` 等过期 `allow` 清理部分完成。
+- 仍在 backlog：`2026-08-18` 架构冗余的 `S-1`（`crossh-ai-sdk` 与 `crossh-agent` 全量类型镜像，约 300-400 行胶水）、`S-2`（low-latency seam 永远禁用的菜单项）、`S-3`（`host_entry_matches` 重复）、`S-4`（`format_size` 双份）与 `2026-08-17` 的 `S-B1/B-4`（死终端契约/双 bootstrap）仍未处置，本轮 S-10 为延续。
+
+## 与 SDD 工作流的衔接
+
+- **spec 类（P1）**：S-1、S-2 属行为保持的组件抽离，需先写短 spec（`docs/specs/` 模板）明确抽离后的 `TextEditingState` 访问器与按键分发契约，再走 TDD；两者可合并为一份 `workspace-input-pipeline` spec。
+- **直接修类（P2/P3）**：S-3、S-4、S-8、S-9 符合豁免清单（文档漂移、死豁免清理、一行修复），可直接修并以 `cargo fmt --check`、`scripts/check-architecture.sh`、`cargo test --workspace` 验证。
+- **决策类**：S-5 是否引入 `ssh-config` 需 ADR 或 spec 裁定；S-6 维持现状。
+
+## 本轮未决项
+
+- 未重新运行 `cargo clippy --workspace --all-targets` 与全量 `cargo test --workspace`（离线环境可补跑）；死代码结论基于 `rg` 静态引用核验与分片交叉验证。
+- S-5 的轮子替换范围（全量替换 vs 仅替换 3 个 helper）待与下一轮 `ssh_config` 单测补强一并裁定。
+- `shell.rs`/`view.rs`/`agent_cli.rs` 的拆分不单独立项，随下一轮相关 feature 变更顺带完成，避免为行数做薄包装拆分。
+
