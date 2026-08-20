@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 use async_channel::{Receiver, Sender};
+use crossh_core::format::format_bytes;
 use russh_sftp::client::SftpSession;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -192,18 +193,6 @@ async fn write_file(sftp: &SftpSession, remote: &str, contents: &[u8]) -> Result
     remote_file.flush().await.map_err(|e| e.to_string())?;
     remote_file.shutdown().await.ok();
     Ok(format!("{} bytes", contents.len()))
-}
-
-fn format_bytes(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    if bytes >= MB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.1} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{bytes} B")
-    }
 }
 
 /// 删除远端条目：文件直接删，目录递归删除。

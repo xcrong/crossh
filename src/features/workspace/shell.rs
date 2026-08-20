@@ -55,9 +55,7 @@ use crossh_core::config::{HostConfig, SshConfig};
 use crossh_core::git::{pull, push};
 use crossh_core::git_status::inspect;
 use crossh_ssh::{HostKeyDecision, RemoteCommandStatus};
-use crossh_terminal::settings::{
-    MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK, TerminalSettings,
-};
+use crossh_terminal::settings::TerminalSettings;
 use crossh_ui::context_menu::{ContextMenuState, MenuEntry, ShellMenuAction, render_context_menu};
 use crossh_ui::theme;
 use crossh_ui::widgets::printable_char;
@@ -73,6 +71,8 @@ mod compose;
 mod notifications;
 #[path = "quit.rs"]
 mod quit;
+#[path = "settings_actions.rs"]
+mod settings_actions;
 #[path = "shell_input.rs"]
 mod shell_input;
 #[path = "shell_render.rs"]
@@ -1119,112 +1119,6 @@ impl AppShell {
         self.close_context_menu(cx);
     }
 
-    pub(crate) fn toggle_settings(&mut self, cx: &mut Context<Self>) {
-        crate::features::settings::toggle_settings(cx.weak_entity(), cx);
-        cx.notify();
-    }
-
-    pub(crate) fn set_language(&mut self, preference: LanguagePreference, cx: &mut Context<Self>) {
-        if self.language_preference == preference {
-            cx.notify();
-            return;
-        }
-        i18n::set_language(cx, preference);
-        crate::infrastructure::app_menu::refresh(cx);
-        self.language_preference = preference;
-        for tab in &self.workspace.sessions.remote_tabs {
-            tab.pane.notify_language(cx);
-        }
-        self.persist_settings();
-        cx.notify();
-    }
-
-    pub(crate) fn toggle_timestamps(&mut self, cx: &mut Context<Self>) {
-        let mut terminal = self.terminal_settings.clone();
-        terminal.show_timestamps = !terminal.show_timestamps;
-        self.apply_terminal_settings(terminal, cx);
-    }
-
-    pub(crate) fn toggle_host_sidebar(&mut self, cx: &mut Context<Self>) {
-        self.workspace_settings.show_host_sidebar = !self.workspace_settings.show_host_sidebar;
-        self.persist_settings();
-        cx.notify();
-    }
-
-    pub(crate) fn set_empty_state_filter(
-        &mut self,
-        filter: EmptyStateFilter,
-        cx: &mut Context<Self>,
-    ) {
-        if self.empty_state_filter != filter {
-            self.empty_state_filter = filter;
-            cx.notify();
-        }
-    }
-
-    pub(crate) fn toggle_quick_commands(&mut self, cx: &mut Context<Self>) {
-        self.workspace_settings.show_quick_commands = !self.workspace_settings.show_quick_commands;
-        self.persist_settings();
-        cx.notify();
-    }
-
-    pub(crate) fn toggle_terminal_notifications(&mut self, cx: &mut Context<Self>) {
-        let mut terminal = self.terminal_settings.clone();
-        terminal.notifications_enabled = !terminal.notifications_enabled;
-        self.apply_terminal_settings(terminal, cx);
-    }
-
-    pub(crate) fn set_update_check_on_startup(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        if self.update_settings.check_on_startup == enabled {
-            return;
-        }
-        self.update_settings.check_on_startup = enabled;
-        self.persist_settings();
-        cx.notify();
-    }
-
-    pub(crate) fn set_agent_settings(&mut self, settings: AgentSettings, cx: &mut Context<Self>) {
-        let settings = settings.normalized();
-        if settings.validate().is_err() || self.agent_settings == settings {
-            return;
-        }
-        self.agent_settings = settings;
-        self.persist_settings();
-        cx.notify();
-    }
-
-    pub(crate) fn adjust_font_size(&mut self, delta: f32, cx: &mut Context<Self>) {
-        let mut terminal = self.terminal_settings.clone();
-        terminal.font_size = (terminal.font_size + delta)
-            .round()
-            .clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
-        self.apply_terminal_settings(terminal, cx);
-    }
-
-    pub(crate) fn set_scrollback(&mut self, scrollback: usize, cx: &mut Context<Self>) {
-        let mut terminal = self.terminal_settings.clone();
-        terminal.scrollback = scrollback.clamp(MIN_SCROLLBACK, MAX_SCROLLBACK);
-        self.apply_terminal_settings(terminal, cx);
-    }
-
-    pub(crate) fn set_recent_dirs_max(&mut self, max: usize, cx: &mut Context<Self>) {
-        let mut workspace = self.workspace_settings.clone();
-        workspace.recent_dirs_max = max;
-        self.workspace_settings = workspace.normalized();
-        self.persist_settings();
-        self.sync_local_dirs(cx);
-        cx.notify();
-    }
-
-    /// 设置显式编辑器命令；`None`/空白清除覆盖并回退自动检测。
-    pub(crate) fn set_editor_command(&mut self, command: Option<String>, cx: &mut Context<Self>) {
-        let mut workspace = self.workspace_settings.clone();
-        workspace.editor_command = command;
-        self.workspace_settings = workspace.normalized();
-        self.persist_settings();
-        cx.notify();
-    }
-
     /// 解析并启动外部编辑器打开 `directory`；无可用编辑器或启动失败时弹错误 Toast。
     pub(crate) fn open_project_in_editor(&mut self, directory: &Path, cx: &mut Context<Self>) {
         let path_env = std::env::var_os("PATH").unwrap_or_default();
@@ -1259,28 +1153,6 @@ impl AppShell {
                 cx,
             );
         }
-    }
-
-    fn apply_terminal_settings(&mut self, settings: TerminalSettings, cx: &mut Context<Self>) {
-        let settings = settings.normalized();
-        if self.terminal_settings == settings {
-            return;
-        }
-
-        TerminalView::apply_zed_settings(&settings, cx);
-
-        for tab in &self.workspace.sessions.remote_tabs {
-            tab.pane.apply_terminal_settings(settings.clone(), cx);
-        }
-        for session in self.workspace.sessions.local_sessions.values() {
-            session.terminal.update(cx, |terminal, cx| {
-                terminal.apply_settings(settings.clone(), cx)
-            });
-        }
-
-        self.terminal_settings = settings;
-        self.persist_settings();
-        cx.notify();
     }
 
     /// 把本地会话按创建时的项目归属目录重建目录视图（打开/关闭/`cd` 时调用）。
@@ -1682,6 +1554,7 @@ fn quick_commands_panel_mode(
     })
 }
 
+// 响应式布局计算：主区可用宽度=视口-侧栏-快捷指令宽度，当前通过 `view.rs` 的布局直接计算，保留独立函数供后续 `split` 响应式重构复用。
 #[allow(dead_code)]
 fn available_main_width(
     viewport_width: Pixels,

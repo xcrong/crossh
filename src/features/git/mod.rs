@@ -65,6 +65,7 @@ mod window;
 
 pub(crate) use window::open_git_window;
 
+// visual-tests 专用夹具：仅在 `visual-tests` feature 的跨编译单元中被 `tests/visual_capture.rs` 调用，生产编译单元无引用，需豁免 dead_code。
 #[cfg(feature = "visual-tests")]
 #[allow(dead_code)]
 pub(crate) fn visual_fixture(
@@ -76,6 +77,7 @@ pub(crate) fn visual_fixture(
     window::GitWindow::visual_fixture(cwd, show_compact_diff, show_error, cx)
 }
 
+// visual-tests 专用夹具：历史视图快照，生产无调用。
 #[cfg(feature = "visual-tests")]
 #[allow(dead_code)]
 pub(crate) fn visual_history_fixture(
@@ -86,6 +88,7 @@ pub(crate) fn visual_history_fixture(
     window::GitWindow::visual_history_fixture(cwd, show_detail, cx)
 }
 
+// visual-tests 专用夹具：分支视图快照，生产无调用。
 #[cfg(feature = "visual-tests")]
 #[allow(dead_code)]
 pub(crate) fn visual_branch_fixture(
@@ -95,6 +98,7 @@ pub(crate) fn visual_branch_fixture(
     window::GitWindow::visual_branch_fixture(cwd, cx)
 }
 
+// visual-tests 专用夹具：stash 视图快照，生产无调用。
 #[cfg(feature = "visual-tests")]
 #[allow(dead_code)]
 pub(crate) fn visual_stash_fixture(
@@ -104,6 +108,7 @@ pub(crate) fn visual_stash_fixture(
     window::GitWindow::visual_stash_fixture(cwd, cx)
 }
 
+// visual-tests 专用夹具：冲突视图快照，生产无调用。
 #[cfg(feature = "visual-tests")]
 #[allow(dead_code)]
 pub(crate) fn visual_conflict_fixture(

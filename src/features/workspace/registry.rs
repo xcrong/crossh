@@ -293,6 +293,7 @@ impl WorkspaceState {
     }
 
     /// 获取指定终端的 compose 条目（不存在时返回默认收起态）。
+    // 预留查询接口：当前生产路径通过 `compose_state_for`/`compose_visible` 访问，`compose_entry` 为调试/未来复用保留。
     #[allow(dead_code)]
     pub(crate) fn compose_entry(&self, view: ActiveView) -> Option<&ComposeEntry> {
         self.compose.get(&view)

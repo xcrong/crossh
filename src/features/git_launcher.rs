@@ -30,11 +30,13 @@ pub(crate) fn parse_cli(
     }
 }
 
+// 双 binary 挂载：主进程通过 `#[path]` 挂载的 CLI 入口，独立 `crossh-git` 二进制复用，生产主单元无直接调用需豁免。
 #[allow(dead_code)]
 pub(crate) fn print_cli_help() {
     print_help_for("crossh git");
 }
 
+// 双 binary 挂载：独立进程 CLI 帮助，复用同一 `print_help_for`，豁免同上。
 #[allow(dead_code)]
 pub(crate) fn print_standalone_cli_help() {
     print_help_for("crossh-git");
@@ -46,6 +48,7 @@ fn print_help_for(command: &str) {
     );
 }
 
+// 双 binary 挂载：主工作区按需拉起 `crossh-git` 独立进程，调用点在测试与条件分支，豁免 dead_code。
 #[allow(dead_code)]
 pub(crate) fn spawn_git_process(cwd: &Path) -> std::io::Result<()> {
     git_process_command(cwd)?.spawn().map(|_| ())

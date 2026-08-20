@@ -6,6 +6,7 @@
 pub mod commands;
 pub mod config;
 pub mod connection;
+pub mod format;
 pub mod git;
 pub mod git_branch;
 pub mod git_conflict;
