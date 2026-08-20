@@ -814,6 +814,16 @@ impl TerminalView {
         self.request_focus();
     }
 
+    pub(crate) fn run_command_without_focus(&mut self, command: &str, cx: &mut Context<Self>) {
+        let command = command.trim();
+        if command.is_empty() {
+            return;
+        }
+        self.ime_marked_text.clear();
+        self.send_input(format!("{command}\r").into_bytes(), cx);
+        // 不请求焦点，保持外层输入框（compose 等批量输入）持有焦点
+    }
+
     pub(crate) fn request_close(&mut self, cx: &mut Context<Self>) {
         if self.state == ConnState::Closed {
             return;
@@ -1035,6 +1045,12 @@ impl WorkspacePane for TerminalWorkspacePane {
     fn run_command(&self, command: &str, cx: &mut App) {
         self.0
             .update(cx, |terminal, cx| terminal.run_command(command, cx));
+    }
+
+    fn run_command_without_focus(&self, command: &str, cx: &mut App) {
+        self.0.update(cx, |terminal, cx| {
+            terminal.run_command_without_focus(command, cx)
+        });
     }
 
     fn send_text(&self, text: &str, cx: &mut App) {

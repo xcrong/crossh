@@ -55,14 +55,14 @@ impl AppShell {
         match view {
             ActiveView::RemoteTab(index) => {
                 if let Some(tab) = self.workspace.sessions.remote_tabs.get(index) {
-                    tab.pane.run_command(&text, cx);
+                    tab.pane.run_command_without_focus(&text, cx);
                 }
             }
             ActiveView::LocalSession(session_id) => {
                 if let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) {
-                    session
-                        .terminal
-                        .update(cx, |terminal, term_cx| terminal.run_command(&text, term_cx));
+                    session.terminal.update(cx, |terminal, term_cx| {
+                        terminal.run_command_without_focus(&text, term_cx)
+                    });
                 }
             }
         }
@@ -80,7 +80,7 @@ impl AppShell {
     pub(crate) fn handle_compose_key(
         &mut self,
         ev: &KeyDownEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(view) = self.workspace.focused_view() else {
@@ -94,6 +94,9 @@ impl AppShell {
                 entry.state.clear_composition();
             }
             self.send_compose(cx);
+            // 保持焦点在 compose，避免 TerminalView::run_command_without_focus 已避免抢占后，
+            // 仍因其他原因（如 button 点击）丢失；此处显式夺回。
+            window.focus(&self.compose_focus, cx);
             cx.stop_propagation();
             return;
         }

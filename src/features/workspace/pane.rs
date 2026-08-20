@@ -20,6 +20,10 @@ pub(crate) trait WorkspacePane {
     fn cwd(&self, cx: &App) -> Option<String>;
     fn is_command_running(&self, cx: &App) -> bool;
     fn run_command(&self, command: &str, cx: &mut App);
+    fn run_command_without_focus(&self, command: &str, cx: &mut App) {
+        // 默认回退到普通发送；终端 pane 会覆盖为无焦点抢占的版本
+        self.run_command(command, cx);
+    }
     fn send_text(&self, _text: &str, _cx: &mut App) {}
     fn set_adjacent_terminal_available(&self, _available: bool, _cx: &mut App) {}
     fn handle_system_notification_response(
