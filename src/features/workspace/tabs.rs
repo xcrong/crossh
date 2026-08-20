@@ -1,11 +1,11 @@
 //! AppShell terminal tab and session navigation.
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crossh_terminal::events::ConnState;
-use gpui::{PromptButton, PromptLevel};
+use gpui::{PromptButton, PromptLevel, Window};
 
 use task::Shell;
 
@@ -19,7 +19,7 @@ use crate::features::workspace::settings::PinnedLocalTab;
 
 /// 单个标签页关闭时可能被打断的活动；任何一项存在都需要确认。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct TabCloseRisk {
+pub(crate) struct TabCloseRisk {
     command_running: bool,
     sftp_writes: usize,
     unsaved_editors: usize,
@@ -45,7 +45,7 @@ pub(super) fn split_pane_retirement(risk: Option<&TabCloseRisk>) -> SplitPaneRet
 }
 
 impl TabCloseRisk {
-    fn needs_confirmation(&self) -> bool {
+    pub(crate) fn needs_confirmation(&self) -> bool {
         self.command_running
             || self.sftp_writes > 0
             || self.unsaved_editors > 0
@@ -283,15 +283,25 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.request_close_local_session_with_keep_pinned(session_id, window, cx, false);
+    }
+
+    pub(crate) fn request_close_local_session_with_keep_pinned(
+        &mut self,
+        session_id: LocalSessionId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        keep_pinned: bool,
+    ) {
         let Some(risk) = self.local_session_close_risk(session_id, cx) else {
             return;
         };
         if !risk.needs_confirmation() {
-            self.close_local_session(session_id, cx);
+            self.close_local_session_internal(session_id, keep_pinned, cx);
             return;
         }
         self.prompt_close_tab(risk, window, cx, move |this, cx| {
-            this.close_local_session(session_id, cx);
+            this.close_local_session_internal(session_id, keep_pinned, cx);
         });
     }
 
@@ -310,16 +320,57 @@ impl AppShell {
         })
     }
 
-    pub(super) fn local_session_close_risk(
+    pub(crate) fn local_session_close_risk(
         &self,
         session_id: LocalSessionId,
         cx: &Context<Self>,
     ) -> Option<TabCloseRisk> {
+        #[cfg(test)]
+        if self.test_risky_sessions.contains(&session_id) {
+            return Some(TabCloseRisk {
+                command_running: true,
+                ..TabCloseRisk::default()
+            });
+        }
         let session = self.workspace.sessions.local_sessions.get(&session_id)?;
         Some(TabCloseRisk {
             command_running: session.terminal.read(cx).is_command_running(cx),
             ..TabCloseRisk::default()
         })
+    }
+
+    /// 一键停止项目：关闭该项目下全部本地会话，但保留 recent/pinned（契约 2）。
+    /// 批量快照 `Vec<LocalSessionId>` 后 `detach_splits_for` 再逐个经
+    /// `request_close_local_session` 风险确认（契约 5），有风险的会话取消后保留。
+    pub(crate) fn stop_local_project(
+        &mut self,
+        project_dir: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(project_dir) = normalize_local_cwd(project_dir) else {
+            return;
+        };
+        let ids: Vec<LocalSessionId> = match self.workspace.sessions.local_dirs.get(&project_dir) {
+            Some(dir) => dir.sessions.clone(),
+            None => return,
+        };
+        if ids.is_empty() {
+            return;
+        }
+        let views: Vec<ActiveView> = ids.iter().copied().map(ActiveView::LocalSession).collect();
+        self.detach_splits_for(&views, cx);
+        for session_id in ids {
+            if !self
+                .workspace
+                .sessions
+                .local_sessions
+                .contains_key(&session_id)
+            {
+                continue;
+            }
+            self.request_close_local_session_with_keep_pinned(session_id, window, cx, true);
+        }
     }
 
     fn prompt_close_tab(

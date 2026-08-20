@@ -161,6 +161,7 @@ sidebar:
 tooltip:
   new_terminal: New terminal
   forget_dir: Remove from recent
+  stop_project: Stop project
   settings: Settings
   open_sftp: Open SFTP
   port_forwarding: Port forwarding
@@ -193,6 +194,7 @@ context_menu:
   open_local_terminal: Open Terminal Here
   reveal_in_finder: Reveal in Finder
   forget_dir: Forget Directory
+  stop_project: Stop Project
   switch: Switch
   close: Close
   close_others: Close Others

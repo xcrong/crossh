@@ -10,6 +10,8 @@
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
+#[cfg(test)]
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -189,6 +191,8 @@ pub struct AppShell {
     shutdown_in_progress: bool,
     /// 标签页关闭确认框是否已打开，防止重复弹出。
     pub(crate) tab_close_confirmation_open: bool,
+    #[cfg(test)]
+    pub(crate) test_risky_sessions: BTreeSet<LocalSessionId>,
 }
 
 impl AppShell {
@@ -290,6 +294,8 @@ impl AppShell {
             quit_confirmation_open: false,
             shutdown_in_progress: false,
             tab_close_confirmation_open: false,
+            #[cfg(test)]
+            test_risky_sessions: BTreeSet::new(),
         });
         updates.update(cx, |updates, cx| updates.start_startup_check(cx));
         shell
@@ -553,21 +559,32 @@ impl AppShell {
         session_id: LocalSessionId,
         cx: &mut Context<Self>,
     ) {
+        self.close_local_session_internal(session_id, false, cx);
+    }
+
+    pub(crate) fn close_local_session_internal(
+        &mut self,
+        session_id: LocalSessionId,
+        keep_pinned: bool,
+        cx: &mut Context<Self>,
+    ) {
         let owner = local_background_owner(session_id);
         self.stop_background_tasks_for_owner(&owner, cx);
         // 关闭即取消固定（契约 8）：任何关闭路径（按钮/关闭其他/进程退出）
-        // 都移除持久化记录，重启后不再恢复。
-        let pin_id = self
-            .workspace
-            .sessions
-            .local_sessions
-            .get(&session_id)
-            .and_then(|session| session.pin_id);
-        if let Some(pin_id) = pin_id {
-            self.workspace_settings
-                .pinned_local_tabs
-                .retain(|tab| tab.pin_id != pin_id);
-            self.persist_settings();
+        // 都移除持久化记录，重启后不再恢复。stop 项目时 keep_pinned=true 保留固定记录。
+        if !keep_pinned {
+            let pin_id = self
+                .workspace
+                .sessions
+                .local_sessions
+                .get(&session_id)
+                .and_then(|session| session.pin_id);
+            if let Some(pin_id) = pin_id {
+                self.workspace_settings
+                    .pinned_local_tabs
+                    .retain(|tab| tab.pin_id != pin_id);
+                self.persist_settings();
+            }
         }
         let Some(cwd) = self
             .workspace
@@ -1040,6 +1057,7 @@ impl AppShell {
                 crossh_core::process::reveal_in_finder(&path);
             }
             ShellMenuAction::ForgetLocalDir(cwd) => self.forget_local_dir(cwd, cx),
+            ShellMenuAction::StopLocalProject(cwd) => self.stop_local_project(cwd, window, cx),
             ShellMenuAction::OpenLocalTerminal(cwd) => {
                 let _ = self.open_local_session(cwd.clone(), cwd.clone(), cx);
                 // 「打开本地终端」即打开项目：同步恢复该项目尚无会话的
@@ -1949,6 +1967,9 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+#[path = "close_project_tests.rs"]
+mod close_project_tests;
 #[cfg(test)]
 #[path = "compose_tests.rs"]
 mod compose_tests;

@@ -182,6 +182,7 @@ define_icons! {
     X => "icons/x.svg",
     CircleX => "icons/circle-x.svg",
     Minus => "icons/minus.svg",
+    Square => "icons/square.svg",
     SquarePen => "icons/square-pen.svg",
 }
 

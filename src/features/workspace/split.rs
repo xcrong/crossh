@@ -65,7 +65,7 @@ impl AppShell {
     /// 批量清扫（close all / close others）前拆掉与被清扫视图相关的分栏
     /// 状态并重置尺规，**不做退休**：右窗格会话与其余会话一视同仁地随清扫
     /// 关闭，避免退休路径提前删除导致后续索引漂移。
-    pub(super) fn detach_splits_for(&mut self, closed: &[ActiveView], cx: &mut Context<Self>) {
+    pub(crate) fn detach_splits_for(&mut self, closed: &[ActiveView], cx: &mut Context<Self>) {
         for split in self.workspace.take_splits_involving(closed) {
             self.set_terminal_adjacent_available(split.left, false, cx);
             self.set_terminal_adjacent_available(split.right, false, cx);

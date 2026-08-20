@@ -45,6 +45,8 @@ pub enum ShellMenuAction {
     RevealInFinder(PathBuf),
     /// 从「最近本地目录」移除。
     ForgetLocalDir(PathBuf),
+    /// 停止本地项目（关闭该目录下全部本地会话，保留 recent/pinned）。
+    StopLocalProject(PathBuf),
     /// 在本地目录打开终端。
     OpenLocalTerminal(PathBuf),
     /// 切换到远程标签。

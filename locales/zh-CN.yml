@@ -161,6 +161,7 @@ sidebar:
 tooltip:
   new_terminal: 新建终端
   forget_dir: 从最近记录移除
+  stop_project: 停止项目
   settings: 设置
   open_sftp: 打开 SFTP
   port_forwarding: 端口转发
@@ -193,6 +194,7 @@ context_menu:
   open_local_terminal: 在此打开终端
   reveal_in_finder: 在 Finder 中显示
   forget_dir: 忘记此目录
+  stop_project: 停止项目
   switch: 切换
   close: 关闭
   close_others: 关闭其他

@@ -589,6 +589,60 @@ fn local_dir_state(shell: &AppShell, dir: &LocalDir, cx: &Context<AppShell>) -> 
         .reduce(crate::features::workspace::view::preferred_state)
 }
 
+pub(crate) fn local_dir_stop_button_visible(count: usize) -> bool {
+    count > 0
+}
+
+pub(crate) fn local_dir_forget_button_visible(count: usize) -> bool {
+    count == 0
+}
+
+pub(crate) fn build_local_dir_context_menu_entries(
+    project_dir: std::path::PathBuf,
+    count: usize,
+) -> Vec<MenuEntry<ShellMenuAction>> {
+    let mut entries = vec![
+        MenuEntry::Item(MenuItem {
+            id: "open-terminal".into(),
+            label: i18n::text("context_menu.open_local_terminal"),
+            shortcut_hint: None,
+            disabled: false,
+            danger: false,
+            action: ShellMenuAction::OpenLocalTerminal(project_dir.clone()),
+        }),
+        MenuEntry::Item(MenuItem {
+            id: "reveal-finder".into(),
+            label: i18n::text("context_menu.reveal_in_finder"),
+            shortcut_hint: None,
+            disabled: false,
+            danger: false,
+            action: ShellMenuAction::RevealInFinder(project_dir.clone()),
+        }),
+    ];
+    if count == 0 {
+        entries.push(MenuEntry::Separator);
+        entries.push(MenuEntry::Item(MenuItem {
+            id: "forget-dir".into(),
+            label: i18n::text("context_menu.forget_dir"),
+            shortcut_hint: None,
+            disabled: false,
+            danger: false,
+            action: ShellMenuAction::ForgetLocalDir(project_dir.clone()),
+        }));
+    } else {
+        entries.push(MenuEntry::Separator);
+        entries.push(MenuEntry::Item(MenuItem {
+            id: "stop-project".into(),
+            label: i18n::text("context_menu.stop_project"),
+            shortcut_hint: None,
+            disabled: false,
+            danger: false,
+            action: ShellMenuAction::StopLocalProject(project_dir),
+        }));
+    }
+    entries
+}
+
 fn render_local_dir(
     idx: usize,
     dir: &LocalDir,
@@ -600,6 +654,7 @@ fn render_local_dir(
     let project_dir = dir.project_dir.clone();
     let project_dir_for_row = project_dir.clone();
     let project_dir_for_new = project_dir.clone();
+    let project_dir_for_stop = project_dir.clone();
     let label = local_dir_label(&project_dir, duplicate_name);
     let tooltip_path = SharedString::from(project_dir.to_string_lossy().to_string());
     let count = dir.sessions.len();
@@ -643,35 +698,7 @@ fn render_local_dir(
         .on_mouse_down(MouseButton::Right, {
             let cwd_menu = project_dir.clone();
             cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
-                let mut entries = vec![
-                    MenuEntry::Item(MenuItem {
-                        id: "open-terminal".into(),
-                        label: i18n::text("context_menu.open_local_terminal"),
-                        shortcut_hint: None,
-                        disabled: false,
-                        danger: false,
-                        action: ShellMenuAction::OpenLocalTerminal(cwd_menu.clone()),
-                    }),
-                    MenuEntry::Item(MenuItem {
-                        id: "reveal-finder".into(),
-                        label: i18n::text("context_menu.reveal_in_finder"),
-                        shortcut_hint: None,
-                        disabled: false,
-                        danger: false,
-                        action: ShellMenuAction::RevealInFinder(cwd_menu.clone()),
-                    }),
-                ];
-                if count == 0 {
-                    entries.push(MenuEntry::Separator);
-                    entries.push(MenuEntry::Item(MenuItem {
-                        id: "forget-dir".into(),
-                        label: i18n::text("context_menu.forget_dir"),
-                        shortcut_hint: None,
-                        disabled: false,
-                        danger: false,
-                        action: ShellMenuAction::ForgetLocalDir(cwd_menu.clone()),
-                    }));
-                }
+                let entries = build_local_dir_context_menu_entries(cwd_menu.clone(), count);
                 this.open_context_menu(ev.position, entries, cx);
             })
         })
@@ -692,7 +719,20 @@ fn render_local_dir(
                 .child(SharedString::from(format!("{count}"))),
         );
     // 仅有历史记录（无活动会话）的目录提供「从最近记录移除」按钮。
-    if count == 0 {
+    if local_dir_stop_button_visible(count) {
+        row = row.child(
+            Button::new(SharedString::from(format!("local-stop-{idx}")))
+                .size(ButtonSize::Icon(px(24.)))
+                .variant(ButtonVariant::Ghost)
+                .icon(icons::icon(icons::IconName::Square, 14.).text_color(theme::muted_text()))
+                .tooltip(i18n::text("tooltip.stop_project"))
+                .on_click(cx.listener(move |this, _ev, window, cx| {
+                    cx.stop_propagation();
+                    this.stop_local_project(project_dir_for_stop.clone(), window, cx);
+                })),
+        );
+    }
+    if local_dir_forget_button_visible(count) {
         row = row.child(
             Button::new(("local-forget", idx))
                 .size(ButtonSize::Icon(px(24.)))
