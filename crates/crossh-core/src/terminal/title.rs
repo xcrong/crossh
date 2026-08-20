@@ -1,23 +1,33 @@
 use std::{env, path::Path};
 
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
 use super::session::TerminalProcessInfo;
 
-/// Matches Zed's per-title-component limit for compact tab labels.
+/// Matches Zed's per-title-component limit for compact tab labels (display width in columns).
 pub const MAX_TITLE_COMPONENT_CHARS: usize = 25;
 
 /// Truncate at a Unicode character boundary using the same trailing ellipsis
-/// convention as Zed's terminal title helper.
+/// convention as Zed's terminal title helper, but measured by display width
+/// (`unicode-width`) so CJK and emoji (width 2) do not overflow the tab.
 pub fn truncate_title(value: &str) -> String {
-    if value.chars().count() <= MAX_TITLE_COMPONENT_CHARS {
+    if value.width() <= MAX_TITLE_COMPONENT_CHARS {
         return value.to_owned();
     }
 
-    let content_limit = MAX_TITLE_COMPONENT_CHARS.saturating_sub(1);
-    value
-        .char_indices()
-        .nth(content_limit)
-        .map(|(index, _)| format!("{}…", &value[..index]))
-        .unwrap_or_else(|| value.to_owned())
+    let ellipsis_width = "…".width();
+    let content_limit = MAX_TITLE_COMPONENT_CHARS.saturating_sub(ellipsis_width);
+    let mut width = 0;
+    let mut end = 0;
+    for (idx, ch) in value.char_indices() {
+        let w = ch.width().unwrap_or(0);
+        if width + w > content_limit {
+            break;
+        }
+        width += w;
+        end = idx + ch.len_utf8();
+    }
+    format!("{}…", &value[..end])
 }
 
 /// Build the local terminal title in the same shape as Zed:
@@ -65,7 +75,9 @@ pub fn remote_terminal_title(title: Option<&str>) -> String {
 /// the terminal's OSC 7 cwd as the canonical path when the title is path-like.
 /// This also turns the local home directory into `~`.
 pub fn local_terminal_tab_title(title: &str, cwd: Option<&str>) -> String {
-    let home = env::var_os("HOME").map(|home| home.to_string_lossy().into_owned());
+    let home = env::var_os("HOME")
+        .map(|home| home.to_string_lossy().into_owned())
+        .or_else(|| dirs::home_dir().map(|path| path.to_string_lossy().into_owned()));
     local_terminal_tab_title_for_home(title, cwd, home.as_deref())
 }
 
@@ -142,7 +154,7 @@ pub fn truncate_path_title(value: &str) -> String {
     }
 
     let shortened = shorten_path_components(value);
-    if shortened.chars().count() <= MAX_TITLE_COMPONENT_CHARS {
+    if shortened.width() <= MAX_TITLE_COMPONENT_CHARS {
         return shortened;
     }
 
@@ -151,16 +163,19 @@ pub fn truncate_path_title(value: &str) -> String {
     } else {
         "…"
     };
-    let available = MAX_TITLE_COMPONENT_CHARS.saturating_sub(prefix.chars().count());
-    let suffix = shortened
-        .chars()
-        .rev()
-        .take(available)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect::<String>();
-    format!("{}{}", prefix, suffix)
+    let prefix_width = prefix.width();
+    let available = MAX_TITLE_COMPONENT_CHARS.saturating_sub(prefix_width);
+    let mut width = 0;
+    let mut start = shortened.len();
+    for (idx, ch) in shortened.char_indices().rev() {
+        let w = ch.width().unwrap_or(0);
+        if width + w > available {
+            break;
+        }
+        width += w;
+        start = idx;
+    }
+    format!("{}{}", prefix, &shortened[start..])
 }
 
 fn is_path_like(value: &str) -> bool {
@@ -256,7 +271,8 @@ mod tests {
     fn title_components_are_truncated_at_unicode_boundaries() {
         let directory = "目录".repeat(20);
         let title = local_terminal_title(Some(&directory), None, Some("zsh"));
-        let expected_directory = format!("{}…", "目录".repeat(12));
+        // “目录” 每个字符宽度为 2，MAX 为列宽 25，内容可用 24 列 → 12 个字符（6 次重复）+ “…”
+        let expected_directory = format!("{}…", "目录".repeat(6));
 
         assert_eq!(title, format!("{expected_directory} — zsh"));
         assert_eq!(truncate_title(&"x".repeat(26)), "x".repeat(24) + "…");
