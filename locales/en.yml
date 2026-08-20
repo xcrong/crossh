@@ -119,6 +119,9 @@ settings:
   pixels: "%{value} px"
   recent_dirs: Recent local directories
   recent_dirs_description: Remember opened local folders so they can be reopened after quitting.
+  editor_command: Default editor
+  editor_command_description: Lists editors auto-detected on this machine; picking one makes the status bar button open the current directory with it. The detection command list is built into the app and cannot be configured.
+  editor_auto: Auto-detect
   dirs: "%{value} dirs"
   recent_dirs_clear: Clear recent history
   updates: Updates
@@ -171,9 +174,13 @@ tooltip:
   close_split: Close the right terminal
   split_terminal_narrow: The window is too narrow for two terminal columns
   pin_command: Pin or unpin command
+  open_in_editor: Open the current directory in an external editor
+  open_in_editor_with: Open the current directory in %{editor}
 
 toast:
   path_copied: Path copied
+  editor_not_found: No editor detected. Configure one in Settings.
+  editor_spawn_failed: Failed to launch editor
 
 context_menu:
   open_terminal: Open Terminal

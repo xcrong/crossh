@@ -181,6 +181,7 @@ define_icons! {
     X => "icons/x.svg",
     CircleX => "icons/circle-x.svg",
     Minus => "icons/minus.svg",
+    SquarePen => "icons/square-pen.svg",
 }
 
 #[cfg(test)]

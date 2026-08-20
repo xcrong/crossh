@@ -32,6 +32,11 @@ pub(crate) struct WorkspaceSettings {
     pub(crate) recent_dirs_max: usize,
     #[serde(default)]
     pub(crate) pinned_local_tabs: Vec<PinnedLocalTab>,
+    /// 显式编辑器命令，由设置中的下拉选择框写入（选项来自自动检测结果）；
+    /// 设置后状态栏「在编辑器中打开」跳过自动检测。空白归一为 `None`（视为未配置）。
+    /// 检测候选列表是代码常量 `editor_launcher::DEFAULT_EDITOR_PRIORITY`，不可配置。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) editor_command: Option<String>,
 }
 
 impl Default for WorkspaceSettings {
@@ -42,6 +47,7 @@ impl Default for WorkspaceSettings {
             recent_dirs: Vec::new(),
             recent_dirs_max: default_recent_dirs_max(),
             pinned_local_tabs: Vec::new(),
+            editor_command: None,
         }
     }
 }
@@ -64,6 +70,12 @@ impl WorkspaceSettings {
                 .filter(|name| !name.trim().is_empty())
                 .map(|name| name.trim().to_string());
         }
+        // 编辑器配置：空白命令归一为 None。
+        self.editor_command = self
+            .editor_command
+            .take()
+            .map(|command| command.trim().to_string())
+            .filter(|command| !command.is_empty());
         self
     }
 }
@@ -106,6 +118,32 @@ mod tests {
         .normalized();
         assert_eq!(high.recent_dirs_max, MAX_RECENT_DIRS_MAX);
         assert_eq!(high.recent_dirs, paths[..MAX_RECENT_DIRS_MAX]);
+    }
+
+    #[test]
+    fn spec_20260820_open_project_in_editor_normalization_cleans_editor_settings() {
+        let settings = WorkspaceSettings {
+            editor_command: Some("  ".into()),
+            ..WorkspaceSettings::default()
+        }
+        .normalized();
+        assert_eq!(settings.editor_command, None, "空白命令归一为未配置");
+    }
+
+    #[test]
+    fn spec_20260820_open_project_in_editor_normalization_is_idempotent() {
+        let once = WorkspaceSettings {
+            editor_command: Some(" zed ".into()),
+            ..WorkspaceSettings::default()
+        }
+        .normalized();
+        assert_eq!(once.clone().normalized(), once);
+    }
+
+    #[test]
+    fn spec_20260820_open_project_in_editor_defaults_have_no_configured_command() {
+        let defaults = WorkspaceSettings::default();
+        assert_eq!(defaults.editor_command, None);
     }
 
     #[test]

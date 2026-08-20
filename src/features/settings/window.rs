@@ -7,13 +7,14 @@
 use gpui::{
     AnyElement, App, AppContext, Bounds, ClickEvent, ClipboardEntry, Context, Entity, FocusHandle,
     FontWeight, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, SharedString, Size,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render, SharedString, Size,
     StatefulInteractiveElement, Styled, Subscription, TitlebarOptions, WeakEntity, Window,
     WindowBounds, WindowOptions, canvas, div, px,
 };
 use std::cell::Cell;
 use std::rc::Rc;
 
+use crate::features::editor_launcher;
 use crate::features::settings::{self, SettingsSnapshot};
 use crate::features::updates::{UpdateController, UpdateStatus};
 use crate::features::workspace::AppShell;
@@ -21,6 +22,7 @@ use crate::shared::i18n::{self, LanguagePreference};
 use crossh_agent::{
     ALL_PROTOCOLS, AgentModel, AgentModelRef, AgentProvider, AgentSettings, Protocol, ProtocolExt,
 };
+use crossh_ui::context_menu::{ContextMenuState, MenuEntry, MenuItem, render_context_menu};
 use crossh_ui::widgets::{ime_input_canvas, printable_char, text_caret, text_span, text_width};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{Button, ButtonSize, ButtonVariant, Stepper, ToggleSwitch, scroll_y};
@@ -40,6 +42,23 @@ const SETTINGS_COMPACT_WIDTH: f32 = 640.;
 
 fn uses_compact_settings_layout(width: Pixels) -> bool {
     width < px(SETTINGS_COMPACT_WIDTH)
+}
+
+/// 构造单个编辑器菜单项；选中态由是否与当前配置一致决定。
+fn editor_menu_entry(path: String, configured: Option<&str>) -> MenuEntry<EditorChoice> {
+    let label = editor_launcher::command_display_name(&path);
+    let checked = configured == Some(path.as_str());
+    MenuEntry::CheckedItem {
+        item: MenuItem {
+            id: format!("editor-{path}"),
+            label,
+            shortcut_hint: None,
+            disabled: false,
+            danger: false,
+            action: EditorChoice::Pick(path),
+        },
+        checked,
+    }
 }
 
 fn observe_update_status<T>(updates: &Entity<UpdateController>, cx: &mut Context<T>) -> Subscription
@@ -79,7 +98,19 @@ pub struct SettingsWindow {
     agent_dragging: bool,
     agent_error: Option<String>,
     agent_api_key_revealed: bool,
+    /// 外部编辑器下拉选择框：打开的菜单状态；None 表示收起。
+    /// 选项在展开时由自动检测实时生成（见 `open_editor_menu`）。
+    editor_menu: Option<ContextMenuState<EditorChoice>>,
     compact_layout: bool,
+}
+
+/// 编辑器下拉菜单的可执行动作。
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum EditorChoice {
+    /// 清除 `editor_command` 覆盖，回退自动检测。
+    Auto,
+    /// 把所选命令写入 `editor_command`。
+    Pick(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -131,6 +162,7 @@ impl SettingsWindow {
             agent_dragging: false,
             agent_error: None,
             agent_api_key_revealed: false,
+            editor_menu: None,
             compact_layout: false,
         }
     }
@@ -264,7 +296,121 @@ impl SettingsWindow {
                 recent_dirs_control.into_any_element(),
                 compact_layout,
             ))
+            .child(self.render_editor_settings_rows(settings, cx))
             .into_any_element()
+    }
+
+    /// 外部编辑器设置：下拉选择框，选项来自自动检测的已安装编辑器。
+    /// 点击展开时实时检测并生成菜单；「自动检测」清除覆盖，其余选项写入
+    /// `editor_command`。
+    fn render_editor_settings_rows(
+        &self,
+        settings: &SettingsSnapshot,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let compact_layout = self.compact_layout;
+        let configured = settings.workspace.editor_command.as_deref();
+        let label = configured
+            .map(editor_launcher::command_display_name)
+            .unwrap_or_else(|| i18n::text("settings.editor_auto"));
+        let select = div()
+            .id("settings-editor-select")
+            .h(px(32.))
+            .px_2()
+            .flex()
+            .items_center()
+            .gap_2()
+            .bg(theme::canvas())
+            .border_1()
+            .border_color(theme::border_strong())
+            .rounded(px(theme::RADIUS_SM))
+            .cursor_pointer()
+            .text_xs()
+            .text_color(theme::text())
+            .hover(|s| s.border_color(theme::focus_ring()))
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .child(SharedString::from(label)),
+            )
+            .child(icons::icon(icons::IconName::ChevronDown, 14.).text_color(theme::muted_text()))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
+                    this.open_editor_menu(ev.position, cx)
+                }),
+            )
+            .into_any_element();
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(responsive_settings_row(
+                i18n::text("settings.editor_command"),
+                i18n::text("settings.editor_command_description"),
+                select,
+                compact_layout,
+            ))
+            .into_any_element()
+    }
+
+    /// 展开/收起编辑器下拉菜单；展开时按默认候选列表实时检测 PATH 生成选项。
+    fn open_editor_menu(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        if self.editor_menu.is_some() {
+            self.editor_menu = None;
+            cx.notify();
+            return;
+        }
+        let configured = self.shell_settings(cx).workspace.editor_command.clone();
+        let path_env = std::env::var_os("PATH").unwrap_or_default();
+        let detected =
+            editor_launcher::detect_editors(&path_env, editor_launcher::executable_exists);
+
+        let mut entries = vec![MenuEntry::CheckedItem {
+            item: MenuItem {
+                id: "editor-auto".into(),
+                label: i18n::text("settings.editor_auto"),
+                shortcut_hint: None,
+                disabled: false,
+                danger: false,
+                action: EditorChoice::Auto,
+            },
+            checked: configured.is_none(),
+        }];
+        let mut seen = std::collections::HashSet::new();
+        for path in detected {
+            seen.insert(path.clone());
+            entries.push(editor_menu_entry(path, configured.as_deref()));
+        }
+        // 兼容迁移：既有配置值不在检测结果中时仍展示（只读选中项），不静默丢弃。
+        if let Some(configured) = &configured
+            && !seen.contains(configured)
+        {
+            let path = configured.clone();
+            entries.push(editor_menu_entry(path, Some(configured.as_str())));
+        }
+        self.editor_menu = Some(ContextMenuState { position, entries });
+        cx.notify();
+    }
+
+    /// 选择下拉菜单项：写入设置并收起菜单。
+    fn select_editor_choice(&mut self, choice: &EditorChoice, cx: &mut Context<Self>) {
+        match choice {
+            EditorChoice::Auto => self.write_to_shell(cx, |shell, cx| {
+                shell.set_editor_command(None, cx);
+            }),
+            EditorChoice::Pick(command) => {
+                let command = command.clone();
+                self.write_to_shell(cx, move |shell, cx| {
+                    shell.set_editor_command(Some(command), cx);
+                });
+            }
+        }
+        self.editor_menu = None;
+        cx.notify();
     }
 
     fn render_terminal_settings(

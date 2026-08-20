@@ -139,12 +139,26 @@ impl Render for SettingsWindow {
                 .child(content_container)
         };
 
-        div()
+        let mut root = div()
             .id("settings-window")
             .size_full()
             .flex()
             .flex_col()
             .bg(theme::canvas())
-            .child(main)
+            .child(main);
+        if let Some(menu) = self.editor_menu.as_ref() {
+            root = root.child(render_context_menu(
+                menu,
+                Point::new(px(0.), px(0.)),
+                window,
+                cx,
+                |this, choice, _window, cx| this.select_editor_choice(&choice, cx),
+                |this, cx| {
+                    this.editor_menu = None;
+                    cx.notify();
+                },
+            ));
+        }
+        root.into_any_element()
     }
 }

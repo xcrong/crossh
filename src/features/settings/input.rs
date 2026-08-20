@@ -9,7 +9,15 @@ use crossh_ui::widgets::{
     utf16_slice,
 };
 
+/// 设置窗口内的 IME 文本输入目标：仅 Agent 配置字段。
+/// 外部编辑器选择是下拉框（点击即生效），不参与文本输入。
+type SettingsInputField = AgentInputField;
+
 impl SettingsWindow {
+    fn active_input_field(&self, window: &Window) -> Option<SettingsInputField> {
+        self.active_agent_input_field(window)
+    }
+
     fn agent_focus_handle(&self, field: AgentInputField) -> &FocusHandle {
         match field {
             AgentInputField::ProviderId => &self.agent_provider_id_focus,
@@ -38,7 +46,7 @@ impl EntityInputHandler for SettingsWindow {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<String> {
-        let field = self.active_agent_input_field(window)?;
+        let field = self.active_input_field(window)?;
         let value = self.agent_input_value(field);
         Some(utf16_slice(&value, range))
     }
@@ -49,7 +57,7 @@ impl EntityInputHandler for SettingsWindow {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
-        let field = self.active_agent_input_field(window)?;
+        let field = self.active_input_field(window)?;
         let value = self.agent_input_value(field);
         let cursor = clamp_char_boundary(&value, self.agent_cursor);
         let anchor = self
@@ -67,7 +75,7 @@ impl EntityInputHandler for SettingsWindow {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
-        let field = self.active_agent_input_field(window)?;
+        let field = self.active_input_field(window)?;
         if self.agent_ime_marked_text.is_empty() {
             return None;
         }
@@ -81,14 +89,13 @@ impl EntityInputHandler for SettingsWindow {
     }
 
     fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.active_agent_input_field(window).is_none() {
-            return;
+        if self.active_input_field(window).is_some() {
+            if let Some((start, end)) = self.agent_ime_replacement.take() {
+                self.agent_cursor = end;
+                self.agent_anchor = (start != end).then_some(start);
+            }
+            self.agent_ime_marked_text.clear();
         }
-        if let Some((start, end)) = self.agent_ime_replacement.take() {
-            self.agent_cursor = end;
-            self.agent_anchor = (start != end).then_some(start);
-        }
-        self.agent_ime_marked_text.clear();
         window.invalidate_character_coordinates();
         cx.notify();
     }
@@ -100,7 +107,7 @@ impl EntityInputHandler for SettingsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(field) = self.active_agent_input_field(window) else {
+        let Some(field) = self.active_input_field(window) else {
             return;
         };
         let value = self.agent_input_value(field);
@@ -153,7 +160,7 @@ impl EntityInputHandler for SettingsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(field) = self.active_agent_input_field(window) else {
+        let Some(field) = self.active_input_field(window) else {
             return;
         };
         let value = self.agent_input_value(field);
@@ -197,7 +204,7 @@ impl EntityInputHandler for SettingsWindow {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        let field = self.active_agent_input_field(window)?;
+        let field = self.active_input_field(window)?;
         let value = self.agent_input_value(field);
         let cursor = byte_index_for_utf16(&value, range.start);
         let text_before = if field == AgentInputField::ApiKey && !self.agent_api_key_revealed {
@@ -225,7 +232,7 @@ impl EntityInputHandler for SettingsWindow {
     }
 
     fn text_length_utf16(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> Option<usize> {
-        let field = self.active_agent_input_field(window)?;
-        Some(utf16_len(&self.agent_input_value(field)))
+        self.active_input_field(window)
+            .map(|field| utf16_len(&self.agent_input_value(field)))
     }
 }

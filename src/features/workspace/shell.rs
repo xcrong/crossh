@@ -23,6 +23,7 @@ use gpui::{
 
 use crate::features::connections::{Connection, ConnectionManager, HostEntry, PendingPrompt};
 use crate::features::connections::{PromptDisplay, render_prompt_modal};
+use crate::features::editor_launcher;
 use crate::features::forwarding::ForwardPane;
 use crate::features::settings::{self, SettingsSnapshot};
 use crate::features::sftp::SftpPane;
@@ -1177,6 +1178,51 @@ impl AppShell {
         cx.notify();
     }
 
+    /// 设置显式编辑器命令；`None`/空白清除覆盖并回退自动检测。
+    pub(crate) fn set_editor_command(&mut self, command: Option<String>, cx: &mut Context<Self>) {
+        let mut workspace = self.workspace_settings.clone();
+        workspace.editor_command = command;
+        self.workspace_settings = workspace.normalized();
+        self.persist_settings();
+        cx.notify();
+    }
+
+    /// 解析并启动外部编辑器打开 `directory`；无可用编辑器或启动失败时弹错误 Toast。
+    pub(crate) fn open_project_in_editor(&mut self, directory: &Path, cx: &mut Context<Self>) {
+        let path_env = std::env::var_os("PATH").unwrap_or_default();
+        self.open_project_in_editor_with_path_env(directory, path_env, cx);
+    }
+
+    /// [`open_project_in_editor`](Self::open_project_in_editor) 的可注入 PATH 变体：
+    /// PATH 作为参数传入，便于纯逻辑测试控制检测结果而不触碰进程环境。
+    pub(crate) fn open_project_in_editor_with_path_env(
+        &mut self,
+        directory: &Path,
+        path_env: std::ffi::OsString,
+        cx: &mut Context<Self>,
+    ) {
+        let editor = editor_launcher::resolve_editor(
+            self.workspace_settings.editor_command.as_deref(),
+            &path_env,
+            editor_launcher::executable_exists,
+        );
+        let Some(binary) = editor else {
+            self.show_toast(
+                ToastNotice::new(i18n::text("toast.editor_not_found"), ToastTone::Error),
+                cx,
+            );
+            return;
+        };
+        let mut process = editor_launcher::editor_process_command(&binary, directory);
+        if let Err(error) = process.spawn() {
+            log::warn!("failed to spawn editor {binary}: {error}");
+            self.show_toast(
+                ToastNotice::new(i18n::text("toast.editor_spawn_failed"), ToastTone::Error),
+                cx,
+            );
+        }
+    }
+
     fn apply_terminal_settings(&mut self, settings: TerminalSettings, cx: &mut Context<Self>) {
         let settings = settings.normalized();
         if self.terminal_settings == settings {
@@ -1717,6 +1763,9 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+#[path = "editor_launch_tests.rs"]
+mod editor_launch_tests;
 #[cfg(test)]
 #[path = "git_sync_toast_tests.rs"]
 mod git_sync_toast_tests;

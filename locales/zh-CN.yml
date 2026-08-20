@@ -119,6 +119,9 @@ settings:
   pixels: "%{value} 像素"
   recent_dirs: 最近本地目录
   recent_dirs_description: 记住打开过的本地目录，退出后仍可在侧栏 Local 重新打开。
+  editor_command: 默认编辑器
+  editor_command_description: 显示自动检测到的本机已安装编辑器，选择后状态栏按钮将用所选编辑器打开当前目录。检测候选命令由程序内置，不可配置。
+  editor_auto: 自动检测
   dirs: "%{value} 个目录"
   recent_dirs_clear: 清空最近记录
   updates: 更新
@@ -171,9 +174,13 @@ tooltip:
   close_split: 关闭右侧终端
   split_terminal_narrow: 窗口太窄，无法使用两栏终端
   pin_command: 固定或取消固定命令
+  open_in_editor: 在外部编辑器中打开当前目录
+  open_in_editor_with: 在 %{editor} 中打开当前目录
 
 toast:
   path_copied: 路径已复制
+  editor_not_found: 未检测到编辑器，可在设置中配置
+  editor_spawn_failed: 编辑器启动失败
 
 context_menu:
   open_terminal: 打开终端

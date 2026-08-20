@@ -10,6 +10,7 @@ use gpui::{
 };
 
 use crate::features::connections::Connection;
+use crate::features::editor_launcher;
 use crate::features::settings::is_settings_window_open;
 use crate::features::terminal::{ConnState, TerminalView};
 use crate::features::workspace::empty_state;
@@ -379,6 +380,42 @@ fn copy_status_path_to_clipboard(path: &Path, cx: &App) {
     ));
 }
 
+/// 「在外部编辑器中打开」状态栏按钮；仅本地会话渲染，目标为该会话当前 `cwd`。
+fn render_open_in_editor_button(
+    session: &LocalSession,
+    shell: &AppShell,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    let directory = session.cwd.clone();
+    let tooltip = match tooltip_editor_name(shell) {
+        Some(name) => {
+            rust_i18n::t!("tooltip.open_in_editor_with", editor = name.as_str()).to_string()
+        }
+        None => i18n::text("tooltip.open_in_editor"),
+    };
+    Button::new("status-open-in-editor")
+        .size(ButtonSize::Icon(px(22.)))
+        .variant(ButtonVariant::Ghost)
+        .icon(icons::icon(icons::IconName::SquarePen, 13.).text_color(theme::muted_text()))
+        .tooltip(tooltip)
+        .on_click(cx.listener(move |this, _event, _window, cx| {
+            this.open_project_in_editor(&directory, cx);
+        }))
+        .into_any_element()
+}
+
+/// 当前解析出的编辑器显示名：配置值原样，检测结果取 basename，供 tooltip 展示。
+fn tooltip_editor_name(shell: &AppShell) -> Option<String> {
+    let editor = editor_launcher::resolve_editor(
+        shell.workspace_settings.editor_command.as_deref(),
+        std::env::var_os("PATH")
+            .as_deref()
+            .unwrap_or_else(|| std::ffi::OsStr::new("")),
+        editor_launcher::executable_exists,
+    );
+    editor.map(|binary| editor_launcher::command_display_name(&binary))
+}
+
 fn render_status_path(cwd: PathBuf, cx: &mut Context<AppShell>) -> AnyElement {
     let path_text = cwd.to_string_lossy().into_owned();
 
@@ -460,6 +497,7 @@ pub(crate) fn render_workspace_status_bar(
     if let Some(ActiveView::LocalSession(session_id)) = focused_view
         && let Some(session) = shell.workspace.sessions.local_sessions.get(&session_id)
     {
+        left = left.child(render_open_in_editor_button(session, shell, cx));
         left = left.child(render_status_path(session.cwd.clone(), cx));
         if let Some(status) = &session.git_status {
             let sync = shell.git_sync.get(&session_id);

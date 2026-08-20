@@ -151,6 +151,7 @@ mod tests {
                 show_quick_commands: false,
                 recent_dirs: vec![PathBuf::from("/a"), PathBuf::from("/b")],
                 recent_dirs_max: 2,
+                editor_command: Some("zed".into()),
                 pinned_local_tabs: vec![
                     crate::features::workspace::settings::PinnedLocalTab {
                         pin_id: 1,
@@ -190,6 +191,11 @@ mod tests {
             encoded
                 .lines()
                 .any(|line| line == "show_quick_commands = false")
+        );
+        assert!(
+            encoded
+                .lines()
+                .any(|line| line == "editor_command = \"zed\"")
         );
         assert!(
             encoded
@@ -251,6 +257,85 @@ mod tests {
         assert_eq!(
             settings_path_from_home(Path::new("/Users/example")),
             PathBuf::from("/Users/example/.config/crossh/settings.toml")
+        );
+    }
+
+    #[test]
+    fn spec_20260820_open_project_in_editor_default_editor_settings_stay_out_of_toml() {
+        let snapshot = SettingsSnapshot {
+            language: LanguagePreference::English,
+            ..SettingsSnapshot {
+                language: LanguagePreference::English,
+                terminal: TerminalSettings::default(),
+                updates: UpdateSettings::default(),
+                workspace: WorkspaceSettings::default(),
+                agent: AgentSettings::default(),
+            }
+        };
+        let encoded = toml::to_string(&SettingsFile::from(&snapshot)).expect("should serialize");
+        assert!(
+            !encoded.contains("editor_command"),
+            "未配置的命令不得写入 settings.toml"
+        );
+        assert!(
+            !encoded.contains("editor_priority"),
+            "检测候选列表是代码常量，不得写入 settings.toml"
+        );
+        let decoded: SettingsSnapshot = toml::from_str::<SettingsFile>(&encoded)
+            .expect("should deserialize")
+            .into();
+        assert_eq!(decoded.workspace.editor_command, None);
+    }
+
+    #[test]
+    fn spec_20260820_open_project_in_editor_custom_editor_settings_round_trip() {
+        let snapshot = SettingsSnapshot {
+            terminal: TerminalSettings::default(),
+            updates: UpdateSettings::default(),
+            workspace: WorkspaceSettings {
+                editor_command: Some("my-editor".into()),
+                ..WorkspaceSettings::default()
+            },
+            ..SettingsSnapshot {
+                language: LanguagePreference::English,
+                terminal: TerminalSettings::default(),
+                updates: UpdateSettings::default(),
+                workspace: WorkspaceSettings::default(),
+                agent: AgentSettings::default(),
+            }
+        };
+        let encoded =
+            toml::to_string(&SettingsFile::from(&snapshot)).expect("settings should serialize");
+        assert!(encoded.contains("editor_command = \"my-editor\""));
+        assert!(
+            !encoded.contains("editor_priority"),
+            "序列化不得再产生 editor_priority 字段"
+        );
+        let decoded: SettingsSnapshot = toml::from_str::<SettingsFile>(&encoded)
+            .expect("settings should deserialize")
+            .into();
+        assert_eq!(decoded, snapshot, "归一化后的快照完整 round-trip");
+    }
+
+    #[test]
+    fn spec_20260820_open_project_in_editor_legacy_priority_field_is_ignored() {
+        let snapshot: SettingsSnapshot = toml::from_str::<SettingsFile>(
+            "editor_command = \"/usr/bin/zed\"\neditor_priority = [\"code\", \"zed\"]",
+        )
+        .expect("legacy settings with editor_priority should deserialize")
+        .into();
+        assert_eq!(
+            snapshot.workspace.editor_command,
+            Some("/usr/bin/zed".into()),
+            "编辑器覆盖项保留"
+        );
+        assert_eq!(
+            snapshot.workspace,
+            WorkspaceSettings {
+                editor_command: Some("/usr/bin/zed".into()),
+                ..WorkspaceSettings::default()
+            },
+            "旧配置里的检测候选列表被忽略，不影响归一化结果"
         );
     }
 }
