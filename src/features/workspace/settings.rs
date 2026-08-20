@@ -5,9 +5,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-pub(crate) const DEFAULT_RECENT_DIRS_MAX: usize = 10;
-pub(crate) const MIN_RECENT_DIRS_MAX: usize = 1;
-pub(crate) const MAX_RECENT_DIRS_MAX: usize = 50;
+pub(crate) const DEFAULT_RECENT_DIRS_MAX: usize = 50;
+pub(crate) const MIN_RECENT_DIRS_MAX: usize = 0;
+pub(crate) const MAX_RECENT_DIRS_MAX: usize = 500;
 
 /// 一条固定本地会话的持久化记录。`pin_id` 是记录内唯一的稳定身份，
 /// 分配后不回收、与列表位置解耦；排序由 `Vec` 顺序决定（为拖拽排序预留）。
@@ -59,7 +59,7 @@ impl WorkspaceSettings {
         self.recent_dirs_max = self
             .recent_dirs_max
             .clamp(MIN_RECENT_DIRS_MAX, MAX_RECENT_DIRS_MAX);
-        if self.recent_dirs.len() > self.recent_dirs_max {
+        if self.recent_dirs_max != 0 && self.recent_dirs.len() > self.recent_dirs_max {
             self.recent_dirs.truncate(self.recent_dirs_max);
         }
         // 固定记录按 pin_id 去重（保留首个出现），空白自定义名称归一为 None。
@@ -114,8 +114,9 @@ mod tests {
             ..WorkspaceSettings::default()
         }
         .normalized();
-        assert_eq!(low.recent_dirs_max, MIN_RECENT_DIRS_MAX);
-        assert_eq!(low.recent_dirs, paths[..1]);
+        assert_eq!(low.recent_dirs_max, 0);
+        assert_eq!(low.recent_dirs.len(), 60);
+        assert_eq!(low.recent_dirs, paths);
 
         let high = WorkspaceSettings {
             recent_dirs: paths.clone(),
@@ -124,7 +125,7 @@ mod tests {
         }
         .normalized();
         assert_eq!(high.recent_dirs_max, MAX_RECENT_DIRS_MAX);
-        assert_eq!(high.recent_dirs, paths[..MAX_RECENT_DIRS_MAX]);
+        assert_eq!(high.recent_dirs, paths);
     }
 
     #[test]

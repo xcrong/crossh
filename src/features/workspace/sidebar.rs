@@ -60,7 +60,7 @@ pub fn render_sidebar(
             .recent_dirs
             .iter()
             .position(|project_dir| project_dir == &dir.project_dir);
-        (!dir.sessions.is_empty(), recency.unwrap_or(usize::MAX))
+        (dir.sessions.is_empty(), recency.unwrap_or(usize::MAX))
     });
     let mut project_name_counts = BTreeMap::new();
     for dir in shell.workspace.sessions.local_dirs.values() {
