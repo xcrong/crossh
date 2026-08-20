@@ -1,0 +1,199 @@
+//! 批量输入条的终端级状态与交互（与分栏同为终端级）。
+//! 逻辑与渲染分离：本模块负责可见性、草稿、发送与按键；渲染在 `compose_bar.rs`。
+
+use gpui::{Context, KeyDownEvent, Window};
+
+use crossh_ui::widgets::printable_char;
+
+use crate::features::workspace::view::ActiveView;
+
+use super::AppShell;
+
+impl AppShell {
+    pub(crate) fn toggle_compose_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(view) = self.workspace.focused_view() else {
+            return;
+        };
+        let entry = self.workspace.compose_entry_mut(view);
+        entry.visible = !entry.visible;
+        if entry.visible {
+            window.focus(&self.compose_focus, cx);
+        } else {
+            self.refocus_active_terminal(cx);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn hide_compose_bar(&mut self, cx: &mut Context<Self>) {
+        let Some(view) = self.workspace.focused_view() else {
+            return;
+        };
+        let Some(entry) = self.workspace.compose.get_mut(&view) else {
+            return;
+        };
+        if !entry.visible {
+            return;
+        }
+        entry.visible = false;
+        self.refocus_active_terminal(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn send_compose(&mut self, cx: &mut Context<Self>) {
+        let Some(view) = self.workspace.focused_view() else {
+            return;
+        };
+        let text = self
+            .workspace
+            .compose
+            .get(&view)
+            .map(|e| e.state.value.trim().to_string())
+            .unwrap_or_default();
+        if text.is_empty() {
+            return;
+        }
+        match view {
+            ActiveView::RemoteTab(index) => {
+                if let Some(tab) = self.workspace.sessions.remote_tabs.get(index) {
+                    tab.pane.run_command(&text, cx);
+                }
+            }
+            ActiveView::LocalSession(session_id) => {
+                if let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) {
+                    session
+                        .terminal
+                        .update(cx, |terminal, term_cx| terminal.run_command(&text, term_cx));
+                }
+            }
+        }
+        if let Some(entry) = self.workspace.compose.get_mut(&view) {
+            entry.state.value.clear();
+            entry.state.cursor = 0;
+            entry.state.anchor = None;
+            entry.state.ime_marked_text.clear();
+            entry.state.ime_replacement = None;
+        }
+        self.compose_scroll.set_offset(gpui::Point::default());
+        cx.notify();
+    }
+
+    pub(crate) fn handle_compose_key(
+        &mut self,
+        ev: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(view) = self.workspace.focused_view() else {
+            return;
+        };
+        let ks = &ev.keystroke;
+        let is_send = (ks.modifiers.control || ks.modifiers.platform) && ks.key == "enter";
+        if is_send {
+            {
+                let entry = self.workspace.compose_entry_mut(view);
+                entry.state.clear_composition();
+            }
+            self.send_compose(cx);
+            cx.stop_propagation();
+            return;
+        }
+        if ks.key == "escape" {
+            {
+                let entry = self.workspace.compose_entry_mut(view);
+                entry.state.clear_composition();
+            }
+            self.hide_compose_bar(cx);
+            cx.stop_propagation();
+            return;
+        }
+        if ks.key == "enter" && ks.modifiers.shift {
+            let entry = self.workspace.compose_entry_mut(view);
+            entry.state.clear_composition();
+            entry.state.replace_selection("\n");
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+        let entry = self.workspace.compose_entry_mut(view);
+        let state = &mut entry.state;
+        let primary = ks.modifiers.control || ks.modifiers.platform;
+        let extend = ks.modifiers.shift;
+        if primary && ks.key == "a" {
+            state.clear_composition();
+            state.select_all();
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+        if primary && matches!(ks.key.as_str(), "c" | "x") {
+            if let Some(text) = state.selected_text() {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                if ks.key == "x" {
+                    state.clear_composition();
+                    state.replace_selection("");
+                }
+            }
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+        if primary && ks.key == "v" {
+            if let Some(pasted) = cx
+                .read_from_clipboard()
+                .and_then(|item| item.text().map(|s| s.to_string()))
+            {
+                state.clear_composition();
+                state.replace_selection(&pasted);
+            }
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+        match ks.key.as_str() {
+            "backspace" => {
+                state.clear_composition();
+                state.backspace();
+                cx.notify();
+                cx.stop_propagation();
+            }
+            "delete" => {
+                state.clear_composition();
+                state.delete();
+                cx.notify();
+                cx.stop_propagation();
+            }
+            "left" => {
+                state.clear_composition();
+                state.move_horizontal(-1, extend);
+                cx.notify();
+                cx.stop_propagation();
+            }
+            "right" => {
+                state.clear_composition();
+                state.move_horizontal(1, extend);
+                cx.notify();
+                cx.stop_propagation();
+            }
+            "home" => {
+                state.clear_composition();
+                state.move_to_boundary(false, extend);
+                cx.notify();
+                cx.stop_propagation();
+            }
+            "end" => {
+                state.clear_composition();
+                state.move_to_boundary(true, extend);
+                cx.notify();
+                cx.stop_propagation();
+            }
+            _ => {
+                if let Some(ch) = printable_char(ks) {
+                    state.clear_composition();
+                    state.replace_selection(&ch.to_string());
+                    cx.notify();
+                    cx.stop_propagation();
+                }
+            }
+        }
+    }
+}

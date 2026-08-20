@@ -27,13 +27,19 @@ pub(crate) fn render_compose_bar(
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
     let focus = shell.compose_focus.clone();
-    let value = shell.compose_state.value.clone();
-    let ime_marked_text = shell.compose_state.ime_marked_text.clone();
-    let ime_replacement = shell.compose_state.ime_replacement;
-    let selection = shell.compose_state.selection();
-    let cursor = shell.compose_state.cursor;
     let scroll = shell.compose_scroll.clone();
     let focused = focus.is_focused(window);
+    let compose_state = shell
+        .workspace
+        .focused_view()
+        .and_then(|view| shell.workspace.compose_state_for(view))
+        .cloned()
+        .unwrap_or_else(|| crate::shared::text_editing::TextEditingState::new(String::new()));
+    let value = compose_state.value.clone();
+    let ime_marked_text = compose_state.ime_marked_text.clone();
+    let ime_replacement = compose_state.ime_replacement;
+    let selection = compose_state.selection();
+    let cursor = compose_state.cursor;
 
     // 自动滚动到光标：单行用 x，多行用 y
     scroll.scroll_to_item(1);

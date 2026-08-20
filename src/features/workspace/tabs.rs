@@ -226,7 +226,9 @@ impl AppShell {
             Some(ActiveView::RemoteTab(a)) if a > idx => Some(ActiveView::RemoteTab(a - 1)),
             other => other,
         };
+        self.workspace.remove_compose_for_view(closing_view);
         self.workspace.remap_split_remote_tab_indices(idx);
+        self.workspace.remap_compose_remote_tab_indices(idx);
         if split_affected {
             self.refocus_active_terminal(cx);
         }
@@ -530,6 +532,14 @@ impl AppShell {
             if index != keep {
                 tab.pane.cleanup(cx);
             }
+        }
+        // 终端级 compose：keep 的草稿需从旧索引迁移到 0
+        if keep != 0
+            && let Some(entry) = self.workspace.compose.remove(&ActiveView::RemoteTab(keep))
+        {
+            self.workspace
+                .compose
+                .insert(ActiveView::RemoteTab(0), entry);
         }
         self.workspace.sessions.remote_tabs =
             vec![self.workspace.sessions.remote_tabs.swap_remove(keep)];

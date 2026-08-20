@@ -70,6 +70,8 @@ impl AppShell {
             self.set_terminal_adjacent_available(split.left, false, cx);
             self.set_terminal_adjacent_available(split.right, false, cx);
         }
+        // 同步清理终端级的 compose 状态，避免已关闭视图的草稿残留
+        let _ = self.workspace.take_composes_involving(closed);
         self.reset_split_ui_if_idle();
     }
 

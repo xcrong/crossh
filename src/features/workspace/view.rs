@@ -499,7 +499,7 @@ pub(crate) fn render_workspace_status_bar(
         left = left.child(render_workspace_terminal_toggle(shell, available_width, cx));
     }
     {
-        let compose_active = shell.compose_visible;
+        let compose_active = shell.workspace.compose_visible_for_focused();
         let compose_disabled = focused_view.is_none();
         left = left.child(
             Button::new("status-compose")

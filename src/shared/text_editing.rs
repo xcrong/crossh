@@ -13,6 +13,7 @@
 ///
 /// `value` 为 UTF-8 文本，`cursor`/`anchor`/`ime_replacement` 均为字节索引，
 /// 编辑方法保证光标始终落在合法字符边界上。
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextEditingState {
     pub value: String,
     pub cursor: usize,

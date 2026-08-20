@@ -43,7 +43,12 @@ impl AppShell {
             .is_some_and(|editor| editor.focus.is_focused(window))
         {
             Some(AppShellInputField::QuickCommand)
-        } else if self.compose_visible && self.compose_focus.is_focused(window) {
+        } else if self
+            .workspace
+            .focused_view()
+            .is_some_and(|view| self.workspace.compose_visible(view))
+            && self.compose_focus.is_focused(window)
+        {
             Some(AppShellInputField::Compose)
         } else if self.host_focus.is_focused(window) {
             Some(AppShellInputField::HostSearch)
@@ -61,7 +66,14 @@ impl EntityInputHandler for AppShell {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<String> {
-        let text = match self.active_input_field(window)? {
+        let field = self.active_input_field(window)?;
+        // 为 Compose 单独处理以避免借用冲突：需通过 workspace 获取终端级状态
+        if let AppShellInputField::Compose = field {
+            let view = self.workspace.focused_view()?;
+            let text = &self.workspace.compose.get(&view)?.state.value;
+            return Some(utf16_slice(text, range));
+        }
+        let text = match field {
             AppShellInputField::HostSearch => &self.host_query,
             AppShellInputField::Credential => &self.prompt_input,
             AppShellInputField::QuickCommand => &self.quick_command_editor.as_ref()?.state.value,
@@ -69,7 +81,7 @@ impl EntityInputHandler for AppShell {
             AppShellInputField::DefaultCommand => {
                 &self.default_command_editor.as_ref()?.state.value
             }
-            AppShellInputField::Compose => &self.compose_state.value,
+            AppShellInputField::Compose => unreachable!(),
         };
         Some(utf16_slice(text, range))
     }
@@ -141,17 +153,13 @@ impl EntityInputHandler for AppShell {
                 })
             }
             AppShellInputField::Compose => {
-                let (start, end) = self
-                    .compose_state
-                    .selection()
-                    .unwrap_or((self.compose_state.cursor, self.compose_state.cursor));
+                let view = self.workspace.focused_view()?;
+                let state = &self.workspace.compose.get(&view)?.state;
+                let (start, end) = state.selection().unwrap_or((state.cursor, state.cursor));
                 Some(UTF16Selection {
-                    range: utf16_offset_for_byte(&self.compose_state.value, start)
-                        ..utf16_offset_for_byte(&self.compose_state.value, end),
-                    reversed: self
-                        .compose_state
-                        .anchor
-                        .is_some_and(|anchor| anchor > self.compose_state.cursor),
+                    range: utf16_offset_for_byte(&state.value, start)
+                        ..utf16_offset_for_byte(&state.value, end),
+                    reversed: state.anchor.is_some_and(|anchor| anchor > state.cursor),
                 })
             }
         }
@@ -198,10 +206,12 @@ impl EntityInputHandler for AppShell {
                 })
             }
             AppShellInputField::Compose => {
-                let (start, _) = self.compose_state.ime_replacement?;
-                (!self.compose_state.ime_marked_text.is_empty()).then(|| {
-                    let start = utf16_offset_for_byte(&self.compose_state.value, start);
-                    start..start + utf16_len(&self.compose_state.ime_marked_text)
+                let view = self.workspace.focused_view()?;
+                let state = &self.workspace.compose.get(&view)?.state;
+                let (start, _) = state.ime_replacement?;
+                (!state.ime_marked_text.is_empty()).then(|| {
+                    let start = utf16_offset_for_byte(&state.value, start);
+                    start..start + utf16_len(&state.ime_marked_text)
                 })
             }
         }
@@ -239,11 +249,15 @@ impl EntityInputHandler for AppShell {
                 }
             }
             Some(AppShellInputField::Compose) => {
-                if let Some((start, end)) = self.compose_state.ime_replacement.take() {
-                    self.compose_state.cursor = end;
-                    self.compose_state.anchor = (start != end).then_some(start);
+                if let Some(view) = self.workspace.focused_view()
+                    && let Some(entry) = self.workspace.compose.get_mut(&view)
+                {
+                    if let Some((start, end)) = entry.state.ime_replacement.take() {
+                        entry.state.cursor = end;
+                        entry.state.anchor = (start != end).then_some(start);
+                    }
+                    entry.state.ime_marked_text.clear();
                 }
-                self.compose_state.ime_marked_text.clear();
             }
             None => {}
         }
@@ -341,22 +355,27 @@ impl EntityInputHandler for AppShell {
                 }
             }
             Some(AppShellInputField::Compose) => {
-                let (start, end) = if let Some(range) = self.compose_state.ime_replacement.take() {
+                let Some(view) = self.workspace.focused_view() else {
+                    return;
+                };
+                let entry = self.workspace.compose_entry_mut(view);
+                let (start, end) = if let Some(range) = entry.state.ime_replacement.take() {
                     range
                 } else if let Some(range) = replacement_range {
                     (
-                        byte_index_for_utf16(&self.compose_state.value, range.start),
-                        byte_index_for_utf16(&self.compose_state.value, range.end),
+                        byte_index_for_utf16(&entry.state.value, range.start),
+                        byte_index_for_utf16(&entry.state.value, range.end),
                     )
                 } else {
-                    self.compose_state
+                    entry
+                        .state
                         .selection()
-                        .unwrap_or((self.compose_state.cursor, self.compose_state.cursor))
+                        .unwrap_or((entry.state.cursor, entry.state.cursor))
                 };
-                self.compose_state.value.replace_range(start..end, text);
-                self.compose_state.cursor = start + text.len();
-                self.compose_state.anchor = None;
-                self.compose_state.ime_marked_text.clear();
+                entry.state.value.replace_range(start..end, text);
+                entry.state.cursor = start + text.len();
+                entry.state.anchor = None;
+                entry.state.ime_marked_text.clear();
             }
             None => return,
         }
@@ -427,17 +446,21 @@ impl EntityInputHandler for AppShell {
                 }
             }
             Some(AppShellInputField::Compose) => {
-                if self.compose_state.ime_replacement.is_none() {
-                    let replacement = self
-                        .compose_state
+                let Some(view) = self.workspace.focused_view() else {
+                    return;
+                };
+                let entry = self.workspace.compose_entry_mut(view);
+                if entry.state.ime_replacement.is_none() {
+                    let replacement = entry
+                        .state
                         .selection()
-                        .unwrap_or((self.compose_state.cursor, self.compose_state.cursor));
-                    self.compose_state.ime_replacement = Some(replacement);
-                    self.compose_state.cursor = replacement.0;
-                    self.compose_state.anchor = None;
+                        .unwrap_or((entry.state.cursor, entry.state.cursor));
+                    entry.state.ime_replacement = Some(replacement);
+                    entry.state.cursor = replacement.0;
+                    entry.state.anchor = None;
                 }
-                self.compose_state.ime_marked_text.clear();
-                self.compose_state.ime_marked_text.push_str(new_text);
+                entry.state.ime_marked_text.clear();
+                entry.state.ime_marked_text.push_str(new_text);
             }
             None => return,
         }
@@ -513,15 +536,18 @@ impl EntityInputHandler for AppShell {
                     px(0.),
                 ))
             }
-            AppShellInputField::Compose => Some(ime_caret_bounds(
-                window,
-                element_bounds,
-                &self.compose_state.value
-                    [..byte_index_for_utf16(&self.compose_state.value, range.start)],
-                px(14.),
-                px(12.),
-                self.compose_scroll.offset().x,
-            )),
+            AppShellInputField::Compose => {
+                let view = self.workspace.focused_view()?;
+                let state = &self.workspace.compose.get(&view)?.state;
+                Some(ime_caret_bounds(
+                    window,
+                    element_bounds,
+                    &state.value[..byte_index_for_utf16(&state.value, range.start)],
+                    px(14.),
+                    px(12.),
+                    self.compose_scroll.offset().x,
+                ))
+            }
         }
     }
 
@@ -550,7 +576,11 @@ impl EntityInputHandler for AppShell {
                 .default_command_editor
                 .as_ref()
                 .map(|editor| utf16_len(&editor.state.value)),
-            AppShellInputField::Compose => Some(utf16_len(&self.compose_state.value)),
+            AppShellInputField::Compose => {
+                let view = self.workspace.focused_view()?;
+                let state = &self.workspace.compose.get(&view)?.state;
+                Some(utf16_len(&state.value))
+            }
         }
     }
 }

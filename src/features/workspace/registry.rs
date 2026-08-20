@@ -10,6 +10,7 @@ use gpui::{Subscription, Task};
 
 use super::toaster::ToasterState;
 use super::view::{ActiveView, LocalDir, LocalSession, LocalSessionId, Tab};
+use crate::shared::text_editing::TextEditingState;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SplitSide {
@@ -54,6 +55,23 @@ impl TerminalSplitState {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ComposeEntry {
+    pub visible: bool,
+    pub state: TextEditingState,
+    pub last_visible: bool,
+}
+
+impl Default for ComposeEntry {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            state: TextEditingState::new(String::new()),
+            last_visible: false,
+        }
+    }
+}
+
 pub(crate) struct SessionRegistry {
     pub(crate) remote_tabs: Vec<Tab>,
     pub(crate) local_sessions: BTreeMap<LocalSessionId, LocalSession>,
@@ -93,6 +111,8 @@ pub(crate) struct WorkspaceState {
     /// 每个属主 Tab/会话至多一个分栏、相互独立共存（ADR 0011）。
     /// key 即分栏属主（创建时的活动视图，等于 `split.left`）。
     pub(crate) terminal_splits: BTreeMap<ActiveView, TerminalSplitState>,
+    /// 每个终端独立的批量输入条状态（终端级，可见性+草稿），与分栏同为终端级设置。
+    pub(crate) compose: BTreeMap<ActiveView, ComposeEntry>,
 }
 
 impl WorkspaceState {
@@ -103,6 +123,7 @@ impl WorkspaceState {
             toaster: ToasterState::default(),
             _toast_task: None,
             terminal_splits: BTreeMap::new(),
+            compose: BTreeMap::new(),
         }
     }
 
@@ -269,6 +290,59 @@ impl WorkspaceState {
             );
         }
         self.terminal_splits = next;
+    }
+
+    /// 获取指定终端的 compose 条目（不存在时返回默认收起态）。
+    #[allow(dead_code)]
+    pub(crate) fn compose_entry(&self, view: ActiveView) -> Option<&ComposeEntry> {
+        self.compose.get(&view)
+    }
+
+    pub(crate) fn compose_visible(&self, view: ActiveView) -> bool {
+        self.compose.get(&view).is_some_and(|e| e.visible)
+    }
+
+    pub(crate) fn compose_state_for(&self, view: ActiveView) -> Option<&TextEditingState> {
+        self.compose.get(&view).map(|e| &e.state)
+    }
+
+    /// 获取或创建指定终端的 compose 条目。
+    pub(crate) fn compose_entry_mut(&mut self, view: ActiveView) -> &mut ComposeEntry {
+        self.compose.entry(view).or_default()
+    }
+
+    pub(crate) fn compose_visible_for_focused(&self) -> bool {
+        self.focused_view()
+            .map(|v| self.compose_visible(v))
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn remove_compose_for_view(&mut self, view: ActiveView) {
+        self.compose.remove(&view);
+    }
+
+    pub(crate) fn take_composes_involving(&mut self, closed: &[ActiveView]) -> Vec<ComposeEntry> {
+        let mut removed = Vec::new();
+        self.compose.retain(|view, entry| {
+            if closed.contains(view) {
+                removed.push(entry.clone());
+                false
+            } else {
+                true
+            }
+        });
+        removed
+    }
+
+    pub(crate) fn remap_compose_remote_tab_indices(&mut self, removed: usize) {
+        let mut next = BTreeMap::new();
+        for (view, entry) in std::mem::take(&mut self.compose) {
+            let Some(view) = remap_remote_tab(view, removed) else {
+                continue;
+            };
+            next.insert(view, entry);
+        }
+        self.compose = next;
     }
 }
 
