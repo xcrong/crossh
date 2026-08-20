@@ -6,7 +6,7 @@ license = "GPL-3.0-or-later"
 
 [dependencies]
 crossh-ui = { path = "../crossh-ui" }
-gpui = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930" }
 
 [dev-dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3", features = ["test-support"] }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930", features = ["test-support"] }

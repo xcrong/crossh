@@ -33,16 +33,16 @@ crossh-terminal = { path = "crates/crossh-terminal" }
 crossh-update = { path = "crates/crossh-update" }
 crossh-ui = { path = "crates/crossh-ui" }
 crossh-ui-component = { path = "crates/crossh-ui-component" }
-gpui = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3", features = ["font-kit"] }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930", features = ["font-kit"] }
 itertools = "0.14"
-terminal = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
-settings = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
-task = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
-theme = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
-theme_settings = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
-util = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
-release_channel = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
+terminal = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930" }
+settings = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930" }
+task = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930" }
+theme = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930" }
+theme_settings = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930" }
+util = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930" }
+release_channel = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930" }
 semver = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time", "fs"] }
 async-channel = "2"
@@ -62,10 +62,10 @@ schemars = "1"
 tui-markdown = { version = "0.3.8", default-features = false }
 
 [dev-dependencies]
-assets = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3" }
+assets = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930" }
 pretty_assertions = "1"
-gpui = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3", features = ["test-support"] }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "90d024b88abc91264d9a0ad260eb4f365fa695c3", features = ["font-kit", "test-support"] }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930", features = ["test-support"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930", features = ["font-kit", "test-support"] }
 
 [[test]]
 name = "visual_capture"
@@ -88,5 +88,6 @@ panic = "abort"
 incremental = false
 
 [patch.crates-io]
+tree-sitter-language = { git = "https://github.com/tree-sitter/tree-sitter", rev = "dff1fd868c750dbbae179fcd5c43ce987e4e0528" }
 async-process = { git = "https://github.com/zed-industries/async-process", rev = "0b6d6713570af61806e1e5cb40e0f757cb93fd9d" }
 async-task = { git = "https://github.com/smol-rs/async-task", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }

@@ -1290,7 +1290,7 @@ mod tests {
             open_navigation_target(
                 &zed_terminal::MaybeNavigationTarget::PathLike(zed_terminal::PathLikeTarget {
                     maybe_path: "/tmp/example.rs:12".into(),
-                    terminal_dir: Some(PathBuf::from("/tmp")),
+                    working_directory: Some(PathBuf::from("/tmp")),
                 }),
                 cx,
             );
