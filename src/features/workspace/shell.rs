@@ -29,6 +29,7 @@ use crate::features::settings::{self, SettingsSnapshot};
 use crate::features::sftp::SftpPane;
 use crate::features::terminal::{TerminalEvent, TerminalView, TerminalViewEvent};
 use crate::features::updates::{UpdateController, UpdateSettings};
+use crate::features::workspace::default_command_editor::DefaultCommandEditor;
 use crate::features::workspace::empty_state::EmptyStateFilter;
 use crate::features::workspace::pinned::{pinned_tabs_for_project, prune_missing_pinned_tabs};
 use crate::features::workspace::quick_commands_rail::render_quick_commands_rail;
@@ -38,9 +39,9 @@ use crate::features::workspace::settings::WorkspaceSettings;
 use crate::features::workspace::sidebar::{render_sidebar, render_sidebar_rail};
 use crate::features::workspace::toaster::{ToastNotice, ToastTone};
 use crate::features::workspace::view::{
-    ActiveView, LocalDir, LocalSession, LocalSessionId, Tab, rebuild_local_dirs, render_main,
-    render_quick_command_editor, render_quick_commands, render_rename_editor,
-    render_workspace_status_bar,
+    ActiveView, LocalDir, LocalSession, LocalSessionId, Tab, rebuild_local_dirs,
+    render_default_command_editor, render_main, render_quick_command_editor, render_quick_commands,
+    render_rename_editor, render_workspace_status_bar,
 };
 use crate::shared::i18n::{self, LanguagePreference};
 use crossh_agent::AgentSettings;
@@ -172,8 +173,9 @@ pub struct AppShell {
     remote_background_controls: BTreeMap<u64, (Entity<Connection>, u64)>,
     pending_background_restarts: BTreeMap<u64, PendingBackgroundRestart>,
     pub(crate) quick_command_editor: Option<QuickCommandEditor>,
-    /// 固定标签重命名弹窗状态；与 quick command 编辑器互斥（都是模态弹窗）。
+    /// 固定标签重命名弹窗状态；与 quick command/default command 编辑器互斥（都是模态弹窗）。
     pub(crate) rename_editor: Option<RenameEditor>,
+    pub(crate) default_command_editor: Option<DefaultCommandEditor>,
     /// 周期性刷新本地会话的 Git 状态，覆盖 shell 空闲时的外部文件变更。
     _git_status_refresh_task: Option<Task<()>>,
     /// 最近一次状态栏 Git 同步操作的进行/错误状态，按会话独立记录。
@@ -273,6 +275,7 @@ impl AppShell {
             pending_background_restarts: BTreeMap::new(),
             quick_command_editor: None,
             rename_editor: None,
+            default_command_editor: None,
             _git_status_refresh_task: None,
             git_sync: BTreeMap::new(),
             quit_confirmation_open: false,
@@ -465,6 +468,7 @@ impl AppShell {
                 git_refresh: Default::default(),
                 pin_id: None,
                 custom_name: None,
+                default_command: None,
             },
         );
         self.ensure_git_status_refresh_task(cx);
@@ -957,7 +961,10 @@ impl AppShell {
         if !matches!(self.current_prompt(cx), PromptDisplay::None) {
             return;
         }
-        if self.quick_command_editor.is_some() {
+        if self.quick_command_editor.is_some()
+            || self.rename_editor.is_some()
+            || self.default_command_editor.is_some()
+        {
             return;
         }
         let ks = &ev.keystroke;
@@ -1049,6 +1056,15 @@ impl AppShell {
             }
             ShellMenuAction::RenameLocalSession(session_id) => {
                 self.open_rename_local_session(session_id, window, cx)
+            }
+            ShellMenuAction::EditDefaultCommand(session_id) => {
+                self.open_default_command_editor(session_id, window, cx)
+            }
+            ShellMenuAction::ReloadDefaultCommand(session_id) => {
+                self.reload_default_command(session_id, cx)
+            }
+            ShellMenuAction::ClearDefaultCommand(session_id) => {
+                self.clear_default_command(session_id, cx)
             }
             ShellMenuAction::CloseLocalSession(session_id) => {
                 self.request_close_local_session(session_id, window, cx);
@@ -1764,6 +1780,9 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+#[path = "default_command_tests.rs"]
+mod default_command_tests;
 #[cfg(test)]
 #[path = "editor_launch_tests.rs"]
 mod editor_launch_tests;

@@ -94,14 +94,18 @@ impl AppShell {
 
         match ks.key.as_str() {
             "enter" | "return" => {
-                if self.rename_editor.is_some() {
+                if self.default_command_editor.is_some() {
+                    self.submit_default_command(cx);
+                } else if self.rename_editor.is_some() {
                     self.submit_rename_local_session(cx);
                 } else {
                     self.submit_quick_command_editor(cx);
                 }
             }
             "escape" => {
-                if self.rename_editor.is_some() {
+                if self.default_command_editor.is_some() {
+                    self.cancel_default_command(cx);
+                } else if self.rename_editor.is_some() {
                     self.cancel_rename_local_session(cx);
                 } else {
                     self.cancel_quick_command_editor(cx);
@@ -161,9 +165,13 @@ impl AppShell {
         }
     }
 
-    /// 当前打开的模态编辑器的文本状态（重命名弹窗优先；两者互斥）。
+    /// 当前打开的模态编辑器的文本状态（默认命令 > 重命名 > QuickCommand；三者互斥）。
     fn active_editor_state(&mut self) -> Option<&mut TextEditingState> {
-        if self.rename_editor.is_some() {
+        if self.default_command_editor.is_some() {
+            self.default_command_editor
+                .as_mut()
+                .map(|editor| &mut editor.state)
+        } else if self.rename_editor.is_some() {
             self.rename_editor.as_mut().map(|editor| &mut editor.state)
         } else {
             self.quick_command_editor

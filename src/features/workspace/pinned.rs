@@ -55,6 +55,7 @@ mod tests {
             project_dir: PathBuf::from(project_dir),
             cwd: PathBuf::from(cwd),
             custom_name: None,
+            default_command: None,
         }
     }
 

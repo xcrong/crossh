@@ -18,6 +18,8 @@ pub(crate) struct PinnedLocalTab {
     pub(crate) cwd: PathBuf,
     #[serde(default)]
     pub(crate) custom_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) default_command: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -69,6 +71,11 @@ impl WorkspaceSettings {
                 .take()
                 .filter(|name| !name.trim().is_empty())
                 .map(|name| name.trim().to_string());
+            tab.default_command = tab
+                .default_command
+                .take()
+                .map(|command| command.trim().to_string())
+                .filter(|command| !command.is_empty());
         }
         // 编辑器配置：空白命令归一为 None。
         self.editor_command = self
@@ -154,24 +161,28 @@ mod tests {
                 project_dir: PathBuf::from("/a"),
                 cwd: PathBuf::from("/a"),
                 custom_name: Some("   ".into()),
+                default_command: Some("   ".into()),
             },
             PinnedLocalTab {
                 pin_id: 1,
                 project_dir: PathBuf::from("/b"),
                 cwd: PathBuf::from("/b"),
                 custom_name: Some("work".into()),
+                default_command: Some("  opencode  ".into()),
             },
             PinnedLocalTab {
                 pin_id: 2,
                 project_dir: PathBuf::from("/c"),
                 cwd: PathBuf::from("/c"),
                 custom_name: None,
+                default_command: None,
             },
             PinnedLocalTab {
                 pin_id: 3,
                 project_dir: PathBuf::from("/d"),
                 cwd: PathBuf::from("/d"),
                 custom_name: Some("  dev  ".into()),
+                default_command: Some("ssh host".into()),
             },
         ];
         let normalized = WorkspaceSettings {
@@ -186,13 +197,22 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(ids, vec![2, 1, 3], "重复 pin_id 只保留首个且顺序不变");
         assert_eq!(normalized.pinned_local_tabs[0].custom_name, None);
+        assert_eq!(normalized.pinned_local_tabs[0].default_command, None);
         assert_eq!(
             normalized.pinned_local_tabs[1].custom_name,
             Some("work".to_string())
         );
         assert_eq!(
+            normalized.pinned_local_tabs[1].default_command,
+            Some("opencode".to_string())
+        );
+        assert_eq!(
             normalized.pinned_local_tabs[2].custom_name,
             Some("dev".to_string())
+        );
+        assert_eq!(
+            normalized.pinned_local_tabs[2].default_command,
+            Some("ssh host".to_string())
         );
     }
 }

@@ -63,6 +63,12 @@ pub enum ShellMenuAction {
     UnpinLocalSession(u64),
     /// 打开本地会话重命名弹窗。
     RenameLocalSession(u64),
+    /// 打开默认命令编辑弹窗。
+    EditDefaultCommand(u64),
+    /// 重载默认命令到终端。
+    ReloadDefaultCommand(u64),
+    /// 清除默认命令。
+    ClearDefaultCommand(u64),
     /// 关闭本地会话。
     CloseLocalSession(u64),
     /// 关闭同目录下的其他本地会话。

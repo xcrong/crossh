@@ -66,6 +66,8 @@ pub struct LocalSession {
     pub pin_id: Option<u64>,
     /// 固定标签的自定义名称；覆盖终端标题显示，重启后保留。
     pub custom_name: Option<String>,
+    /// 固定标签的默认命令；`Some` 时恢复/重载自动执行。
+    pub default_command: Option<String>,
 }
 
 /// 每个本地会话最多运行一个 Git 状态查询；期间的刷新请求只合并为一次后续检查。
@@ -1399,6 +1401,128 @@ pub fn render_rename_editor(
     .blocks_card_clicks()
     .on_backdrop_click(cx.listener(|this, _ev, _window, cx| {
         this.cancel_rename_local_session(cx);
+    }))
+    .child(input)
+    .actions(buttons)
+    .into_any_element()
+}
+
+pub fn render_default_command_editor(
+    shell: &mut AppShell,
+    window: &Window,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    let Some(editor) = &shell.default_command_editor else {
+        return div().into_any_element();
+    };
+    let focus = editor.focus.clone();
+    let value = editor.state.value.clone();
+    let ime_marked_text = editor.state.ime_marked_text.clone();
+    let selection = editor.state.selection();
+    let (selection_start, selection_end) =
+        selection.unwrap_or((editor.state.cursor, editor.state.cursor));
+    let focused = focus.is_focused(window);
+    // 实现与 QuickCommand/rename 相同，但加入横向滚动以容纳长命令（如 ssh）。
+    let mut input = div()
+        .id("default-command-editor-input")
+        .w_full()
+        .min_w_0()
+        .min_h(px(38.))
+        .px_3()
+        .py_2()
+        .flex()
+        .items_center()
+        .bg(theme::canvas())
+        .border_1()
+        .border_color(theme::border_strong())
+        .rounded(px(theme::RADIUS_SM))
+        .relative()
+        .text_sm()
+        .text_color(theme::text())
+        .track_focus(&focus)
+        .tab_stop(true)
+        .focus(|style| style.border_color(theme::focus_ring()))
+        .on_click({
+            let focus = focus.clone();
+            move |_ev, window, cx| window.focus(&focus, cx)
+        })
+        .on_key_down(cx.listener(AppShell::handle_modal_editor_key));
+
+    if value.is_empty() {
+        if focused {
+            input = input.child(text_caret(px(20.)));
+        }
+        if ime_marked_text.is_empty() {
+            input = input.child(
+                div()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .text_color(theme::faint_text())
+                    .child(SharedString::from(i18n::text(
+                        "default_command.placeholder",
+                    ))),
+            );
+        } else {
+            input = input.child(marked_text_span(ime_marked_text.clone()));
+        }
+    } else {
+        input = input.child(text_span(value[..selection_start].to_string()));
+        if let Some((start, end)) = selection {
+            input = input.child(
+                div()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .bg(theme::accent_soft())
+                    .text_color(theme::text())
+                    .child(SharedString::from(value[start..end].to_string())),
+            );
+        } else {
+            if focused {
+                input = input.child(text_caret(px(20.)));
+            }
+            if !ime_marked_text.is_empty() {
+                input = input.child(marked_text_span(ime_marked_text.clone()));
+            }
+        }
+        input = input.child(text_span(value[selection_end..].to_string()));
+    }
+    input = input.child(ime_input_canvas(focus, cx.entity()));
+
+    let buttons = div()
+        .flex()
+        .flex_row()
+        .gap_2()
+        .child(
+            Button::new("default-command-editor-save")
+                .size(ButtonSize::Medium)
+                .variant(ButtonVariant::Primary)
+                .icon(icons::icon(icons::IconName::Check, 13.).text_color(theme::canvas()))
+                .label(i18n::text("default_command.save"))
+                .on_click(cx.listener(|this, _ev, _window, cx| {
+                    this.submit_default_command(cx);
+                })),
+        )
+        .child(
+            Button::new("default-command-editor-cancel")
+                .size(ButtonSize::Medium)
+                .variant(ButtonVariant::Secondary)
+                .icon(icons::icon(icons::IconName::X, 13.).text_color(theme::muted_text()))
+                .label(i18n::text("prompt.cancel"))
+                .on_click(cx.listener(|this, _ev, _window, cx| {
+                    this.cancel_default_command(cx);
+                })),
+        );
+
+    ModalDialog::new(
+        i18n::text("default_command.title"),
+        icons::icon(icons::IconName::Terminal, 16.).text_color(theme::info()),
+    )
+    .width(px(500.))
+    .scrim_id("default-command-editor-scrim")
+    .card_id("default-command-editor-card")
+    .blocks_card_clicks()
+    .on_backdrop_click(cx.listener(|this, _ev, _window, cx| {
+        this.cancel_default_command(cx);
     }))
     .child(input)
     .actions(buttons)

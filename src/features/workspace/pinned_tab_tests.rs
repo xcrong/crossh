@@ -96,6 +96,7 @@ fn insert_local_session(
             git_refresh: Default::default(),
             pin_id: None,
             custom_name: None,
+            default_command: None,
         },
     );
     shell.sync_local_dirs(cx);
@@ -386,7 +387,7 @@ fn spec_20260818_local_tab_pin_restore_applies_pin_state_to_created_session(
         shell.update(cx, |shell, cx| {
             // 恢复路径第二阶段：把固定记录状态应用到「创建出来的指定会话」。
             insert_local_session(shell, 7, dir.clone(), cx);
-            shell.apply_pin_to_session(7, 5, Some("restored".into()), cx);
+            shell.apply_pin_to_session(7, 5, Some("restored".into()), None, cx);
         });
     });
 

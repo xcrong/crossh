@@ -148,6 +148,7 @@ fn insert_local_session(shell: &mut AppShell, cwd: PathBuf, cx: &mut gpui::Conte
             git_refresh: Default::default(),
             pin_id: None,
             custom_name: None,
+            default_command: None,
         },
     );
 }

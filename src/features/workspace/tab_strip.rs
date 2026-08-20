@@ -70,12 +70,14 @@ where
     tab.into_any_element()
 }
 
-fn local_session_menu_entries(
+pub(crate) fn local_session_menu_entries(
     session_id: LocalSessionId,
     is_active: bool,
     pinned: bool,
     single: bool,
     cwd: PathBuf,
+    default_command: Option<String>,
+    is_command_running: bool,
 ) -> Vec<MenuEntry<ShellMenuAction>> {
     let mut entries = vec![MenuEntry::Item(MenuItem {
         id: "switch".into(),
@@ -101,6 +103,33 @@ fn local_session_menu_entries(
             disabled: false,
             danger: false,
             action: ShellMenuAction::RenameLocalSession(session_id),
+        }));
+        entries.push(MenuEntry::Item(MenuItem {
+            id: "edit-default-command".into(),
+            label: i18n::text("context_menu.edit_default_command"),
+            shortcut_hint: None,
+            disabled: false,
+            danger: false,
+            action: ShellMenuAction::EditDefaultCommand(session_id),
+        }));
+        let has_command = default_command
+            .as_ref()
+            .is_some_and(|cmd| !cmd.trim().is_empty());
+        entries.push(MenuEntry::Item(MenuItem {
+            id: "reload-default-command".into(),
+            label: i18n::text("context_menu.reload_default_command"),
+            shortcut_hint: None,
+            disabled: !has_command || is_command_running,
+            danger: false,
+            action: ShellMenuAction::ReloadDefaultCommand(session_id),
+        }));
+        entries.push(MenuEntry::Item(MenuItem {
+            id: "clear-default-command".into(),
+            label: i18n::text("context_menu.clear_default_command"),
+            shortcut_hint: None,
+            disabled: !has_command,
+            danger: false,
+            action: ShellMenuAction::ClearDefaultCommand(session_id),
         }));
     } else {
         entries.push(MenuEntry::Item(MenuItem {
@@ -281,18 +310,28 @@ pub(super) fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> 
                     .clone()
                     .unwrap_or_else(|| session.terminal.read(cx).tab_title(&fallback));
                 let cwd = session.cwd.clone();
+                let default_command = session.default_command.clone();
+                let has_default_command = default_command.is_some();
                 let single = session_ids.len() == 1;
+                let leading = {
+                    let mut leading =
+                        div().flex().items_center().gap_1().child(
+                            icons::icon(icons::IconName::Pin, 11.).text_color(theme::accent()),
+                        );
+                    if has_default_command {
+                        leading = leading.child(
+                            icons::icon(icons::IconName::Play, 8.).text_color(theme::muted_text()),
+                        );
+                    }
+                    leading.into_any_element()
+                };
                 strip = strip.child(render_tab_chip(
                     cx,
                     ("pinned-tab-container", session_id),
                     local_tab_dot_color(&Some(state), command_running),
                     label,
                     is_active,
-                    Some(
-                        icons::icon(icons::IconName::Pin, 11.)
-                            .text_color(theme::accent())
-                            .into_any_element(),
-                    ),
+                    Some(leading),
                     ("pinned-tab", session_id),
                     move |ev: &MouseDownEvent, this, _window, cx| {
                         let entries = local_session_menu_entries(
@@ -301,6 +340,8 @@ pub(super) fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> 
                             true,
                             single,
                             cwd.clone(),
+                            default_command.clone(),
+                            command_running,
                         );
                         this.open_context_menu(ev.position, entries, cx);
                     },
@@ -368,6 +409,8 @@ pub(super) fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> 
                             false,
                             single,
                             cwd.clone(),
+                            None,
+                            command_running,
                         );
                         this.open_context_menu(ev.position, entries, cx);
                     },

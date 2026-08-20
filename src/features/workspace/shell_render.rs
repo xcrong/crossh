@@ -151,6 +151,9 @@ impl Render for AppShell {
         if self.rename_editor.is_some() {
             root = root.child(render_rename_editor(self, window, cx));
         }
+        if self.default_command_editor.is_some() {
+            root = root.child(render_default_command_editor(self, window, cx));
+        }
         if let Some(menu) = self.context_menu.clone() {
             root = root.child(render_context_menu(
                 &menu,

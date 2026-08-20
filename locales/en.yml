@@ -199,6 +199,9 @@ context_menu:
   pin_tab: Pin Tab
   unpin_tab: Unpin Tab
   rename_tab: Rename…
+  edit_default_command: Edit Default Command…
+  reload_default_command: Reload Default Command
+  clear_default_command: Clear Default Command
   copy: Copy
   paste: Paste
   select_all: Select All
@@ -434,4 +437,9 @@ quick_commands:
 rename_tab:
   title: Rename Tab
   name_placeholder: Tab name (empty restores the default)
+  save: Save
+
+default_command:
+  title: Edit Default Command
+  placeholder: Enter a default command (empty clears)
   save: Save

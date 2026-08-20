@@ -2,7 +2,9 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::time::Duration;
 
+use crossh_terminal::events::ConnState;
 use gpui::{PromptButton, PromptLevel};
 
 use task::Shell;
@@ -555,6 +557,7 @@ impl AppShell {
                 project_dir: session.project_dir.clone(),
                 cwd: self.local_session_cwd(session_id, cx),
                 custom_name: None,
+                default_command: None,
             });
         self.persist_settings();
         cx.notify();
@@ -638,6 +641,130 @@ impl AppShell {
         }
     }
 
+    /// 打开默认命令编辑弹窗（初始值取当前 default_command；空白表示清除）。
+    /// 与其他模态互斥。
+    pub(crate) fn open_default_command_editor(
+        &mut self,
+        session_id: LocalSessionId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) else {
+            return;
+        };
+        if session.pin_id.is_none() {
+            return;
+        }
+        let focus = cx.focus_handle();
+        self.quick_command_editor = None;
+        self.rename_editor = None;
+        self.default_command_editor = Some(
+            crate::features::workspace::default_command_editor::DefaultCommandEditor::new(
+                session_id,
+                session.default_command.clone().unwrap_or_default(),
+                focus.clone(),
+            ),
+        );
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn submit_default_command(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.default_command_editor.take() else {
+            return;
+        };
+        let raw = editor.state.value.clone();
+        let trimmed = raw.trim().to_string();
+        let new_command = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        };
+        let Some(session) = self
+            .workspace
+            .sessions
+            .local_sessions
+            .get_mut(&editor.session_id)
+        else {
+            cx.notify();
+            return;
+        };
+        session.default_command = new_command.clone();
+        if let Some(pin_id) = session.pin_id
+            && let Some(tab) = self
+                .workspace_settings
+                .pinned_local_tabs
+                .iter_mut()
+                .find(|tab| tab.pin_id == pin_id)
+        {
+            tab.default_command = new_command;
+            // normalized 会在 persist 前 trim+空白归一，但此处已处理
+            self.persist_settings();
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn cancel_default_command(&mut self, cx: &mut Context<Self>) {
+        if self.default_command_editor.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// 重载默认命令到终端；空闲时才执行（契约 5/6）。
+    pub(crate) fn reload_default_command(
+        &mut self,
+        session_id: LocalSessionId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) else {
+            return;
+        };
+        let Some(cmd) = session.default_command.clone() else {
+            return;
+        };
+        if cmd.trim().is_empty() {
+            return;
+        }
+        if session.pin_id.is_none() {
+            return;
+        }
+        if session.terminal.read(cx).is_command_running(cx) {
+            return;
+        }
+        session.terminal.update(cx, |terminal, terminal_cx| {
+            terminal.run_command(&cmd, terminal_cx)
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn clear_default_command(
+        &mut self,
+        session_id: LocalSessionId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.workspace.sessions.local_sessions.get_mut(&session_id) else {
+            return;
+        };
+        if session.pin_id.is_none() {
+            return;
+        }
+        if session.default_command.is_none() {
+            return;
+        }
+        session.default_command = None;
+        if let Some(pin_id) = session.pin_id
+            && let Some(tab) = self
+                .workspace_settings
+                .pinned_local_tabs
+                .iter_mut()
+                .find(|tab| tab.pin_id == pin_id)
+        {
+            tab.default_command = None;
+            self.persist_settings();
+        }
+        cx.notify();
+    }
+
     /// 按固定记录顺序重开会话（契约 11 恢复路径）：把 `pin_id` 与自定义
     /// 名称应用到**本次恢复创建的新会话**（显式会话 id），目录已失效的
     /// 记录跳过并即时从持久化设置清理（契约 11 Rev-4）。
@@ -650,6 +777,7 @@ impl AppShell {
         for tab in tabs {
             let pin_id = tab.pin_id;
             let custom_name = tab.custom_name.clone();
+            let default_command = tab.default_command.clone();
             let Some(session_id) =
                 self.open_local_session(tab.project_dir.clone(), tab.cwd.clone(), cx)
             else {
@@ -661,7 +789,51 @@ impl AppShell {
                 removed_stale = true;
                 continue;
             };
-            self.apply_pin_to_session(session_id, pin_id, custom_name, cx);
+            self.apply_pin_to_session(session_id, pin_id, custom_name, default_command.clone(), cx);
+            // 自动执行默认命令（契约 4）：恢复后若配置了 default_command，延迟到终端 Connected 再执行
+            // `open_local_session` 创建的 TerminalView 初始为 Connecting（display-only），立即 send_input 会丢失；
+            // 需等待 Zed TerminalBuilder 完成 attach 后再投递。
+            if let Some(cmd) = default_command
+                && !cmd.trim().is_empty()
+            {
+                let cmd = cmd.trim().to_string();
+                if let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) {
+                    let terminal = session.terminal.clone();
+                    cx.spawn(async move |weak, cx| {
+                        // 最多等待 4s，轮询终端是否已 Connected 且空闲
+                        for _ in 0..40 {
+                            cx.background_executor()
+                                .timer(Duration::from_millis(100))
+                                .await;
+                            let ready = weak
+                                .update(cx, |this, cx| {
+                                    this.workspace
+                                        .sessions
+                                        .local_sessions
+                                        .get(&session_id)
+                                        .is_some_and(|s| {
+                                            s.terminal.entity_id() == terminal.entity_id()
+                                                && s.terminal.read(cx).state == ConnState::Connected
+                                                && !s.terminal.read(cx).is_command_running(cx)
+                                        })
+                                })
+                                .unwrap_or(false);
+                            if ready {
+                                let _ = weak.update(cx, |this, cx| {
+                                    if let Some(s) =
+                                        this.workspace.sessions.local_sessions.get(&session_id)
+                                    {
+                                        s.terminal
+                                            .update(cx, |t, term_cx| t.run_command(&cmd, term_cx));
+                                    }
+                                });
+                                break;
+                            }
+                        }
+                    })
+                    .detach();
+                }
+            }
         }
         if removed_stale {
             self.persist_settings();
@@ -700,11 +872,16 @@ impl AppShell {
         session_id: LocalSessionId,
         pin_id: u64,
         custom_name: Option<String>,
+        default_command: Option<String>,
         cx: &mut Context<Self>,
     ) {
         if let Some(session) = self.workspace.sessions.local_sessions.get_mut(&session_id) {
             session.pin_id = Some(pin_id);
             session.custom_name = custom_name;
+            // default_command 已做 trim/空白归一
+            session.default_command = default_command
+                .map(|c| c.trim().to_string())
+                .filter(|c| !c.is_empty());
             cx.notify();
         }
     }

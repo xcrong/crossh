@@ -199,6 +199,9 @@ context_menu:
   pin_tab: 固定标签
   unpin_tab: 取消固定
   rename_tab: 重命名…
+  edit_default_command: 编辑默认命令…
+  reload_default_command: 重载默认命令
+  clear_default_command: 清除默认命令
   copy: 复制
   paste: 粘贴
   select_all: 全选
@@ -434,4 +437,9 @@ quick_commands:
 rename_tab:
   title: 重命名标签
   name_placeholder: 标签名称（留空恢复默认）
+  save: 保存
+
+default_command:
+  title: 编辑默认命令
+  placeholder: 输入默认命令（留空清除）
   save: 保存
