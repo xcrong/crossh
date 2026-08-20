@@ -176,24 +176,6 @@ pub fn render_sidebar(
         },
         cx,
     );
-    let projects_group = if show_projects {
-        Some(render_host_group(
-            HostGroupSpec {
-                id: "projects",
-                icon: icons::IconName::FolderOpen,
-                title: i18n::text("sidebar.local"),
-                count: project_count,
-                collapsed: shell.projects_collapsed && query.is_empty(),
-                children: project_list.into_any_element(),
-                toggle: AppShell::toggle_projects_group,
-                action: Some(AppShell::choose_project_directory),
-            },
-            cx,
-        ))
-    } else {
-        None
-    };
-
     let mut list = scroll_y(&shell.sidebar_scroll)
         .id("host-list")
         .flex_1()
@@ -203,12 +185,12 @@ pub fn render_sidebar(
         .gap_3()
         .px_3()
         .py_3();
-    if let Some(projects_group) = projects_group {
-        list = list.child(projects_group);
+    if show_projects {
+        list = list.child(project_list);
     }
     // 活跃/主机分组已隐藏（按需求注释）
     // list = list.child(active_group).child(bank_group);
-    let _ = (&active_group, &bank_group);
+    let _ = (&active_group, &bank_group, &project_count);
 
     let search = div()
         .id("host-search-wrap")

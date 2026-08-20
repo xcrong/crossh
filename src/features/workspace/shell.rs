@@ -133,10 +133,9 @@ pub struct AppShell {
     /// 应用外壳根焦点；无任何终端/输入框聚焦时持有，保证窗口级动作
     /// （如 Cmd+Q → Quit）始终有合法的 dispatch 目标。
     pub(crate) shell_focus: FocusHandle,
-    /// 主机分组折叠状态；Bank 默认收起，Local/Active 默认展开。
+    /// 主机分组折叠状态；Bank 默认收起，Active 默认展开。
     pub(crate) bank_collapsed: bool,
     pub(crate) active_collapsed: bool,
-    pub(crate) projects_collapsed: bool,
     pub(crate) empty_state_filter: EmptyStateFilter,
     /// 原生项目目录选择器任务，持有到选择结果返回。
     _project_picker: Option<Task<()>>,
@@ -247,7 +246,6 @@ impl AppShell {
             shell_focus: cx.focus_handle(),
             bank_collapsed: true,
             active_collapsed: false,
-            projects_collapsed: false,
             empty_state_filter: EmptyStateFilter::default(),
             _project_picker: None,
             prompt_input: String::new(),
@@ -991,11 +989,6 @@ impl AppShell {
 
     pub(crate) fn toggle_active_group(&mut self, cx: &mut Context<Self>) {
         self.active_collapsed = !self.active_collapsed;
-        cx.notify();
-    }
-
-    pub(crate) fn toggle_projects_group(&mut self, cx: &mut Context<Self>) {
-        self.projects_collapsed = !self.projects_collapsed;
         cx.notify();
     }
 
