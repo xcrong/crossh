@@ -280,7 +280,7 @@ impl SettingsWindow {
 
         div()
             .id("settings-general")
-            .max_w(px(760.))
+            .w_full()
             .flex()
             .flex_col()
             .child(settings_heading("settings.general"))
@@ -484,7 +484,7 @@ impl SettingsWindow {
 
         div()
             .id("settings-terminal")
-            .max_w(px(760.))
+            .w_full()
             .flex()
             .flex_col()
             .child(settings_heading("settings.terminal"))
@@ -556,7 +556,7 @@ impl SettingsWindow {
 
         let mut content = div()
             .id("settings-updates")
-            .max_w(px(760.))
+            .w_full()
             .flex()
             .flex_col()
             .child(settings_heading("settings.updates"))
@@ -857,7 +857,7 @@ impl SettingsWindow {
             };
             return div()
                 .id("settings-providers")
-                .max_w(px(760.))
+                .w_full()
                 .flex()
                 .flex_col()
                 .child(settings_heading("settings.providers"))
@@ -1434,7 +1434,7 @@ impl SettingsWindow {
 
         div()
             .id("settings-providers")
-            .max_w(px(760.))
+            .w_full()
             .flex()
             .flex_col()
             .child(settings_heading("settings.providers"))

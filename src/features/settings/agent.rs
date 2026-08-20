@@ -61,7 +61,7 @@ impl SettingsWindow {
 
         div()
             .id("settings-agent")
-            .max_w(px(760.))
+            .w_full()
             .flex()
             .flex_col()
             .child(settings_heading("settings.agent"))
@@ -745,7 +745,7 @@ impl SettingsWindow {
 
         div()
             .id("settings-about")
-            .max_w(px(760.))
+            .w_full()
             .flex()
             .flex_col()
             .child(settings_heading("settings.about"))
