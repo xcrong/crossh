@@ -113,8 +113,11 @@ pub fn render_main(
         .flex()
         .flex_col();
 
-    // 标签条。
-    pane = pane.child(tab_strip::render_tab_strip(shell, cx));
+    // 空状态（无活动视图）不渲染 Tab 条，避免 38px 空条 + 单个 "+" 的噪音；
+    // 有会话时 TabStrip 负责展示对应项目的标签及 "+"。
+    if shell.workspace.active_view.is_some() {
+        pane = pane.child(tab_strip::render_tab_strip(shell, cx));
+    }
 
     // 终端/SFTP 区。
     let mut content = div().flex_1().min_h_0().flex().relative();
