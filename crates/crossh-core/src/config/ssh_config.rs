@@ -308,7 +308,8 @@ fn parse_forward(value: &str, is_dynamic: bool) -> Option<ForwardSpec> {
     }
 }
 
-/// `Include` 的 glob 展开（相对 ~/.ssh/，支持 `*`/`?`）。失败则忽略。
+/// `Include` 的 glob 展开（相对 `referring_file` 所在目录，支持 `*`/`?`/`[...]`）。
+/// 使用 `glob` crate 替代手写 `read_dir + pattern_matches`，支持目录段中的通配符与递归模式。
 fn glob_includes(referring_file: &Path, pattern: &str) -> Vec<PathBuf> {
     let expanded = expand_tilde(pattern.trim());
     let p = PathBuf::from(&expanded);
@@ -321,45 +322,26 @@ fn glob_includes(referring_file: &Path, pattern: &str) -> Vec<PathBuf> {
             .to_path_buf()
     };
     let full = base.join(&p);
-
-    // 简单 glob：含通配符才扫描目录，否则直接返回路径。
-    let s = full.to_string_lossy();
-    if !s.contains('*') && !s.contains('?') {
+    let pattern_str = full.to_string_lossy().to_string();
+    let has_wildcard =
+        pattern_str.contains('*') || pattern_str.contains('?') || pattern_str.contains('[');
+    if !has_wildcard {
         return vec![full];
     }
-    let parent = match full.parent() {
-        Some(d) => d,
-        None => return vec![full],
-    };
-    let pat = match full.file_name().and_then(|n| n.to_str()) {
-        Some(p) => p,
-        None => return vec![full],
-    };
-    let mut out = Vec::new();
-    if let Ok(entries) = fs::read_dir(parent) {
-        for ent in entries.flatten() {
-            if let Some(name) = ent.file_name().to_str()
-                && pattern_matches(pat, name)
-            {
-                out.push(ent.path());
-            }
+    match glob::glob(&pattern_str) {
+        Ok(paths) => {
+            let mut out: Vec<PathBuf> = paths.filter_map(Result::ok).collect();
+            out.sort();
+            out
         }
+        Err(_) => vec![full],
     }
-    out.sort();
-    out
 }
 
 pub fn expand_tilde(s: &str) -> String {
-    if let Some(rest) = s.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return Path::new(&home).join(rest).to_string_lossy().into_owned();
-        }
-    } else if s == "~"
-        && let Some(home) = std::env::var_os("HOME")
-    {
-        return home.to_string_lossy().into_owned();
-    }
-    s.to_string()
+    // 使用 `shellexpand` 轮子覆盖手写 `~/` 展开，保持与 OpenSSH 一致的 `~`/`~/` 语义
+    //（仅展开当前用户的 HOME，不处理 `~user/`）。失败（无 HOME）时保持原串。
+    shellexpand::tilde(s).into_owned()
 }
 
 /// OpenSSH Host 模式匹配：`*` 匹配任意、`?` 匹配单字符、`!` 取反（仅多段列表）。
@@ -371,18 +353,20 @@ fn pattern_matches(pattern: &str, target: &str) -> bool {
     glob(pattern, target)
 }
 
-/// 极简通配匹配（`*` 任意、`?` 单字符），大小写敏感。
+/// 通配匹配（`*` 任意、`?` 单字符），大小写不敏感（与 OpenSSH Host 匹配一致）。
+/// 使用 `glob` crate 的 `Pattern` 轮子替代手写递归，保持 `*`/`?` 语义并获得字符集 `[...]` 支持。
 fn glob(pattern: &str, target: &str) -> bool {
-    fn helper(p: &[u8], t: &[u8]) -> bool {
-        match (p.first(), t.first()) {
-            (None, None) => true,
-            (Some(b'*'), _) => helper(&p[1..], t) || (!t.is_empty() && helper(p, &t[1..])),
-            (Some(b'?'), Some(_)) => helper(&p[1..], &t[1..]),
-            (Some(&a), Some(&b)) => a.eq_ignore_ascii_case(&b) && helper(&p[1..], &t[1..]),
-            _ => false,
-        }
+    match glob::Pattern::new(pattern) {
+        Ok(pat) => pat.matches_with(
+            target,
+            glob::MatchOptions {
+                case_sensitive: false,
+                require_literal_separator: false,
+                require_literal_leading_dot: false,
+            },
+        ),
+        Err(_) => pattern.eq_ignore_ascii_case(target),
     }
-    helper(pattern.as_bytes(), target.as_bytes())
 }
 
 /// `KEY VALUE` 拆分（首段为 key，其余整体为 value；允许 `=` 分隔）。
