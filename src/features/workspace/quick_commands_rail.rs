@@ -10,14 +10,17 @@ use crossh_core::commands::{
 };
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::theme;
-use crossh_ui_component::{Avatar, AvatarKind, StatusDot, Tooltip};
+use crossh_ui_component::{
+    Avatar, AvatarKind, RAIL_AVATAR_GAP, RAIL_AVATAR_SIZE, Rail, Tooltip, rail_avatar_wide,
+    rail_status_badge,
+};
 
 use crate::features::workspace::shell::AppShell;
 use crate::features::workspace::status::{background_task_color, background_task_label};
 use crate::shared::i18n;
 
-const QUICK_COMMANDS_RAIL_ITEM_SIZE: f32 = 30.0;
-const QUICK_COMMANDS_RAIL_ITEM_GAP: f32 = 4.0;
+const QUICK_COMMANDS_RAIL_ITEM_SIZE: f32 = RAIL_AVATAR_SIZE;
+const QUICK_COMMANDS_RAIL_ITEM_GAP: f32 = RAIL_AVATAR_GAP;
 
 fn rail_background_tasks(
     background_tasks: &BackgroundTaskManager,
@@ -86,16 +89,8 @@ pub(crate) fn render_quick_commands_rail(
         contents = contents.child(render_background_task(task, cx));
     }
 
-    div()
-        .id("quick-commands-rail")
-        .w(px(theme::QUICK_COMMANDS_RAIL_WIDTH))
-        .h_full()
-        .flex_none()
-        .flex()
-        .flex_col()
-        .items_center()
+    Rail::right("quick-commands-rail", theme::QUICK_COMMANDS_RAIL_WIDTH)
         .bg(theme::surface())
-        .border_l_1()
         .border_color(theme::border())
         .child(contents)
         .into_any_element()
@@ -120,117 +115,107 @@ fn render_pinned_command(
     // 头像承载的是该命令首个进行中实例：非 Running 状态（如 Stopping）仍可终止。
     let active_task_id = active_task.map(|task| task.id);
     let tooltip_command = command.clone();
-    let mut item = div()
-        .id(SharedString::from(format!("quick-command-rail-{index}")))
-        .relative()
-        .w(px(QUICK_COMMANDS_RAIL_ITEM_SIZE))
-        .h(px(QUICK_COMMANDS_RAIL_ITEM_SIZE))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(theme::RADIUS_SM))
-        .cursor_pointer()
-        .hover(|style| style.bg(theme::raised()))
-        .tooltip(move |_window, cx| {
-            cx.new(|_| Tooltip::new(tooltip_command.clone()).wide())
-                .into()
+    let mut item = rail_avatar_wide(
+        SharedString::from(format!("quick-command-rail-{index}")),
+        Avatar::new(&command).kind(AvatarKind::Command),
+        tooltip_command.clone(),
+        false,
+        cx.listener(move |this, ev: &gpui::ClickEvent, _window, cx| {
+            if ev.click_count() == 2 {
+                this.run_quick_command(run_scope.clone(), command.clone(), false, cx);
+            }
+        }),
+    )
+    .on_mouse_down(MouseButton::Right, {
+        cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
+            let mut entries = Vec::new();
+            if let Some(id) = running_id {
+                entries.push(MenuEntry::Item(MenuItem {
+                    id: "quick-restart-background".into(),
+                    label: i18n::text("quick_commands.restart"),
+                    shortcut_hint: None,
+                    disabled: false,
+                    danger: false,
+                    action: ShellMenuAction::RestartBackgroundTask(id),
+                }));
+            } else if let Some(id) = active_task_id {
+                entries.push(MenuEntry::Item(MenuItem {
+                    id: "quick-stop-background".into(),
+                    label: i18n::text("quick_commands.stop"),
+                    shortcut_hint: None,
+                    disabled: false,
+                    danger: true,
+                    action: ShellMenuAction::StopBackgroundTask(id),
+                }));
+            } else {
+                entries.push(MenuEntry::Item(MenuItem {
+                    id: "quick-run-background".into(),
+                    label: i18n::text("quick_commands.run_background"),
+                    shortcut_hint: None,
+                    disabled: false,
+                    danger: false,
+                    action: ShellMenuAction::RunQuickCommand {
+                        scope: menu_scope.clone(),
+                        command: menu_command.clone(),
+                        background: true,
+                    },
+                }));
+            }
+            entries.push(MenuEntry::Separator);
+            entries.extend([
+                MenuEntry::Item(MenuItem {
+                    id: "quick-edit".into(),
+                    label: i18n::text("quick_commands.edit"),
+                    shortcut_hint: None,
+                    disabled: false,
+                    danger: false,
+                    action: ShellMenuAction::EditQuickCommand {
+                        scope: menu_scope.clone(),
+                        command: menu_command.clone(),
+                    },
+                }),
+                MenuEntry::Item(MenuItem {
+                    id: "quick-unpin".into(),
+                    label: i18n::text("quick_commands.unpin"),
+                    shortcut_hint: None,
+                    disabled: false,
+                    danger: false,
+                    action: ShellMenuAction::ToggleQuickCommandPin {
+                        scope: menu_scope.clone(),
+                        command: menu_command.clone(),
+                    },
+                }),
+                MenuEntry::Item(MenuItem {
+                    id: "quick-delete".into(),
+                    label: i18n::text("quick_commands.delete"),
+                    shortcut_hint: None,
+                    disabled: false,
+                    danger: true,
+                    action: ShellMenuAction::DeleteQuickCommand {
+                        scope: menu_scope.clone(),
+                        command: menu_command.clone(),
+                    },
+                }),
+                MenuEntry::Item(MenuItem {
+                    id: "quick-ignore".into(),
+                    label: i18n::text("quick_commands.ignore"),
+                    shortcut_hint: None,
+                    disabled: false,
+                    danger: true,
+                    action: ShellMenuAction::IgnoreQuickCommand {
+                        scope: menu_scope.clone(),
+                        command: menu_command.clone(),
+                    },
+                }),
+            ]);
+            this.open_context_menu(ev.position, entries, cx);
         })
-        .child(Avatar::new(&command).kind(AvatarKind::Command))
-        .on_click(
-            cx.listener(move |this, ev: &gpui::ClickEvent, _window, cx| {
-                if ev.click_count() == 2 {
-                    this.run_quick_command(run_scope.clone(), command.clone(), false, cx);
-                }
-            }),
-        )
-        .on_mouse_down(MouseButton::Right, {
-            cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
-                let mut entries = Vec::new();
-                if let Some(id) = running_id {
-                    entries.push(MenuEntry::Item(MenuItem {
-                        id: "quick-restart-background".into(),
-                        label: i18n::text("quick_commands.restart"),
-                        shortcut_hint: None,
-                        disabled: false,
-                        danger: false,
-                        action: ShellMenuAction::RestartBackgroundTask(id),
-                    }));
-                } else if let Some(id) = active_task_id {
-                    entries.push(MenuEntry::Item(MenuItem {
-                        id: "quick-stop-background".into(),
-                        label: i18n::text("quick_commands.stop"),
-                        shortcut_hint: None,
-                        disabled: false,
-                        danger: true,
-                        action: ShellMenuAction::StopBackgroundTask(id),
-                    }));
-                } else {
-                    entries.push(MenuEntry::Item(MenuItem {
-                        id: "quick-run-background".into(),
-                        label: i18n::text("quick_commands.run_background"),
-                        shortcut_hint: None,
-                        disabled: false,
-                        danger: false,
-                        action: ShellMenuAction::RunQuickCommand {
-                            scope: menu_scope.clone(),
-                            command: menu_command.clone(),
-                            background: true,
-                        },
-                    }));
-                }
-                entries.push(MenuEntry::Separator);
-                entries.extend([
-                    MenuEntry::Item(MenuItem {
-                        id: "quick-edit".into(),
-                        label: i18n::text("quick_commands.edit"),
-                        shortcut_hint: None,
-                        disabled: false,
-                        danger: false,
-                        action: ShellMenuAction::EditQuickCommand {
-                            scope: menu_scope.clone(),
-                            command: menu_command.clone(),
-                        },
-                    }),
-                    MenuEntry::Item(MenuItem {
-                        id: "quick-unpin".into(),
-                        label: i18n::text("quick_commands.unpin"),
-                        shortcut_hint: None,
-                        disabled: false,
-                        danger: false,
-                        action: ShellMenuAction::ToggleQuickCommandPin {
-                            scope: menu_scope.clone(),
-                            command: menu_command.clone(),
-                        },
-                    }),
-                    MenuEntry::Item(MenuItem {
-                        id: "quick-delete".into(),
-                        label: i18n::text("quick_commands.delete"),
-                        shortcut_hint: None,
-                        disabled: false,
-                        danger: true,
-                        action: ShellMenuAction::DeleteQuickCommand {
-                            scope: menu_scope.clone(),
-                            command: menu_command.clone(),
-                        },
-                    }),
-                    MenuEntry::Item(MenuItem {
-                        id: "quick-ignore".into(),
-                        label: i18n::text("quick_commands.ignore"),
-                        shortcut_hint: None,
-                        disabled: false,
-                        danger: true,
-                        action: ShellMenuAction::IgnoreQuickCommand {
-                            scope: menu_scope.clone(),
-                            command: menu_command.clone(),
-                        },
-                    }),
-                ]);
-                this.open_context_menu(ev.position, entries, cx);
-            })
-        });
+    });
     if let Some(task) = active_task {
-        item = item.child(background_task_badge(task.status));
+        item = item.child(rail_status_badge(
+            background_task_color(task.status),
+            theme::surface(),
+        ));
     }
     item.into_any_element()
 }
@@ -255,7 +240,10 @@ fn render_background_task(task: BackgroundTask, cx: &mut Context<AppShell>) -> A
         .hover(|style| style.bg(theme::accent_soft()))
         .tooltip(move |_window, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
         .child(Avatar::new(&task.command).kind(AvatarKind::Command))
-        .child(background_task_badge(task.status))
+        .child(rail_status_badge(
+            background_task_color(task.status),
+            theme::surface(),
+        ))
         .on_mouse_down(
             MouseButton::Right,
             cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
@@ -284,12 +272,9 @@ fn render_background_task(task: BackgroundTask, cx: &mut Context<AppShell>) -> A
         .into_any_element()
 }
 
+#[allow(dead_code)]
 fn background_task_badge(status: BackgroundTaskStatus) -> impl IntoElement {
-    div().absolute().top(px(1.)).right(px(1.)).child(
-        StatusDot::new(background_task_color(status))
-            .size(px(7.))
-            .border(theme::surface()),
-    )
+    rail_status_badge(background_task_color(status), theme::surface())
 }
 
 #[cfg(test)]

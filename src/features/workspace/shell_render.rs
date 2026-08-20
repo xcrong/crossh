@@ -69,21 +69,24 @@ impl Render for AppShell {
         // Materialize opaque elements before attaching the root listener so Rust 2024 does not
         // keep `cx` borrowed through the render helpers.
         let sidebar_width = if self.workspace_settings.show_host_sidebar {
-            self.sidebar_width
-                .get()
-                .clamp(theme::SIDEBAR_MIN_WIDTH, theme::SIDEBAR_MAX_WIDTH)
+            crossh_ui_component::clamp_panel_width(
+                self.sidebar_width.get(),
+                theme::SIDEBAR_MIN_WIDTH,
+                theme::SIDEBAR_MAX_WIDTH,
+            )
         } else {
             theme::SIDEBAR_RAIL_WIDTH
         };
         let quick_commands_width = match quick_commands_panel_mode {
-            Some(QuickCommandsPanelMode::Expanded) => self.quick_commands_width.get().clamp(
+            Some(QuickCommandsPanelMode::Expanded) => crossh_ui_component::clamp_panel_width(
+                self.quick_commands_width.get(),
                 theme::QUICK_COMMANDS_MIN_WIDTH,
                 theme::QUICK_COMMANDS_MAX_WIDTH,
             ),
             Some(QuickCommandsPanelMode::Rail) => theme::QUICK_COMMANDS_RAIL_WIDTH,
             None => 0.,
         };
-        let available_main_width = available_main_width(
+        let available_main_width = crossh_ui_component::panel_available_main_width(
             window.viewport_size().width,
             sidebar_width,
             quick_commands_width,

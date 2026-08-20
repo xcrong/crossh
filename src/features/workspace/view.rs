@@ -27,8 +27,8 @@ use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::widgets::{ime_input_canvas, marked_text_span, text_caret, text_span};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
-    BadgeTone, Button, ButtonSize, ButtonVariant, CountBadge, ModalDialog, SplitResizer, StatusBar,
-    StatusDot, StatusMetric, Tooltip,
+    BadgeTone, Button, ButtonSize, ButtonVariant, CountBadge, ModalDialog, SidePanel, SplitResizer,
+    StatusBar, StatusDot, StatusMetric, Tooltip,
 };
 
 const TERMINAL_SPLIT_MIN_PANE_WIDTH: f32 = 160.0;
@@ -683,22 +683,9 @@ pub(crate) fn render_quick_commands(
     cwd: String,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
-    let width = shell.quick_commands_width.get().clamp(
-        theme::QUICK_COMMANDS_MIN_WIDTH,
-        theme::QUICK_COMMANDS_MAX_WIDTH,
-    );
     let records = shell.command_history.top(&scope);
     let total = shell.command_history.total(&scope);
     let tasks = shell.background_tasks.tasks_for_scope(&scope);
-    let resizer = SplitResizer::new(
-        "quick-commands-resize",
-        shell.quick_commands_dragging.clone(),
-        shell.quick_commands_width.clone(),
-    )
-    .min_width(theme::QUICK_COMMANDS_MIN_WIDTH)
-    .max_width(theme::QUICK_COMMANDS_MAX_WIDTH)
-    .handle_left()
-    .line();
 
     let header = div()
         .h(px(50.))
@@ -805,21 +792,20 @@ pub(crate) fn render_quick_commands(
         section.into_any_element()
     });
 
-    let panel = div()
-        .relative()
-        .flex_shrink_0()
-        .w(px(width))
-        .h_full()
-        .flex()
-        .flex_col()
-        .bg(theme::surface())
-        .border_l_1()
-        .border_color(theme::border())
-        .child(header)
-        .child(list)
-        .children(task_section)
-        .child(resizer);
-    panel.into_any_element()
+    SidePanel::right(
+        "quick-commands-resize",
+        shell.quick_commands_width.clone(),
+        shell.quick_commands_dragging.clone(),
+    )
+    .min_width(theme::QUICK_COMMANDS_MIN_WIDTH)
+    .max_width(theme::QUICK_COMMANDS_MAX_WIDTH)
+    .bg(theme::surface())
+    .border_color(theme::border())
+    .line()
+    .child(header)
+    .child(list)
+    .children(task_section)
+    .into_any_element()
 }
 
 fn render_quick_command_row(

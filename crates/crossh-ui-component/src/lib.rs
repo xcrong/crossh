@@ -12,6 +12,7 @@ pub mod count_badge;
 pub mod hint;
 pub mod layout;
 pub mod modal;
+pub mod panel;
 pub mod select;
 pub mod split_resizer;
 pub mod status_bar;
@@ -36,6 +37,11 @@ pub use count_badge::CountBadge;
 pub use hint::Hint;
 pub use layout::{h_flex, scroll_y};
 pub use modal::ModalDialog;
+pub use panel::{
+    PanelSide, RAIL_AVATAR_GAP, RAIL_AVATAR_PITCH, RAIL_AVATAR_SIZE, Rail, SidePanel,
+    available_main_width as panel_available_main_width, clamp_panel_width, rail_avatar,
+    rail_avatar_wide, rail_status_badge,
+};
 pub use select::{Select, SelectOption};
 pub use split_resizer::{SplitHandleSide, SplitResizer};
 pub use status_bar::StatusBar;

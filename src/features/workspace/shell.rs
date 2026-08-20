@@ -1644,6 +1644,7 @@ fn quick_commands_panel_mode(
     })
 }
 
+#[allow(dead_code)]
 fn available_main_width(
     viewport_width: Pixels,
     sidebar_width: f32,

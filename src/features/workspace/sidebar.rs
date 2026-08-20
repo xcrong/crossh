@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use gpui::{
-    AnyElement, App, AppContext, ClickEvent, Context, Div, ElementId, FontWeight,
-    InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, SharedString,
-    Stateful, StatefulInteractiveElement, Styled, Window, div, px,
+    AnyElement, AppContext, Context, FontWeight, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div,
+    px,
 };
 
 use crate::features::connections::HostEntry;
@@ -19,15 +19,8 @@ use crossh_core::terminal::path_display_name;
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
-    Avatar, AvatarKind, Button, ButtonSize, ButtonVariant, CountBadge, Hint, SplitResizer,
-    StatusDot, TextInput, Tooltip, scroll_y,
-};
-
-const TRANSPARENT: gpui::Rgba = gpui::Rgba {
-    r: 0.0,
-    g: 0.0,
-    b: 0.0,
-    a: 0.0,
+    Avatar, AvatarKind, Button, ButtonSize, ButtonVariant, CountBadge, Hint, Rail, SidePanel,
+    StatusDot, TextInput, Tooltip, rail_avatar, scroll_y,
 };
 
 fn host_entry_matches(entry: &HostEntry, query: &str) -> bool {
@@ -244,19 +237,6 @@ pub fn render_sidebar(
                 .on_key_down(cx.listener(AppShell::handle_host_search_key)),
         );
 
-    let width = shell
-        .sidebar_width
-        .get()
-        .clamp(theme::SIDEBAR_MIN_WIDTH, theme::SIDEBAR_MAX_WIDTH);
-    let resizer = SplitResizer::new(
-        "sidebar-resize",
-        shell.sidebar_dragging.clone(),
-        shell.sidebar_width.clone(),
-    )
-    .min_width(theme::SIDEBAR_MIN_WIDTH)
-    .max_width(theme::SIDEBAR_MAX_WIDTH)
-    .line();
-
     let titlebar = div()
         .relative()
         .h(px(theme::TITLEBAR_HEIGHT))
@@ -288,68 +268,26 @@ pub fn render_sidebar(
                 .child(SharedString::from("crossh")),
         )
         .child(div().flex_1());
-    let sidebar_root = div()
-        .relative()
-        .flex_shrink_0()
-        .w(px(width))
-        .h_full()
-        .flex()
-        .flex_col()
-        .bg(theme::sidebar())
-        .border_r_1()
-        .border_color(theme::border())
-        .child(
-            div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .child(titlebar)
-                .child(search)
-                .child(list),
-        )
-        .child(resizer);
-    sidebar_root.into_any_element()
-}
-
-/// rail 栏中的 30px 头像切换按钮：项目与主机两处入口复用同一外观与交互骨架。
-fn rail_avatar_button(
-    id: impl Into<ElementId>,
-    avatar: Avatar,
-    tooltip: SharedString,
-    selected: bool,
-    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> Stateful<Div> {
-    div()
-        .id(id)
-        .w(px(30.))
-        .h(px(30.))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(theme::RADIUS_SM))
-        .cursor_pointer()
-        .border_1()
-        .border_color(if selected {
-            theme::accent()
-        } else {
-            TRANSPARENT
-        })
-        .bg(if selected {
-            theme::accent_soft()
-        } else {
-            TRANSPARENT
-        })
-        .hover(move |style| {
-            style.bg(if selected {
-                theme::accent_soft()
-            } else {
-                theme::surface()
-            })
-        })
-        .tooltip(move |_window, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
-        .child(avatar)
-        .on_click(on_click)
+    SidePanel::left(
+        "sidebar-resize",
+        shell.sidebar_width.clone(),
+        shell.sidebar_dragging.clone(),
+    )
+    .min_width(theme::SIDEBAR_MIN_WIDTH)
+    .max_width(theme::SIDEBAR_MAX_WIDTH)
+    .bg(theme::sidebar())
+    .border_color(theme::border())
+    .line()
+    .child(
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(titlebar)
+            .child(search)
+            .child(list),
+    )
+    .into_any_element()
 }
 
 /// 收起主机栏时保留活跃项目与连接主机，便于直接切换工作目标。
@@ -385,10 +323,10 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
         let project_id = project_dir.to_string_lossy().to_string();
         let avatar = Avatar::new(&label).kind(AvatarKind::Project);
         let selected = is_active_local_dir(shell, dir);
-        activity = activity.child(rail_avatar_button(
+        activity = activity.child(rail_avatar(
             SharedString::from(format!("sidebar-rail-project-{project_id}")),
             avatar,
-            label.into(),
+            label,
             selected,
             cx.listener(move |this, _ev, _window, cx| {
                 this.activate_local_dir(project_dir.clone(), cx);
@@ -402,10 +340,10 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
         let alias = entry.alias.clone();
         let avatar = Avatar::new(&alias).kind(AvatarKind::Host);
         let selected = active_remote_key.as_deref() == Some(entry.key.as_str());
-        activity = activity.child(rail_avatar_button(
+        activity = activity.child(rail_avatar(
             ("sidebar-rail-host", index),
             avatar,
-            alias.into(),
+            alias.clone(),
             selected,
             cx.listener(move |this, _ev, _window, cx| {
                 this.open_host(index, cx);
@@ -428,17 +366,8 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
             .map(|(index, entry)| (index, entry.alias.as_str())),
     );
 
-    div()
-        .id("sidebar-rail")
-        .w(px(theme::SIDEBAR_RAIL_WIDTH))
-        .h_full()
-        .flex_none()
-        .flex()
-        .flex_col()
-        .items_center()
-        .py_2()
+    Rail::left("sidebar-rail", theme::SIDEBAR_RAIL_WIDTH)
         .bg(theme::sidebar())
-        .border_r_1()
         .border_color(theme::border())
         .child(
             div()
