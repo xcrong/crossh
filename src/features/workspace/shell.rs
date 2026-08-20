@@ -1201,7 +1201,7 @@ impl AppShell {
         self.compose_state.ime_marked_text.clear();
         self.compose_state.ime_replacement = None;
         self.compose_scroll.set_offset(gpui::Point::default());
-        self.refocus_active_terminal(cx);
+        // 保持焦点在输入框以便连续输入（不跳回终端）
         cx.notify();
     }
 
