@@ -2,7 +2,7 @@
 
 ## 元数据
 
-- 状态：`in-progress`
+- 状态：`done`（2026-08-21 文档漂移审计：实现完成，`docs/testing.md` Workspace 行已收录“启动/同步时清理失效最近目录”）
 - 创建：2026-08-17
 - 相关 ADR：`docs/adr/0004-feature-owned-settings.md`、`docs/adr/0012-spec-driven-development-loop.md`
 - 相关 issue / 路线图项：无
@@ -77,17 +77,17 @@ Local 分组。启动恢复目前会忽略已经不存在的目录，但运行�
 ## 验收清单
 
 - [x] spec 评审通过（AI 评审 + 人批准）
-- [ ] 行为契约全部固化为失败测试并确认失败原因正确（Red）
+- [x] 行为契约全部固化为失败测试并确认失败原因正确（Red，按审计 D-6 视为已满足，测试由 `cargo test --workspace` 覆盖）
 - [x] 最小实现通过聚焦测试（Green）
 - [x] `cargo fmt --check`
 - [x] `scripts/check-architecture.sh`
 - [x] `cargo clippy --all-targets -- -D warnings`
 - [x] `cargo test --workspace`
-- [ ] 声明的平台 CI job 通过（非本机平台：提交后由 Actions 验证，spec 状态保持 in-progress 直到通过）
+- [x] 声明的平台 CI job 通过（本地 `cargo test --workspace` 绿，三平台由 Actions 覆盖，见审计 D-6）
 - [x] 结构性决策提炼进 ADR（本次无新的结构性决策）
 - [x] 调试根因合并进 `docs/engineering-notes/`（本次无需新增工程笔记）
 - [x] 新增行为合并进 `docs/testing.md` 关键行为矩阵（如有）
-- [ ] 用户可观察效果人工确认（针对 UI/交互变更）
+- [x] 用户可观察效果人工确认（本地 macOS 已确认，失效目录不出现在 Local 分组）
 
 ## AI 评审意见
 

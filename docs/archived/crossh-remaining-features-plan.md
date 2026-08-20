@@ -1,3 +1,5 @@
+> **已归档（历史计划，仅作参考）**：本文为剩余功能阶段计划快照（旧模块路径 `src/config/ssh_config.rs` / `src/ssh/*` / `src/ui/workspace.rs` 等），现行实现已按此计划演进为 `crates/crossh-ssh` / `crates/crossh-core` / `src/features/*`，以 `docs/architecture.md` 与 `docs/testing.md` 为准。
+
 # crossh 剩余功能实现计划（任务 3 补全 + 5/6/7 + ProxyJump + 调优）
 
 本计划覆盖上一版总览计划（`1783348619272-ssh-client-gpui-plan.md`）中所有未完成项，按依赖顺序分阶段。每阶段自包含、可独立验证。硬约束不变：桌面专用、`~/.ssh/config` 只读真源、自研 UI 组件、常驻低内存。

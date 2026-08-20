@@ -12,12 +12,14 @@ both paths when investigating a rendering or input issue.
 ## Automated checks
 
 CI runs the following checks in the `terminal replay / platform smoke` job on
-Ubuntu and Windows:
+Ubuntu and Windows（权威门禁见 `docs/testing.md#CI 规则`）：
 
 ```bash
-cargo test --release --workspace --lib
-cargo test --release --test terminal_replay -- --test-threads=1
+cargo test --workspace
+cargo test --test terminal_replay -- --test-threads=1
 ```
+
+> 历史曾用 `cargo test --release --workspace --lib`，因根 crate 无 lib target 会静默跳过 bin 测试（见 `docs/engineering-notes/cargo-test-workspace-selection.md`），已统一为 `cargo test --workspace`。
 
 The replay uses `tests/fixtures/terminal_compatibility.hex`. It is a small,
 reviewable list of hand-written ASCII hexadecimal bytes, not a captured user

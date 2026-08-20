@@ -1,6 +1,6 @@
 # crossh-agent 独立二进制拆分计划
 
-状态：**已完结**（2026-08-15）。Phase 0-3 已执行完毕并收录为 ADR 0009；依赖图、ownership 与边界规则 7 已同步到 `docs/architecture.md`。Phase 4（独立分发）仍未启动，待 §5 信号触发后另起计划。
+状态：**已完结**（2026-08-15）。Phase 0-3 已执行完毕并收录为 ADR 0009（见 `docs/adr/0009-standalone-agent-binary.md`，`docs/architecture.md` 决策索引已登记）；依赖图、ownership 与边界规则 7 已同步到 `docs/architecture.md`。Phase 4（独立分发）仍未启动，待 §5 信号触发后另起计划；未决的本地会话增强 spec（`20260821-pinned-tab-default-command.md` / `20260820-terminal-compose-bar.md` 等）不改变本计划的完结状态。
 
 ## 1. 背景与现状盘点（已核实）
 

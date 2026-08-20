@@ -1,3 +1,5 @@
+> **后续处置（2026-08-21 文档漂移审计 D-10）**：本文 P0/P1 部分高危项已在后续 spec/实现中闭环（`crossh-ai-sdk` 单一事实来源与 `low_latency` 残骸已由 `20260818-sdk-single-source-and-lowlatency-removal.md:done` 删除，`terminal-compatibility` 静默跳过已由 `cargo-test-workspace-selection` 工程笔记与 `testing.md` 统一为 `cargo test --workspace`），详见 `docs/audit/2026-08-20-simplification-audit.md` 与 `docs/audit/2026-08-21-doc-drift-audit.md`。本文保留为历史档案。
+
 # Crossh 项目审阅报告（2026-08-17）
 
 审阅方式：三个并行只读 subagent（架构与分层一致性 / 测试契约覆盖 / 技术债与文档漂移），

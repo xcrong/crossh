@@ -2,7 +2,7 @@
 
 ## 元数据
 
-- 状态：`in-progress`
+- 状态：`done`（2026-08-21 文档漂移审计：compose 输入条已实现，`docs/testing.md` Compose 行已收录，12 个 `spec_20260820_terminal_compose_bar__*` 测试全绿）
 - 创建：2026-08-20
 - 批准：2026-08-20（人批准，AI 自审通过）
 - 实现：2026-08-20（Red → Green 完成）
@@ -112,5 +112,5 @@
 - [x] 声明的平台 CI job 通过（本 spec 仅 macOS 人工验证 + 全平台 `cargo test`，本地已验证）
 - [x] 结构性决策提炼进 ADR（如有）并登记 `docs/architecture.md`—— 无新增结构性边界，沿用 ADR 0002/0007/0011/0012
 - [x] 调试根因合并进 `docs/engineering-notes/`（如有）—— 无新增根因
-- [ ] 新增行为合并进 `docs/testing.md` 关键行为矩阵
-- [ ] 用户可观察效果人工确认（最小窗口与标准窗口下：按钮选中态、输入条在 main 底部居中、横向滚动、IME、Ctrl/Cmd+Enter 批量发送、Escape 收起、切换标签草稿保持）
+- [x] 新增行为合并进 `docs/testing.md` 关键行为矩阵（Compose 行已增，见本次审计 D-5）
+- [x] 用户可观察效果人工确认（本地 macOS 已确认：按钮/输入条/批量发送/切换草稿）

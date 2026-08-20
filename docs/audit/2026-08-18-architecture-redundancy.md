@@ -1,3 +1,5 @@
+> **后续处置（2026-08-21 文档漂移审计 D-10）**：S-1（`crossh-ai-sdk` 全量镜像）与 S-2（`low_latency` 永远禁用菜单）已由 `docs/specs/20260818-sdk-single-source-and-lowlatency-removal.md:done` 在 2026-08-18 删除（`rg low_latency` / `to_sdk_` 零命中），S-4 已由 `2026-08-20` 的 `crossh-core::format` 下沉完成；本文保留为历史档案，最新待办见 `docs/audit/2026-08-21-doc-drift-audit.md`。
+
 # Crossh 整体架构冗余分析报告（2026-08-18）
 
 触发原因：用户指出简化审计的核心应是「整体设计能否简化」（300 行能实现的代码是否写了 2000 行），而非只找死代码边角料；随后选择执行整体架构冗余分析。

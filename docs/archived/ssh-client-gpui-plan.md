@@ -1,3 +1,5 @@
+> **已归档（历史方案，仅作参考）**：本文为早期实现方案快照（`gpui rev 1d217ee`、旧模块路径 `src/ui/*` / `src/config/*` / `src/ssh/*`），现行架构与 crate 划分以 `docs/architecture.md` 与 `docs/adr/*` 为准，Zed revision 以 `Cargo.toml` 为准（当前 `1b04e4caf01e376624fb514ef85b0e6d8ee5d930`）。
+
 # crossh —— 基于 gpui 的轻量 SSH 客户端（实现方案）
 
 ## 目标

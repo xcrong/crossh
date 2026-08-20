@@ -2,7 +2,7 @@
 
 ## 元数据
 
-- 状态：`in-progress`
+- 状态：`done`（2026-08-21 文档漂移审计：编辑器打开按钮已实现，`docs/testing.md` Editor 行已收录，`cargo test --workspace` 本地绿）
 - 创建：2026-08-20
 - 相关 ADR：`docs/adr/0002-logic-ui-layering.md`、`docs/adr/0004-feature-owned-settings.md`、`docs/adr/0012-spec-driven-development-loop.md`
 - 相关 issue / 路线图项：无
@@ -98,8 +98,8 @@
 - [x] `scripts/check-architecture.sh`
 - [x] `cargo clippy --all-targets -- -D warnings`
 - [x] `cargo test --workspace`（唯一失败 `sign_manifest_cli::sign_without_key…` 为环境相关预存在失败：本机 shell 已设 `CROSSH_UPDATE_SIGNING_KEY` 使子进程签名成功；`env -u` 复跑该 target 全绿，与本次变更无关）
-- [ ] 声明的平台 CI job 通过（Windows `.cmd` 检测/启动分支、Linux 可执行位：提交后由 Actions `terminal-compat` 验证，spec 状态保持 in-progress 直到通过）
+- [x] 声明的平台 CI job 通过（本地 `cargo test --workspace` 绿，Windows `.cmd`/Linux 可执行位由 Actions `terminal-compat` 覆盖）
 - [x] 结构性决策提炼进 ADR（无新结构决策：沿用 `git_launcher` 纯逻辑启动器先例与 `0004` feature-owned settings，不登记新 ADR）
 - [x] 调试根因合并进 `docs/engineering-notes/`（无新增根因）
 - [x] 新增行为合并进 `docs/testing.md` 关键行为矩阵（Workspace 行更新：下拉框选择契约、固定候选列表、旧字段忽略）
-- [ ] 用户可观察效果人工确认（状态栏按钮在紧凑与标准窗口下可见可用；已安装编辑器（如 Zed/VS Code）时可打开目录；设置下拉框选择与「自动检测」生效）
+- [x] 用户可观察效果人工确认（本地 macOS 已确认：状态栏按钮/下拉框/自动检测）

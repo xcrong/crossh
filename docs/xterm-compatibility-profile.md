@@ -14,7 +14,7 @@ and were removed when Crossh adopted the Zed terminal core (2026-08-08).
 - [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/)
 
 The screen emulator is the Zed `terminal` crate at the revision pinned in
-`Cargo.toml` (`90d024b88abc91264d9a0ad260eb4f365fa695c3`). That crate uses
+`Cargo.toml` (`1b04e4caf01e376624fb514ef85b0e6d8ee5d930`). That crate uses
 `alacritty_terminal` and `vte` internally. Crossh must not duplicate that
 screen state.
 
@@ -69,12 +69,14 @@ named in their evidence.
 ## Evidence Commands
 
 ```sh
-cargo test --quiet
-cargo test --release --test terminal_replay -- --test-threads=1
+cargo fmt --check
 scripts/check-architecture.sh
-cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
+cargo test --workspace
+cargo test --test terminal_replay -- --test-threads=1
 ```
+
+> 权威门禁见 `docs/testing.md#本地验证` 与 `docs/testing.md#CI 规则`；此处为最小证据集，不替代全量 `cargo test --workspace`。
 
 Real PTY captures are stored as minimized, redacted fixtures under
 `tests/fixtures/terminal/`. A fixture records bytes only; host names, paths,

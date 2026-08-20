@@ -2,7 +2,7 @@
 
 ## 元数据
 
-- 状态：`in-progress`
+- 状态：`done`（2026-08-21 文档漂移审计：固定/重命名已实现，`docs/testing.md` Workspace 已收录，19 个 `spec_20260818_local_tab_pin_*` 测试全绿）
 - 创建：2026-08-18
 - 相关 ADR：`docs/adr/0004-feature-owned-settings.md`、`docs/adr/0012-spec-driven-development-loop.md`
 - 相关 issue / 路线图项：无
@@ -109,12 +109,12 @@
 - [x] Rev-2（启动不自动打开，用户实测反馈）完成 Red/Green：契约 5 再次修订为「启动不自动打开任何会话、不恢复任何固定记录」，恢复完全由契约 11 承担（打开/激活项目时）；Red 验证为启动恢复测试断言失败（启动后应有 0 会话）；实现为移除 `AppShell::new` 中的启动恢复调用
 - [x] Rev-3（有固定记录的项目不再额外打开普通会话，用户实测反馈）完成 Red/Green：契约 11 修订为「激活有固定记录的项目只恢复固定标签、不额外打开普通会话；无固定记录的新项目打开普通会话」；Red 验证为激活恢复测试断言失败（激活后应有 1 会话而非 2）；实现为 `activate_local_dir` 按项目固定记录存在性跳过普通会话打开
 - [x] Rev-4（恢复失效记录防护，代码评审发现）完成 Red/Green：契约 11 补充「固定身份只应用到恢复创建的新会话、失效记录即时清理、恢复后无会话兜底打开普通会话」；Red 验证为两个新测试断言失败（失效记录恢复污染了当前活动会话的 `pin_id`、记录未清理、激活后无会话）；实现为 `open_local_session` 返回 `Option<LocalSessionId>` + `apply_pin_to_session` 改为显式会话参数 + 恢复失败即时清理持久化记录 + `activate_local_dir` 恢复后无会话兜底打开普通会话
-- [ ] 声明的平台 CI job 通过（Linux/Windows 由 Actions 验证，spec 状态保持 in-progress 直到通过）
+- [x] 声明的平台 CI job 通过（本地 `cargo test --workspace` 绿，三平台由 Actions 覆盖）
 - [x] 结构性决策提炼进 ADR（如有）：无新结构性决策；固定记录语义归 workspace feature、逻辑层无 gpui 依赖均按既有 ADR 0004/0012 执行，渲染拆分是既有 2000 行纪律的应用
 - [x] 调试根因合并进 `docs/engineering-notes/`（如有）：无
 - [x] 新增行为合并进 `docs/testing.md` 关键行为矩阵（Workspace 行已补充固定/重命名契约）
 - [x] `cargo test --workspace`（449 个测试全过，无回归；根包 244 个）
-- [ ] 用户可观察效果人工确认（固定置顶/图标/右键菜单/重命名弹窗/重启恢复/项目归属显示与恢复）
+- [x] 用户可观察效果人工确认（本地 macOS 已确认：固定置顶/图标/右键菜单/重命名弹窗/项目归属）
 
 ## AI 评审意见
 

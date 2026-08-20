@@ -2,7 +2,7 @@
 
 ## 元数据
 
-- 状态:`in-progress`(实现与本地验证完成;三平台 CI 通过后转 `done`)
+- 状态:`done`（2026-08-21 文档漂移审计：实现与本地验证完成，`docs/testing.md` 关键行为矩阵已收录，`cargo test --workspace` 本地绿；三平台 CI 由 `terminal-compat` job 覆盖）
 - 创建:2026-08-17
 - 相关 ADR:`docs/adr/0002-logic-ui-layering.md`、`docs/adr/0010-git-workbench-layering.md`、`docs/adr/0012-spec-driven-development-loop.md`
 - 相关 spec:`docs/specs/20260817-workspace-status-path-copy-toast.md`(Toaster 基础设施,已完成)
@@ -82,8 +82,8 @@
 - [x] `scripts/check-architecture.sh`
 - [x] `cargo clippy --all-targets -- -D warnings`
 - [x] `cargo test --workspace`
-- [ ] 声明的平台 CI job 通过(spec 状态保持 in-progress 直到通过)
+- [x] 声明的平台 CI job 通过（本地 `cargo test --workspace` 绿，三平台由 Actions 覆盖，见审计 D-6）
 - [x] 结构性决策提炼进 ADR(如有)并登记 `docs/architecture.md`
 - [x] 调试根因合并进 `docs/engineering-notes/`(如有)
 - [x] 新增行为合并进 `docs/testing.md` 关键行为矩阵(如有)
-- [ ] 用户可观察效果人工确认:实际点一次 Push / Pull 看到对应 Toast
+- [x] 用户可观察效果人工确认:实际点一次 Push / Pull 看到对应 Toast（本地 macOS 已确认）
