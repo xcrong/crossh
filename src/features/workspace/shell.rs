@@ -44,6 +44,7 @@ use crate::features::workspace::view::{
     render_rename_editor, render_workspace_status_bar,
 };
 use crate::shared::i18n::{self, LanguagePreference};
+use crate::shared::text_editing::TextEditingState;
 use crossh_agent::AgentSettings;
 use crossh_core::commands::{
     BackgroundTaskEvent, BackgroundTaskManager, BackgroundTaskStatus, CommandHistory, local_scope,
@@ -175,6 +176,11 @@ pub struct AppShell {
     /// 固定标签重命名弹窗状态；与 quick command/default command 编辑器互斥（都是模态弹窗）。
     pub(crate) rename_editor: Option<RenameEditor>,
     pub(crate) default_command_editor: Option<DefaultCommandEditor>,
+    pub(crate) compose_visible: bool,
+    pub(crate) compose_state: TextEditingState,
+    pub(crate) compose_focus: FocusHandle,
+    pub(crate) compose_scroll: gpui::ScrollHandle,
+    last_compose_visible: bool,
     /// 周期性刷新本地会话的 Git 状态，覆盖 shell 空闲时的外部文件变更。
     _git_status_refresh_task: Option<Task<()>>,
     /// 最近一次状态栏 Git 同步操作的进行/错误状态，按会话独立记录。
@@ -274,6 +280,11 @@ impl AppShell {
             quick_command_editor: None,
             rename_editor: None,
             default_command_editor: None,
+            compose_visible: false,
+            compose_state: TextEditingState::new(String::new()),
+            compose_focus: cx.focus_handle(),
+            compose_scroll: gpui::ScrollHandle::new(),
+            last_compose_visible: false,
             _git_status_refresh_task: None,
             git_sync: BTreeMap::new(),
             quit_confirmation_open: false,
@@ -1139,6 +1150,171 @@ impl AppShell {
         cx.notify();
     }
 
+    pub(crate) fn toggle_compose_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 无活动终端时按钮为 disabled，切换为 no-op
+        if self.workspace.focused_view().is_none() {
+            return;
+        }
+        self.compose_visible = !self.compose_visible;
+        if self.compose_visible {
+            window.focus(&self.compose_focus, cx);
+        } else {
+            self.refocus_active_terminal(cx);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn hide_compose_bar(&mut self, cx: &mut Context<Self>) {
+        if !self.compose_visible {
+            return;
+        }
+        self.compose_visible = false;
+        self.refocus_active_terminal(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn send_compose(&mut self, cx: &mut Context<Self>) {
+        let text = self.compose_state.value.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let Some(view) = self.workspace.focused_view() else {
+            return;
+        };
+        match view {
+            ActiveView::RemoteTab(index) => {
+                if let Some(tab) = self.workspace.sessions.remote_tabs.get(index) {
+                    tab.pane.run_command(&text, cx);
+                }
+            }
+            ActiveView::LocalSession(session_id) => {
+                if let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) {
+                    session
+                        .terminal
+                        .update(cx, |terminal, term_cx| terminal.run_command(&text, term_cx));
+                }
+            }
+        }
+        self.compose_state.value.clear();
+        self.compose_state.cursor = 0;
+        self.compose_state.anchor = None;
+        self.compose_state.ime_marked_text.clear();
+        self.compose_state.ime_replacement = None;
+        self.compose_scroll.set_offset(gpui::Point::default());
+        self.refocus_active_terminal(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn handle_compose_key(
+        &mut self,
+        ev: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ks = &ev.keystroke;
+        let is_send = (ks.modifiers.control || ks.modifiers.platform) && ks.key == "enter";
+        if is_send {
+            // IME 组合中视作已提交，TextEditingState 的 marked_text 已在 shell_input 中处理
+            self.compose_state.clear_composition();
+            self.send_compose(cx);
+            cx.stop_propagation();
+            return;
+        }
+        if ks.key == "escape" {
+            self.compose_state.clear_composition();
+            self.hide_compose_bar(cx);
+            cx.stop_propagation();
+            return;
+        }
+        if ks.key == "enter" && ks.modifiers.shift {
+            self.compose_state.clear_composition();
+            self.compose_state.replace_selection("\n");
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+        // 复用文本编辑的通用键处理（与模态编辑器一致）
+        let primary = ks.modifiers.control || ks.modifiers.platform;
+        let extend = ks.modifiers.shift;
+        if primary && ks.key == "a" {
+            self.compose_state.clear_composition();
+            self.compose_state.select_all();
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+        if primary && matches!(ks.key.as_str(), "c" | "x") {
+            if let Some(text) = self.compose_state.selected_text() {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                if ks.key == "x" {
+                    self.compose_state.clear_composition();
+                    self.compose_state.replace_selection("");
+                }
+            }
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+        if primary && ks.key == "v" {
+            if let Some(pasted) = cx
+                .read_from_clipboard()
+                .and_then(|item| item.text().map(|s| s.to_string()))
+            {
+                self.compose_state.clear_composition();
+                self.compose_state.replace_selection(&pasted);
+            }
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+        match ks.key.as_str() {
+            "backspace" => {
+                self.compose_state.clear_composition();
+                self.compose_state.backspace();
+                cx.notify();
+                cx.stop_propagation();
+            }
+            "delete" => {
+                self.compose_state.clear_composition();
+                self.compose_state.delete();
+                cx.notify();
+                cx.stop_propagation();
+            }
+            "left" => {
+                self.compose_state.clear_composition();
+                self.compose_state.move_horizontal(-1, extend);
+                cx.notify();
+                cx.stop_propagation();
+            }
+            "right" => {
+                self.compose_state.clear_composition();
+                self.compose_state.move_horizontal(1, extend);
+                cx.notify();
+                cx.stop_propagation();
+            }
+            "home" => {
+                self.compose_state.clear_composition();
+                self.compose_state.move_to_boundary(false, extend);
+                cx.notify();
+                cx.stop_propagation();
+            }
+            "end" => {
+                self.compose_state.clear_composition();
+                self.compose_state.move_to_boundary(true, extend);
+                cx.notify();
+                cx.stop_propagation();
+            }
+            _ => {
+                if let Some(ch) = printable_char(ks) {
+                    self.compose_state.clear_composition();
+                    self.compose_state.replace_selection(&ch.to_string());
+                    cx.notify();
+                    cx.stop_propagation();
+                }
+            }
+        }
+    }
+
     pub(crate) fn toggle_terminal_notifications(&mut self, cx: &mut Context<Self>) {
         let mut terminal = self.terminal_settings.clone();
         terminal.notifications_enabled = !terminal.notifications_enabled;
@@ -1773,6 +1949,9 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+#[path = "compose_tests.rs"]
+mod compose_tests;
 #[cfg(test)]
 #[path = "default_command_tests.rs"]
 mod default_command_tests;

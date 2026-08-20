@@ -18,6 +18,7 @@ enum AppShellInputField {
     QuickCommand,
     Rename,
     DefaultCommand,
+    Compose,
 }
 
 impl AppShell {
@@ -42,6 +43,8 @@ impl AppShell {
             .is_some_and(|editor| editor.focus.is_focused(window))
         {
             Some(AppShellInputField::QuickCommand)
+        } else if self.compose_visible && self.compose_focus.is_focused(window) {
+            Some(AppShellInputField::Compose)
         } else if self.host_focus.is_focused(window) {
             Some(AppShellInputField::HostSearch)
         } else {
@@ -66,6 +69,7 @@ impl EntityInputHandler for AppShell {
             AppShellInputField::DefaultCommand => {
                 &self.default_command_editor.as_ref()?.state.value
             }
+            AppShellInputField::Compose => &self.compose_state.value,
         };
         Some(utf16_slice(text, range))
     }
@@ -136,6 +140,20 @@ impl EntityInputHandler for AppShell {
                         .is_some_and(|anchor| anchor > editor.state.cursor),
                 })
             }
+            AppShellInputField::Compose => {
+                let (start, end) = self
+                    .compose_state
+                    .selection()
+                    .unwrap_or((self.compose_state.cursor, self.compose_state.cursor));
+                Some(UTF16Selection {
+                    range: utf16_offset_for_byte(&self.compose_state.value, start)
+                        ..utf16_offset_for_byte(&self.compose_state.value, end),
+                    reversed: self
+                        .compose_state
+                        .anchor
+                        .is_some_and(|anchor| anchor > self.compose_state.cursor),
+                })
+            }
         }
     }
 
@@ -179,6 +197,13 @@ impl EntityInputHandler for AppShell {
                     start..start + utf16_len(&editor.state.ime_marked_text)
                 })
             }
+            AppShellInputField::Compose => {
+                let (start, _) = self.compose_state.ime_replacement?;
+                (!self.compose_state.ime_marked_text.is_empty()).then(|| {
+                    let start = utf16_offset_for_byte(&self.compose_state.value, start);
+                    start..start + utf16_len(&self.compose_state.ime_marked_text)
+                })
+            }
         }
     }
 
@@ -212,6 +237,13 @@ impl EntityInputHandler for AppShell {
                     }
                     editor.state.ime_marked_text.clear();
                 }
+            }
+            Some(AppShellInputField::Compose) => {
+                if let Some((start, end)) = self.compose_state.ime_replacement.take() {
+                    self.compose_state.cursor = end;
+                    self.compose_state.anchor = (start != end).then_some(start);
+                }
+                self.compose_state.ime_marked_text.clear();
             }
             None => {}
         }
@@ -308,6 +340,24 @@ impl EntityInputHandler for AppShell {
                     editor.state.ime_marked_text.clear();
                 }
             }
+            Some(AppShellInputField::Compose) => {
+                let (start, end) = if let Some(range) = self.compose_state.ime_replacement.take() {
+                    range
+                } else if let Some(range) = replacement_range {
+                    (
+                        byte_index_for_utf16(&self.compose_state.value, range.start),
+                        byte_index_for_utf16(&self.compose_state.value, range.end),
+                    )
+                } else {
+                    self.compose_state
+                        .selection()
+                        .unwrap_or((self.compose_state.cursor, self.compose_state.cursor))
+                };
+                self.compose_state.value.replace_range(start..end, text);
+                self.compose_state.cursor = start + text.len();
+                self.compose_state.anchor = None;
+                self.compose_state.ime_marked_text.clear();
+            }
             None => return,
         }
         window.invalidate_character_coordinates();
@@ -375,6 +425,19 @@ impl EntityInputHandler for AppShell {
                     editor.state.ime_marked_text.clear();
                     editor.state.ime_marked_text.push_str(new_text);
                 }
+            }
+            Some(AppShellInputField::Compose) => {
+                if self.compose_state.ime_replacement.is_none() {
+                    let replacement = self
+                        .compose_state
+                        .selection()
+                        .unwrap_or((self.compose_state.cursor, self.compose_state.cursor));
+                    self.compose_state.ime_replacement = Some(replacement);
+                    self.compose_state.cursor = replacement.0;
+                    self.compose_state.anchor = None;
+                }
+                self.compose_state.ime_marked_text.clear();
+                self.compose_state.ime_marked_text.push_str(new_text);
             }
             None => return,
         }
@@ -450,6 +513,15 @@ impl EntityInputHandler for AppShell {
                     px(0.),
                 ))
             }
+            AppShellInputField::Compose => Some(ime_caret_bounds(
+                window,
+                element_bounds,
+                &self.compose_state.value
+                    [..byte_index_for_utf16(&self.compose_state.value, range.start)],
+                px(14.),
+                px(12.),
+                self.compose_scroll.offset().x,
+            )),
         }
     }
 
@@ -478,6 +550,7 @@ impl EntityInputHandler for AppShell {
                 .default_command_editor
                 .as_ref()
                 .map(|editor| utf16_len(&editor.state.value)),
+            AppShellInputField::Compose => Some(utf16_len(&self.compose_state.value)),
         }
     }
 }

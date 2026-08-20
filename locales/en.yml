@@ -176,6 +176,7 @@ tooltip:
   pin_command: Pin or unpin command
   open_in_editor: Open the current directory in an external editor
   open_in_editor_with: Open the current directory in %{editor}
+  compose_bar: Toggle compose input bar
 
 toast:
   path_copied: Path copied
@@ -443,3 +444,9 @@ default_command:
   title: Edit Default Command
   placeholder: Enter a default command (empty clears)
   save: Save
+
+compose:
+  title: Compose input
+  placeholder: Type command locally, press Ctrl+Enter to send
+  send: Send
+  send_tooltip: Send (Ctrl+Enter)

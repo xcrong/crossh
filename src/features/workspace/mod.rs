@@ -1,6 +1,7 @@
 //! Main workspace: navigation, tabs, local projects, and pane composition.
 
 pub(crate) mod command_editor;
+pub(crate) mod compose_bar;
 pub(crate) mod default_command_editor;
 pub(crate) mod empty_state;
 pub(crate) mod local_paths;

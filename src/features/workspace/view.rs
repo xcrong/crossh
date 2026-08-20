@@ -498,6 +498,29 @@ pub(crate) fn render_workspace_status_bar(
         ));
         left = left.child(render_workspace_terminal_toggle(shell, available_width, cx));
     }
+    {
+        let compose_active = shell.compose_visible;
+        let compose_disabled = focused_view.is_none();
+        left = left.child(
+            Button::new("status-compose")
+                .size(ButtonSize::Icon(px(22.)))
+                .variant(ButtonVariant::Ghost)
+                .selected(compose_active)
+                .disabled(compose_disabled)
+                .icon(
+                    icons::icon(icons::IconName::Keyboard, 13.).text_color(if compose_active {
+                        theme::accent()
+                    } else {
+                        theme::muted_text()
+                    }),
+                )
+                .tooltip(i18n::text("tooltip.compose_bar"))
+                .on_click(cx.listener(|this, _ev, window, cx| {
+                    this.toggle_compose_bar(window, cx);
+                }))
+                .into_any_element(),
+        );
+    }
 
     if let Some(ActiveView::LocalSession(session_id)) = focused_view
         && let Some(session) = shell.workspace.sessions.local_sessions.get(&session_id)

@@ -14,6 +14,12 @@ impl Render for AppShell {
         }
         self.last_had_prompt = has_prompt;
 
+        // compose 展开时自动聚焦输入框（仅在可见性翻转时触发，避免每帧抢焦点）
+        if self.compose_visible && !self.last_compose_visible {
+            self.compose_focus.focus(window, cx);
+        }
+        self.last_compose_visible = self.compose_visible;
+
         // 保持根焦点：没有终端或输入框聚焦时，按键/动作仍能沿 dispatch
         // 路径到达 #app-shell 的动作处理器（否则 Cmd+Q 等会被静默丢弃）。
         if window.focused(cx).is_none() {
@@ -97,13 +103,24 @@ impl Render for AppShell {
         } else {
             render_sidebar_rail(self, cx)
         };
+        let compose_bar = self
+            .compose_visible
+            .then(|| crate::features::workspace::compose_bar::render_compose_bar(self, window, cx));
+        let main_column = div()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(main)
+            .children(compose_bar);
         let workspace = div()
             .flex_1()
             .min_h_0()
             .flex()
             .flex_row()
             .child(sidebar)
-            .child(main)
+            .child(main_column)
             .children(quick_commands);
         let status_bar = render_workspace_status_bar(self, available_main_width, cx);
 

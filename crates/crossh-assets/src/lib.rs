@@ -162,6 +162,7 @@ define_icons! {
     GitBranch => "icons/git-branch.svg",
     Info => "icons/info.svg",
     KeyRound => "icons/key-round.svg",
+    Keyboard => "icons/keyboard.svg",
     Link => "icons/link.svg",
     Pencil => "icons/pencil.svg",
     Pin => "icons/pin.svg",
