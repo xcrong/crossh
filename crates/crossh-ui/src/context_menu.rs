@@ -162,16 +162,22 @@ pub fn clamp_menu_position<A>(
     window: &Window,
     entries: &[MenuEntry<A>],
 ) -> Point<Pixels> {
-    let bounds = window.bounds();
+    let viewport = window.viewport_size();
     let mut x = position.x.as_f32();
     let mut y = position.y.as_f32();
-    if x + CONTEXT_MENU_WIDTH > bounds.right().as_f32() {
+    if x + CONTEXT_MENU_WIDTH > viewport.width.as_f32() {
         x = (x - CONTEXT_MENU_WIDTH).max(0.0);
+        if x + CONTEXT_MENU_WIDTH > viewport.width.as_f32() {
+            x = (viewport.width.as_f32() - CONTEXT_MENU_WIDTH).max(0.0);
+        }
     }
     let height = estimate_menu_height(entries)
-        .min((bounds.size.height.as_f32() - MENU_PADDING * 2.0).max(ITEM_HEIGHT));
-    if y + height > bounds.bottom().as_f32() {
+        .min((viewport.height.as_f32() - MENU_PADDING * 2.0).max(ITEM_HEIGHT));
+    if y + height > viewport.height.as_f32() {
         y = (y - height).max(0.0);
+        if y + height > viewport.height.as_f32() {
+            y = (viewport.height.as_f32() - height - MENU_PADDING).max(0.0);
+        }
     }
     Point::new(px(x), px(y))
 }
@@ -190,7 +196,7 @@ pub fn render_context_menu<A: Clone + 'static, T: 'static>(
 ) -> AnyElement {
     let position = clamp_menu_position(state.position, window, &state.entries);
     let relative = Point::new(position.x - anchor.x, position.y - anchor.y);
-    let max_height = (window.bounds().size.height.as_f32() - MENU_PADDING * 2.0).max(ITEM_HEIGHT);
+    let max_height = (window.viewport_size().height.as_f32() - MENU_PADDING * 2.0).max(ITEM_HEIGHT);
     let on_action = Rc::new(on_action);
     let on_dismiss = Rc::new(on_dismiss);
 
