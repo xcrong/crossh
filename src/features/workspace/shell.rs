@@ -938,6 +938,9 @@ impl AppShell {
         self._project_picker = Some(task);
     }
 
+    /// 主机搜索框保持 `String` 型编辑：该输入为单行过滤/直连入口，
+    /// 无需选区/多光标等 `TextEditingState` 能力；`compose.rs`/`modal_editor.rs`
+    /// 的 `TextEditingState` 通用分发见 `shared::text_editing::handle_text_editing_key`。
     pub(crate) fn handle_host_search_key(
         &mut self,
         ev: &KeyDownEvent,

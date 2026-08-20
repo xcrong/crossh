@@ -1,11 +1,10 @@
 //! 批量输入条的终端级状态与交互（与分栏同为终端级）。
 //! 逻辑与渲染分离：本模块负责可见性、草稿、发送与按键；渲染在 `compose_bar.rs`。
 
-use gpui::{Context, KeyDownEvent, Window};
-
-use crossh_ui::widgets::printable_char;
+use gpui::{ClipboardItem, Context, KeyDownEvent, Window};
 
 use crate::features::workspace::view::ActiveView;
+use crate::shared::text_editing::handle_text_editing_key;
 
 use super::AppShell;
 
@@ -67,11 +66,7 @@ impl AppShell {
             }
         }
         if let Some(entry) = self.workspace.compose.get_mut(&view) {
-            entry.state.value.clear();
-            entry.state.cursor = 0;
-            entry.state.anchor = None;
-            entry.state.ime_marked_text.clear();
-            entry.state.ime_replacement = None;
+            entry.state.clear();
         }
         self.compose_scroll.set_offset(gpui::Point::default());
         cx.notify();
@@ -120,83 +115,19 @@ impl AppShell {
         let entry = self.workspace.compose_entry_mut(view);
         let state = &mut entry.state;
         let primary = ks.modifiers.control || ks.modifiers.platform;
-        let extend = ks.modifiers.shift;
-        if primary && ks.key == "a" {
-            state.clear_composition();
-            state.select_all();
-            cx.notify();
-            cx.stop_propagation();
-            return;
-        }
-        if primary && matches!(ks.key.as_str(), "c" | "x") {
-            if let Some(text) = state.selected_text() {
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-                if ks.key == "x" {
-                    state.clear_composition();
-                    state.replace_selection("");
-                }
-            }
-            cx.notify();
-            cx.stop_propagation();
-            return;
-        }
-        if primary && ks.key == "v" {
-            if let Some(pasted) = cx
-                .read_from_clipboard()
+        let paste_text = if primary && ks.key == "v" {
+            cx.read_from_clipboard()
                 .and_then(|item| item.text().map(|s| s.to_string()))
-            {
-                state.clear_composition();
-                state.replace_selection(&pasted);
-            }
+        } else {
+            None
+        };
+        let result = handle_text_editing_key(state, ks, paste_text.as_deref());
+        if let Some(text) = result.copy_text {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+        if result.handled {
             cx.notify();
             cx.stop_propagation();
-            return;
-        }
-        match ks.key.as_str() {
-            "backspace" => {
-                state.clear_composition();
-                state.backspace();
-                cx.notify();
-                cx.stop_propagation();
-            }
-            "delete" => {
-                state.clear_composition();
-                state.delete();
-                cx.notify();
-                cx.stop_propagation();
-            }
-            "left" => {
-                state.clear_composition();
-                state.move_horizontal(-1, extend);
-                cx.notify();
-                cx.stop_propagation();
-            }
-            "right" => {
-                state.clear_composition();
-                state.move_horizontal(1, extend);
-                cx.notify();
-                cx.stop_propagation();
-            }
-            "home" => {
-                state.clear_composition();
-                state.move_to_boundary(false, extend);
-                cx.notify();
-                cx.stop_propagation();
-            }
-            "end" => {
-                state.clear_composition();
-                state.move_to_boundary(true, extend);
-                cx.notify();
-                cx.stop_propagation();
-            }
-            _ => {
-                if let Some(ch) = printable_char(ks) {
-                    state.clear_composition();
-                    state.replace_selection(&ch.to_string());
-                    cx.notify();
-                    cx.stop_propagation();
-                }
-            }
         }
     }
 }

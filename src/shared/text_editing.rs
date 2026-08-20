@@ -9,6 +9,133 @@
 //! `TextEditingState` 统一了各编辑器共享的字段集合（value/cursor/anchor/IME
 //! 标记），配合本模块的四个字符边界函数，消除各 feature 之间重复的边界实现。
 
+use gpui::Keystroke;
+
+use crossh_ui::widgets::printable_char;
+
+/// 统一按键分发的结果：是否已消费该按键，以及 `ctrl/cmd+c/x` 时需要写入剪贴板的文本。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextEditingKeyResult {
+    pub handled: bool,
+    pub copy_text: Option<String>,
+}
+
+/// 将 `TextEditingState` 的通用编辑键（`backspace/delete/left/right/home/end`、
+/// `ctrl/cmd+a/c/x/v` 与可打印字符）收敛到单一分发器。
+///
+/// 调用方负责剪贴板 I/O：`clipboard_text` 传入粘贴内容（`ctrl/cmd+v` 时从 `cx` 读取），
+/// 返回的 `copy_text` 若为 `Some` 则由调用方写入剪贴板。
+/// 所有会改变文本/光标的分支内部已调用 `clear_composition()`，调用方无需重复。
+/// 未匹配的按键返回 `handled: false`。
+pub fn handle_text_editing_key(
+    state: &mut TextEditingState,
+    ks: &Keystroke,
+    clipboard_text: Option<&str>,
+) -> TextEditingKeyResult {
+    let primary = ks.modifiers.control || ks.modifiers.platform;
+    let extend = ks.modifiers.shift;
+    if primary && ks.key == "a" {
+        state.clear_composition();
+        state.select_all();
+        return TextEditingKeyResult {
+            handled: true,
+            copy_text: None,
+        };
+    }
+    if primary && matches!(ks.key.as_str(), "c" | "x") {
+        if let Some(text) = state.selected_text() {
+            let copy = text.clone();
+            if ks.key == "x" {
+                state.clear_composition();
+                state.replace_selection("");
+            }
+            return TextEditingKeyResult {
+                handled: true,
+                copy_text: Some(copy),
+            };
+        }
+        return TextEditingKeyResult {
+            handled: true,
+            copy_text: None,
+        };
+    }
+    if primary && ks.key == "v" {
+        if let Some(pasted) = clipboard_text {
+            state.clear_composition();
+            state.replace_selection(pasted);
+        }
+        return TextEditingKeyResult {
+            handled: true,
+            copy_text: None,
+        };
+    }
+    match ks.key.as_str() {
+        "backspace" => {
+            state.clear_composition();
+            state.backspace();
+            TextEditingKeyResult {
+                handled: true,
+                copy_text: None,
+            }
+        }
+        "delete" => {
+            state.clear_composition();
+            state.delete();
+            TextEditingKeyResult {
+                handled: true,
+                copy_text: None,
+            }
+        }
+        "left" => {
+            state.clear_composition();
+            state.move_horizontal(-1, extend);
+            TextEditingKeyResult {
+                handled: true,
+                copy_text: None,
+            }
+        }
+        "right" => {
+            state.clear_composition();
+            state.move_horizontal(1, extend);
+            TextEditingKeyResult {
+                handled: true,
+                copy_text: None,
+            }
+        }
+        "home" => {
+            state.clear_composition();
+            state.move_to_boundary(false, extend);
+            TextEditingKeyResult {
+                handled: true,
+                copy_text: None,
+            }
+        }
+        "end" => {
+            state.clear_composition();
+            state.move_to_boundary(true, extend);
+            TextEditingKeyResult {
+                handled: true,
+                copy_text: None,
+            }
+        }
+        _ => {
+            if let Some(ch) = printable_char(ks) {
+                state.clear_composition();
+                state.replace_selection(&ch.to_string());
+                TextEditingKeyResult {
+                    handled: true,
+                    copy_text: None,
+                }
+            } else {
+                TextEditingKeyResult {
+                    handled: false,
+                    copy_text: None,
+                }
+            }
+        }
+    }
+}
+
 /// 文本编辑的纯状态：文本内容、光标、选区锚点与 IME 组合状态。
 ///
 /// `value` 为 UTF-8 文本，`cursor`/`anchor`/`ime_replacement` 均为字节索引，
@@ -39,7 +166,6 @@ impl TextEditingState {
     /// 清空文本与全部编辑状态（含 IME 组合），光标回到 0。
     ///
     /// 供 CommitEditor / 设置输入框作为“提交后重置”入口。
-    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.value.clear();
         self.cursor = 0;
@@ -412,5 +538,128 @@ mod tests {
         assert_eq!(editor.value, "ab");
         assert_eq!(editor.cursor, 1);
         assert_eq!(editor.anchor, None);
+    }
+
+    fn keystroke(
+        key: &str,
+        control: bool,
+        platform: bool,
+        shift: bool,
+        key_char: Option<&str>,
+    ) -> gpui::Keystroke {
+        gpui::Keystroke {
+            key: key.to_string(),
+            key_char: key_char.map(|s| s.to_string()),
+            modifiers: gpui::Modifiers {
+                control,
+                platform,
+                shift,
+                alt: false,
+                function: false,
+            },
+        }
+    }
+
+    #[test]
+    fn handle_text_editing_key_covers_select_all_copy_cut_paste_and_navigation() {
+        let mut state = TextEditingState::new("hello");
+        state.cursor = 2;
+        let result =
+            handle_text_editing_key(&mut state, &keystroke("a", true, false, false, None), None);
+        assert!(result.handled);
+        assert_eq!(state.selection(), Some((0, 5)));
+        assert_eq!(result.copy_text, None);
+
+        let result =
+            handle_text_editing_key(&mut state, &keystroke("c", true, false, false, None), None);
+        assert!(result.handled);
+        assert_eq!(result.copy_text.as_deref(), Some("hello"));
+        assert_eq!(state.value, "hello");
+
+        let result =
+            handle_text_editing_key(&mut state, &keystroke("x", true, false, false, None), None);
+        assert!(result.handled);
+        assert_eq!(result.copy_text.as_deref(), Some("hello"));
+        assert_eq!(state.value, "");
+        assert_eq!(state.cursor, 0);
+
+        state.value = "abc".to_string();
+        state.cursor = 3;
+        let result = handle_text_editing_key(
+            &mut state,
+            &keystroke("v", true, false, false, None),
+            Some("XYZ"),
+        );
+        assert!(result.handled);
+        assert_eq!(state.value, "abcXYZ");
+
+        state.cursor = state.value.len();
+        let result = handle_text_editing_key(
+            &mut state,
+            &keystroke("backspace", false, false, false, None),
+            None,
+        );
+        assert!(result.handled);
+        assert_eq!(state.value, "abcXY");
+
+        let result = handle_text_editing_key(
+            &mut state,
+            &keystroke("left", false, false, false, None),
+            None,
+        );
+        assert!(result.handled);
+        assert_eq!(state.cursor, "abcX".len());
+
+        let result = handle_text_editing_key(
+            &mut state,
+            &keystroke("home", false, false, false, None),
+            None,
+        );
+        assert!(result.handled);
+        assert_eq!(state.cursor, 0);
+
+        let result = handle_text_editing_key(
+            &mut state,
+            &keystroke("a", false, false, false, Some("a")),
+            None,
+        );
+        assert!(result.handled);
+        assert_eq!(state.value, "aabcXY");
+        assert_eq!(state.cursor, 1);
+
+        state.ime_marked_text = "__".to_string();
+        state.ime_replacement = Some((0, 1));
+        let result = handle_text_editing_key(
+            &mut state,
+            &keystroke("end", false, false, false, None),
+            None,
+        );
+        assert!(result.handled);
+        assert!(state.ime_marked_text.is_empty());
+        assert_eq!(state.ime_replacement, None);
+        assert_eq!(state.cursor, state.value.len());
+    }
+
+    #[test]
+    fn handle_text_editing_key_returns_unhandled_for_unknown_keys() {
+        let mut state = TextEditingState::new("hi");
+        let result = handle_text_editing_key(
+            &mut state,
+            &keystroke("f1", false, false, false, None),
+            None,
+        );
+        assert!(!result.handled);
+        assert_eq!(result.copy_text, None);
+        assert_eq!(state.value, "hi");
+    }
+
+    #[test]
+    fn handle_text_editing_key_paste_without_clipboard_still_handled() {
+        let mut state = TextEditingState::new("hi");
+        let before = state.clone();
+        let result =
+            handle_text_editing_key(&mut state, &keystroke("v", true, false, false, None), None);
+        assert!(result.handled);
+        assert_eq!(state, before);
     }
 }

@@ -2,11 +2,9 @@
 //! 打开/提交/取消与统一键盘处理。渲染位于 `view.rs`（两者互斥，
 //! 键盘入口合并为一个 handler，避免重复的编辑键分支）。
 
-use gpui::{ClipboardEntry, Context, KeyDownEvent, Window};
+use gpui::{ClipboardEntry, ClipboardItem, Context, KeyDownEvent, Window};
 
-use crossh_ui::widgets::printable_char;
-
-use crate::shared::text_editing::TextEditingState;
+use crate::shared::text_editing::{TextEditingState, handle_text_editing_key};
 
 use super::command_editor::QuickCommandEditor;
 use super::*;
@@ -49,118 +47,52 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         let ks = &ev.keystroke;
-        let primary = ks.modifiers.control || ks.modifiers.platform;
-        let extend = ks.modifiers.shift;
-
-        if primary && ks.key == "a" {
-            if let Some(editor) = self.active_editor_state() {
-                editor.clear_composition();
-                editor.select_all();
-            }
-            cx.notify();
-            return;
-        }
-
-        if primary && matches!(ks.key.as_str(), "c" | "x") {
-            if let Some(editor) = self.active_editor_state()
-                && let Some(text) = editor.selected_text()
-            {
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-                if ks.key == "x" {
-                    editor.clear_composition();
-                    editor.replace_selection("");
-                }
-            }
-            cx.notify();
-            return;
-        }
-
-        if primary && ks.key == "v" {
-            let pasted = cx.read_from_clipboard().and_then(|item| {
-                item.into_entries().find_map(|entry| match entry {
-                    ClipboardEntry::String(value) => Some(value.text),
-                    _ => None,
-                })
-            });
-            if let Some(editor) = self.active_editor_state()
-                && let Some(text) = pasted
-            {
-                editor.clear_composition();
-                editor.replace_selection(&text);
-            }
-            cx.notify();
-            return;
-        }
-
+        // enter/escape 为模态提交/取消语义，优先于通用编辑分发。
         match ks.key.as_str() {
             "enter" | "return" => {
                 if self.default_command_editor.is_some() {
                     self.submit_default_command(cx);
                 } else if self.rename_editor.is_some() {
                     self.submit_rename_local_session(cx);
-                } else {
+                } else if self.quick_command_editor.is_some() {
                     self.submit_quick_command_editor(cx);
+                } else {
+                    return;
                 }
+                return;
             }
             "escape" => {
                 if self.default_command_editor.is_some() {
                     self.cancel_default_command(cx);
                 } else if self.rename_editor.is_some() {
                     self.cancel_rename_local_session(cx);
-                } else {
+                } else if self.quick_command_editor.is_some() {
                     self.cancel_quick_command_editor(cx);
+                } else {
+                    return;
                 }
+                return;
             }
-            "backspace" => {
-                if let Some(editor) = self.active_editor_state() {
-                    editor.clear_composition();
-                    editor.backspace();
-                }
+            _ => {}
+        }
+        let primary = ks.modifiers.control || ks.modifiers.platform;
+        let paste_text = if primary && ks.key == "v" {
+            cx.read_from_clipboard().and_then(|item| {
+                item.into_entries().find_map(|entry| match entry {
+                    ClipboardEntry::String(value) => Some(value.text),
+                    _ => None,
+                })
+            })
+        } else {
+            None
+        };
+        if let Some(editor) = self.active_editor_state() {
+            let result = handle_text_editing_key(editor, ks, paste_text.as_deref());
+            if let Some(text) = result.copy_text {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+            }
+            if result.handled {
                 cx.notify();
-            }
-            "delete" => {
-                if let Some(editor) = self.active_editor_state() {
-                    editor.clear_composition();
-                    editor.delete();
-                }
-                cx.notify();
-            }
-            "left" => {
-                if let Some(editor) = self.active_editor_state() {
-                    editor.clear_composition();
-                    editor.move_horizontal(-1, extend);
-                }
-                cx.notify();
-            }
-            "right" => {
-                if let Some(editor) = self.active_editor_state() {
-                    editor.clear_composition();
-                    editor.move_horizontal(1, extend);
-                }
-                cx.notify();
-            }
-            "home" => {
-                if let Some(editor) = self.active_editor_state() {
-                    editor.clear_composition();
-                    editor.move_to_boundary(false, extend);
-                }
-                cx.notify();
-            }
-            "end" => {
-                if let Some(editor) = self.active_editor_state() {
-                    editor.clear_composition();
-                    editor.move_to_boundary(true, extend);
-                }
-                cx.notify();
-            }
-            _ => {
-                if let Some(ch) = printable_char(ks)
-                    && let Some(editor) = self.active_editor_state()
-                {
-                    editor.clear_composition();
-                    editor.replace_selection(&ch.to_string());
-                    cx.notify();
-                }
             }
         }
     }
