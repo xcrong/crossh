@@ -7,6 +7,7 @@
 
 mod config;
 mod policy;
+mod presets;
 mod providers;
 mod tools;
 
@@ -25,6 +26,9 @@ pub use crossh_ai_sdk::{
 pub use policy::{
     ALL_PROTOCOLS, ALL_THINKING_LEVELS, AgentModel, AgentModelRef, AgentProvider,
     AgentReviewResult, AgentSettings, ResolvedModel, review_tool,
+};
+pub use presets::{
+    OPENCODE_GO_ID, OPENCODE_GO_OPENAI_ID, OPENCODE_GO_RESPONSES_ID, builtin_presets,
 };
 pub use providers::complete_stream_with_options;
 pub use tools::{AgentToolDefinition, builtin_tools, execute_tool_with_cancel};

@@ -25,20 +25,22 @@ struct AgentSettingsFile {
 /// GUI 调整设置后无需同步，两边读到同一份文件。
 pub fn load() -> AgentSettings {
     let Some(path) = settings_path() else {
-        return AgentSettings::default();
+        return AgentSettings::default().with_builtin_presets();
     };
     match fs::read_to_string(path) {
         Ok(contents) => match toml::from_str::<AgentSettingsFile>(&contents) {
-            Ok(file) => file.agent,
+            Ok(file) => file.agent.with_builtin_presets(),
             Err(error) => {
                 log::warn!("failed to parse agent settings: {error}");
-                AgentSettings::default()
+                AgentSettings::default().with_builtin_presets()
             }
         },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => AgentSettings::default(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            AgentSettings::default().with_builtin_presets()
+        }
         Err(error) => {
             log::warn!("failed to read agent settings: {error}");
-            AgentSettings::default()
+            AgentSettings::default().with_builtin_presets()
         }
     }
 }

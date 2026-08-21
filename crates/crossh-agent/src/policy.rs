@@ -110,6 +110,20 @@ impl Default for AgentSettings {
 }
 
 impl AgentSettings {
+    /// 将内置预设（目前为 `opencode-go` 三协议）合并到当前设置中。
+    /// 已存在同 `id` 的用户配置优先，预设不会覆盖。
+    pub fn with_builtin_presets(mut self) -> Self {
+        let presets = crate::presets::builtin_presets();
+        let existing: std::collections::BTreeSet<String> =
+            self.providers.iter().map(|p| p.id.clone()).collect();
+        for preset in presets {
+            if !existing.contains(&preset.id) {
+                self.providers.push(preset);
+            }
+        }
+        self
+    }
+
     pub fn normalized(mut self) -> Self {
         self.active_model.provider = self.active_model.provider.trim().into();
         self.active_model.model = self.active_model.model.trim().into();

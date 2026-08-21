@@ -67,25 +67,27 @@ impl From<&SettingsSnapshot> for SettingsFile {
 }
 
 pub(crate) fn load() -> SettingsSnapshot {
-    let Some(path) = settings_path() else {
-        return SettingsFile::default().into();
-    };
-    match fs::read_to_string(path) {
-        Ok(contents) => match toml::from_str::<SettingsFile>(&contents) {
-            Ok(settings) => settings.into(),
+    let mut snapshot: SettingsSnapshot = match settings_path() {
+        None => SettingsFile::default().into(),
+        Some(path) => match fs::read_to_string(&path) {
+            Ok(contents) => match toml::from_str::<SettingsFile>(&contents) {
+                Ok(settings) => settings.into(),
+                Err(error) => {
+                    log::warn!("failed to parse settings: {error}");
+                    SettingsFile::default().into()
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                SettingsFile::default().into()
+            }
             Err(error) => {
-                log::warn!("failed to parse settings: {error}");
+                log::warn!("failed to read settings: {error}");
                 SettingsFile::default().into()
             }
         },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            SettingsFile::default().into()
-        }
-        Err(error) => {
-            log::warn!("failed to read settings: {error}");
-            SettingsFile::default().into()
-        }
-    }
+    };
+    snapshot.agent = snapshot.agent.with_builtin_presets();
+    snapshot
 }
 
 pub(crate) fn save(snapshot: &SettingsSnapshot) -> std::io::Result<()> {
