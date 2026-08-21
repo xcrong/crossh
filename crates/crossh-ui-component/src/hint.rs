@@ -49,6 +49,13 @@ impl Hint {
         self
     }
 
+    /// 列表空态统一样式：`px(12)` + `py(16)`，收敛 15+ 处重复的 `padding_x/y` 样板。
+    pub fn padded(mut self) -> Self {
+        self.padding_x = px(12.);
+        self.padding_y = px(16.);
+        self
+    }
+
     /// 在父容器中水平垂直居中。
     ///
     /// 包一层 `flex_1().flex().items_center().justify_center()` 容器,
@@ -111,5 +118,12 @@ mod tests {
         assert_eq!(hint.padding_y, px(16.));
         assert_eq!(hint.radius, Some(px(4.)));
         assert!(hint.centered);
+    }
+
+    #[test]
+    fn hint_padded_sets_unified_empty_padding() {
+        let hint = Hint::new("empty").padded();
+        assert_eq!(hint.padding_x, px(12.));
+        assert_eq!(hint.padding_y, px(16.));
     }
 }

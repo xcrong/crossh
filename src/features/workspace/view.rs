@@ -605,40 +605,28 @@ fn render_git_status(
         }));
 
     if status.ahead > 0 {
-        git = git.child(status_metric(format!("↑{}", status.ahead), BadgeTone::Info));
+        git = git.child(StatusMetric::new(format!("↑{}", status.ahead)).tone(BadgeTone::Info));
     }
     if status.behind > 0 {
-        git = git.child(status_metric(
-            format!("↓{}", status.behind),
-            BadgeTone::Info,
-        ));
+        git = git.child(StatusMetric::new(format!("↓{}", status.behind)).tone(BadgeTone::Info));
     }
     if status.staged > 0 {
-        git = git.child(status_metric(
-            format!("+{}", status.staged),
-            BadgeTone::Accent,
-        ));
+        git = git.child(StatusMetric::new(format!("+{}", status.staged)).tone(BadgeTone::Accent));
     }
     if status.modified > 0 {
-        git = git.child(status_metric(
-            format!("~{}", status.modified),
-            BadgeTone::Warning,
-        ));
+        git =
+            git.child(StatusMetric::new(format!("~{}", status.modified)).tone(BadgeTone::Warning));
     }
     if status.untracked > 0 {
-        git = git.child(status_metric(
-            format!("?{}", status.untracked),
-            BadgeTone::Neutral,
-        ));
+        git =
+            git.child(StatusMetric::new(format!("?{}", status.untracked)).tone(BadgeTone::Neutral));
     }
     if status.conflicts > 0 {
-        git = git.child(status_metric(
-            format!("!{}", status.conflicts),
-            BadgeTone::Danger,
-        ));
+        git =
+            git.child(StatusMetric::new(format!("!{}", status.conflicts)).tone(BadgeTone::Danger));
     }
     if status.is_clean() {
-        git = git.child(status_metric(i18n::text("git.clean"), BadgeTone::Success));
+        git = git.child(StatusMetric::new(i18n::text("git.clean")).tone(BadgeTone::Success));
     }
     if status.behind > 0 || status.ahead > 0 || sync.is_some() {
         let mut actions = div().flex().items_center().gap_1();
@@ -1355,10 +1343,6 @@ pub fn render_default_command_editor(
         AppShell::submit_default_command,
         AppShell::cancel_default_command,
     )
-}
-
-fn status_metric(text: impl Into<SharedString>, tone: BadgeTone) -> AnyElement {
-    StatusMetric::new(text).tone(tone).into_any_element()
 }
 
 /// 把会话按项目归属目录重建目录视图：同一项目的会话合并，保留上一次的活动会话。

@@ -9,8 +9,8 @@ use crate::shared::i18n;
 use crossh_core::git_stash::StashSummary;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
-    Banner, BannerTone, Button, ButtonSize, ButtonVariant, ListState, list_pane, list_state_body,
-    pane_operation_error, selectable_row,
+    Banner, BannerTone, Button, ButtonSize, ButtonVariant, ListState, PaneToolbar, list_pane,
+    list_state_body, pane_operation_error, selectable_row,
 };
 
 use super::session::OperationState;
@@ -89,25 +89,7 @@ impl GitWindow {
     }
 
     fn render_stash_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .h(px(38.))
-            .flex_shrink_0()
-            .px_3()
-            .flex()
-            .items_center()
-            .gap_2()
-            .bg(theme::surface())
-            .border_b_1()
-            .border_color(theme::border())
-            .child(icons::icon(icons::IconName::Save, 14.).text_color(theme::accent()))
-            .child(
-                div()
-                    .text_xs()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::text())
-                    .child(SharedString::from(i18n::text("git.stashes"))),
-            )
-            .child(div().flex_1())
+        PaneToolbar::new(i18n::text("git.stashes"), icons::IconName::Save)
             .child(
                 Button::new("git-stash-save")
                     .size(ButtonSize::Small)

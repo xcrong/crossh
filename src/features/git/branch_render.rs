@@ -10,8 +10,8 @@ use crate::shared::i18n;
 use crossh_core::git_branch::BranchSummary;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
-    Badge, BadgeTone, Button, ButtonSize, ButtonVariant, ListState, list_pane, list_state_body,
-    pane_operation_error, selectable_row,
+    Badge, BadgeTone, Button, ButtonSize, ButtonVariant, ListState, PaneToolbar, list_pane,
+    list_state_body, pane_operation_error, selectable_row,
 };
 
 use super::branch::BranchListState;
@@ -86,25 +86,7 @@ impl GitWindow {
     }
 
     fn render_branch_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .h(px(38.))
-            .flex_shrink_0()
-            .px_3()
-            .flex()
-            .items_center()
-            .gap_2()
-            .bg(theme::surface())
-            .border_b_1()
-            .border_color(theme::border())
-            .child(icons::icon(icons::IconName::GitBranch, 14.).text_color(theme::accent()))
-            .child(
-                div()
-                    .text_xs()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::text())
-                    .child(SharedString::from(i18n::text("git.branches"))),
-            )
-            .child(div().flex_1())
+        PaneToolbar::new(i18n::text("git.branches"), icons::IconName::GitBranch)
             .child(
                 Button::new("git-branches-refresh")
                     .size(ButtonSize::Icon(px(26.)))
@@ -171,10 +153,10 @@ impl GitWindow {
                     )
                 })
                 .when(branch.ahead > 0, |line| {
-                    line.child(branch_status_badge(format!("↑{}", branch.ahead)))
+                    line.child(Badge::new(format!("↑{}", branch.ahead)).tone(BadgeTone::Info))
                 })
                 .when(branch.behind > 0, |line| {
-                    line.child(branch_status_badge(format!("↓{}", branch.behind)))
+                    line.child(Badge::new(format!("↓{}", branch.behind)).tone(BadgeTone::Info))
                 }),
         )
         .child(
@@ -231,8 +213,4 @@ impl GitWindow {
         }
         row.into_any_element()
     }
-}
-
-fn branch_status_badge(text: String) -> AnyElement {
-    Badge::new(text).tone(BadgeTone::Info).into_any_element()
 }

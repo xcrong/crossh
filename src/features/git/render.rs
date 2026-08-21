@@ -18,7 +18,7 @@ use crossh_ui::{icons, theme};
 use crossh_ui_component::{
     Badge, BadgeTone, Banner, BannerLayout, BannerTone, Button, ButtonSize, ButtonVariant, Hint,
     ListState, SplitResizer, StatusBar, StatusMetric, TabItem, TabStrip, list_pane,
-    list_state_body, selectable_row,
+    list_state_body, pane_toolbar, selectable_row,
 };
 
 use super::editor::CommitEditor;
@@ -252,46 +252,36 @@ impl GitWindow {
 
         if let Some(status) = &self.session.status {
             if status.ahead > 0 {
-                branch = branch.child(git_status_metric(
-                    format!("↑{}", status.ahead),
-                    BadgeTone::Info,
-                ));
+                branch = branch
+                    .child(StatusMetric::new(format!("↑{}", status.ahead)).tone(BadgeTone::Info));
             }
             if status.behind > 0 {
-                branch = branch.child(git_status_metric(
-                    format!("↓{}", status.behind),
-                    BadgeTone::Info,
-                ));
+                branch = branch
+                    .child(StatusMetric::new(format!("↓{}", status.behind)).tone(BadgeTone::Info));
             }
             if status.staged > 0 {
-                branch = branch.child(git_status_metric(
-                    format!("+{}", status.staged),
-                    BadgeTone::Accent,
-                ));
+                branch = branch.child(
+                    StatusMetric::new(format!("+{}", status.staged)).tone(BadgeTone::Accent),
+                );
             }
             if status.modified > 0 {
-                branch = branch.child(git_status_metric(
-                    format!("~{}", status.modified),
-                    BadgeTone::Warning,
-                ));
+                branch = branch.child(
+                    StatusMetric::new(format!("~{}", status.modified)).tone(BadgeTone::Warning),
+                );
             }
             if status.untracked > 0 {
-                branch = branch.child(git_status_metric(
-                    format!("?{}", status.untracked),
-                    BadgeTone::Neutral,
-                ));
+                branch = branch.child(
+                    StatusMetric::new(format!("?{}", status.untracked)).tone(BadgeTone::Neutral),
+                );
             }
             if status.conflicts > 0 {
-                branch = branch.child(git_status_metric(
-                    format!("!{}", status.conflicts),
-                    BadgeTone::Danger,
-                ));
+                branch = branch.child(
+                    StatusMetric::new(format!("!{}", status.conflicts)).tone(BadgeTone::Danger),
+                );
             }
             if status.is_clean() {
-                branch = branch.child(git_status_metric(
-                    i18n::text("git.clean"),
-                    BadgeTone::Success,
-                ));
+                branch = branch
+                    .child(StatusMetric::new(i18n::text("git.clean")).tone(BadgeTone::Success));
             }
         }
 
@@ -780,30 +770,12 @@ impl GitWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(entry) = self.selected_entry() else {
-            return div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    Hint::new(i18n::text("git.no_selection"))
-                        .padding_x(px(16.))
-                        .padding_y(px(16.)),
-                )
+            return Hint::new(i18n::text("git.no_selection"))
+                .centered()
                 .into_any_element();
         };
         let key = ChangeKey::from(entry);
-        let header = div()
-            .h(px(38.))
-            .flex_shrink_0()
-            .px_3()
-            .flex()
-            .items_center()
-            .gap_2()
-            .bg(theme::surface())
-            .border_b_1()
-            .border_color(theme::border())
+        let header = pane_toolbar()
             .when(compact, |header| {
                 header.child(
                     Button::new("git-back-to-changes")
@@ -1303,10 +1275,6 @@ fn status_glyph(status: ChangeStatus) -> AnyElement {
         .text_color(status_color(status))
         .child(SharedString::from(status.glyph()))
         .into_any_element()
-}
-
-fn git_status_metric(text: impl Into<SharedString>, tone: BadgeTone) -> AnyElement {
-    StatusMetric::new(text).tone(tone).into_any_element()
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-use gpui::{AnyElement, IntoElement, SharedString, px};
+use gpui::{AnyElement, IntoElement, SharedString};
 
 use crate::hint::Hint;
 
@@ -49,10 +49,7 @@ pub fn list_empty(state: ListState) -> AnyElement {
         ListState::Empty(message) => message,
         ListState::Ready => panic!("list_empty called with Ready state"),
     };
-    Hint::new(text)
-        .padding_x(px(12.))
-        .padding_y(px(16.))
-        .into_any_element()
+    Hint::new(text).padded().into_any_element()
 }
 
 #[cfg(test)]

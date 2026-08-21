@@ -12,7 +12,7 @@ use crossh_core::git_history_graph::HistoryGraphRow;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
     Badge, BadgeTone, Button, ButtonSize, ButtonVariant, Hint, ListState, TextInput, list_pane,
-    list_state_body, scroll_y, selectable_row,
+    list_state_body, pane_toolbar, scroll_y, selectable_row,
 };
 
 use super::history::{HistoryDetailState, HistoryListState, HistoryRow};
@@ -127,17 +127,8 @@ impl GitWindow {
     fn render_history_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
         let search_focus = self.history_search_focus.clone();
         let search_focus_for_click = search_focus.clone();
-        div()
+        pane_toolbar()
             .id("git-history-toolbar")
-            .h(px(40.))
-            .flex_shrink_0()
-            .px_2()
-            .flex()
-            .items_center()
-            .gap_2()
-            .bg(theme::surface())
-            .border_b_1()
-            .border_color(theme::border())
             .on_click(move |_event, window, cx| {
                 window.focus(&search_focus_for_click, cx);
                 cx.stop_propagation();
@@ -367,8 +358,7 @@ impl GitWindow {
         let file_count = files.len();
         let file_list = if files.is_empty() {
             Hint::new(i18n::text("git.no_files_changed"))
-                .padding_x(px(12.))
-                .padding_y(px(12.))
+                .padded()
                 .into_any_element()
         } else {
             uniform_list(

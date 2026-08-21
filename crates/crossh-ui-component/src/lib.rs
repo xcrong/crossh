@@ -16,6 +16,7 @@ pub mod list_pane;
 pub mod list_state;
 pub mod modal;
 pub mod modal_field;
+pub mod pane_toolbar;
 pub mod panel;
 pub mod select;
 pub mod selectable_row;
@@ -46,6 +47,7 @@ pub use list_pane::{ListPane, PaneFrame, list_pane, pane_operation_error};
 pub use list_state::{ListState, list_empty, list_state_body};
 pub use modal::ModalDialog;
 pub use modal_field::{ModalDialogActions, ModalField, ModalTextInput, SharedTextState};
+pub use pane_toolbar::{PaneToolbar, pane_toolbar};
 pub use panel::{
     PanelSide, RAIL_AVATAR_GAP, RAIL_AVATAR_PITCH, RAIL_AVATAR_SIZE, Rail, SidePanel,
     available_main_width as panel_available_main_width, clamp_panel_width, rail_avatar,
