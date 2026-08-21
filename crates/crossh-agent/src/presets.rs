@@ -24,6 +24,13 @@ pub const OPENCODE_GO_ID: &str = "opencode-go";
 pub const OPENCODE_GO_OPENAI_ID: &str = "opencode-go-openai";
 pub const OPENCODE_GO_RESPONSES_ID: &str = "opencode-go-responses";
 
+pub fn is_builtin_preset_id(id: &str) -> bool {
+    matches!(
+        id,
+        OPENCODE_GO_ID | OPENCODE_GO_OPENAI_ID | OPENCODE_GO_RESPONSES_ID
+    )
+}
+
 /// 返回所有内置预设。调用方负责去重（已存在同 `id` 的用户配置优先）。
 pub fn builtin_presets() -> Vec<AgentProvider> {
     let (anthropic, openai_chat, openai_responses) = load_dynamic_or_baked();
@@ -59,9 +66,15 @@ pub fn builtin_presets() -> Vec<AgentProvider> {
 }
 
 fn load_dynamic_or_baked() -> (Vec<AgentModel>, Vec<AgentModel>, Vec<AgentModel>) {
-    let baked_anthropic = anthropic_models();
-    let baked_chat = openai_chat_models();
-    let baked_responses = openai_responses_models();
+    let baked_anthropic = anthropic_models().into_iter().map(sanitize_model).collect();
+    let baked_chat = openai_chat_models()
+        .into_iter()
+        .map(sanitize_model)
+        .collect();
+    let baked_responses = openai_responses_models()
+        .into_iter()
+        .map(sanitize_model)
+        .collect();
     let Some(dynamic) = load_pi_dynamic_models() else {
         return (baked_anthropic, baked_chat, baked_responses);
     };
@@ -75,6 +88,22 @@ struct DynamicGroups {
     anthropic: Vec<AgentModel>,
     openai_chat: Vec<AgentModel>,
     openai_responses: Vec<AgentModel>,
+}
+
+fn sanitize_model(mut model: AgentModel) -> AgentModel {
+    // 与 AgentSettings::validate 保持一致：max < context 且至少留 1024 输入 token
+    if model.context_window == 0 {
+        model.context_window = 128_000;
+    }
+    if model.max_tokens == 0 {
+        model.max_tokens = 32_000;
+    }
+    if model.max_tokens >= model.context_window
+        || model.context_window.saturating_sub(model.max_tokens) < 1_024
+    {
+        model.max_tokens = model.context_window.saturating_sub(1_024).max(1);
+    }
+    model
 }
 
 fn load_pi_dynamic_models() -> Option<DynamicGroups> {
@@ -102,13 +131,13 @@ fn load_pi_dynamic_models() -> Option<DynamicGroups> {
             .and_then(JsonValue::as_u64)
             .unwrap_or(32_000) as u32;
         let api = model.get("api")?.as_str().unwrap_or("");
-        let agent_model = AgentModel {
+        let agent_model = sanitize_model(AgentModel {
             id: id.into(),
             name: name.into(),
             reasoning,
             context_window: context_window.max(1),
             max_tokens: max_tokens.max(1),
-        };
+        });
         match api {
             "anthropic-messages" => anthropic.push(agent_model),
             "openai-completions" => openai_chat.push(agent_model),
@@ -219,7 +248,7 @@ fn openai_chat_models() -> Vec<AgentModel> {
             name: "Kimi K2.7 Code".into(),
             reasoning: true,
             context_window: 262_144,
-            max_tokens: 262_144,
+            max_tokens: 261_120,
         },
         AgentModel {
             id: "kimi-k3".into(),
@@ -273,7 +302,7 @@ fn openai_responses_models() -> Vec<AgentModel> {
             name: "Grok 4.5".into(),
             reasoning: true,
             context_window: 500_000,
-            max_tokens: 500_000,
+            max_tokens: 498_976,
         },
     ]
 }

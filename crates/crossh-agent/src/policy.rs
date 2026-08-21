@@ -111,7 +111,8 @@ impl Default for AgentSettings {
 
 impl AgentSettings {
     /// 将内置预设（目前为 `opencode-go` 三协议）合并到当前设置中。
-    /// 已存在同 `id` 的用户配置优先，预设不会覆盖。
+    /// 已存在同 `id` 的用户配置优先，预设不会覆盖；已存在的预设供应商模型
+    /// 会按 `validate` 规则自动修正 `max_tokens` 以避免旧缓存导致启动失败。
     pub fn with_builtin_presets(mut self) -> Self {
         let presets = crate::presets::builtin_presets();
         let existing: std::collections::BTreeSet<String> =
@@ -119,6 +120,19 @@ impl AgentSettings {
         for preset in presets {
             if !existing.contains(&preset.id) {
                 self.providers.push(preset);
+            }
+        }
+        // 修正旧版本已持久化的预设模型（例如 kimi-k2.7-code / grok-4.5 曾满足
+        // `max == context`，在新校验下会触发 `Maximum output tokens must be ...`）。
+        for provider in &mut self.providers {
+            if crate::presets::is_builtin_preset_id(&provider.id) {
+                for model in &mut provider.models {
+                    if model.max_tokens >= model.context_window
+                        || model.context_window.saturating_sub(model.max_tokens) < 1_024
+                    {
+                        model.max_tokens = model.context_window.saturating_sub(1_024).max(1);
+                    }
+                }
             }
         }
         self
