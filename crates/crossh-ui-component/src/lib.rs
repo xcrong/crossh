@@ -45,7 +45,7 @@ pub use layout::{h_flex, scroll_y};
 pub use list_pane::{ListPane, list_pane};
 pub use list_state::{ListState, list_empty};
 pub use modal::ModalDialog;
-pub use modal_field::{ModalField, SharedTextState};
+pub use modal_field::{ModalDialogActions, ModalField, ModalTextInput, SharedTextState};
 pub use panel::{
     PanelSide, RAIL_AVATAR_GAP, RAIL_AVATAR_PITCH, RAIL_AVATAR_SIZE, Rail, SidePanel,
     available_main_width as panel_available_main_width, clamp_panel_width, rail_avatar,

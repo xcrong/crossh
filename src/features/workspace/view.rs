@@ -1181,6 +1181,72 @@ fn render_background_task_row(task: &BackgroundTask, cx: &mut Context<AppShell>)
     row.into_any_element()
 }
 
+// 收敛点：3 个弹窗仅 6 参数不同（id / placeholder / title / icon / width / on_submit/on_cancel），
+// 其余 div 样式/选中高亮/caret/marked/ime_input_canvas 均由 ModalField 统一。
+#[allow(clippy::too_many_arguments)]
+fn render_single_line_modal(
+    focus: gpui::FocusHandle,
+    state: SharedTextState,
+    scroll: Option<gpui::ScrollHandle>,
+    _shell: &mut AppShell,
+    cx: &mut Context<AppShell>,
+    input_id: &'static str,
+    placeholder: String,
+    title: String,
+    icon: icons::IconName,
+    width: gpui::Pixels,
+    scrim_id: &'static str,
+    card_id: &'static str,
+    primary_label: String,
+    save_id: &'static str,
+    cancel_id: &'static str,
+    on_save: fn(&mut AppShell, &mut Context<AppShell>),
+    on_cancel: fn(&mut AppShell, &mut Context<AppShell>),
+) -> AnyElement {
+    let mut input = ModalField::new(input_id, focus, &state)
+        .placeholder(placeholder)
+        .entity(cx.entity())
+        .on_key_down(cx.listener(|this, e, w, cx| this.handle_modal_editor_key(e, w, cx)));
+    if let Some(handle) = scroll {
+        input = input.scrollable(handle);
+    }
+    let buttons = div()
+        .flex()
+        .flex_row()
+        .gap_2()
+        .child(
+            Button::new(save_id)
+                .size(ButtonSize::Medium)
+                .variant(ButtonVariant::Primary)
+                .icon(icons::icon(icons::IconName::Check, 13.).text_color(theme::canvas()))
+                .label(primary_label)
+                .on_click(cx.listener(move |this, _ev, _window, cx| {
+                    on_save(this, cx);
+                })),
+        )
+        .child(
+            Button::new(cancel_id)
+                .size(ButtonSize::Medium)
+                .variant(ButtonVariant::Secondary)
+                .icon(icons::icon(icons::IconName::X, 13.).text_color(theme::muted_text()))
+                .label(i18n::text("prompt.cancel"))
+                .on_click(cx.listener(move |this, _ev, _window, cx| {
+                    on_cancel(this, cx);
+                })),
+        );
+    ModalDialog::new(title, icons::icon(icon, 16.).text_color(theme::info()))
+        .width(width)
+        .scrim_id(scrim_id)
+        .card_id(card_id)
+        .blocks_card_clicks()
+        .on_backdrop_click(cx.listener(move |this, _ev, _window, cx| {
+            on_cancel(this, cx);
+        }))
+        .child(input)
+        .actions(buttons)
+        .into_any_element()
+}
+
 pub fn render_quick_command_editor(
     shell: &mut AppShell,
     _window: &Window,
@@ -1189,8 +1255,6 @@ pub fn render_quick_command_editor(
     let Some(editor) = &shell.quick_command_editor else {
         return div().into_any_element();
     };
-    let focus = editor.focus.clone();
-    let scroll = editor.scroll.clone();
     let state = SharedTextState {
         value: editor.state.value.clone(),
         cursor: editor.state.cursor,
@@ -1198,51 +1262,25 @@ pub fn render_quick_command_editor(
         ime_marked_text: editor.state.ime_marked_text.clone(),
         ime_replacement: editor.state.ime_replacement,
     };
-    let input = ModalField::new("quick-command-editor-input", focus, &state)
-        .placeholder(i18n::text("quick_commands.command_placeholder"))
-        .scrollable(scroll)
-        .entity(cx.entity())
-        .on_key_down(cx.listener(|this, e, w, cx| this.handle_modal_editor_key(e, w, cx)));
-
-    let buttons = div()
-        .flex()
-        .flex_row()
-        .gap_2()
-        .child(
-            Button::new("quick-command-editor-save")
-                .size(ButtonSize::Medium)
-                .variant(ButtonVariant::Primary)
-                .icon(icons::icon(icons::IconName::Check, 13.).text_color(theme::canvas()))
-                .label(i18n::text("quick_commands.save"))
-                .on_click(cx.listener(|this, _ev, _window, cx| {
-                    this.submit_quick_command_editor(cx);
-                })),
-        )
-        .child(
-            Button::new("quick-command-editor-cancel")
-                .size(ButtonSize::Medium)
-                .variant(ButtonVariant::Secondary)
-                .icon(icons::icon(icons::IconName::X, 13.).text_color(theme::muted_text()))
-                .label(i18n::text("prompt.cancel"))
-                .on_click(cx.listener(|this, _ev, _window, cx| {
-                    this.cancel_quick_command_editor(cx);
-                })),
-        );
-
-    ModalDialog::new(
+    render_single_line_modal(
+        editor.focus.clone(),
+        state,
+        Some(editor.scroll.clone()),
+        shell,
+        cx,
+        "quick-command-editor-input",
+        i18n::text("quick_commands.command_placeholder"),
         i18n::text("quick_commands.edit_title"),
-        icons::icon(icons::IconName::Pencil, 16.).text_color(theme::info()),
+        icons::IconName::Pencil,
+        px(500.),
+        "quick-command-editor-scrim",
+        "quick-command-editor-card",
+        i18n::text("quick_commands.save"),
+        "quick-command-editor-save",
+        "quick-command-editor-cancel",
+        AppShell::submit_quick_command_editor,
+        AppShell::cancel_quick_command_editor,
     )
-    .width(px(500.))
-    .scrim_id("quick-command-editor-scrim")
-    .card_id("quick-command-editor-card")
-    .blocks_card_clicks()
-    .on_backdrop_click(cx.listener(|this, _ev, _window, cx| {
-        this.cancel_quick_command_editor(cx);
-    }))
-    .child(input)
-    .actions(buttons)
-    .into_any_element()
 }
 
 /// 固定标签重命名弹窗：ModalDialog + 自绘文本输入（IME 支持），
@@ -1255,7 +1293,6 @@ pub fn render_rename_editor(
     let Some(editor) = &shell.rename_editor else {
         return div().into_any_element();
     };
-    let focus = editor.focus.clone();
     let state = SharedTextState {
         value: editor.state.value.clone(),
         cursor: editor.state.cursor,
@@ -1263,50 +1300,25 @@ pub fn render_rename_editor(
         ime_marked_text: editor.state.ime_marked_text.clone(),
         ime_replacement: editor.state.ime_replacement,
     };
-    let input = ModalField::new("rename-editor-input", focus, &state)
-        .placeholder(i18n::text("rename_tab.name_placeholder"))
-        .entity(cx.entity())
-        .on_key_down(cx.listener(|this, e, w, cx| this.handle_modal_editor_key(e, w, cx)));
-
-    let buttons = div()
-        .flex()
-        .flex_row()
-        .gap_2()
-        .child(
-            Button::new("rename-editor-save")
-                .size(ButtonSize::Medium)
-                .variant(ButtonVariant::Primary)
-                .icon(icons::icon(icons::IconName::Check, 13.).text_color(theme::canvas()))
-                .label(i18n::text("rename_tab.save"))
-                .on_click(cx.listener(|this, _ev, _window, cx| {
-                    this.submit_rename_local_session(cx);
-                })),
-        )
-        .child(
-            Button::new("rename-editor-cancel")
-                .size(ButtonSize::Medium)
-                .variant(ButtonVariant::Secondary)
-                .icon(icons::icon(icons::IconName::X, 13.).text_color(theme::muted_text()))
-                .label(i18n::text("prompt.cancel"))
-                .on_click(cx.listener(|this, _ev, _window, cx| {
-                    this.cancel_rename_local_session(cx);
-                })),
-        );
-
-    ModalDialog::new(
+    render_single_line_modal(
+        editor.focus.clone(),
+        state,
+        None,
+        shell,
+        cx,
+        "rename-editor-input",
+        i18n::text("rename_tab.name_placeholder"),
         i18n::text("rename_tab.title"),
-        icons::icon(icons::IconName::Pencil, 16.).text_color(theme::info()),
+        icons::IconName::Pencil,
+        px(420.),
+        "rename-editor-scrim",
+        "rename-editor-card",
+        i18n::text("rename_tab.save"),
+        "rename-editor-save",
+        "rename-editor-cancel",
+        AppShell::submit_rename_local_session,
+        AppShell::cancel_rename_local_session,
     )
-    .width(px(420.))
-    .scrim_id("rename-editor-scrim")
-    .card_id("rename-editor-card")
-    .blocks_card_clicks()
-    .on_backdrop_click(cx.listener(|this, _ev, _window, cx| {
-        this.cancel_rename_local_session(cx);
-    }))
-    .child(input)
-    .actions(buttons)
-    .into_any_element()
 }
 
 pub fn render_default_command_editor(
@@ -1317,7 +1329,6 @@ pub fn render_default_command_editor(
     let Some(editor) = &shell.default_command_editor else {
         return div().into_any_element();
     };
-    let focus = editor.focus.clone();
     let state = SharedTextState {
         value: editor.state.value.clone(),
         cursor: editor.state.cursor,
@@ -1325,50 +1336,25 @@ pub fn render_default_command_editor(
         ime_marked_text: editor.state.ime_marked_text.clone(),
         ime_replacement: editor.state.ime_replacement,
     };
-    let input = ModalField::new("default-command-editor-input", focus, &state)
-        .placeholder(i18n::text("default_command.placeholder"))
-        .entity(cx.entity())
-        .on_key_down(cx.listener(|this, e, w, cx| this.handle_modal_editor_key(e, w, cx)));
-
-    let buttons = div()
-        .flex()
-        .flex_row()
-        .gap_2()
-        .child(
-            Button::new("default-command-editor-save")
-                .size(ButtonSize::Medium)
-                .variant(ButtonVariant::Primary)
-                .icon(icons::icon(icons::IconName::Check, 13.).text_color(theme::canvas()))
-                .label(i18n::text("default_command.save"))
-                .on_click(cx.listener(|this, _ev, _window, cx| {
-                    this.submit_default_command(cx);
-                })),
-        )
-        .child(
-            Button::new("default-command-editor-cancel")
-                .size(ButtonSize::Medium)
-                .variant(ButtonVariant::Secondary)
-                .icon(icons::icon(icons::IconName::X, 13.).text_color(theme::muted_text()))
-                .label(i18n::text("prompt.cancel"))
-                .on_click(cx.listener(|this, _ev, _window, cx| {
-                    this.cancel_default_command(cx);
-                })),
-        );
-
-    ModalDialog::new(
+    render_single_line_modal(
+        editor.focus.clone(),
+        state,
+        None,
+        shell,
+        cx,
+        "default-command-editor-input",
+        i18n::text("default_command.placeholder"),
         i18n::text("default_command.title"),
-        icons::icon(icons::IconName::Terminal, 16.).text_color(theme::info()),
+        icons::IconName::Terminal,
+        px(500.),
+        "default-command-editor-scrim",
+        "default-command-editor-card",
+        i18n::text("default_command.save"),
+        "default-command-editor-save",
+        "default-command-editor-cancel",
+        AppShell::submit_default_command,
+        AppShell::cancel_default_command,
     )
-    .width(px(500.))
-    .scrim_id("default-command-editor-scrim")
-    .card_id("default-command-editor-card")
-    .blocks_card_clicks()
-    .on_backdrop_click(cx.listener(|this, _ev, _window, cx| {
-        this.cancel_default_command(cx);
-    }))
-    .child(input)
-    .actions(buttons)
-    .into_any_element()
 }
 
 fn status_metric(text: impl Into<SharedString>, tone: BadgeTone) -> AnyElement {

@@ -22,7 +22,6 @@ use crossh_ssh::{MAX_EDITOR_FILE_BYTES, RemoteEntry, SftpCmd, SftpEvent};
 use crossh_ui::context_menu::{
     ContextMenuState, MenuEntry, MenuItem, SftpMenuAction, render_context_menu,
 };
-use crossh_ui::widgets::text_caret;
 use crossh_ui::widgets::{
     byte_index_for_utf16, ime_caret_bounds, ime_input_canvas, marked_text_span, printable_char,
     replace_utf16_range, utf16_len, utf16_offset_for_byte, utf16_slice,
@@ -757,13 +756,12 @@ impl SftpPane {
     }
 
     /// 路径输入模态（重命名 / 新建目录）；未打开时返回空元素。
-    fn render_path_input_modal(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_path_input_modal(&mut self, _window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(input) = &self.pending_path_input else {
             return div().into_any_element();
         };
         let focus = input.focus.clone();
         let value = input.state.value.clone();
-        let input_focused = focus.is_focused(window);
         let is_rename = input.rename_from.is_some();
         let title = if is_rename {
             i18n::text("context_menu.rename")
@@ -771,58 +769,21 @@ impl SftpPane {
             i18n::text("context_menu.new_folder")
         };
 
-        let mut input_el = div()
-            .id("sftp-path-input")
-            .w_full()
-            .h(px(34.))
-            .px_3()
-            .flex()
-            .items_center()
-            .mt_2()
-            .bg(theme::canvas())
-            .border_1()
-            .border_color(theme::border_strong())
-            .rounded(px(theme::RADIUS_SM))
-            .relative()
-            .text_sm()
-            .text_color(theme::text())
-            .track_focus(&focus)
-            .tab_stop(true)
-            .focus(|style| style.border_color(theme::focus_ring()))
-            .on_click({
-                let focus = focus.clone();
-                move |_ev, window, cx| window.focus(&focus, cx)
-            })
-            .on_key_down(cx.listener(SftpPane::handle_path_input_key));
-        if value.is_empty() {
-            if input_focused {
-                input_el = input_el.child(text_caret(px(16.)));
-            }
-            if input.state.ime_marked_text.is_empty() {
-                input_el = input_el.child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .truncate()
-                        .child(SharedString::from(i18n::text("sftp.name_placeholder"))),
-                );
-            }
-        } else {
-            input_el = input_el.child(
-                div()
-                    .min_w_0()
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .child(SharedString::from(value)),
-            );
-            if input_focused {
-                input_el = input_el.child(text_caret(px(16.)));
-            }
-        }
-        if !input.state.ime_marked_text.is_empty() {
-            input_el = input_el.child(marked_text_span(input.state.ime_marked_text.clone()));
-        }
-        input_el = input_el.child(ime_input_canvas(focus, cx.entity()));
+        // 已收敛为 TextInput：选中/placeholder/caret/IME 由组件统一渲染，
+        // 替代原手写 text_caret + marked_text_span + ime_input_canvas。
+        let input_el = div().mt_2().child(
+            TextInput::new("sftp-path-input", focus.clone())
+                .value(value.clone())
+                .placeholder(i18n::text("sftp.name_placeholder"))
+                .ime_marked_text(input.state.ime_marked_text.clone())
+                .caret_height(px(16.))
+                .height(px(34.))
+                .padding_x(px(12.))
+                .text_size(px(14.))
+                .full_width()
+                .entity(cx.entity())
+                .on_key_down(cx.listener(SftpPane::handle_path_input_key)),
+        );
 
         let mut buttons = div().flex().flex_row().gap_2();
         buttons = buttons

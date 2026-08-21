@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use crossh_ui::widgets::{ime_input_canvas, text_caret};
+use crossh_ui::widgets::{ime_input_canvas, marked_text_span, text_caret, text_span};
 use gpui::{
     App, ElementId, Entity, EntityInputHandler, FocusHandle, InteractiveElement, IntoElement,
     KeyDownEvent, ParentElement, RenderOnce, Rgba, SharedString, StatefulInteractiveElement,
@@ -21,6 +21,9 @@ type KeyHandler = Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App)>;
 ///
 /// 内容布局:值为空时显示 caret(聚焦时)+ placeholder 或 IME 标记;
 /// 非空时显示 `display`(默认取 `value`)+ caret(聚焦时)+ IME 标记。
+/// 若传入 `selection`（`Some((start,end))` 字节区间）且 `display` 为空，则按
+/// `ModalField` 同款高亮渲染「before + 选中块(accent_soft) + after」，不再显示 caret/IME；
+/// 该扩展使 `compose_bar`/`git`/`sftp` 等单行输入可复用同一选中渲染路径。
 pub struct TextInput<V> {
     id: ElementId,
     focus: FocusHandle,
@@ -28,6 +31,8 @@ pub struct TextInput<V> {
     display: Option<SharedString>,
     placeholder: Option<SharedString>,
     ime_marked_text: SharedString,
+    selection: Option<(usize, usize)>,
+    cursor: Option<usize>,
     caret_height: gpui::Pixels,
     height: gpui::Pixels,
     padding_x: gpui::Pixels,
@@ -50,6 +55,8 @@ impl<V> TextInput<V> {
             display: None,
             placeholder: None,
             ime_marked_text: SharedString::default(),
+            selection: None,
+            cursor: None,
             caret_height: px(16.),
             height: px(32.),
             padding_x: px(8.),
@@ -84,6 +91,19 @@ impl<V> TextInput<V> {
     /// IME 组合中的标记文本;穿 underlining + accent 下划线样式。
     pub fn ime_marked_text(mut self, ime: impl Into<SharedString>) -> Self {
         self.ime_marked_text = ime.into();
+        self
+    }
+
+    /// 选中区间（字节索引，左闭右开）；`None` 或 `start==end` 表示无选区。
+    /// 仅在 `display` 为空时生效，掩码等场景保持原 caret-at-end 渲染。
+    pub fn selection(mut self, selection: Option<(usize, usize)>) -> Self {
+        self.selection = selection;
+        self
+    }
+
+    /// 光标字节索引；无选区时按此位置拆分 before/caret/after，`None` 则置末尾。
+    pub fn cursor(mut self, cursor: usize) -> Self {
+        self.cursor = Some(cursor);
         self
     }
 
@@ -186,6 +206,8 @@ impl<V: EntityInputHandler + 'static> RenderOnce for TextInput<V> {
             display,
             placeholder,
             ime_marked_text,
+            selection,
+            cursor,
             caret_height,
             height,
             padding_x,
@@ -199,7 +221,15 @@ impl<V: EntityInputHandler + 'static> RenderOnce for TextInput<V> {
             on_key_down,
         } = self;
         let focused = focus.is_focused(window);
-        let display_text = display.unwrap_or_else(|| value.clone());
+        let display_text = display.clone().unwrap_or_else(|| value.clone());
+        // 仅非掩码（display 为空）时启用选区高亮，避免 value 与 display 长度不一致导致错位。
+        let has_selection = display.is_none() && selection.is_some_and(|(start, end)| start != end);
+        let (sel_start, sel_end) = if has_selection {
+            let (a, b) = selection.unwrap();
+            if a < b { (a, b) } else { (b, a) }
+        } else {
+            (0, 0)
+        };
 
         let mut children: Vec<gpui::AnyElement> = Vec::new();
         if value.is_empty() {
@@ -220,20 +250,85 @@ impl<V: EntityInputHandler + 'static> RenderOnce for TextInput<V> {
             } else {
                 children.push(marked_element(ime_marked_text).into_any_element());
             }
-        } else {
-            children.push(
-                div()
-                    .min_w_0()
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .child(display_text)
-                    .into_any_element(),
-            );
-            if focused {
-                children.push(text_caret(caret_height).into_any_element());
+        } else if has_selection {
+            let val = value.as_ref();
+            let s = sel_start.min(val.len());
+            let e = sel_end.min(val.len());
+            // 容错：若切片落在字符内部，回退到末尾 caret 渲染，避免 panic。
+            let valid = val.is_char_boundary(s) && val.is_char_boundary(e) && s <= e;
+            if valid {
+                if !val[..s].is_empty() {
+                    children.push(text_span(val[..s].to_string()).into_any_element());
+                }
+                children.push(
+                    div()
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
+                        .bg(theme::accent_soft())
+                        .text_color(theme::text())
+                        .child(SharedString::from(val[s..e].to_string()))
+                        .into_any_element(),
+                );
+                if !val[e..].is_empty() {
+                    children.push(text_span(val[e..].to_string()).into_any_element());
+                }
+                if !ime_marked_text.is_empty() {
+                    children.push(marked_text_span(ime_marked_text).into_any_element());
+                }
+            } else {
+                children.push(
+                    div()
+                        .min_w_0()
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
+                        .child(display_text)
+                        .into_any_element(),
+                );
+                if focused {
+                    children.push(text_caret(caret_height).into_any_element());
+                }
+                if !ime_marked_text.is_empty() {
+                    children.push(marked_element(ime_marked_text).into_any_element());
+                }
             }
-            if !ime_marked_text.is_empty() {
-                children.push(marked_element(ime_marked_text).into_any_element());
+        } else {
+            let val = value.as_ref();
+            let cursor_pos = cursor.unwrap_or(val.len()).min(val.len());
+            let cursor_pos = if val.is_char_boundary(cursor_pos) {
+                cursor_pos
+            } else {
+                val.len()
+            };
+            // 有明确 cursor 位时按 before/caret/after 拆分，否则整体显示后置 caret。
+            let use_cursor_split = cursor.is_some() && display.is_none();
+            if use_cursor_split {
+                if !val[..cursor_pos].is_empty() {
+                    children.push(text_span(val[..cursor_pos].to_string()).into_any_element());
+                }
+                if focused {
+                    children.push(text_caret(caret_height).into_any_element());
+                }
+                if !ime_marked_text.is_empty() {
+                    children.push(marked_text_span(ime_marked_text).into_any_element());
+                }
+                if !val[cursor_pos..].is_empty() {
+                    children.push(text_span(val[cursor_pos..].to_string()).into_any_element());
+                }
+            } else {
+                children.push(
+                    div()
+                        .min_w_0()
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
+                        .child(display_text)
+                        .into_any_element(),
+                );
+                if focused {
+                    children.push(text_caret(caret_height).into_any_element());
+                }
+                if !ime_marked_text.is_empty() {
+                    children.push(marked_element(ime_marked_text).into_any_element());
+                }
             }
         }
 
@@ -302,6 +397,8 @@ mod tests {
         assert!(input.display.is_none());
         assert!(input.placeholder.is_none());
         assert!(input.ime_marked_text.is_empty());
+        assert!(input.selection.is_none());
+        assert!(input.cursor.is_none());
         assert_eq!(input.caret_height, px(16.));
         assert_eq!(input.height, px(32.));
         assert_eq!(input.padding_x, px(8.));
@@ -323,6 +420,8 @@ mod tests {
             .display(masked.clone())
             .placeholder("Type here")
             .ime_marked_text("中")
+            .selection(Some((1, 3)))
+            .cursor(2)
             .caret_height(px(15.))
             .height(px(34.))
             .padding_x(px(12.))
@@ -336,6 +435,8 @@ mod tests {
         assert_eq!(input.display.as_deref(), Some(masked.as_str()));
         assert_eq!(input.placeholder.as_deref(), Some("Type here"));
         assert_eq!(input.ime_marked_text.as_ref(), "中");
+        assert_eq!(input.selection, Some((1, 3)));
+        assert_eq!(input.cursor, Some(2));
         assert_eq!(input.caret_height, px(15.));
         assert_eq!(input.height, px(34.));
         assert_eq!(input.padding_x, px(12.));
@@ -359,5 +460,15 @@ mod tests {
         let input: TextInput<()> = TextInput::new("sftp", focus(cx)).flex_1().full_width();
         assert!(input.flex_1);
         assert!(input.full_width);
+    }
+
+    #[gpui::test]
+    fn selection_and_cursor_are_stored_ordered(cx: &mut TestAppContext) {
+        let with_sel: TextInput<()> = TextInput::new("sel", focus(cx)).selection(Some((5, 2)));
+        assert_eq!(with_sel.selection, Some((5, 2)));
+        let with_cursor: TextInput<()> = TextInput::new("cur", focus(cx)).cursor(3);
+        assert_eq!(with_cursor.cursor, Some(3));
+        let none: TextInput<()> = TextInput::new("none", focus(cx)).selection(None);
+        assert!(none.selection.is_none());
     }
 }
