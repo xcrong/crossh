@@ -98,7 +98,7 @@ pub(crate) fn parse_options(
             "--thinking" => {
                 let value = arguments
                     .next()
-                    .ok_or("--thinking requires off, minimal, low, medium, high, or xhigh")?;
+                    .ok_or("--thinking requires off, minimal, low, medium, high, xhigh, or max")?;
                 options.thinking = Some(
                     parse_thinking(&value)
                         .ok_or_else(|| format!("unknown thinking level: {value}"))?,
@@ -120,7 +120,7 @@ pub(crate) fn print_help() {
 
 fn print_help_for(command: &str) {
     println!(
-        "Usage: {command} [OPTIONS]\n\nStart the interactive Crossh coding agent.\n\nOptions:\n  -c, --continue          Continue the most recent project session\n  -r, --resume VALUE      Resume a session by number, id, name, or path\n  -m, --model VALUE       Select provider/model or a model id\n      --thinking LEVEL    Set off, minimal, low, medium, high, or xhigh reasoning\n      --no-session         Do not write a persistent session\n  -h, --help              Print this help\n\nInside the agent, type /help for commands and Ctrl-T/Ctrl-O for display toggles."
+        "Usage: {command} [OPTIONS]\n\nStart the interactive Crossh coding agent.\n\nOptions:\n  -c, --continue          Continue the most recent project session\n  -r, --resume VALUE      Resume a session by number, id, name, or path\n  -m, --model VALUE       Select provider/model or a model id\n      --thinking LEVEL    Set off, minimal, low, medium, high, or xhigh, or max reasoning\n      --no-session         Do not write a persistent session\n  -h, --help              Print this help\n\nInside the agent, type /help for commands and Shift-Tab/Ctrl-T/Ctrl-O for display toggles."
     );
 }
 
@@ -149,6 +149,8 @@ struct App {
     input_cursor: usize,
     history_cursor: Option<usize>,
     queued_inputs: VecDeque<String>,
+    queue: crossh_agent::MessageQueue,
+    event_bus: crossh_agent::EventBus,
     messages: Vec<(Role, String)>,
     scroll: u16,
     max_scroll: u16,
@@ -201,13 +203,17 @@ pub(crate) fn run_with_options(
         input_cursor: 0,
         history_cursor: None,
         queued_inputs: VecDeque::new(),
+        queue: crossh_agent::MessageQueue::new(),
+        event_bus: crossh_agent::EventBus::new(),
         scroll: u16::MAX,
         max_scroll: 0,
         show_tool_details: false,
         show_reasoning: false,
         thinking: options.thinking.unwrap_or(ThinkingLevel::Medium),
         thinking_explicit: options.thinking.is_some(),
-        status: "Ready  Enter send  Ctrl-T thinking  Ctrl-O tools  Esc quit".into(),
+        status:
+            "Ready  Enter send  Shift-Tab thinking  Ctrl-T show-thinking  Ctrl-O tools  Esc quit"
+                .into(),
         started_at: Instant::now(),
     };
 
@@ -293,6 +299,12 @@ fn handle_key(terminal: &mut DefaultTerminal, app: &mut App, key: KeyEvent) -> i
             _ => {}
         }
     }
+    if key.code == KeyCode::BackTab
+        || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
+    {
+        cycle_thinking(app);
+        return Ok(false);
+    }
     if key.code == KeyCode::Esc {
         if app.input.is_empty() {
             return Ok(true);
@@ -343,6 +355,18 @@ fn handle_key(terminal: &mut DefaultTerminal, app: &mut App, key: KeyEvent) -> i
     Ok(false)
 }
 
+fn cycle_thinking(app: &mut App) {
+    let current = ALL_THINKING_LEVELS
+        .iter()
+        .position(|level| *level == app.thinking)
+        .unwrap_or(3);
+    let next = ALL_THINKING_LEVELS[(current + 1) % ALL_THINKING_LEVELS.len()];
+    app.thinking = next;
+    app.thinking_explicit = true;
+    app.scroll = u16::MAX;
+    app.status = format!("Thinking: {}", next.label());
+}
+
 fn submit(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
     let mut prompts = VecDeque::new();
     prompts.push_back(input::take_input(app));
@@ -354,15 +378,34 @@ fn submit(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
             continue;
         }
         if !process_prompt(terminal, app, prompt)? {
+            // Restore queued prompts to input instead of discarding.
+            app.queue.restore_to_input(&mut app.input);
             app.queued_inputs.clear();
+            app.input_cursor = app.input.len();
+            app.status = "Cancelled — queued prompts restored".into();
+            app.event_bus
+                .emit(crossh_agent::AgentSessionEvent::QueueUpdate {
+                    steering: app.queue.steering.clone(),
+                    follow_up: app.queue.follow_up.clone(),
+                });
             return Ok(());
         }
-        if prompts.is_empty() && !app.queued_inputs.is_empty() {
-            prompts.push_back(
-                app.queued_inputs
-                    .pop_front()
-                    .expect("queue was checked as non-empty"),
-            );
+        if prompts.is_empty() {
+            if let Some(next) = app.queue.pop_next() {
+                let _ = app.queued_inputs.pop_front();
+                app.event_bus
+                    .emit(crossh_agent::AgentSessionEvent::QueueUpdate {
+                        steering: app.queue.steering.clone(),
+                        follow_up: app.queue.follow_up.clone(),
+                    });
+                prompts.push_back(next);
+            } else if !app.queued_inputs.is_empty() {
+                prompts.push_back(
+                    app.queued_inputs
+                        .pop_front()
+                        .expect("queue was checked as non-empty"),
+                );
+            }
         }
     }
     app.status = "Ready".into();
@@ -381,13 +424,44 @@ fn process_prompt(
     app.scroll = u16::MAX;
     persist_session(app);
 
-    let removed = app.session.compact(compaction_limit(app));
-    if removed > 0 {
-        app.messages.push((
-            Role::Notice,
-            format!("Compacted {removed} older messages to stay within the model context."),
-        ));
+    // New compaction path: threshold/overflow with real entry IDs, history preserved via CompactionEntry.
+    let context_limit = active_context_limit(app);
+    let tokens_used = estimate_tokens(&app.session.messages);
+    if let Some(reason) = crossh_agent::should_compact(tokens_used, context_limit) {
+        app.event_bus
+            .emit(crossh_agent::AgentSessionEvent::CompactionStart {
+                reason: reason.as_str().into(),
+            });
+        let result =
+            crossh_agent::summarize_for_compaction(&app.session, context_limit / 4, reason);
+        // Apply the actual truncation via the legacy compact, but report the
+        // new result's metadata (real first_kept_entry_id and reason).
+        let removed = app.session.compact(compaction_limit(app));
+        if removed > 0 || !result.summary.is_empty() {
+            app.messages.push((
+                Role::Notice,
+                format!(
+                    "Compacted {} older messages (reason: {}, first_kept: {}) to stay within context.",
+                    result.removed, result.reason.as_str(), result.first_kept_entry_id
+                ),
+            ));
+        }
+        app.event_bus
+            .emit(crossh_agent::AgentSessionEvent::CompactionEnd {
+                reason: reason.as_str().into(),
+                aborted: false,
+                will_retry: false,
+            });
         persist_session(app);
+    } else {
+        let removed = app.session.compact(compaction_limit(app));
+        if removed > 0 {
+            app.messages.push((
+                Role::Notice,
+                format!("Compacted {removed} older messages to stay within the model context."),
+            ));
+            persist_session(app);
+        }
     }
 
     let mut request_messages = request_messages(app);
@@ -609,7 +683,11 @@ fn wait_for_model(
                     }
                     if input::is_enter_key(key.code) && !key.modifiers.contains(KeyModifiers::SHIFT)
                     {
-                        input::queue_input(app);
+                        if key.modifiers.contains(KeyModifiers::ALT) {
+                            input::queue_follow_up(app);
+                        } else {
+                            input::queue_steering(app);
+                        }
                     } else if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('o')
                     {

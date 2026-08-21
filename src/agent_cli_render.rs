@@ -115,11 +115,20 @@ pub(super) fn render(frame: &mut Frame, app: &mut App) {
     } else {
         " queue next prompt "
     };
+    let thinking_border = match app.thinking {
+        crossh_agent::ThinkingLevel::Off => faint,
+        crossh_agent::ThinkingLevel::Minimal => muted,
+        crossh_agent::ThinkingLevel::Low => tui_color(theme::info()),
+        crossh_agent::ThinkingLevel::Medium => accent,
+        crossh_agent::ThinkingLevel::High => tui_color(theme::warning()),
+        crossh_agent::ThinkingLevel::XHigh => tui_color(theme::danger()),
+        crossh_agent::ThinkingLevel::Max => tui_color(theme::danger()),
+    };
     let input_block = Block::new()
         .title(input_title)
         .borders(Borders::ALL)
         .border_style(Style::new().fg(if app.queued_inputs.is_empty() {
-            border
+            thinking_border
         } else {
             accent
         }))

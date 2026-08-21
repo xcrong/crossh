@@ -145,6 +145,7 @@ pub(super) fn apply_thinking_option(
             } else {
                 let effort = match thinking {
                     ThinkingLevel::XHigh => "high",
+                    ThinkingLevel::Max => "max",
                     other => other.label(),
                 };
                 body["reasoning_effort"] = Value::from(effort);
@@ -156,6 +157,7 @@ pub(super) fn apply_thinking_option(
             } else {
                 let effort = match thinking {
                     ThinkingLevel::XHigh => "high",
+                    ThinkingLevel::Max => "max",
                     other => other.label(),
                 };
                 body["reasoning"] = json!({"effort": effort, "summary": "auto"});

@@ -28,13 +28,14 @@ pub const ALL_PROTOCOLS: [Protocol; 3] = [
 ];
 
 /// Agent-layer listing of every supported thinking level (SDK [`ThinkingLevel`]).
-pub const ALL_THINKING_LEVELS: [ThinkingLevel; 6] = [
+pub const ALL_THINKING_LEVELS: [ThinkingLevel; 7] = [
     ThinkingLevel::Off,
     ThinkingLevel::Minimal,
     ThinkingLevel::Low,
     ThinkingLevel::Medium,
     ThinkingLevel::High,
     ThinkingLevel::XHigh,
+    ThinkingLevel::Max,
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

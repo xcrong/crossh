@@ -10,6 +10,11 @@ mod policy;
 mod providers;
 mod tools;
 
+pub mod compaction;
+pub mod entry;
+pub mod event;
+pub mod manager;
+pub mod runtime;
 pub mod session;
 
 pub use config::load as load_agent_settings;
@@ -24,10 +29,18 @@ pub use policy::{
 pub use providers::complete_stream_with_options;
 pub use tools::{AgentToolDefinition, builtin_tools, execute_tool_with_cancel};
 
+pub use compaction::{
+    CompactionReason, CompactionResult, should_compact, summarize_for_compaction,
+};
+pub use entry::{CURRENT_SESSION_VERSION as ENTRY_VERSION, SessionEntry, SessionEntryData};
+pub use event::{AgentSessionEvent, EventBus, MessageQueue};
+pub use manager::{FsSessionManager, InMemorySessionManager, SessionManager};
+pub use runtime::{AgentSessionRuntime, AgentSessionServices};
 pub use session::{
-    AgentContextFile, AgentPrompt, AgentSession, AgentSessionSummary, AgentSkill, context_prompt,
-    create_session, export_markdown, latest_session, list_sessions, load_context_files,
-    load_prompts, load_session, load_skills, save_session,
+    AgentContextFile, AgentPrompt, AgentSession, AgentSessionSummary, AgentSkill,
+    CURRENT_SESSION_VERSION, context_prompt, create_session, export_markdown, latest_session,
+    list_sessions, load_context_files, load_prompts, load_session, load_skills, save_session,
+    tree_entries_from_messages,
 };
 
 /// Agent-layer label accessor over the SDK [`Protocol`] model.

@@ -33,6 +33,7 @@ pub enum ThinkingLevel {
     Medium,
     High,
     XHigh,
+    Max,
 }
 
 impl ThinkingLevel {
@@ -44,6 +45,7 @@ impl ThinkingLevel {
             Self::Medium => "medium",
             Self::High => "high",
             Self::XHigh => "xhigh",
+            Self::Max => "max",
         }
     }
 
@@ -55,6 +57,7 @@ impl ThinkingLevel {
             Self::Medium => 0.3,
             Self::High => 0.5,
             Self::XHigh => 0.75,
+            Self::Max => 0.95,
         };
         ((max_tokens as f32 * fraction) as u32)
             .max(1_024)
@@ -787,6 +790,7 @@ fn apply_model_options(body: &mut Value, request: &CompletionRequest) {
                 } else {
                     let effort = match thinking {
                         ThinkingLevel::XHigh => "high",
+                        ThinkingLevel::Max => "max",
                         other => other.label(),
                     };
                     body["reasoning"] = json!({"effort": effort, "summary": "auto"});
@@ -816,6 +820,7 @@ fn apply_openai_thinking(body: &mut Value, thinking: ThinkingLevel) {
     } else {
         let effort = match thinking {
             ThinkingLevel::XHigh => "high",
+            ThinkingLevel::Max => "max",
             other => other.label(),
         };
         body["reasoning_effort"] = Value::from(effort);

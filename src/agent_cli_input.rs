@@ -1,14 +1,54 @@
 use super::*;
 
+#[allow(dead_code)]
 pub(super) fn queue_input(app: &mut App) {
+    queue_steering(app);
+}
+
+pub(super) fn queue_steering(app: &mut App) {
     let input = take_input(app);
     if input.trim().is_empty() {
         return;
     }
+    app.queue.push_steering(input.clone());
     app.queued_inputs.push_back(input.clone());
-    app.messages
-        .push((Role::Queued, format!("Queued: {}", one_line(&input))));
-    app.status = format!("Queued {} prompt(s)", app.queued_inputs.len());
+    app.messages.push((
+        Role::Queued,
+        format!("Queued (steering): {}", one_line(&input)),
+    ));
+    app.status = format!(
+        "Queued steering={} follow_up={}",
+        app.queue.steering.len(),
+        app.queue.follow_up.len()
+    );
+    app.event_bus
+        .emit(crossh_agent::AgentSessionEvent::QueueUpdate {
+            steering: app.queue.steering.clone(),
+            follow_up: app.queue.follow_up.clone(),
+        });
+}
+
+pub(super) fn queue_follow_up(app: &mut App) {
+    let input = take_input(app);
+    if input.trim().is_empty() {
+        return;
+    }
+    app.queue.push_follow_up(input.clone());
+    app.queued_inputs.push_back(input.clone());
+    app.messages.push((
+        Role::Queued,
+        format!("Queued (follow-up): {}", one_line(&input)),
+    ));
+    app.status = format!(
+        "Queued steering={} follow_up={}",
+        app.queue.steering.len(),
+        app.queue.follow_up.len()
+    );
+    app.event_bus
+        .emit(crossh_agent::AgentSessionEvent::QueueUpdate {
+            steering: app.queue.steering.clone(),
+            follow_up: app.queue.follow_up.clone(),
+        });
 }
 
 pub(super) fn edit_input(app: &mut App, key: KeyEvent) {

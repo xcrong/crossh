@@ -13,7 +13,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-const SESSION_VERSION: u32 = 1;
+const SESSION_VERSION: u32 = 3;
+pub const CURRENT_SESSION_VERSION: u32 = 3;
 const MAX_CONTEXT_FILE_BYTES: u64 = 128 * 1024;
 const MAX_TOTAL_CONTEXT_FILE_BYTES: u64 = 256 * 1024;
 const MAX_INSTRUCTION_FILE_BYTES: u64 = 128 * 1024;
@@ -28,6 +29,36 @@ pub struct AgentSession {
     pub created_at: u64,
     pub updated_at: u64,
     pub messages: Vec<Message>,
+}
+
+/// Derive tree entries from a linear session (migration helper).
+/// Each message becomes an entry with parent = previous entry.
+/// This keeps legacy files readable as a chain while new code writes tree metadata.
+pub fn tree_entries_from_messages(session: &AgentSession) -> Vec<crate::entry::SessionEntry> {
+    use crate::entry::{SessionEntry, SessionEntryData};
+    let mut out = Vec::new();
+    let mut parent: Option<String> = None;
+    for (idx, msg) in session.messages.iter().enumerate() {
+        let id = format!("{}-m{idx}", session.id);
+        let ts = format_timestamp(session.created_at + idx as u64);
+        let entry = SessionEntry {
+            id: id.clone(),
+            parent_id: parent.clone(),
+            timestamp: ts,
+            data: SessionEntryData::Message {
+                message: msg.clone(),
+            },
+        };
+        parent = Some(id);
+        out.push(entry);
+    }
+    out
+}
+
+fn format_timestamp(millis: u64) -> String {
+    let secs = millis / 1000;
+    let ms = millis % 1000;
+    format!("{secs}.{ms:03}Z")
 }
 
 impl AgentSession {
@@ -169,6 +200,7 @@ struct SessionHeader<'a> {
 }
 
 #[derive(Serialize)]
+#[allow(dead_code)]
 struct SessionMessage<'a> {
     kind: &'static str,
     message: &'a Message,
@@ -202,14 +234,22 @@ pub fn save_session(path: &Path, session: &AgentSession) -> Result<(), String> {
         })
         .map_err(|error| error.to_string())?,
     );
-    for message in &session.messages {
-        lines.push(
-            serde_json::to_string(&SessionMessage {
-                kind: "message",
-                message,
-            })
-            .map_err(|error| error.to_string())?,
-        );
+    // Write tree-aware entries: each message gets a stable id/parentId/timestamp.
+    // Extra fields are additive; legacy readers ignore them, tree readers use them.
+    let entries = tree_entries_from_messages(session);
+    for entry in &entries {
+        // Keep legacy `kind: message` + `message` for compat, add tree metadata.
+        if let crate::entry::SessionEntryData::Message { message } = &entry.data {
+            let line = serde_json::json!({
+                "kind": "message",
+                "type": "message",
+                "id": entry.id,
+                "parentId": entry.parent_id,
+                "timestamp": entry.timestamp,
+                "message": message
+            });
+            lines.push(serde_json::to_string(&line).map_err(|error| error.to_string())?);
+        }
     }
     let temp_path = path.with_extension(format!(
         "jsonl.tmp.{}.{}",

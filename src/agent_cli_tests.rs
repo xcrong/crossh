@@ -49,6 +49,8 @@ fn app() -> App {
         input_cursor: 0,
         history_cursor: None,
         queued_inputs: VecDeque::new(),
+        queue: crossh_agent::MessageQueue::new(),
+        event_bus: crossh_agent::EventBus::new(),
         messages: Vec::new(),
         scroll: u16::MAX,
         max_scroll: 40,
