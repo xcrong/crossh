@@ -10,8 +10,8 @@ use crate::shared::i18n;
 use crossh_core::git_branch::BranchSummary;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
-    Badge, BadgeTone, Button, ButtonSize, ButtonVariant, ListState, list_empty, list_pane,
-    selectable_row,
+    Badge, BadgeTone, Button, ButtonSize, ButtonVariant, ListState, list_pane, list_state_body,
+    pane_operation_error, selectable_row,
 };
 
 use super::branch::BranchListState;
@@ -26,38 +26,39 @@ impl GitWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let focus = self.branch_focus.clone();
-        let body = match &self.session.branch.list_state {
+        let list_state = match &self.session.branch.list_state {
             BranchListState::Idle | BranchListState::Loading => {
-                list_empty(ListState::Loading(i18n::text("git.loading").into()))
+                ListState::Loading(i18n::text("git.loading").into())
             }
-            BranchListState::Error(error) => list_empty(ListState::Error(error.clone().into())),
+            BranchListState::Error(error) => ListState::Error(error.clone().into()),
             BranchListState::Ready if self.session.branch.entries.is_empty() => {
-                list_empty(ListState::Empty(i18n::text("git.no_branches").into()))
+                ListState::Empty(i18n::text("git.no_branches").into())
             }
-            BranchListState::Ready => {
-                let entries = self.session.branch.entries.clone();
-                let count = entries.len();
-                uniform_list(
-                    if compact {
-                        "git-branches-compact"
-                    } else {
-                        "git-branches"
-                    },
-                    count,
-                    cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
-                        entries[range]
-                            .iter()
-                            .map(|entry| this.render_branch_row(entry, cx))
-                            .collect::<Vec<_>>()
-                    }),
-                )
-                .track_scroll(&self.branch_scroll)
-                .flex_1()
-                .min_h_0()
-                .with_sizing_behavior(ListSizingBehavior::Auto)
-                .into_any_element()
-            }
+            BranchListState::Ready => ListState::Ready,
         };
+        let body = list_state_body(list_state, || {
+            let entries = self.session.branch.entries.clone();
+            let count = entries.len();
+            uniform_list(
+                if compact {
+                    "git-branches-compact"
+                } else {
+                    "git-branches"
+                },
+                count,
+                cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                    entries[range]
+                        .iter()
+                        .map(|entry| this.render_branch_row(entry, cx))
+                        .collect::<Vec<_>>()
+                }),
+            )
+            .track_scroll(&self.branch_scroll)
+            .flex_1()
+            .min_h_0()
+            .with_sizing_behavior(ListSizingBehavior::Auto)
+            .into_any_element()
+        });
 
         let mut pane = list_pane(
             if compact {
@@ -79,18 +80,7 @@ impl GitWindow {
         }))
         .child(self.render_branch_toolbar(cx));
         if let OperationState::Error(message) = &self.session.operation {
-            pane = pane.child(
-                div()
-                    .w_full()
-                    .flex_shrink_0()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(theme::danger())
-                    .text_xs()
-                    .text_color(theme::danger())
-                    .child(SharedString::from(message.clone())),
-            );
+            pane = pane.child(pane_operation_error(message.clone().into()));
         }
         pane.child(body).into_any_element()
     }

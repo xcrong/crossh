@@ -28,6 +28,17 @@ impl ListState {
     }
 }
 
+/// 统一的列表内容分发，收敛 `git/` 4 页重复的 `match { Idle|Loading => Hint, Error => Hint, Empty => Hint, Ready => uniform_list }`。
+///
+/// `Ready` 时调用 `rows` 产出 `uniform_list`，其余状态复用 [`list_empty`] 的统一样式（`px12/py16`）。
+/// 调用方仅需将领域状态（如 `BranchListState` / `HistoryListState`）映射为 [`ListState`] 后传入。
+pub fn list_state_body(state: ListState, rows: impl FnOnce() -> AnyElement) -> AnyElement {
+    match state {
+        ListState::Ready => rows(),
+        other => list_empty(other),
+    }
+}
+
 /// 将 [`ListState`] 渲染为统一的 [`Hint`] 占位元素。
 ///
 /// `Ready` 分支不应调用本函数；若误传会 `panic` 以暴露调用错误。
@@ -46,7 +57,10 @@ pub fn list_empty(state: ListState) -> AnyElement {
 
 #[cfg(test)]
 mod tests {
-    use super::{ListState, list_empty};
+    use crate::hint::Hint;
+    use gpui::IntoElement as _;
+
+    use super::{ListState, list_empty, list_state_body};
 
     #[test]
     fn list_state_variants_are_distinct() {
@@ -73,5 +87,15 @@ mod tests {
     #[should_panic(expected = "Ready")]
     fn list_empty_panics_on_ready() {
         let _ = list_empty(ListState::Ready);
+    }
+
+    #[test]
+    fn list_state_body_dispatches_to_rows_or_hint() {
+        let ready = list_state_body(ListState::Ready, || Hint::new("row").into_any_element());
+        let _ = ready;
+        let loading = list_state_body(ListState::Loading("loading".into()), || {
+            Hint::new("row").into_any_element()
+        });
+        let _ = loading;
     }
 }

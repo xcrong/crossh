@@ -9,8 +9,8 @@ use crate::shared::i18n;
 use crossh_core::git_stash::StashSummary;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
-    Banner, BannerTone, Button, ButtonSize, ButtonVariant, ListState, list_empty, list_pane,
-    selectable_row,
+    Banner, BannerTone, Button, ButtonSize, ButtonVariant, ListState, list_pane, list_state_body,
+    pane_operation_error, selectable_row,
 };
 
 use super::session::OperationState;
@@ -25,38 +25,39 @@ impl GitWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let focus = self.stash_focus.clone();
-        let body = match &self.session.stash.list_state {
+        let list_state = match &self.session.stash.list_state {
             StashListState::Idle | StashListState::Loading => {
-                list_empty(ListState::Loading(i18n::text("git.loading").into()))
+                ListState::Loading(i18n::text("git.loading").into())
             }
-            StashListState::Error(error) => list_empty(ListState::Error(error.clone().into())),
+            StashListState::Error(error) => ListState::Error(error.clone().into()),
             StashListState::Ready if self.session.stash.entries.is_empty() => {
-                list_empty(ListState::Empty(i18n::text("git.no_stashes").into()))
+                ListState::Empty(i18n::text("git.no_stashes").into())
             }
-            StashListState::Ready => {
-                let entries = self.session.stash.entries.clone();
-                let count = entries.len();
-                uniform_list(
-                    if compact {
-                        "git-stashes-compact"
-                    } else {
-                        "git-stashes"
-                    },
-                    count,
-                    cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
-                        entries[range]
-                            .iter()
-                            .map(|entry| this.render_stash_row(entry, compact, cx))
-                            .collect::<Vec<_>>()
-                    }),
-                )
-                .track_scroll(&self.stash_scroll)
-                .flex_1()
-                .min_h_0()
-                .with_sizing_behavior(ListSizingBehavior::Auto)
-                .into_any_element()
-            }
+            StashListState::Ready => ListState::Ready,
         };
+        let body = list_state_body(list_state, || {
+            let entries = self.session.stash.entries.clone();
+            let count = entries.len();
+            uniform_list(
+                if compact {
+                    "git-stashes-compact"
+                } else {
+                    "git-stashes"
+                },
+                count,
+                cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                    entries[range]
+                        .iter()
+                        .map(|entry| this.render_stash_row(entry, compact, cx))
+                        .collect::<Vec<_>>()
+                }),
+            )
+            .track_scroll(&self.stash_scroll)
+            .flex_1()
+            .min_h_0()
+            .with_sizing_behavior(ListSizingBehavior::Auto)
+            .into_any_element()
+        });
 
         let mut pane = list_pane(
             if compact {
@@ -82,18 +83,7 @@ impl GitWindow {
             pane = pane.child(self.render_stash_drop_confirmation(selector, cx));
         }
         if let OperationState::Error(message) = &self.session.operation {
-            pane = pane.child(
-                div()
-                    .w_full()
-                    .flex_shrink_0()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(theme::danger())
-                    .text_xs()
-                    .text_color(theme::danger())
-                    .child(SharedString::from(message.clone())),
-            );
+            pane = pane.child(pane_operation_error(message.clone().into()));
         }
         pane.child(body).into_any_element()
     }

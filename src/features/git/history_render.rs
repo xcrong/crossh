@@ -11,8 +11,8 @@ use crossh_core::git_history::{CommitDetail, CommitFileChange, HistoryRef, Histo
 use crossh_core::git_history_graph::HistoryGraphRow;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
-    Badge, BadgeTone, Button, ButtonSize, ButtonVariant, Hint, ListState, TextInput, list_empty,
-    list_pane, scroll_y, selectable_row,
+    Badge, BadgeTone, Button, ButtonSize, ButtonVariant, Hint, ListState, TextInput, list_pane,
+    list_state_body, scroll_y, selectable_row,
 };
 
 use super::history::{HistoryDetailState, HistoryListState, HistoryRow};
@@ -66,42 +66,43 @@ impl GitWindow {
     ) -> AnyElement {
         let focus = self.history_focus.clone();
         let rows = self.session.history.visible_rows();
-        let body = match &self.session.history.list_state {
+        let list_state = match &self.session.history.list_state {
             HistoryListState::Idle | HistoryListState::Loading => {
-                list_empty(ListState::Loading(i18n::text("git.loading").into()))
+                ListState::Loading(i18n::text("git.loading").into())
             }
-            HistoryListState::Error(error) => list_empty(ListState::Error(error.clone().into())),
+            HistoryListState::Error(error) => ListState::Error(error.clone().into()),
             HistoryListState::Ready if rows.is_empty() => {
                 let message = if self.session.history.query.is_empty() {
                     i18n::text("git.no_history")
                 } else {
                     i18n::text("git.history_no_matches")
                 };
-                list_empty(ListState::Empty(message.into()))
+                ListState::Empty(message.into())
             }
-            HistoryListState::Ready => {
-                let count = rows.len();
-                uniform_list(
-                    if compact {
-                        "git-history-list-compact"
-                    } else {
-                        "git-history-list"
-                    },
-                    count,
-                    cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
-                        rows[range]
-                            .iter()
-                            .map(|row| this.render_history_row(row, cx))
-                            .collect::<Vec<_>>()
-                    }),
-                )
-                .track_scroll(&self.history_scroll)
-                .flex_1()
-                .min_h_0()
-                .with_sizing_behavior(ListSizingBehavior::Auto)
-                .into_any_element()
-            }
+            HistoryListState::Ready => ListState::Ready,
         };
+        let body = list_state_body(list_state, || {
+            let count = rows.len();
+            uniform_list(
+                if compact {
+                    "git-history-list-compact"
+                } else {
+                    "git-history-list"
+                },
+                count,
+                cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                    rows[range]
+                        .iter()
+                        .map(|row| this.render_history_row(row, cx))
+                        .collect::<Vec<_>>()
+                }),
+            )
+            .track_scroll(&self.history_scroll)
+            .flex_1()
+            .min_h_0()
+            .with_sizing_behavior(ListSizingBehavior::Auto)
+            .into_any_element()
+        });
 
         list_pane(
             if compact {

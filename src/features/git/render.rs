@@ -17,8 +17,8 @@ use crossh_ui::widgets::{ime_input_canvas, marked_text_span, text_caret, text_sp
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
     Badge, BadgeTone, Banner, BannerLayout, BannerTone, Button, ButtonSize, ButtonVariant, Hint,
-    ListState, SplitResizer, StatusBar, StatusMetric, TabItem, TabStrip, list_empty, list_pane,
-    selectable_row,
+    ListState, SplitResizer, StatusBar, StatusMetric, TabItem, TabStrip, list_pane,
+    list_state_body, selectable_row,
 };
 
 use super::editor::CommitEditor;
@@ -364,13 +364,16 @@ impl GitWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let focus = self.changes_focus.clone();
-        let changes_body = if self.session.initial_loading {
-            list_empty(ListState::Loading(i18n::text("git.loading").into()))
+        let list_state = if self.session.initial_loading {
+            ListState::Loading(i18n::text("git.loading").into())
         } else if let Some(error) = &self.session.load_error {
-            list_empty(ListState::Error(error.clone().into()))
+            ListState::Error(error.clone().into())
         } else if self.session.changes.is_empty() {
-            list_empty(ListState::Empty(i18n::text("git.no_changes").into()))
+            ListState::Empty(i18n::text("git.no_changes").into())
         } else {
+            ListState::Ready
+        };
+        let changes_body = list_state_body(list_state, || {
             let items = change_list_items(
                 &self.session.changes,
                 self.staged_collapsed,
@@ -410,7 +413,7 @@ impl GitWindow {
             .min_h_0()
             .with_sizing_behavior(ListSizingBehavior::Auto)
             .into_any_element()
-        };
+        });
 
         list_pane(
             if compact {
