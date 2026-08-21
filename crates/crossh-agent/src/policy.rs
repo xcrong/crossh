@@ -76,6 +76,13 @@ pub struct AgentModelRef {
     pub model: String,
 }
 
+fn default_steering_mode() -> String {
+    "one-at-a-time".into()
+}
+fn default_follow_up_mode() -> String {
+    "one-at-a-time".into()
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct AgentSettings {
     pub providers: Vec<AgentProvider>,
@@ -83,6 +90,10 @@ pub struct AgentSettings {
     pub reviewer_model: AgentModelRef,
     #[serde(default = "default_max_tool_rounds")]
     pub max_tool_rounds: u32,
+    #[serde(default = "default_steering_mode")]
+    pub steering_mode: String,
+    #[serde(default = "default_follow_up_mode")]
+    pub follow_up_mode: String,
 }
 
 impl Default for AgentSettings {
@@ -92,6 +103,8 @@ impl Default for AgentSettings {
             active_model: AgentModelRef::default(),
             reviewer_model: AgentModelRef::default(),
             max_tool_rounds: default_max_tool_rounds(),
+            steering_mode: default_steering_mode(),
+            follow_up_mode: default_follow_up_mode(),
         }
     }
 }
@@ -111,6 +124,14 @@ impl AgentSettings {
                 model.id = model.id.trim().into();
                 model.name = model.name.trim().into();
             }
+        }
+        self.steering_mode = self.steering_mode.trim().to_ascii_lowercase();
+        if self.steering_mode != "all" {
+            self.steering_mode = "one-at-a-time".into();
+        }
+        self.follow_up_mode = self.follow_up_mode.trim().to_ascii_lowercase();
+        if self.follow_up_mode != "all" {
+            self.follow_up_mode = "one-at-a-time".into();
         }
         self
     }

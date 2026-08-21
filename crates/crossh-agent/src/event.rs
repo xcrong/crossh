@@ -89,6 +89,24 @@ impl MessageQueue {
             None
         }
     }
+    /// 仅弹出 steering 队列首项，对齐 pi 的 intra-turn steer 语义（tool 轮间注入）。
+    pub fn pop_steering(&mut self) -> Option<String> {
+        if self.steering.is_empty() {
+            None
+        } else {
+            Some(self.steering.remove(0))
+        }
+    }
+    pub fn has_steering(&self) -> bool {
+        !self.steering.is_empty()
+    }
+    pub fn pending_count(&self) -> usize {
+        self.steering.len() + self.follow_up.len()
+    }
+    /// 对齐 pi 的 clearQueue：清空并返回原队列，用于恢复到输入框。
+    pub fn clear_queue(&mut self) -> (Vec<String>, Vec<String>) {
+        self.take_all()
+    }
     pub fn take_all(&mut self) -> (Vec<String>, Vec<String>) {
         (
             std::mem::take(&mut self.steering),

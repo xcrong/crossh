@@ -17,7 +17,7 @@ pub(super) fn queue_steering(app: &mut App) {
         format!("Queued (steering): {}", one_line(&input)),
     ));
     app.status = format!(
-        "Queued steering={} follow_up={}",
+        "Queued steering={} follow_up={} — Alt+Up dequeue",
         app.queue.steering.len(),
         app.queue.follow_up.len()
     );
@@ -40,7 +40,7 @@ pub(super) fn queue_follow_up(app: &mut App) {
         format!("Queued (follow-up): {}", one_line(&input)),
     ));
     app.status = format!(
-        "Queued steering={} follow_up={}",
+        "Queued steering={} follow_up={} — Alt+Up dequeue",
         app.queue.steering.len(),
         app.queue.follow_up.len()
     );
@@ -49,6 +49,40 @@ pub(super) fn queue_follow_up(app: &mut App) {
             steering: app.queue.steering.clone(),
             follow_up: app.queue.follow_up.clone(),
         });
+}
+
+/// 对齐 pi 的 `app.message.dequeue`（Alt+Up）：将 queued 消息恢复到输入框并清空队列。
+pub(super) fn dequeue_queue(app: &mut App) -> bool {
+    if app.queue.is_empty() && app.queued_inputs.is_empty() {
+        return false;
+    }
+    let (steering, follow_up) = app.queue.clear_queue();
+    let mut restored = Vec::new();
+    restored.extend(steering);
+    restored.extend(follow_up);
+    // 同步清理显示队列，尽量按恢复顺序移除
+    for text in &restored {
+        if let Some(pos) = app.queued_inputs.iter().position(|x| x == text) {
+            app.queued_inputs.remove(pos);
+        }
+    }
+    if !restored.is_empty() {
+        if !app.input.is_empty() {
+            app.input.push('\n');
+        }
+        app.input.push_str(&restored.join("\n"));
+        app.input_cursor = app.input.len();
+        app.history_cursor = None;
+    }
+    app.queued_inputs.clear();
+    app.event_bus
+        .emit(crossh_agent::AgentSessionEvent::QueueUpdate {
+            steering: Vec::new(),
+            follow_up: Vec::new(),
+        });
+    app.status = "Dequeued — restored to input".into();
+    app.scroll = u16::MAX;
+    true
 }
 
 pub(super) fn edit_input(app: &mut App, key: KeyEvent) {

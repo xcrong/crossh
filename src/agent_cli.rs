@@ -348,6 +348,12 @@ fn handle_key(terminal: &mut DefaultTerminal, app: &mut App, key: KeyEvent) -> i
             app.slash_selected = 0;
         }
     }
+    if key.modifiers.contains(KeyModifiers::ALT)
+        && key.code == KeyCode::Up
+        && input::dequeue_queue(app)
+    {
+        return Ok(false);
+    }
     if input::is_enter_key(key.code) {
         if key.modifiers.contains(KeyModifiers::SHIFT) {
             input::insert_text(app, "\n");
@@ -437,15 +443,54 @@ fn submit(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                 });
             return Ok(());
         }
-        if prompts.is_empty() {
-            if let Some(next) = app.queue.pop_next() {
-                let _ = app.queued_inputs.pop_front();
+        if prompts.is_empty() && (!app.queue.is_empty() || !app.queued_inputs.is_empty()) {
+            // 对齐 pi 的 followUp/steering 投递：steering 优先，其次 followUp；支持 all vs one-at-a-time
+            let next = if !app.queue.steering.is_empty() {
+                if app.settings.steering_mode == "all" {
+                    let drained = std::mem::take(&mut app.queue.steering);
+                    for t in &drained {
+                        if let Some(pos) = app.queued_inputs.iter().position(|x| x == t) {
+                            app.queued_inputs.remove(pos);
+                        }
+                    }
+                    Some(drained.join("\n\n"))
+                } else {
+                    let t = app.queue.steering.remove(0);
+                    if let Some(pos) = app.queued_inputs.iter().position(|x| x == &t) {
+                        app.queued_inputs.remove(pos);
+                    } else {
+                        let _ = app.queued_inputs.pop_front();
+                    }
+                    Some(t)
+                }
+            } else if !app.queue.follow_up.is_empty() {
+                if app.settings.follow_up_mode == "all" {
+                    let drained = std::mem::take(&mut app.queue.follow_up);
+                    for t in &drained {
+                        if let Some(pos) = app.queued_inputs.iter().position(|x| x == t) {
+                            app.queued_inputs.remove(pos);
+                        }
+                    }
+                    Some(drained.join("\n\n"))
+                } else {
+                    let t = app.queue.follow_up.remove(0);
+                    if let Some(pos) = app.queued_inputs.iter().position(|x| x == &t) {
+                        app.queued_inputs.remove(pos);
+                    } else {
+                        let _ = app.queued_inputs.pop_front();
+                    }
+                    Some(t)
+                }
+            } else {
+                None
+            };
+            if let Some(text) = next.filter(|s| !s.trim().is_empty()) {
                 app.event_bus
                     .emit(crossh_agent::AgentSessionEvent::QueueUpdate {
                         steering: app.queue.steering.clone(),
                         follow_up: app.queue.follow_up.clone(),
                     });
-                prompts.push_back(next);
+                prompts.push_back(text);
             } else if !app.queued_inputs.is_empty() {
                 prompts.push_back(
                     app.queued_inputs
@@ -457,6 +502,39 @@ fn submit(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
     }
     app.status = "Ready".into();
     Ok(())
+}
+
+fn take_steering_for_delivery(app: &mut App) -> Option<String> {
+    if app.queue.steering.is_empty() {
+        return None;
+    }
+    let text = if app.settings.steering_mode == "all" {
+        let drained = std::mem::take(&mut app.queue.steering);
+        for t in &drained {
+            if let Some(pos) = app.queued_inputs.iter().position(|x| x == t) {
+                app.queued_inputs.remove(pos);
+            }
+        }
+        // 若 queued_inputs 仍有残留的 steering 文本，按数量兜底清理
+        while app.queued_inputs.len() > app.queue.follow_up.len() + app.queue.steering.len() {
+            let _ = app.queued_inputs.pop_front();
+        }
+        drained.join("\n\n")
+    } else {
+        let t = app.queue.steering.remove(0);
+        if let Some(pos) = app.queued_inputs.iter().position(|x| x == &t) {
+            app.queued_inputs.remove(pos);
+        } else if !app.queued_inputs.is_empty() {
+            let _ = app.queued_inputs.pop_front();
+        }
+        t
+    };
+    app.event_bus
+        .emit(crossh_agent::AgentSessionEvent::QueueUpdate {
+            steering: app.queue.steering.clone(),
+            follow_up: app.queue.follow_up.clone(),
+        });
+    Some(text)
 }
 
 fn process_prompt(
@@ -578,14 +656,24 @@ fn process_prompt(
             })
             .collect::<Vec<_>>();
         if calls.is_empty() {
+            // 先落盘当前 assistant 回复，再检查是否有 steering 需要在下一轮前注入（对齐 pi）
             app.session.append(Message {
                 role: MessageRole::Assistant,
-                text,
+                text: text.clone(),
                 tool_calls: Vec::new(),
                 tool_result: None,
-                protocol_items,
+                protocol_items: protocol_items.clone(),
             });
             persist_session(app);
+            if let Some(steer_text) = take_steering_for_delivery(app) {
+                let msg = Message::new(MessageRole::User, steer_text.clone());
+                request_messages.push(msg.clone());
+                app.session.append(msg);
+                app.messages.push((Role::User, steer_text));
+                persist_session(app);
+                app.status = "Steered — injecting".into();
+                continue;
+            }
             app.status = "Ready".into();
             return Ok(true);
         }
@@ -684,6 +772,15 @@ fn process_prompt(
             app.session.append(Message::tool_result(result));
             persist_session(app);
         }
+        if let Some(steer_text) = take_steering_for_delivery(app) {
+            let msg = Message::new(MessageRole::User, steer_text.clone());
+            request_messages.push(msg.clone());
+            app.session.append(msg);
+            app.messages.push((Role::User, steer_text));
+            persist_session(app);
+            app.status = format!("Steered after round {}", round + 1);
+            continue;
+        }
         app.status = format!("Completed tool round {}", round + 1);
     }
     app.messages
@@ -728,7 +825,10 @@ fn wait_for_model(
                         task.abort();
                         return Ok(WaitResult::Cancelled);
                     }
-                    if input::is_enter_key(key.code) && !key.modifiers.contains(KeyModifiers::SHIFT)
+                    if key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Up {
+                        input::dequeue_queue(app);
+                    } else if input::is_enter_key(key.code)
+                        && !key.modifiers.contains(KeyModifiers::SHIFT)
                     {
                         if key.modifiers.contains(KeyModifiers::ALT) {
                             input::queue_follow_up(app);
@@ -1102,7 +1202,7 @@ fn normalize_command_name(command: &str) -> String {
 }
 
 fn help_text() -> String {
-    "Commands (start with / or 、):\n  /help, /hotkeys       Show commands and shortcuts\n  /model [value]        List or switch provider/model\n  /thinking [level]     Set reasoning level\n  /tools                Show available tools\n  /skills               List project skills\n  /skill NAME [request] Apply a skill to a request\n  /prompts              List prompt templates\n  /prompt NAME [args]   Run a prompt template\n  /new, /clear          Start a fresh session\n  /continue             Resume the most recent session\n  /resume [value]       List or resume a saved session\n  /fork, /clone         Branch the current conversation\n  /name [value]         Set or show the session name\n  /session, /stats      Show session and context details\n  /compact              Compact older conversation context\n  /reload               Reload project instructions and resources\n  /export [path]        Export the session as Markdown\n  /quit, /exit          Quit\n\nShortcuts:\n  Enter                 Send prompt\n  Shift+Enter           Insert a new line\n  Escape                Clear input, then quit\n  Ctrl+C                Clear input, then quit\n  Ctrl+T                Expand or collapse thinking\n  Ctrl+O                Expand or collapse tool output\n  PageUp/PageDown       Scroll conversation\n  Up/Down               Browse prompt history / slash candidates\n  Tab / Enter           Complete slash command\n  While working, Enter  Queue a follow-up prompt\n\nSlash commands show a popup when typing / or 、; ↑↓ to navigate.\nNote: text selection uses the terminal's native drag (mouse capture disabled)"
+    "Commands (start with / or 、):\n  /help, /hotkeys       Show commands and shortcuts\n  /model [value]        List or switch provider/model\n  /thinking [level]     Set reasoning level\n  /tools                Show available tools\n  /skills               List project skills\n  /skill NAME [request] Apply a skill to a request\n  /prompts              List prompt templates\n  /prompt NAME [args]   Run a prompt template\n  /new, /clear          Start a fresh session\n  /continue             Resume the most recent session\n  /resume [value]       List or resume a saved session\n  /fork, /clone         Branch the current conversation\n  /name [value]         Set or show the session name\n  /session, /stats      Show session and context details\n  /compact              Compact older conversation context\n  /reload               Reload project instructions and resources\n  /export [path]        Export the session as Markdown\n  /quit, /exit          Quit\n\nShortcuts:\n  Enter                 Send prompt\n  Shift+Enter           Insert a new line\n  Escape                Clear input, then quit\n  Ctrl+C                Clear input, then quit\n  Ctrl+T                Expand or collapse thinking\n  Ctrl+O                Expand or collapse tool output\n  PageUp/PageDown       Scroll conversation\n  Up/Down               Browse prompt history / slash candidates\n  Tab / Enter           Complete slash command\n  While working, Enter  Steering (next turn)  Alt+Enter Follow-up  Alt+Up Dequeue\n\nSlash commands show a popup when typing / or 、; ↑↓ to navigate.\nNote: text selection uses the terminal's native drag (mouse capture disabled)"
         .into()
 }
 
