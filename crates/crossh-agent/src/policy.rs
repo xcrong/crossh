@@ -122,10 +122,20 @@ impl AgentSettings {
                 self.providers.push(preset);
             }
         }
-        // 修正旧版本已持久化的预设模型（例如 kimi-k2.7-code / grok-4.5 曾满足
-        // `max == context`，在新校验下会触发 `Maximum output tokens must be ...`）。
+        // 修正旧版本已持久化的预设（模型 max_tokens / URL 曾为 base 而非完整路径，
+        // 会触发校验失败或 404 HTML）。
+        let mut preset_urls = std::collections::BTreeMap::new();
+        for preset in crate::presets::builtin_presets() {
+            preset_urls.insert(preset.id, preset.url);
+        }
         for provider in &mut self.providers {
             if crate::presets::is_builtin_preset_id(&provider.id) {
+                if let Some(correct_url) = preset_urls.get(&provider.id) {
+                    // 旧缓存为 https://opencode.ai/zen/go 或 .../v1（缺少 /v1/messages 等后缀）
+                    if provider.url != *correct_url {
+                        provider.url = correct_url.clone();
+                    }
+                }
                 for model in &mut provider.models {
                     if model.max_tokens >= model.context_window
                         || model.context_window.saturating_sub(model.max_tokens) < 1_024

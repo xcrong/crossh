@@ -39,7 +39,9 @@ pub fn builtin_presets() -> Vec<AgentProvider> {
             id: OPENCODE_GO_ID.into(),
             name: "opencode-go".into(),
             protocol: Protocol::AnthropicMessages,
-            url: "https://opencode.ai/zen/go".into(),
+            // pi 的 baseUrl 为 https://opencode.ai/zen/go，Anthropic SDK 会自动追加 /v1/messages；
+            // crossh 直接 POST 到 provider.url，需要完整路径
+            url: "https://opencode.ai/zen/go/v1/messages".into(),
             api_key_env: "OPENCODE_API_KEY".into(),
             api_key: String::new(),
             models: anthropic,
@@ -48,7 +50,7 @@ pub fn builtin_presets() -> Vec<AgentProvider> {
             id: OPENCODE_GO_OPENAI_ID.into(),
             name: "opencode-go (OpenAI Chat)".into(),
             protocol: Protocol::OpenAiChat,
-            url: "https://opencode.ai/zen/go/v1".into(),
+            url: "https://opencode.ai/zen/go/v1/chat/completions".into(),
             api_key_env: "OPENCODE_API_KEY".into(),
             api_key: String::new(),
             models: openai_chat,
@@ -57,7 +59,7 @@ pub fn builtin_presets() -> Vec<AgentProvider> {
             id: OPENCODE_GO_RESPONSES_ID.into(),
             name: "opencode-go (Responses)".into(),
             protocol: Protocol::OpenAiResponses,
-            url: "https://opencode.ai/zen/go/v1".into(),
+            url: "https://opencode.ai/zen/go/v1/responses".into(),
             api_key_env: "OPENCODE_API_KEY".into(),
             api_key: String::new(),
             models: openai_responses,
@@ -329,7 +331,7 @@ mod tests {
         assert_eq!(presets.len(), 3);
         let go = presets.iter().find(|p| p.id == OPENCODE_GO_ID).unwrap();
         assert_eq!(go.protocol, Protocol::AnthropicMessages);
-        assert_eq!(go.url, "https://opencode.ai/zen/go");
+        assert_eq!(go.url, "https://opencode.ai/zen/go/v1/messages");
         // 动态 overlay 可能使数量大于 baked 基线（pi 侧 4h 刷新追加模型）
         assert!(go.models.len() >= 4);
         assert!(go.models.iter().any(|m| m.id == "minimax-m3"));
