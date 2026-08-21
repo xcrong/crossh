@@ -16,8 +16,9 @@ use crossh_ui::context_menu::render_context_menu;
 use crossh_ui::widgets::{ime_input_canvas, marked_text_span, text_caret, text_span};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
-    Badge, BadgeTone, Button, ButtonSize, ButtonVariant, Hint, ListState, SplitResizer, StatusBar,
-    StatusMetric, TabItem, TabStrip, list_empty, list_pane, selectable_row,
+    Badge, BadgeTone, Banner, BannerLayout, BannerTone, Button, ButtonSize, ButtonVariant, Hint,
+    ListState, SplitResizer, StatusBar, StatusMetric, TabItem, TabStrip, list_empty, list_pane,
+    selectable_row,
 };
 
 use super::editor::CommitEditor;
@@ -741,56 +742,30 @@ impl GitWindow {
     }
 
     fn render_discard_confirmation(&self, count: usize, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .id("git-discard-confirmation")
-            .flex_shrink_0()
-            .w_full()
-            .p_2()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .bg(theme::surface())
-            .border_b_1()
-            .border_color(theme::danger())
-            .child(
-                div()
-                    .text_xs()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::text())
-                    .child(SharedString::from(
-                        rust_i18n::t!("git.discard_confirm", count = count).to_string(),
-                    )),
+        Banner::new("git-discard-confirmation")
+            .tone(BannerTone::Danger)
+            .layout(BannerLayout::Stacked)
+            .icon(icons::icon(icons::IconName::CircleX, 14.).text_color(theme::danger()))
+            .title(rust_i18n::t!("git.discard_confirm", count = count).to_string())
+            .description(i18n::text("git.discard_confirm_detail"))
+            .action(
+                Button::new("git-discard-cancel")
+                    .size(ButtonSize::Small)
+                    .variant(ButtonVariant::Ghost)
+                    .label(i18n::text("git.discard_cancel"))
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.cancel_discard(cx);
+                    })),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme::muted_text())
-                    .child(SharedString::from(i18n::text("git.discard_confirm_detail"))),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .justify_end()
-                    .gap_1()
-                    .child(
-                        Button::new("git-discard-cancel")
-                            .size(ButtonSize::Small)
-                            .variant(ButtonVariant::Secondary)
-                            .label(i18n::text("git.discard_cancel"))
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.cancel_discard(cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("git-discard-confirm")
-                            .size(ButtonSize::Small)
-                            .variant(ButtonVariant::Danger)
-                            .label(i18n::text("git.discard_confirm_action"))
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.confirm_discard(cx);
-                            })),
-                    ),
+            .action(
+                Button::new("git-discard-confirm")
+                    .size(ButtonSize::Small)
+                    .variant(ButtonVariant::Danger)
+                    .label(i18n::text("git.discard_confirm_action"))
+                    .icon(icons::icon(icons::IconName::Trash, 12.).text_color(theme::canvas()))
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.confirm_discard(cx);
+                    })),
             )
             .into_any_element()
     }
@@ -976,36 +951,16 @@ impl GitWindow {
         path: String,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut panel = div()
-            .w_full()
-            .flex_shrink_0()
-            .px_3()
-            .py_2()
-            .flex()
-            .items_center()
-            .gap_2()
-            .flex_wrap()
-            .bg(theme::diff_del_bg())
-            .border_b_1()
-            .border_color(theme::danger())
-            .child(icons::icon(icons::IconName::ShieldAlert, 14.).text_color(theme::danger()))
-            .child(
-                div()
-                    .min_w_0()
-                    .flex_1()
-                    .text_xs()
-                    .text_color(theme::danger())
-                    .child(SharedString::from(i18n::text("git.conflict_actions"))),
-            );
-        if compact {
-            panel = panel.flex_col().items_start();
-        }
-
         let ours_path = path.clone();
         let theirs_path = path.clone();
         let resolved_path = path;
-        panel
-            .child(
+        Banner::new("git-conflict-actions")
+            .tone(BannerTone::Warning)
+            .layout(BannerLayout::Inline)
+            .compact(compact)
+            .icon(icons::icon(icons::IconName::ShieldAlert, 14.).text_color(theme::warning()))
+            .title(i18n::text("git.conflict_actions"))
+            .action(
                 Button::new("git-conflict-ours")
                     .size(ButtonSize::Small)
                     .variant(ButtonVariant::Secondary)
@@ -1017,7 +972,7 @@ impl GitWindow {
                         cx.stop_propagation();
                     })),
             )
-            .child(
+            .action(
                 Button::new("git-conflict-theirs")
                     .size(ButtonSize::Small)
                     .variant(ButtonVariant::Secondary)
@@ -1029,7 +984,7 @@ impl GitWindow {
                         cx.stop_propagation();
                     })),
             )
-            .child(
+            .action(
                 Button::new("git-conflict-resolved")
                     .size(ButtonSize::Small)
                     .variant(ButtonVariant::Ghost)

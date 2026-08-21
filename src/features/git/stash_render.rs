@@ -9,7 +9,8 @@ use crate::shared::i18n;
 use crossh_core::git_stash::StashSummary;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
-    Button, ButtonSize, ButtonVariant, ListState, list_empty, list_pane, selectable_row,
+    Banner, BannerTone, Button, ButtonSize, ButtonVariant, ListState, list_empty, list_pane,
+    selectable_row,
 };
 
 use super::session::OperationState;
@@ -146,30 +147,14 @@ impl GitWindow {
     }
 
     fn render_stash_drop_confirmation(&self, selector: &str, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .w_full()
-            .flex_shrink_0()
-            .px_3()
-            .py_2()
-            .flex()
-            .items_center()
-            .gap_2()
-            .flex_wrap()
-            .bg(theme::diff_del_bg())
-            .border_b_1()
-            .border_color(theme::danger())
-            .child(
-                div()
-                    .min_w_0()
-                    .flex_1()
-                    .text_xs()
-                    .text_color(theme::danger())
-                    .child(SharedString::from(format!(
-                        "{}: {selector}",
-                        i18n::text("git.drop_stash_confirm")
-                    ))),
-            )
-            .child(
+        Banner::new("git-stash-drop-confirmation")
+            .tone(BannerTone::Danger)
+            .icon(icons::icon(icons::IconName::Trash, 14.).text_color(theme::danger()))
+            .title(format!(
+                "{}: {selector}",
+                i18n::text("git.drop_stash_confirm")
+            ))
+            .action(
                 Button::new("git-stash-drop-cancel")
                     .size(ButtonSize::Small)
                     .variant(ButtonVariant::Ghost)
@@ -178,7 +163,7 @@ impl GitWindow {
                         this.cancel_drop_stash(cx);
                     })),
             )
-            .child(
+            .action(
                 Button::new("git-stash-drop-confirm")
                     .size(ButtonSize::Small)
                     .variant(ButtonVariant::Danger)

@@ -7,6 +7,7 @@
 
 pub mod avatar;
 pub mod badge;
+pub mod banner;
 pub mod button;
 pub mod count_badge;
 pub mod hint;
@@ -36,6 +37,7 @@ pub mod theme {
 
 pub use avatar::{Avatar, AvatarKind};
 pub use badge::{Badge, BadgeTone};
+pub use banner::{Banner, BannerLayout, BannerTone, danger_banner, warning_banner};
 pub use button::{Button, ButtonSize, ButtonVariant};
 pub use count_badge::CountBadge;
 pub use hint::Hint;
