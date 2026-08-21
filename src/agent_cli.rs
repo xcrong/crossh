@@ -24,13 +24,7 @@ use crossh_agent::{
     load_prompts, load_session, load_skills, review_tool, save_session,
 };
 use crossh_theme as theme;
-use crossterm::{
-    event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers, MouseEventKind,
-    },
-    execute,
-};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Layout, Margin, Rect},
@@ -217,10 +211,9 @@ pub(crate) fn run_with_options(
         started_at: Instant::now(),
     };
 
-    execute!(io::stdout(), EnableMouseCapture).map_err(|error| error.to_string())?;
-    let result = ratatui::run(|terminal| run_app(terminal, &mut app));
-    let cleanup = execute!(io::stdout(), DisableMouseCapture);
-    result.and(cleanup).map_err(|error| error.to_string())
+    // 鼠标捕获会劫持终端原生选区，Agent 仅需滚轮滚动，已改由键盘处理，
+    // 故不再启用 EnableMouseCapture，保留终端默认的拖拽选择行为。
+    ratatui::run(|terminal| run_app(terminal, &mut app)).map_err(|error| error.to_string())
 }
 
 fn open_starting_session(
@@ -249,18 +242,14 @@ fn open_starting_session(
 fn run_app(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
     loop {
         terminal.draw(|frame| render(frame, app))?;
-        match event::read()? {
-            Event::Key(key) if key.kind == KeyEventKind::Press => {
-                if handle_key(terminal, app, key)? {
-                    return Ok(());
-                }
-            }
-            Event::Mouse(mouse) => match mouse.kind {
-                MouseEventKind::ScrollUp => scroll_conversation(app, -3),
-                MouseEventKind::ScrollDown => scroll_conversation(app, 3),
-                _ => {}
-            },
-            _ => {}
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        if handle_key(terminal, app, key)? {
+            return Ok(());
         }
     }
 }
@@ -342,6 +331,14 @@ fn handle_key(terminal: &mut DefaultTerminal, app: &mut App, key: KeyEvent) -> i
             return Ok(false);
         }
         submit(terminal, app)?;
+        return Ok(false);
+    }
+    if matches!(key.code, KeyCode::PageUp) {
+        scroll_conversation(app, -10);
+        return Ok(false);
+    }
+    if matches!(key.code, KeyCode::PageDown) {
+        scroll_conversation(app, 10);
         return Ok(false);
     }
     if matches!(key.code, KeyCode::Up | KeyCode::Down)
@@ -700,11 +697,6 @@ fn wait_for_model(
                         input::edit_input(app, key);
                     }
                 }
-                Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollUp => scroll_conversation(app, -3),
-                    MouseEventKind::ScrollDown => scroll_conversation(app, 3),
-                    _ => {}
-                },
                 _ => {}
             }
         }
@@ -741,11 +733,6 @@ fn confirm_tool(
                     break true;
                 }
                 KeyCode::Char('n') | KeyCode::Esc => break false,
-                _ => {}
-            },
-            Event::Mouse(mouse) => match mouse.kind {
-                MouseEventKind::ScrollUp => scroll_conversation(app, -3),
-                MouseEventKind::ScrollDown => scroll_conversation(app, 3),
                 _ => {}
             },
             _ => {}
@@ -903,11 +890,6 @@ fn wait_for_background<T>(
                     app.status = format!("{label} cancelled");
                     return Ok(BackgroundResult::Cancelled);
                 }
-                Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollUp => scroll_conversation(app, -3),
-                    MouseEventKind::ScrollDown => scroll_conversation(app, 3),
-                    _ => {}
-                },
                 _ => {}
             }
         }
@@ -1070,7 +1052,7 @@ fn normalize_command_name(command: &str) -> String {
 }
 
 fn help_text() -> String {
-    "Commands (start with / or 、):\n  /help, /hotkeys       Show commands and shortcuts\n  /model [value]        List or switch provider/model\n  /thinking [level]     Set reasoning level\n  /tools                Show available tools\n  /skills               List project skills\n  /skill NAME [request] Apply a skill to a request\n  /prompts              List prompt templates\n  /prompt NAME [args]   Run a prompt template\n  /new, /clear          Start a fresh session\n  /continue             Resume the most recent session\n  /resume [value]       List or resume a saved session\n  /fork, /clone         Branch the current conversation\n  /name [value]         Set or show the session name\n  /session, /stats      Show session and context details\n  /compact              Compact older conversation context\n  /reload               Reload project instructions and resources\n  /export [path]        Export the session as Markdown\n  /quit, /exit          Quit\n\nShortcuts:\n  Enter                 Send prompt\n  Shift+Enter           Insert a new line\n  Escape                Clear input, then quit\n  Ctrl+C                Clear input, then quit\n  Ctrl+T                Expand or collapse thinking\n  Ctrl+O                Expand or collapse tool output\n  Up/Down               Browse prompt history\n  While working, Enter  Queue a follow-up prompt"
+    "Commands (start with / or 、):\n  /help, /hotkeys       Show commands and shortcuts\n  /model [value]        List or switch provider/model\n  /thinking [level]     Set reasoning level\n  /tools                Show available tools\n  /skills               List project skills\n  /skill NAME [request] Apply a skill to a request\n  /prompts              List prompt templates\n  /prompt NAME [args]   Run a prompt template\n  /new, /clear          Start a fresh session\n  /continue             Resume the most recent session\n  /resume [value]       List or resume a saved session\n  /fork, /clone         Branch the current conversation\n  /name [value]         Set or show the session name\n  /session, /stats      Show session and context details\n  /compact              Compact older conversation context\n  /reload               Reload project instructions and resources\n  /export [path]        Export the session as Markdown\n  /quit, /exit          Quit\n\nShortcuts:\n  Enter                 Send prompt\n  Shift+Enter           Insert a new line\n  Escape                Clear input, then quit\n  Ctrl+C                Clear input, then quit\n  Ctrl+T                Expand or collapse thinking\n  Ctrl+O                Expand or collapse tool output\n  PageUp/PageDown       Scroll conversation\n  Up/Down               Browse prompt history\n  While working, Enter  Queue a follow-up prompt\n\nNote: text selection uses the terminal's native drag (mouse capture disabled)"
         .into()
 }
 
