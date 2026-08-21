@@ -5,7 +5,7 @@
 
 ## 特性
 
-- **读取 `~/.ssh/config`（只读）**：别名列表、`Include`/通配/`Match`、`ProxyJump`、`Local/Remote/DynamicForward`、`IdentityFile`/`IdentitiesOnly` 均可解析。
+- **读取 `~/.ssh/config`（只读）**：别名列表、`Include`/通配/`ProxyJump`、`Local/Remote/DynamicForward`、`IdentityFile`/`IdentitiesOnly` 均可解析（`Match exec` / `ProxyCommand` 为计划明确不支持，见 `crates/crossh-core/src/config/ssh_config.rs:5`）。
 - **会话池复用**：SFTP、端口转发和后台远程命令按主机共享已认证的 russh 连接；交互式终端由 Zed 的 PTY/事件循环独立管理。
 - **交互式终端**：Zed `terminal` 负责 PTY、终端模拟和滚动核心；Crossh 按固定 Zed revision 本地裁剪并维护 `terminal_view` 的 `TerminalElement`，继续复用 Zed 的绘制、输入、文本选择、鼠标协议、IME 和滚动行为。本地 shell 与交互式 SSH 都走同一套视图。
 - **反应式认证**：未知主机密钥弹指纹确认（可写 `known_hosts`）；加密私钥口令、密码按需弹出，凭据不回写日志。
@@ -13,7 +13,7 @@
 - **端口转发**：`-L` / `-R` / `-D`(SOCKS5)，config 驱动，UI 启停。
 - **本地终端**：Zed `TerminalBuilder` 创建本地 PTY；Crossh 只叠加项目目录、当前 `cwd` 和多会话标签，Git 状态由工作区单独维护。
 - **设置**：语言（zh/en）、Zed 终端字号、滚动回退行数、启动时检查更新，持久化到 `~/.config/crossh/`。
-- **远程更新**：设置页从 HTTPS release manifest 检查版本，按平台下载并校验 SHA-256，再交给随应用分发的独立 updater 完成替换和重启。
+- **远程更新**：设置页从 HTTPS release manifest 检查版本，按平台下载并校验 SHA-256 与 Ed25519 签名（缺失/无效签名一律拒绝，见 ADR 0014），再交给随应用分发的独立 updater 完成替换和重启。
 - **Crossh Agent**：`crossh agent` 提供流式多协议模型对话、`read`/`grep`/`find`/`ls`/`patch`/`edit`/`write`/`bash` 工具、项目 `AGENTS.md`/`CLAUDE.md`/`.pi/SYSTEM.md` 上下文、项目与用户级 `skills`/prompt templates、JSONL 会话恢复/分叉/树回退/压缩/导出、模型与思考级别切换、Markdown 输出、工具确认、取消和工作中排队。
 - 常驻友好：日志裁剪（`/tmp/crossh/run.log`）、panic 现场保留、空闲内存 ~70MB。
 
@@ -35,7 +35,7 @@ crossh git ~/Code/draw-backend
 
 Git Viewer 提供变更列表、staging/unstage、commit、push/pull 与刷新，状态栏同步显示与远端的分歧；`cmd-r` 刷新。
 
-发布包会同时包含 `crossh`、`crossh-git` 和共享的 `crossh-assets/` 资源目录。`crossh git`
+发布包会同时包含 `crossh`、`crossh-agent`、`crossh-git`、`crossh-updater` 和共享的 `crossh-assets/` 资源目录（三平台一致，见 `scripts/package.sh` / `package-linux.sh` / `package-windows.ps1`）。`crossh git`
 会优先启动安装目录旁边的 `crossh-git`，所有子程序共用同一份字体、图标和主题资源，
 因此 Git Viewer 不需要加载完整的 SSH、终端和工作区功能。
 
@@ -47,11 +47,11 @@ scripts/package.sh x86_64-apple-darwin   # 指定架构（交叉编译）
 open dist/crossh.app
 ```
 
-三平台发布产物由 [.github/workflows/release.yml](.github/workflows/release.yml) 构建：macOS `.app` zip（aarch64/x86_64）、Linux `tar.gz` + AppImage（x86_64/aarch64）、Windows zip（x86_64）。每个 release 同时生成 `stable.json`，由 [scripts/generate-update-manifest.sh](scripts/generate-update-manifest.sh) 根据实际产物的大小和 SHA-256 自动生成。更新设计、平台替换策略和后续 Ed25519 签名计划见 [docs/remote-update-plan.md](docs/remote-update-plan.md)。
+三平台发布产物由 [.github/workflows/release.yml](.github/workflows/release.yml) 构建：macOS `.app` zip（aarch64/x86_64）、Linux `tar.gz` + AppImage（x86_64/aarch64）、Windows zip（x86_64，aarch64 为 optional experimental）。每个 release 同时生成 `stable.json`，由 [scripts/generate-update-manifest.sh](scripts/generate-update-manifest.sh) 根据实际产物的大小、SHA-256 与 Ed25519 签名自动生成。更新设计、平台替换策略与签名校验（v0.16.4 已落地）见 [docs/remote-update-plan.md](docs/remote-update-plan.md) 与 [docs/adr/0014-update-manifest-signature.md](docs/adr/0014-update-manifest-signature.md)。
 
 版本发布使用 `scripts/release.sh <version> --push`：统一 workspace 版本、同步 lockfile、提交、打 tag 并推送。格式、架构、Clippy 和测试检查由 tag 触发的 GitHub Actions 在构建发布产物前执行。
 
-当前版本的 macOS 包不做 Apple 签名，不承诺绕过 Gatekeeper 或提供公证；远程更新只负责验证 HTTPS、目标平台、版本、文件大小和 SHA-256。
+当前版本的 macOS 包不做 Apple 签名，不承诺绕过 Gatekeeper 或提供公证；远程更新负责验证 HTTPS、目标平台、版本、文件大小、SHA-256 与 manifest Ed25519 签名。
 
 ## 快捷键
 
@@ -97,7 +97,7 @@ src/
     updates/                  更新状态机与设置页入口
 ```
 
-依赖方向保持单向：`crossh-core`、`crossh-assets`、`crossh-ssh`、`crossh-terminal` 和 `crossh-update` 不依赖 GPUI；`crossh-ui` 将 `crossh-assets` 适配为 GPUI 的资源源；根 package 的 GPUI feature adapter 依赖这些 crate；`workspace` 通过 `WorkspacePane` trait 消费终端、SFTP 和转发面板。可重复执行的分层检查位于 `scripts/check-architecture.sh`。
+依赖方向保持单向：`crossh-core`、`crossh-agent`、`crossh-ai-sdk`、`crossh-theme`、`crossh-assets`、`crossh-ssh`、`crossh-terminal` 和 `crossh-update` 不依赖 GPUI；`crossh-ui` 将 `crossh-assets` 适配为 GPUI 的资源源；根 package 的 GPUI feature adapter 依赖这些 crate；`workspace` 通过 `WorkspacePane` trait 消费终端、SFTP 和转发面板。可重复执行的分层检查位于 `scripts/check-architecture.sh`。
 
 UI 图标统一放在 `crates/crossh-assets/assets/icons/`，由 `crossh-assets`
 自动嵌入。图标引用必须通过 `crossh_ui::icons::IconName`，不要在业务视图中
