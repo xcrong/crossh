@@ -4,10 +4,10 @@ use gpui::{Bounds, Context, EntityInputHandler, Pixels, Point, UTF16Selection, W
 use std::ops::Range;
 
 use crate::shared::text_editing::{clamp_char_boundary, selection_bounds};
-use crossh_ui::widgets::{
-    byte_index_for_utf16, ime_caret_bounds, replace_utf16_range, utf16_len, utf16_offset_for_byte,
-    utf16_slice,
+use crate::shared::utf16::{
+    byte_index_for_utf16, replace_utf16_range, utf16_len, utf16_offset_for_byte, utf16_slice,
 };
+use crossh_ui::widgets::ime_caret_bounds;
 
 /// 设置窗口内的 IME 文本输入目标：仅 Agent 配置字段。
 /// 外部编辑器选择是下拉框（点击即生效），不参与文本输入。

@@ -7,27 +7,29 @@
 
 use std::ops::Range;
 
-use gpui::UTF16Selection;
-
-use crossh_ui::widgets::{
-    byte_index_for_utf16, replace_utf16_range, utf16_len, utf16_offset_for_byte,
-};
-
 use super::text_editing::TextEditingState;
+use super::utf16::{byte_index_for_utf16, replace_utf16_range, utf16_len, utf16_offset_for_byte};
+
+/// UTF-16 坐标系下的选区（与 GPUI 的 `UTF16Selection` 同构，由视图层转换）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Utf16Selection {
+    pub range: std::ops::Range<usize>,
+    pub reversed: bool,
+}
 
 /// `String` 型输入的选区：始终为光标在末尾的空选区。
-pub fn plain_selected_range(value: &str) -> UTF16Selection {
+pub fn plain_selected_range(value: &str) -> Utf16Selection {
     let position = utf16_len(value);
-    UTF16Selection {
+    Utf16Selection {
         range: position..position,
         reversed: false,
     }
 }
 
 /// `TextEditingState` 型输入的选区。
-pub fn editing_selected_range(state: &TextEditingState) -> UTF16Selection {
+pub fn editing_selected_range(state: &TextEditingState) -> Utf16Selection {
     let (start, end) = state.selection().unwrap_or((state.cursor, state.cursor));
-    UTF16Selection {
+    Utf16Selection {
         range: utf16_offset_for_byte(&state.value, start)..utf16_offset_for_byte(&state.value, end),
         reversed: state.anchor.is_some_and(|anchor| anchor > state.cursor),
     }

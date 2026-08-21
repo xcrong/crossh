@@ -7,10 +7,10 @@ use gpui::{
     Point, UTF16Selection, Window, px, size,
 };
 
-use crossh_ui::widgets::{
-    byte_index_for_utf16, printable_char, replace_utf16_range, text_width, utf16_len,
-    utf16_offset_for_byte, utf16_slice,
+use crate::shared::utf16::{
+    byte_index_for_utf16, replace_utf16_range, utf16_len, utf16_offset_for_byte, utf16_slice,
 };
+use crossh_ui::widgets::{printable_char, text_width};
 
 use super::window::GitWindow;
 use crate::shared::text_editing::selection_bounds;

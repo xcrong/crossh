@@ -74,6 +74,11 @@ check_absent \
     "$repo_root/src/shared/i18n.rs"
 
 check_absent \
+    "shared application logic imports GPUI or the UI crate" \
+    '(use|extern crate).*gpui|gpui::|crossh_ui' \
+    "$repo_root/src/shared"
+
+check_absent \
     "standalone updater includes application source with #[path]" \
     '#\[path' \
     "$repo_root/src/bin/crossh-updater.rs"

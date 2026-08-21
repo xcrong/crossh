@@ -3,7 +3,7 @@
 
 use gpui::Context;
 
-use crate::shared::i18n::{self, LanguagePreference};
+use crate::shared::i18n::LanguagePreference;
 use crossh_agent::AgentSettings;
 use crossh_terminal::settings::{
     MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK, TerminalSettings,
@@ -24,7 +24,7 @@ impl AppShell {
             cx.notify();
             return;
         }
-        i18n::set_language(cx, preference);
+        crate::features::settings::locale_state::set_language(cx, preference);
         crate::infrastructure::app_menu::refresh(cx);
         self.language_preference = preference;
         for tab in &self.workspace.sessions.remote_tabs {

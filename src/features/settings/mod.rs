@@ -1,11 +1,10 @@
 //! User settings feature.
 
+pub(crate) mod locale_state;
 pub(crate) mod persistence;
 pub(crate) mod window;
 
 use gpui::BorrowAppContext;
-
-use crate::shared::i18n;
 
 pub(crate) use persistence::{SettingsSnapshot, load, save};
 pub(crate) use window::{
@@ -15,5 +14,5 @@ pub(crate) use window::{
 /// Load persisted feature settings and initialize the locale global during boot.
 pub(crate) fn init<C: BorrowAppContext>(cx: &mut C) {
     let snapshot = load();
-    i18n::init(cx, snapshot.language);
+    locale_state::init(cx, snapshot.language);
 }

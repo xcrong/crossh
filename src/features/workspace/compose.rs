@@ -4,7 +4,7 @@
 use gpui::{ClipboardItem, Context, KeyDownEvent, Window};
 
 use crate::features::workspace::view::ActiveView;
-use crate::shared::text_editing::handle_text_editing_key;
+use crate::shared::text_editing::{EditingKeystroke, handle_text_editing_key};
 
 use super::AppShell;
 
@@ -121,7 +121,14 @@ impl AppShell {
         } else {
             None
         };
-        let result = handle_text_editing_key(state, ks, paste_text.as_deref());
+        let editing_ks = EditingKeystroke {
+            key: ks.key.clone(),
+            key_char: ks.key_char.clone(),
+            control: ks.modifiers.control,
+            platform: ks.modifiers.platform,
+            shift: ks.modifiers.shift,
+        };
+        let result = handle_text_editing_key(state, &editing_ks, paste_text.as_deref());
         if let Some(text) = result.copy_text {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }

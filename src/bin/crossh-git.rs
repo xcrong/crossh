@@ -3,6 +3,9 @@
 #[path = "../shared/text_editing.rs"]
 pub mod text_editing;
 
+#[path = "../shared/utf16.rs"]
+pub mod utf16;
+
 mod shared {
     pub mod i18n {
         pub fn text(key: &str) -> String {
@@ -11,6 +14,7 @@ mod shared {
     }
 
     pub use crate::text_editing;
+    pub use crate::utf16;
 }
 
 rust_i18n::i18n!("locales", fallback = "en");

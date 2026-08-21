@@ -10,9 +10,8 @@
 
 use std::ops::Range;
 
-use crossh_ui::widgets::{
-    byte_index_for_utf16, ime_caret_bounds, replace_utf16_range, utf16_len, utf16_slice,
-};
+use crate::shared::utf16::{byte_index_for_utf16, replace_utf16_range, utf16_len, utf16_slice};
+use crossh_ui::widgets::ime_caret_bounds;
 use gpui::{Bounds, Pixels, UTF16Selection, Window, px};
 
 /// 单行、光标恒在末尾的输入状态。

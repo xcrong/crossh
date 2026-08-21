@@ -4,7 +4,8 @@ use std::ops::Range;
 
 use gpui::{Bounds, EntityInputHandler, Pixels, UTF16Selection};
 
-use crossh_ui::widgets::{byte_index_for_utf16, ime_caret_bounds, utf16_len, utf16_slice};
+use crate::shared::utf16::{byte_index_for_utf16, utf16_len, utf16_slice};
+use crossh_ui::widgets::ime_caret_bounds;
 
 use crate::shared::input_handler::{
     editing_mark_text, editing_marked_range, editing_replace, editing_selected_range,
@@ -188,12 +189,15 @@ impl EntityInputHandler for AppShell {
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
         let field = self.active_input_field(window)?;
-        if let Some(state) = self.editing_state(field) {
-            Some(editing_selected_range(state))
+        let selection = if let Some(state) = self.editing_state(field) {
+            editing_selected_range(state)
         } else {
-            let value = self.plain_value(field)?;
-            Some(plain_selected_range(value))
-        }
+            plain_selected_range(self.plain_value(field)?)
+        };
+        Some(UTF16Selection {
+            range: selection.range,
+            reversed: selection.reversed,
+        })
     }
 
     fn marked_text_range(

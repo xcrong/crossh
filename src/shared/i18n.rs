@@ -1,9 +1,8 @@
-//! Application locale state and translation helpers.
+//! Application locale helpers (pure logic, zero UI dependencies).
 //!
-//! `Global` is GPUI application-state storage rather than view coupling; a complete UI-dependency
-//! break would require the settings feature to own and inject this state.
+//! GPUI 全局态（`I18nState`/`init`/`set_language`）由 settings feature 的
+//! `locale_state` 模块拥有并注入；本模块只保留 locale 解析与翻译查询。
 
-use gpui::{BorrowAppContext, Global};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,28 +48,6 @@ impl LanguagePreference {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct I18nState {
-    pub preference: LanguagePreference,
-    pub locale: Locale,
-}
-
-impl Global for I18nState {}
-
-pub fn init<C: BorrowAppContext>(cx: &mut C, preference: LanguagePreference) {
-    set_locale(preference);
-    let locale = preference.resolve();
-    cx.set_global(I18nState { preference, locale });
-}
-
-pub fn set_language<C: BorrowAppContext>(cx: &mut C, preference: LanguagePreference) {
-    set_locale(preference);
-    let locale = preference.resolve();
-    cx.update_global::<I18nState, _>(|state, _| {
-        *state = I18nState { preference, locale };
-    });
-}
-
 pub fn text(key: &str) -> String {
     rust_i18n::t!(key).to_string()
 }
@@ -88,7 +65,7 @@ pub fn preference_label(preference: LanguagePreference) -> String {
     })
 }
 
-fn set_locale(preference: LanguagePreference) {
+pub(crate) fn set_locale(preference: LanguagePreference) {
     rust_i18n::set_locale(preference.resolve().code());
 }
 

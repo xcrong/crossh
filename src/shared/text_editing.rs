@@ -1,7 +1,7 @@
 //! 文本编辑状态机与 UTF-8 字符边界工具（纯逻辑，零 UI 依赖）。
 //!
 //! 本模块是应用程序"文本编辑"的共享纯逻辑层，遵循架构红线：
-//! **逻辑不依赖 UI**——除标准库文本处理外，这里不允许出现 `gpui` 等任何 UI
+//! **逻辑不依赖 UI**——除标准库文本处理外，这里不允许出现任何 UI 框架
 //! 依赖（`scripts/check-architecture.sh` 亦会拦截）。焦点、滚动、重绘
 //! （`cx.notify()`）等 UI 职责由各 feature 的视图层（`QuickCommandEditor`、
 //! `CommitEditor`、设置输入框、SFTP 编辑器）自行承担，本模块只负责状态与编辑运算。
@@ -9,15 +9,21 @@
 //! `TextEditingState` 统一了各编辑器共享的字段集合（value/cursor/anchor/IME
 //! 标记），配合本模块的四个字符边界函数，消除各 feature 之间重复的边界实现。
 
-use gpui::Keystroke;
-
-use crossh_ui::widgets::printable_char;
-
 /// 统一按键分发的结果：是否已消费该按键，以及 `ctrl/cmd+c/x` 时需要写入剪贴板的文本。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextEditingKeyResult {
     pub handled: bool,
     pub copy_text: Option<String>,
+}
+
+/// 与编辑分发相关的按键快照；由视图层从 GPUI 的 `Keystroke` 转换而来。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditingKeystroke {
+    pub key: String,
+    pub key_char: Option<String>,
+    pub control: bool,
+    pub platform: bool,
+    pub shift: bool,
 }
 
 /// 将 `TextEditingState` 的通用编辑键（`backspace/delete/left/right/home/end`、
@@ -29,11 +35,11 @@ pub struct TextEditingKeyResult {
 /// 未匹配的按键返回 `handled: false`。
 pub fn handle_text_editing_key(
     state: &mut TextEditingState,
-    ks: &Keystroke,
+    ks: &EditingKeystroke,
     clipboard_text: Option<&str>,
 ) -> TextEditingKeyResult {
-    let primary = ks.modifiers.control || ks.modifiers.platform;
-    let extend = ks.modifiers.shift;
+    let primary = ks.control || ks.platform;
+    let extend = ks.shift;
     if primary && ks.key == "a" {
         state.clear_composition();
         state.select_all();
@@ -119,7 +125,7 @@ pub fn handle_text_editing_key(
             }
         }
         _ => {
-            if let Some(ch) = printable_char(ks) {
+            if let Some(ch) = printable_key_char(ks) {
                 state.clear_composition();
                 state.replace_selection(&ch.to_string());
                 TextEditingKeyResult {
@@ -134,6 +140,14 @@ pub fn handle_text_editing_key(
             }
         }
     }
+}
+
+/// 键盘事件的可打印字符；带控制/平台修饰键时返回 None。
+fn printable_key_char(ks: &EditingKeystroke) -> Option<char> {
+    if ks.control || ks.platform {
+        return None;
+    }
+    ks.key_char.as_ref().and_then(|s| s.chars().next())
 }
 
 /// 文本编辑的纯状态：文本内容、光标、选区锚点与 IME 组合状态。
@@ -546,17 +560,13 @@ mod tests {
         platform: bool,
         shift: bool,
         key_char: Option<&str>,
-    ) -> gpui::Keystroke {
-        gpui::Keystroke {
+    ) -> EditingKeystroke {
+        EditingKeystroke {
             key: key.to_string(),
             key_char: key_char.map(|s| s.to_string()),
-            modifiers: gpui::Modifiers {
-                control,
-                platform,
-                shift,
-                alt: false,
-                function: false,
-            },
+            control,
+            platform,
+            shift,
         }
     }
 
