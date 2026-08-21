@@ -3,8 +3,10 @@
 //! This state is deliberately independent from rendering. The shell coordinates
 //! actions, while the registry owns the collections that describe open panes.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use gpui::{Subscription, Task};
 
@@ -113,6 +115,10 @@ pub(crate) struct WorkspaceState {
     pub(crate) terminal_splits: BTreeMap<ActiveView, TerminalSplitState>,
     /// 每个终端独立的批量输入条状态（终端级，可见性+草稿），与分栏同为终端级设置。
     pub(crate) compose: BTreeMap<ActiveView, ComposeEntry>,
+    /// 每个分栏属主独立的左窗格宽度（ADR 0011 语义的自然延伸）。key 与
+    /// `terminal_splits` 一致；`0.0` 是哨兵值，渲染层读到它就走均分默认。
+    /// 槽位生命周期严格跟随 `terminal_splits` 的增删/重映射路径。
+    pub(crate) split_widths: BTreeMap<ActiveView, Rc<Cell<f32>>>,
 }
 
 impl WorkspaceState {
@@ -124,6 +130,7 @@ impl WorkspaceState {
             _toast_task: None,
             terminal_splits: BTreeMap::new(),
             compose: BTreeMap::new(),
+            split_widths: BTreeMap::new(),
         }
     }
 
@@ -138,6 +145,8 @@ impl WorkspaceState {
         }
         self.terminal_splits
             .insert(left, TerminalSplitState::new(left, right));
+        // 宽度槽位随分栏创建：0.0 哨兵 = 渲染层走均分默认。
+        self.split_widths.insert(left, Rc::new(Cell::new(0.)));
         true
     }
 
@@ -217,6 +226,8 @@ impl WorkspaceState {
         self.terminal_splits.retain(|owner, split| {
             if closed.contains(owner) || closed.contains(&split.right) {
                 removed.push(*split);
+                // 宽度槽位随分栏一起拆除，避免孤儿条目。
+                self.split_widths.remove(owner);
                 false
             } else {
                 true
@@ -240,10 +251,12 @@ impl WorkspaceState {
     /// （无活动销毁 / 有活动保留为普通标签）。关闭右窗格只清空分栏。
     pub(crate) fn prepare_split_view_close(&mut self, view: ActiveView) -> SplitViewCloseOutcome {
         if let Some(split) = self.terminal_splits.remove(&view) {
+            self.split_widths.remove(&view);
             return self.prepare_owner_close(split);
         }
         if let Some(owner) = self.split_owner_of_right(view) {
             self.terminal_splits.remove(&owner);
+            self.split_widths.remove(&owner);
             return SplitViewCloseOutcome::Closed { retire_pane: None };
         }
         SplitViewCloseOutcome::Inactive
@@ -268,7 +281,10 @@ impl WorkspaceState {
     /// 分栏直接失效清除（close 流程的 prepare 通常已经清理，此处兜底）。
     pub(crate) fn remap_split_remote_tab_indices(&mut self, removed: usize) {
         let mut next = BTreeMap::new();
+        let mut next_widths = BTreeMap::new();
+        let old_widths = std::mem::take(&mut self.split_widths);
         for (key, split) in std::mem::take(&mut self.terminal_splits) {
+            let original_key = key;
             let key = match key {
                 ActiveView::RemoteTab(index) if index == removed => continue,
                 ActiveView::RemoteTab(index) if index > removed => ActiveView::RemoteTab(index - 1),
@@ -288,8 +304,13 @@ impl WorkspaceState {
                     ..split
                 },
             );
+            // 宽度槽位 key 与分栏属主同步迁移；分栏被删的槽位随之清除。
+            if let Some(width) = old_widths.get(&original_key) {
+                next_widths.insert(key, width.clone());
+            }
         }
         self.terminal_splits = next;
+        self.split_widths = next_widths;
     }
 
     /// 获取指定终端的 compose 条目（不存在时返回默认收起态）。
@@ -357,6 +378,10 @@ fn remap_remote_tab(view: ActiveView, removed: usize) -> Option<ActiveView> {
 
 #[cfg(test)]
 mod tests {
+    // spec 测试名带双下划线前缀（如 `spec_20260821_split_width__`），
+    // 触发 non_snake_case 警告；测试模块内显式豁免。
+    #![allow(non_snake_case)]
+
     use super::*;
 
     #[test]
@@ -521,6 +546,171 @@ mod tests {
         let removed = workspace.take_splits_involving(&[ActiveView::LocalSession(2)]);
         assert_eq!(removed.len(), 1);
         assert!(!workspace.is_split_secondary(ActiveView::LocalSession(2)));
+    }
+
+    /// 契约 1：两个属主的分栏宽度互不覆盖。
+    #[test]
+    fn spec_20260821_split_width__owners_keep_independent_widths() {
+        let mut workspace = WorkspaceState::new(BTreeMap::new());
+        workspace.active_view = Some(ActiveView::LocalSession(1));
+        assert!(workspace.begin_terminal_split(ActiveView::LocalSession(2)));
+        workspace.active_view = Some(ActiveView::LocalSession(3));
+        assert!(workspace.begin_terminal_split(ActiveView::LocalSession(4)));
+
+        workspace.split_widths[&ActiveView::LocalSession(1)].set(220.);
+        workspace.split_widths[&ActiveView::LocalSession(3)].set(540.);
+
+        assert_eq!(
+            workspace.split_widths[&ActiveView::LocalSession(1)].get(),
+            220.
+        );
+        assert_eq!(
+            workspace.split_widths[&ActiveView::LocalSession(3)].get(),
+            540.
+        );
+    }
+
+    /// 契约 2：从未拖拽过的分栏读到 0.0 哨兵（渲染层以均分为默认值）。
+    #[test]
+    fn spec_20260821_split_width__fresh_slot_reads_zero_sentinel() {
+        let mut workspace = WorkspaceState::new(BTreeMap::new());
+        workspace.active_view = Some(ActiveView::LocalSession(1));
+        assert!(workspace.begin_terminal_split(ActiveView::LocalSession(2)));
+
+        assert_eq!(
+            workspace.split_widths[&ActiveView::LocalSession(1)].get(),
+            0.
+        );
+    }
+
+    /// 契约 3：只有创建成功才分配宽度槽位；失败早退不分配、不覆盖。
+    #[test]
+    fn spec_20260821_split_width__slot_allocated_only_on_successful_creation() {
+        let mut workspace = WorkspaceState::new(BTreeMap::new());
+        // 无活动视图：创建失败，不分配槽位
+        assert!(!workspace.begin_terminal_split(ActiveView::LocalSession(2)));
+        assert!(
+            !workspace
+                .split_widths
+                .contains_key(&ActiveView::LocalSession(1))
+        );
+
+        workspace.active_view = Some(ActiveView::LocalSession(1));
+        assert!(workspace.begin_terminal_split(ActiveView::LocalSession(2)));
+        assert!(
+            workspace
+                .split_widths
+                .contains_key(&ActiveView::LocalSession(1))
+        );
+
+        // 属主已有分栏：再次创建失败，不重置已有槽位
+        workspace.split_widths[&ActiveView::LocalSession(1)].set(300.);
+        assert!(!workspace.begin_terminal_split(ActiveView::LocalSession(3)));
+        assert_eq!(
+            workspace.split_widths[&ActiveView::LocalSession(1)].get(),
+            300.
+        );
+    }
+
+    /// 契约 4：关闭属主/右窗格、批量清扫三条拆除路径都同步移除宽度槽位。
+    #[test]
+    fn spec_20260821_split_width__all_close_paths_remove_their_slots() {
+        let mut workspace = WorkspaceState::new(BTreeMap::new());
+        workspace.active_view = Some(ActiveView::LocalSession(1));
+        assert!(workspace.begin_terminal_split(ActiveView::LocalSession(2)));
+        workspace.active_view = Some(ActiveView::LocalSession(3));
+        assert!(workspace.begin_terminal_split(ActiveView::LocalSession(4)));
+        workspace.active_view = Some(ActiveView::LocalSession(5));
+        assert!(workspace.begin_terminal_split(ActiveView::LocalSession(6)));
+
+        // 路径一：关闭右窗格（会话 2），属主 1 的槽位移除
+        assert_eq!(
+            workspace.prepare_split_view_close(ActiveView::LocalSession(2)),
+            SplitViewCloseOutcome::Closed { retire_pane: None }
+        );
+        assert!(
+            !workspace
+                .split_widths
+                .contains_key(&ActiveView::LocalSession(1))
+        );
+
+        // 路径二：隐藏状态下关闭属主 Tab（会话 3），其槽位移除
+        workspace.active_view = Some(ActiveView::LocalSession(7));
+        assert_eq!(
+            workspace.prepare_split_view_close(ActiveView::LocalSession(3)),
+            SplitViewCloseOutcome::Closed {
+                retire_pane: Some(ActiveView::LocalSession(4))
+            }
+        );
+        assert!(
+            !workspace
+                .split_widths
+                .contains_key(&ActiveView::LocalSession(3))
+        );
+
+        // 路径三：批量清扫命中属主（会话 5），其槽位移除
+        let removed = workspace.take_splits_involving(&[ActiveView::LocalSession(5)]);
+        assert_eq!(removed.len(), 1);
+        assert!(
+            !workspace
+                .split_widths
+                .contains_key(&ActiveView::LocalSession(5))
+        );
+        assert!(workspace.split_widths.is_empty());
+    }
+
+    /// 契约 5：远程 Tab 索引重映射时宽度槽位 key 跟随迁移；
+    /// 属主被删的分栏的槽位清除。
+    #[test]
+    fn spec_20260821_split_width__remote_remap_moves_and_clears_slots() {
+        let mut workspace = WorkspaceState::new(BTreeMap::new());
+        workspace.active_view = Some(ActiveView::RemoteTab(0));
+        assert!(workspace.begin_terminal_split(ActiveView::RemoteTab(3)));
+        workspace.active_view = Some(ActiveView::RemoteTab(4));
+        assert!(workspace.begin_terminal_split(ActiveView::RemoteTab(5)));
+        workspace.split_widths[&ActiveView::RemoteTab(0)].set(180.);
+        workspace.split_widths[&ActiveView::RemoteTab(4)].set(420.);
+
+        // 删除索引 1：两个属主 key 都不变（0 与 4>1→3 迁移）
+        workspace.remap_split_remote_tab_indices(1);
+        assert_eq!(
+            workspace.split_widths[&ActiveView::RemoteTab(0)].get(),
+            180.
+        );
+        assert_eq!(
+            workspace.split_widths[&ActiveView::RemoteTab(3)].get(),
+            420.
+        );
+
+        // 删除索引 2：属主 0 的分栏失效，其槽位清除；第二个属主 3→2 迁移
+        workspace.remap_split_remote_tab_indices(2);
+        assert!(
+            !workspace
+                .split_widths
+                .contains_key(&ActiveView::RemoteTab(0))
+        );
+        assert_eq!(
+            workspace.split_widths[&ActiveView::RemoteTab(2)].get(),
+            420.
+        );
+    }
+
+    /// 契约 6：全部分栏清空后 split_widths 同步为空，不留孤儿条目。
+    #[test]
+    fn spec_20260821_split_width__clearing_all_splits_empties_width_slots() {
+        let mut workspace = WorkspaceState::new(BTreeMap::new());
+        workspace.active_view = Some(ActiveView::LocalSession(1));
+        assert!(workspace.begin_terminal_split(ActiveView::LocalSession(2)));
+        workspace.active_view = Some(ActiveView::LocalSession(3));
+        assert!(workspace.begin_terminal_split(ActiveView::LocalSession(4)));
+        workspace.split_widths[&ActiveView::LocalSession(1)].set(260.);
+        workspace.split_widths[&ActiveView::LocalSession(3)].set(480.);
+
+        let removed = workspace
+            .take_splits_involving(&[ActiveView::LocalSession(1), ActiveView::LocalSession(3)]);
+        assert_eq!(removed.len(), 2);
+        assert!(workspace.terminal_splits.is_empty());
+        assert!(workspace.split_widths.is_empty());
     }
 
     /// 多分栏共存时，关闭某个分栏的右窗格只清空其属主的分栏，

@@ -1,7 +1,9 @@
 //! 工作区：标签条 + 终端/SFTP/转发主区，以及会话/标签的数据类型。
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, AppContext, ClickEvent, Context, Entity, FontWeight, InteractiveElement,
@@ -196,8 +198,16 @@ fn render_terminal_split(
         (available_width - TERMINAL_SPLIT_HANDLE_WIDTH).max(0.0)
     };
     let default_left_width = ((available_width - TERMINAL_SPLIT_HANDLE_WIDTH) / 2.0).max(0.0);
+    // 宽度槽位按分栏属主独立记忆；查不到槽位（理论不可达，防御）时回退
+    // 0.0 哨兵走均分，不得 panic。
+    let split_width = shell
+        .workspace
+        .split_widths
+        .get(&split.left)
+        .cloned()
+        .unwrap_or_else(|| Rc::new(Cell::new(0.)));
     let left_width = terminal_split_left_width(
-        shell.terminal_split_width.get(),
+        split_width.get(),
         default_left_width,
         pane_min_width,
         max_left_width,
@@ -237,6 +247,7 @@ fn render_terminal_split(
         .child(right)
         .child(render_terminal_split_resizer(
             shell,
+            split_width,
             left_width,
             pane_min_width,
             max_left_width,
@@ -246,6 +257,7 @@ fn render_terminal_split(
 
 fn render_terminal_split_resizer(
     shell: &AppShell,
+    split_width: Rc<Cell<f32>>,
     left_width: f32,
     min_width: f32,
     max_width: f32,
@@ -261,7 +273,7 @@ fn render_terminal_split_resizer(
             SplitResizer::new(
                 "terminal-split-resizer",
                 shell.terminal_split_dragging.clone(),
-                shell.terminal_split_width.clone(),
+                split_width,
             )
             .min_width(min_width)
             .max_width(max_width)

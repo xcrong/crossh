@@ -192,10 +192,10 @@ impl AppShell {
         }
     }
 
-    /// 分栏全部关闭后重置尺规；还有其他属主的分栏在时保留宽度偏好。
+    /// 分栏全部关闭后复位拖拽标志；宽度槽位已随各删除路径在 registry
+    /// 中清理，这里不再触碰。
     fn reset_split_ui_if_idle(&mut self) {
         if self.workspace.terminal_splits.is_empty() {
-            self.terminal_split_width.set(0.);
             self.terminal_split_dragging.set(false);
         }
     }
