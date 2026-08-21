@@ -149,6 +149,60 @@ pub(super) fn render(frame: &mut Frame, app: &mut App) {
     let (cursor_x, cursor_y) = cursor_position(input_area, &app.input, app.input_cursor);
     frame.set_cursor_position((cursor_x, cursor_y));
 
+    let slash_cands = slash::slash_candidates(app);
+    if !slash_cands.is_empty() && is_command_input(&app.input) {
+        let selected = app.slash_selected.min(slash_cands.len().saturating_sub(1));
+        let mut popup_lines = Vec::new();
+        for (idx, cand) in slash_cands.iter().enumerate() {
+            let is_sel = idx == selected;
+            let name_style = if is_sel {
+                Style::new().fg(bg).bg(accent).add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(accent).add_modifier(Modifier::BOLD)
+            };
+            let desc_style = if is_sel {
+                Style::new().fg(bg).bg(accent)
+            } else {
+                Style::new().fg(muted)
+            };
+            popup_lines.push(Line::from(vec![
+                Span::styled(format!(" {:<14}", cand.display), name_style),
+                Span::styled(format!(" {}", cand.desc), desc_style),
+            ]));
+        }
+        let popup_height = (slash_cands.len() as u16 + 2).clamp(3, 10);
+        let popup_width = input.width.saturating_sub(2).clamp(32, 64);
+        let popup_x = input.x;
+        let popup_y = input.y.saturating_sub(popup_height);
+        let mut popup_rect = Rect {
+            x: popup_x,
+            y: popup_y,
+            width: popup_width,
+            height: popup_height,
+        };
+        if popup_rect.y < conversation.y + 1 {
+            popup_rect.y = conversation.y + 1;
+        }
+        if popup_rect.bottom() > input.y {
+            popup_rect.y = input.y.saturating_sub(popup_height);
+        }
+        frame.render_widget(ratatui::widgets::Clear, popup_rect);
+        let hint = if slash_cands.len() == 1 {
+            " Tab/Enter 补全 "
+        } else {
+            " ↑↓ 选择 Tab/Enter 补全 "
+        };
+        frame.render_widget(
+            Paragraph::new(popup_lines).block(
+                Block::bordered()
+                    .border_style(Style::new().fg(accent))
+                    .title(hint)
+                    .style(Style::new().bg(bg)),
+            ),
+            popup_rect,
+        );
+    }
+
     let footer_line = Line::from(vec![
         Span::styled(format!(" {}", app.status), Style::new().fg(muted)),
         Span::styled(

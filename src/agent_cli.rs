@@ -38,6 +38,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 mod input;
 #[path = "agent_cli_render.rs"]
 mod render;
+#[path = "agent_cli_slash.rs"]
+mod slash;
 #[cfg(test)]
 use input::{delete_previous_char, delete_previous_word, insert_text, move_cursor, queue_input};
 use render::{render, scroll_conversation, session_name};
@@ -142,6 +144,7 @@ struct App {
     input: String,
     input_cursor: usize,
     history_cursor: Option<usize>,
+    slash_selected: usize,
     queued_inputs: VecDeque<String>,
     queue: crossh_agent::MessageQueue,
     event_bus: crossh_agent::EventBus,
@@ -196,6 +199,7 @@ pub(crate) fn run_with_options(
         input: String::new(),
         input_cursor: 0,
         history_cursor: None,
+        slash_selected: 0,
         queued_inputs: VecDeque::new(),
         queue: crossh_agent::MessageQueue::new(),
         event_bus: crossh_agent::EventBus::new(),
@@ -295,12 +299,54 @@ fn handle_key(terminal: &mut DefaultTerminal, app: &mut App, key: KeyEvent) -> i
         return Ok(false);
     }
     if key.code == KeyCode::Esc {
+        if !slash::slash_candidates(app).is_empty() {
+            app.slash_selected = 0;
+        }
         if app.input.is_empty() {
             return Ok(true);
         }
         input::clear_input(app);
         app.status = "Input cleared".into();
         return Ok(false);
+    }
+    {
+        let candidates = slash::slash_candidates(app);
+        if !candidates.is_empty() {
+            if app.slash_selected >= candidates.len() {
+                app.slash_selected = 0;
+            }
+            match key.code {
+                KeyCode::Up => {
+                    app.slash_selected =
+                        (app.slash_selected + candidates.len() - 1) % candidates.len();
+                    return Ok(false);
+                }
+                KeyCode::Down => {
+                    app.slash_selected = (app.slash_selected + 1) % candidates.len();
+                    return Ok(false);
+                }
+                KeyCode::Tab => {
+                    let cand = candidates[app.slash_selected].clone();
+                    slash::apply_slash_completion(app, &cand);
+                    return Ok(false);
+                }
+                _ => {}
+            }
+            if input::is_enter_key(key.code) && !key.modifiers.contains(KeyModifiers::SHIFT) {
+                let trimmed = app.input.trim().to_ascii_lowercase();
+                let exact = candidates.iter().any(|c| {
+                    c.display.to_ascii_lowercase() == trimmed
+                        || c.insert.to_ascii_lowercase() == trimmed
+                });
+                if !exact {
+                    let cand = candidates[app.slash_selected].clone();
+                    slash::apply_slash_completion(app, &cand);
+                    return Ok(false);
+                }
+            }
+        } else {
+            app.slash_selected = 0;
+        }
     }
     if input::is_enter_key(key.code) {
         if key.modifiers.contains(KeyModifiers::SHIFT) {
@@ -345,10 +391,14 @@ fn handle_key(terminal: &mut DefaultTerminal, app: &mut App, key: KeyEvent) -> i
         && !app.input.contains('\n')
         && (app.input_cursor == 0 || app.input_cursor == app.input.len())
     {
+        if !slash::slash_candidates(app).is_empty() {
+            return Ok(false);
+        }
         input::move_history(app, key.code == KeyCode::Up);
         return Ok(false);
     }
     input::edit_input(app, key);
+    app.slash_selected = 0;
     Ok(false)
 }
 
@@ -1052,7 +1102,7 @@ fn normalize_command_name(command: &str) -> String {
 }
 
 fn help_text() -> String {
-    "Commands (start with / or 、):\n  /help, /hotkeys       Show commands and shortcuts\n  /model [value]        List or switch provider/model\n  /thinking [level]     Set reasoning level\n  /tools                Show available tools\n  /skills               List project skills\n  /skill NAME [request] Apply a skill to a request\n  /prompts              List prompt templates\n  /prompt NAME [args]   Run a prompt template\n  /new, /clear          Start a fresh session\n  /continue             Resume the most recent session\n  /resume [value]       List or resume a saved session\n  /fork, /clone         Branch the current conversation\n  /name [value]         Set or show the session name\n  /session, /stats      Show session and context details\n  /compact              Compact older conversation context\n  /reload               Reload project instructions and resources\n  /export [path]        Export the session as Markdown\n  /quit, /exit          Quit\n\nShortcuts:\n  Enter                 Send prompt\n  Shift+Enter           Insert a new line\n  Escape                Clear input, then quit\n  Ctrl+C                Clear input, then quit\n  Ctrl+T                Expand or collapse thinking\n  Ctrl+O                Expand or collapse tool output\n  PageUp/PageDown       Scroll conversation\n  Up/Down               Browse prompt history\n  While working, Enter  Queue a follow-up prompt\n\nNote: text selection uses the terminal's native drag (mouse capture disabled)"
+    "Commands (start with / or 、):\n  /help, /hotkeys       Show commands and shortcuts\n  /model [value]        List or switch provider/model\n  /thinking [level]     Set reasoning level\n  /tools                Show available tools\n  /skills               List project skills\n  /skill NAME [request] Apply a skill to a request\n  /prompts              List prompt templates\n  /prompt NAME [args]   Run a prompt template\n  /new, /clear          Start a fresh session\n  /continue             Resume the most recent session\n  /resume [value]       List or resume a saved session\n  /fork, /clone         Branch the current conversation\n  /name [value]         Set or show the session name\n  /session, /stats      Show session and context details\n  /compact              Compact older conversation context\n  /reload               Reload project instructions and resources\n  /export [path]        Export the session as Markdown\n  /quit, /exit          Quit\n\nShortcuts:\n  Enter                 Send prompt\n  Shift+Enter           Insert a new line\n  Escape                Clear input, then quit\n  Ctrl+C                Clear input, then quit\n  Ctrl+T                Expand or collapse thinking\n  Ctrl+O                Expand or collapse tool output\n  PageUp/PageDown       Scroll conversation\n  Up/Down               Browse prompt history / slash candidates\n  Tab / Enter           Complete slash command\n  While working, Enter  Queue a follow-up prompt\n\nSlash commands show a popup when typing / or 、; ↑↓ to navigate.\nNote: text selection uses the terminal's native drag (mouse capture disabled)"
         .into()
 }
 

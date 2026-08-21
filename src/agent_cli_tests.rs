@@ -48,6 +48,7 @@ fn app() -> App {
         input: String::new(),
         input_cursor: 0,
         history_cursor: None,
+        slash_selected: 0,
         queued_inputs: VecDeque::new(),
         queue: crossh_agent::MessageQueue::new(),
         event_bus: crossh_agent::EventBus::new(),
