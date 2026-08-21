@@ -24,11 +24,10 @@ use crate::shared::i18n;
 use crossh_core::commands::{BackgroundTask, BackgroundTaskStatus, CommandRecord};
 use crossh_core::git_status::GitStatus;
 use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
-use crossh_ui::widgets::{ime_input_canvas, marked_text_span, text_caret, text_span};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
-    BadgeTone, Button, ButtonSize, ButtonVariant, CountBadge, ModalDialog, SidePanel, SplitResizer,
-    StatusBar, StatusDot, StatusMetric, Tooltip,
+    BadgeTone, Button, ButtonSize, ButtonVariant, CountBadge, ModalDialog, ModalField,
+    SharedTextState, SidePanel, SplitResizer, StatusBar, StatusDot, StatusMetric, Tooltip,
 };
 
 const TERMINAL_SPLIT_MIN_PANE_WIDTH: f32 = 160.0;
@@ -1184,87 +1183,26 @@ fn render_background_task_row(task: &BackgroundTask, cx: &mut Context<AppShell>)
 
 pub fn render_quick_command_editor(
     shell: &mut AppShell,
-    window: &Window,
+    _window: &Window,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
     let Some(editor) = &shell.quick_command_editor else {
         return div().into_any_element();
     };
     let focus = editor.focus.clone();
-    let value = editor.state.value.clone();
-    let ime_marked_text = editor.state.ime_marked_text.clone();
-    let selection = editor.state.selection();
-    let (selection_start, selection_end) =
-        selection.unwrap_or((editor.state.cursor, editor.state.cursor));
     let scroll = editor.scroll.clone();
-    let focused = focus.is_focused(window);
-    scroll.scroll_to_item(1);
-    let mut input = div()
-        .id("quick-command-editor-input")
-        .w_full()
-        .min_w_0()
-        .min_h(px(38.))
-        .px_3()
-        .py_2()
-        .flex()
-        .items_center()
-        .overflow_x_scroll()
-        .track_scroll(&scroll)
-        .bg(theme::canvas())
-        .border_1()
-        .border_color(theme::border_strong())
-        .rounded(px(theme::RADIUS_SM))
-        .relative()
-        .text_sm()
-        .text_color(theme::text())
-        .track_focus(&focus)
-        .tab_stop(true)
-        .focus(|style| style.border_color(theme::focus_ring()))
-        .on_click({
-            let focus = focus.clone();
-            move |_ev, window, cx| window.focus(&focus, cx)
-        })
-        .on_key_down(cx.listener(AppShell::handle_modal_editor_key));
-
-    if value.is_empty() {
-        if focused {
-            input = input.child(text_caret(px(20.)));
-        }
-        if ime_marked_text.is_empty() {
-            input = input.child(
-                div()
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .text_color(theme::faint_text())
-                    .child(SharedString::from(i18n::text(
-                        "quick_commands.command_placeholder",
-                    ))),
-            );
-        } else {
-            input = input.child(marked_text_span(ime_marked_text.clone()));
-        }
-    } else {
-        input = input.child(text_span(value[..selection_start].to_string()));
-        if let Some((start, end)) = selection {
-            input = input.child(
-                div()
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .bg(theme::accent_soft())
-                    .text_color(theme::text())
-                    .child(SharedString::from(value[start..end].to_string())),
-            );
-        } else {
-            if focused {
-                input = input.child(text_caret(px(20.)));
-            }
-            if !ime_marked_text.is_empty() {
-                input = input.child(marked_text_span(ime_marked_text.clone()));
-            }
-        }
-        input = input.child(text_span(value[selection_end..].to_string()));
-    }
-    input = input.child(ime_input_canvas(focus, cx.entity()));
+    let state = SharedTextState {
+        value: editor.state.value.clone(),
+        cursor: editor.state.cursor,
+        anchor: editor.state.anchor,
+        ime_marked_text: editor.state.ime_marked_text.clone(),
+        ime_replacement: editor.state.ime_replacement,
+    };
+    let input = ModalField::new("quick-command-editor-input", focus, &state)
+        .placeholder(i18n::text("quick_commands.command_placeholder"))
+        .scrollable(scroll)
+        .entity(cx.entity())
+        .on_key_down(cx.listener(|this, e, w, cx| this.handle_modal_editor_key(e, w, cx)));
 
     let buttons = div()
         .flex()
@@ -1311,83 +1249,24 @@ pub fn render_quick_command_editor(
 /// 模式与 Quick Command 编辑器一致。
 pub fn render_rename_editor(
     shell: &mut AppShell,
-    window: &Window,
+    _window: &Window,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
     let Some(editor) = &shell.rename_editor else {
         return div().into_any_element();
     };
     let focus = editor.focus.clone();
-    let value = editor.state.value.clone();
-    let ime_marked_text = editor.state.ime_marked_text.clone();
-    let selection = editor.state.selection();
-    let (selection_start, selection_end) =
-        selection.unwrap_or((editor.state.cursor, editor.state.cursor));
-    let focused = focus.is_focused(window);
-    let mut input = div()
-        .id("rename-editor-input")
-        .w_full()
-        .min_w_0()
-        .min_h(px(38.))
-        .px_3()
-        .py_2()
-        .flex()
-        .items_center()
-        .bg(theme::canvas())
-        .border_1()
-        .border_color(theme::border_strong())
-        .rounded(px(theme::RADIUS_SM))
-        .relative()
-        .text_sm()
-        .text_color(theme::text())
-        .track_focus(&focus)
-        .tab_stop(true)
-        .focus(|style| style.border_color(theme::focus_ring()))
-        .on_click({
-            let focus = focus.clone();
-            move |_ev, window, cx| window.focus(&focus, cx)
-        })
-        .on_key_down(cx.listener(AppShell::handle_modal_editor_key));
-
-    if value.is_empty() {
-        if focused {
-            input = input.child(text_caret(px(20.)));
-        }
-        if ime_marked_text.is_empty() {
-            input = input.child(
-                div()
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .text_color(theme::faint_text())
-                    .child(SharedString::from(i18n::text(
-                        "rename_tab.name_placeholder",
-                    ))),
-            );
-        } else {
-            input = input.child(marked_text_span(ime_marked_text.clone()));
-        }
-    } else {
-        input = input.child(text_span(value[..selection_start].to_string()));
-        if let Some((start, end)) = selection {
-            input = input.child(
-                div()
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .bg(theme::accent_soft())
-                    .text_color(theme::text())
-                    .child(SharedString::from(value[start..end].to_string())),
-            );
-        } else {
-            if focused {
-                input = input.child(text_caret(px(20.)));
-            }
-            if !ime_marked_text.is_empty() {
-                input = input.child(marked_text_span(ime_marked_text.clone()));
-            }
-        }
-        input = input.child(text_span(value[selection_end..].to_string()));
-    }
-    input = input.child(ime_input_canvas(focus, cx.entity()));
+    let state = SharedTextState {
+        value: editor.state.value.clone(),
+        cursor: editor.state.cursor,
+        anchor: editor.state.anchor,
+        ime_marked_text: editor.state.ime_marked_text.clone(),
+        ime_replacement: editor.state.ime_replacement,
+    };
+    let input = ModalField::new("rename-editor-input", focus, &state)
+        .placeholder(i18n::text("rename_tab.name_placeholder"))
+        .entity(cx.entity())
+        .on_key_down(cx.listener(|this, e, w, cx| this.handle_modal_editor_key(e, w, cx)));
 
     let buttons = div()
         .flex()
@@ -1432,84 +1311,24 @@ pub fn render_rename_editor(
 
 pub fn render_default_command_editor(
     shell: &mut AppShell,
-    window: &Window,
+    _window: &Window,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
     let Some(editor) = &shell.default_command_editor else {
         return div().into_any_element();
     };
     let focus = editor.focus.clone();
-    let value = editor.state.value.clone();
-    let ime_marked_text = editor.state.ime_marked_text.clone();
-    let selection = editor.state.selection();
-    let (selection_start, selection_end) =
-        selection.unwrap_or((editor.state.cursor, editor.state.cursor));
-    let focused = focus.is_focused(window);
-    // 实现与 QuickCommand/rename 相同，但加入横向滚动以容纳长命令（如 ssh）。
-    let mut input = div()
-        .id("default-command-editor-input")
-        .w_full()
-        .min_w_0()
-        .min_h(px(38.))
-        .px_3()
-        .py_2()
-        .flex()
-        .items_center()
-        .bg(theme::canvas())
-        .border_1()
-        .border_color(theme::border_strong())
-        .rounded(px(theme::RADIUS_SM))
-        .relative()
-        .text_sm()
-        .text_color(theme::text())
-        .track_focus(&focus)
-        .tab_stop(true)
-        .focus(|style| style.border_color(theme::focus_ring()))
-        .on_click({
-            let focus = focus.clone();
-            move |_ev, window, cx| window.focus(&focus, cx)
-        })
-        .on_key_down(cx.listener(AppShell::handle_modal_editor_key));
-
-    if value.is_empty() {
-        if focused {
-            input = input.child(text_caret(px(20.)));
-        }
-        if ime_marked_text.is_empty() {
-            input = input.child(
-                div()
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .text_color(theme::faint_text())
-                    .child(SharedString::from(i18n::text(
-                        "default_command.placeholder",
-                    ))),
-            );
-        } else {
-            input = input.child(marked_text_span(ime_marked_text.clone()));
-        }
-    } else {
-        input = input.child(text_span(value[..selection_start].to_string()));
-        if let Some((start, end)) = selection {
-            input = input.child(
-                div()
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .bg(theme::accent_soft())
-                    .text_color(theme::text())
-                    .child(SharedString::from(value[start..end].to_string())),
-            );
-        } else {
-            if focused {
-                input = input.child(text_caret(px(20.)));
-            }
-            if !ime_marked_text.is_empty() {
-                input = input.child(marked_text_span(ime_marked_text.clone()));
-            }
-        }
-        input = input.child(text_span(value[selection_end..].to_string()));
-    }
-    input = input.child(ime_input_canvas(focus, cx.entity()));
+    let state = SharedTextState {
+        value: editor.state.value.clone(),
+        cursor: editor.state.cursor,
+        anchor: editor.state.anchor,
+        ime_marked_text: editor.state.ime_marked_text.clone(),
+        ime_replacement: editor.state.ime_replacement,
+    };
+    let input = ModalField::new("default-command-editor-input", focus, &state)
+        .placeholder(i18n::text("default_command.placeholder"))
+        .entity(cx.entity())
+        .on_key_down(cx.listener(|this, e, w, cx| this.handle_modal_editor_key(e, w, cx)));
 
     let buttons = div()
         .flex()

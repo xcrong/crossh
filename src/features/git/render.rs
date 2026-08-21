@@ -16,8 +16,8 @@ use crossh_ui::context_menu::render_context_menu;
 use crossh_ui::widgets::{ime_input_canvas, marked_text_span, text_caret, text_span};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
-    Badge, BadgeTone, Button, ButtonSize, ButtonVariant, Hint, SplitResizer, StatusBar,
-    StatusMetric, TabItem, TabStrip,
+    Badge, BadgeTone, Button, ButtonSize, ButtonVariant, Hint, ListState, SplitResizer, StatusBar,
+    StatusMetric, TabItem, TabStrip, list_empty, list_pane, selectable_row,
 };
 
 use super::editor::CommitEditor;
@@ -364,20 +364,11 @@ impl GitWindow {
     ) -> AnyElement {
         let focus = self.changes_focus.clone();
         let changes_body = if self.session.initial_loading {
-            Hint::new(i18n::text("git.loading"))
-                .padding_x(px(8.))
-                .padding_y(px(16.))
-                .into_any_element()
+            list_empty(ListState::Loading(i18n::text("git.loading").into()))
         } else if let Some(error) = &self.session.load_error {
-            Hint::new(error.clone())
-                .padding_x(px(8.))
-                .padding_y(px(16.))
-                .into_any_element()
+            list_empty(ListState::Error(error.clone().into()))
         } else if self.session.changes.is_empty() {
-            Hint::new(i18n::text("git.no_changes"))
-                .padding_x(px(8.))
-                .padding_y(px(16.))
-                .into_any_element()
+            list_empty(ListState::Empty(i18n::text("git.no_changes").into()))
         } else {
             let items = change_list_items(
                 &self.session.changes,
@@ -420,42 +411,35 @@ impl GitWindow {
             .into_any_element()
         };
 
-        div()
-            .id(if compact {
+        list_pane(
+            if compact {
                 "git-changes-compact"
             } else {
                 "git-changes-pane"
-            })
-            .key_context(GIT_CHANGES_CONTEXT)
-            .track_focus(&focus)
-            .tab_stop(true)
-            .size_full()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .bg(theme::sidebar())
-            .focus(|style| style.border_color(theme::focus_ring()))
-            .on_click(move |_event, window, cx| window.focus(&focus, cx))
-            .on_action(cx.listener(|this, _: &MoveSelectionUp, _window, cx| {
-                this.move_selection(-1, cx);
-            }))
-            .on_action(cx.listener(|this, _: &MoveSelectionDown, _window, cx| {
-                this.move_selection(1, cx);
-            }))
-            .on_action(cx.listener(|this, _: &ToggleSelectedStage, _window, cx| {
-                this.toggle_selected_stage(cx);
-            }))
-            .on_action(cx.listener(|this, _: &SelectAllChanges, _window, cx| {
-                this.select_all_changes(cx);
-            }))
-            .child(self.render_commit_panel(compact, window, cx))
-            .child(self.render_selection_toolbar(cx))
-            .when_some(
-                self.pending_discard.as_ref().map(Vec::len),
-                |pane, count| pane.child(self.render_discard_confirmation(count, cx)),
-            )
-            .child(changes_body)
-            .into_any_element()
+            },
+            focus,
+            GIT_CHANGES_CONTEXT,
+        )
+        .on_action(cx.listener(|this, _: &MoveSelectionUp, _window, cx| {
+            this.move_selection(-1, cx);
+        }))
+        .on_action(cx.listener(|this, _: &MoveSelectionDown, _window, cx| {
+            this.move_selection(1, cx);
+        }))
+        .on_action(cx.listener(|this, _: &ToggleSelectedStage, _window, cx| {
+            this.toggle_selected_stage(cx);
+        }))
+        .on_action(cx.listener(|this, _: &SelectAllChanges, _window, cx| {
+            this.select_all_changes(cx);
+        }))
+        .child(self.render_commit_panel(compact, window, cx))
+        .child(self.render_selection_toolbar(cx))
+        .when_some(
+            self.pending_discard.as_ref().map(Vec::len),
+            |pane, count| pane.child(self.render_discard_confirmation(count, cx)),
+        )
+        .child(changes_body)
+        .into_any_element()
     }
 
     fn render_section_header(
@@ -566,129 +550,123 @@ impl GitWindow {
             .filter(|parent| !parent.as_os_str().is_empty())
             .map(|parent| parent.to_string_lossy().into_owned());
 
-        div()
-            .id(SharedString::from(format!(
+        selectable_row(
+            SharedString::from(format!(
                 "git-entry-{}-{}",
                 if staged { "staged" } else { "working" },
                 entry.path
-            )))
-            .h(px(34.))
-            .w_full()
-            .pr_2()
-            .flex()
-            .items_center()
-            .gap_2()
-            .cursor_pointer()
-            .border_l_2()
-            .border_color(if selected {
-                status_color(entry.status)
-            } else {
-                theme::sidebar()
-            })
-            .bg(if selected {
-                theme::raised()
-            } else {
-                theme::sidebar()
-            })
-            .hover(|style| style.bg(theme::raised()))
-            .child(status_glyph(entry.status))
-            .child(
-                div()
-                    .min_w_0()
-                    .flex_1()
-                    .flex()
-                    .items_baseline()
-                    .gap_1()
-                    .child(
+            )),
+            selected,
+            px(34.),
+        )
+        // 变更行选中态边框按文件状态着色，覆盖 selectable_row 默认的 accent。
+        .border_color(if selected {
+            status_color(entry.status)
+        } else {
+            theme::sidebar()
+        })
+        .pr_2()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(status_glyph(entry.status))
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .flex()
+                .items_baseline()
+                .gap_1()
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_xs()
+                        .text_color(theme::text())
+                        .child(SharedString::from(basename)),
+                )
+                .when_some(parent, |row, parent| {
+                    row.child(
                         div()
                             .min_w_0()
                             .truncate()
                             .text_xs()
-                            .text_color(theme::text())
-                            .child(SharedString::from(basename)),
+                            .text_color(theme::faint_text())
+                            .child(SharedString::from(parent)),
                     )
-                    .when_some(parent, |row, parent| {
-                        row.child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_xs()
-                                .text_color(theme::faint_text())
-                                .child(SharedString::from(parent)),
-                        )
-                    }),
-            )
-            .when(entry.insertions > 0 || entry.deletions > 0, |row| {
-                row.child(
-                    div()
-                        .flex_shrink_0()
-                        .text_xs()
-                        .text_color(theme::muted_text())
-                        .child(SharedString::from(format!(
-                            "+{} −{}",
-                            entry.insertions, entry.deletions
-                        ))),
-                )
-            })
-            .child(
-                Button::new(SharedString::from(format!(
-                    "git-toggle-stage-{}-{}",
-                    if staged { "staged" } else { "working" },
-                    entry.path
-                )))
-                .size(ButtonSize::Icon(px(24.)))
-                .variant(ButtonVariant::Ghost)
-                .tooltip(if staged {
-                    i18n::text("git.unstage")
-                } else {
-                    i18n::text("git.stage")
-                })
-                .icon(
-                    icons::icon(
-                        if staged {
-                            icons::IconName::Minus
-                        } else {
-                            icons::IconName::Plus
-                        },
-                        13.,
-                    )
-                    .text_color(theme::muted_text()),
-                )
-                .on_click({
-                    let path = entry.path.clone();
-                    cx.listener(move |this, _event, _window, cx| {
-                        if staged {
-                            this.unstage_paths(vec![path.clone()], cx);
-                        } else {
-                            this.stage_paths(vec![path.clone()], cx);
-                        }
-                        cx.stop_propagation();
-                    })
                 }),
+        )
+        .when(entry.insertions > 0 || entry.deletions > 0, |row| {
+            row.child(
+                div()
+                    .flex_shrink_0()
+                    .text_xs()
+                    .text_color(theme::muted_text())
+                    .child(SharedString::from(format!(
+                        "+{} −{}",
+                        entry.insertions, entry.deletions
+                    ))),
+            )
+        })
+        .child(
+            Button::new(SharedString::from(format!(
+                "git-toggle-stage-{}-{}",
+                if staged { "staged" } else { "working" },
+                entry.path
+            )))
+            .size(ButtonSize::Icon(px(24.)))
+            .variant(ButtonVariant::Ghost)
+            .tooltip(if staged {
+                i18n::text("git.unstage")
+            } else {
+                i18n::text("git.stage")
+            })
+            .icon(
+                icons::icon(
+                    if staged {
+                        icons::IconName::Minus
+                    } else {
+                        icons::IconName::Plus
+                    },
+                    13.,
+                )
+                .text_color(theme::muted_text()),
             )
             .on_click({
-                let key = key.clone();
-                cx.listener(move |this, event: &ClickEvent, _window, cx| {
-                    let modifiers = event.modifiers();
-                    this.select(
-                        key.clone(),
-                        modifiers.control || modifiers.platform,
-                        modifiers.shift,
-                        cx,
-                    );
-                })
-            })
-            .on_mouse_down(MouseButton::Right, {
-                let key = key.clone();
-                cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
-                    if !this.session.is_selected(&key) {
-                        this.select(key.clone(), false, false, cx);
+                let path = entry.path.clone();
+                cx.listener(move |this, _event, _window, cx| {
+                    if staged {
+                        this.unstage_paths(vec![path.clone()], cx);
+                    } else {
+                        this.stage_paths(vec![path.clone()], cx);
                     }
-                    this.open_context_menu(event.position, cx);
                     cx.stop_propagation();
                 })
+            }),
+        )
+        .on_click({
+            let key = key.clone();
+            cx.listener(move |this, event: &ClickEvent, _window, cx| {
+                let modifiers = event.modifiers();
+                this.select(
+                    key.clone(),
+                    modifiers.control || modifiers.platform,
+                    modifiers.shift,
+                    cx,
+                );
             })
-            .into_any_element()
+        })
+        .on_mouse_down(MouseButton::Right, {
+            let key = key.clone();
+            cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+                if !this.session.is_selected(&key) {
+                    this.select(key.clone(), false, false, cx);
+                }
+                this.open_context_menu(event.position, cx);
+                cx.stop_propagation();
+            })
+        })
+        .into_any_element()
     }
 
     fn render_selection_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {

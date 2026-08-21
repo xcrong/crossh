@@ -11,7 +11,8 @@ use crossh_core::git_history::{CommitDetail, CommitFileChange, HistoryRef, Histo
 use crossh_core::git_history_graph::HistoryGraphRow;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
-    Badge, BadgeTone, Button, ButtonSize, ButtonVariant, Hint, TextInput, scroll_y,
+    Badge, BadgeTone, Button, ButtonSize, ButtonVariant, Hint, ListState, TextInput, list_empty,
+    list_pane, scroll_y, selectable_row,
 };
 
 use super::history::{HistoryDetailState, HistoryListState, HistoryRow};
@@ -67,25 +68,16 @@ impl GitWindow {
         let rows = self.session.history.visible_rows();
         let body = match &self.session.history.list_state {
             HistoryListState::Idle | HistoryListState::Loading => {
-                Hint::new(i18n::text("git.loading"))
-                    .padding_x(px(8.))
-                    .padding_y(px(16.))
-                    .into_any_element()
+                list_empty(ListState::Loading(i18n::text("git.loading").into()))
             }
-            HistoryListState::Error(error) => Hint::new(error.clone())
-                .padding_x(px(8.))
-                .padding_y(px(16.))
-                .into_any_element(),
+            HistoryListState::Error(error) => list_empty(ListState::Error(error.clone().into())),
             HistoryListState::Ready if rows.is_empty() => {
                 let message = if self.session.history.query.is_empty() {
                     i18n::text("git.no_history")
                 } else {
                     i18n::text("git.history_no_matches")
                 };
-                Hint::new(message)
-                    .padding_x(px(8.))
-                    .padding_y(px(16.))
-                    .into_any_element()
+                list_empty(ListState::Empty(message.into()))
             }
             HistoryListState::Ready => {
                 let count = rows.len();
@@ -111,31 +103,24 @@ impl GitWindow {
             }
         };
 
-        div()
-            .id(if compact {
+        list_pane(
+            if compact {
                 "git-history-compact"
             } else {
                 "git-history-pane"
-            })
-            .key_context(GIT_HISTORY_CONTEXT)
-            .track_focus(&focus)
-            .tab_stop(true)
-            .size_full()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .bg(theme::sidebar())
-            .focus(|style| style.border_color(theme::focus_ring()))
-            .on_click(move |_event, window, cx| window.focus(&focus, cx))
-            .on_action(cx.listener(|this, _: &MoveHistoryUp, _window, cx| {
-                this.move_history_selection(-1, cx);
-            }))
-            .on_action(cx.listener(|this, _: &MoveHistoryDown, _window, cx| {
-                this.move_history_selection(1, cx);
-            }))
-            .child(self.render_history_toolbar(cx))
-            .child(body)
-            .into_any_element()
+            },
+            focus,
+            GIT_HISTORY_CONTEXT,
+        )
+        .on_action(cx.listener(|this, _: &MoveHistoryUp, _window, cx| {
+            this.move_history_selection(-1, cx);
+        }))
+        .on_action(cx.listener(|this, _: &MoveHistoryDown, _window, cx| {
+            this.move_history_selection(1, cx);
+        }))
+        .child(self.render_history_toolbar(cx))
+        .child(body)
+        .into_any_element()
     }
 
     fn render_history_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -215,85 +200,70 @@ impl GitWindow {
             );
         }
 
-        div()
-            .id(SharedString::from(format!(
-                "git-history-entry-{}",
-                entry.id
-            )))
-            .h(px(HISTORY_ROW_HEIGHT))
-            .w_full()
-            .pr_2()
-            .flex()
-            .items_center()
-            .cursor_pointer()
-            .border_l_2()
-            .border_color(if selected {
-                theme::accent()
-            } else {
-                theme::sidebar()
-            })
-            .bg(if selected {
-                theme::raised()
-            } else {
-                theme::sidebar()
-            })
-            .hover(|style| style.bg(theme::raised()))
-            .child(graph)
-            .child(
-                div()
-                    .min_w_0()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .justify_center()
-                    .gap_1()
-                    .child(
-                        div()
-                            .w_full()
-                            .min_w_0()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(decorations)
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .flex_1()
-                                    .truncate()
-                                    .text_xs()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(theme::text())
-                                    .child(SharedString::from(entry.subject.clone())),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .min_w_0()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .text_xs()
-                            .text_color(theme::faint_text())
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .flex_1()
-                                    .truncate()
-                                    .child(SharedString::from(entry.author.clone())),
-                            )
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .text_color(theme::muted_text())
-                                    .child(SharedString::from(entry.date.clone())),
-                            ),
-                    ),
-            )
-            .on_click(cx.listener(move |this, _event, _window, cx| {
-                this.select_history_commit(id.clone(), cx);
-            }))
-            .into_any_element()
+        selectable_row(
+            SharedString::from(format!("git-history-entry-{}", entry.id)),
+            selected,
+            px(HISTORY_ROW_HEIGHT),
+        )
+        .pr_2()
+        .flex()
+        .items_center()
+        .child(graph)
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .justify_center()
+                .gap_1()
+                .child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(decorations)
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .truncate()
+                                .text_xs()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme::text())
+                                .child(SharedString::from(entry.subject.clone())),
+                        ),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .text_xs()
+                        .text_color(theme::faint_text())
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .truncate()
+                                .child(SharedString::from(entry.author.clone())),
+                        )
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_color(theme::muted_text())
+                                .child(SharedString::from(entry.date.clone())),
+                        ),
+                ),
+        )
+        .on_click(cx.listener(move |this, _event, _window, cx| {
+            this.select_history_commit(id.clone(), cx);
+        }))
+        .into_any_element()
     }
 
     pub(super) fn render_history_detail(
