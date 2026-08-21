@@ -1,5 +1,7 @@
 //! Application bootstrap and composition entry points.
 
+pub mod cli;
+
 use gpui::App;
 
 pub(crate) use crate::features::workspace::open_main_window;
@@ -9,7 +11,7 @@ pub(crate) use crate::features::workspace::open_main_window;
 /// Only the main window exists today; future CLI entries (e.g. opening a
 /// project or SSH session directly) extend this enum instead of threading
 /// new arguments through `main`.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum LaunchTarget {
     Main,
 }

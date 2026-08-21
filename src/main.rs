@@ -41,19 +41,21 @@ actions!(
 );
 
 fn main() {
-    let mut args = std::env::args().skip(1);
-    let launch_target = match args.next().as_deref() {
-        Some("--help" | "-h" | "help") => {
-            print_help();
+    let cli = app::cli::parse_cli(
+        std::env::args().skip(1),
+        std::env::current_dir().map_err(|error| error.to_string()),
+    );
+    let launch_target = match cli {
+        app::cli::CliCommand::Help => {
+            app::cli::print_help();
             return;
         }
-        Some("--version" | "-V") => {
+        app::cli::CliCommand::Version => {
             println!("crossh {}", env!("CARGO_PKG_VERSION"));
             return;
         }
-        Some("agent") => {
-            let arguments = std::env::args().skip(2).collect::<Vec<_>>();
-            let code = match spawn_agent_process(&arguments) {
+        app::cli::CliCommand::Agent(arguments) => {
+            let code = match app::cli::spawn_agent_process(&arguments) {
                 Ok(code) => code,
                 Err(error) => {
                     eprintln!("crossh agent: {error}");
@@ -62,10 +64,7 @@ fn main() {
             };
             std::process::exit(code);
         }
-        Some("git") => match features::git_launcher::parse_cli(
-            args,
-            std::env::current_dir().map_err(|error| error.to_string()),
-        ) {
+        app::cli::CliCommand::Git(result) => match result {
             Ok(features::git_launcher::GitCliCommand::Open(cwd)) => {
                 if let Err(error) = features::git_launcher::spawn_git_process(&cwd) {
                     eprintln!("crossh git: failed to start crossh-git: {error}");
@@ -83,12 +82,12 @@ fn main() {
                 std::process::exit(2);
             }
         },
-        Some(argument) => {
+        app::cli::CliCommand::Unknown(argument) => {
             eprintln!("unknown argument: {argument}\n");
-            print_help();
+            app::cli::print_help();
             std::process::exit(2);
         }
-        None => app::LaunchTarget::Main,
+        app::cli::CliCommand::Main(target) => target,
     };
     infrastructure::logging::init();
 
@@ -124,30 +123,4 @@ fn main() {
         infrastructure::app_menu::install(cx);
         app::open_launch_target(launch_target, cx);
     });
-}
-
-/// 委托同目录（或 PATH）的 `crossh-agent` 二进制。继承 stdio 让 TUI 直接
-/// 使用当前终端，launcher 不碰 termios；透传子进程退出码，退出路径不变。
-fn spawn_agent_process(arguments: &[String]) -> Result<i32, String> {
-    let executable = crossh_core::process::sibling_executable("crossh-agent");
-    let status = std::process::Command::new(&executable)
-        .args(arguments)
-        .status()
-        .map_err(|error| {
-            // sibling_executable 在找不到同伴二进制时回退为纯文件名（交给
-            // PATH）；此时启动失败几乎一定是二进制缺失，给出可执行的指引。
-            if executable.is_relative() {
-                format!("{error}: crossh-agent not found next to crossh or on PATH; build it with `cargo build` or install crossh-agent alongside crossh")
-            } else {
-                error.to_string()
-            }
-        })?;
-    Ok(status.code().unwrap_or(1))
-}
-
-fn print_help() {
-    println!(
-        "Crossh {}\n\nUsage: crossh [COMMAND]\n\nCommands:\n  agent       Start the interactive coding agent\n  git         Open the Git Viewer for a directory\n  help        Print help\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version",
-        env!("CARGO_PKG_VERSION")
-    );
 }
