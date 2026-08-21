@@ -1824,9 +1824,11 @@ fn parse_thinking(value: &str) -> Option<ThinkingLevel> {
 }
 
 fn active_model_label(app: &App) -> String {
+    // 顶部状态栏与 /model 反馈均显示 provider/model 的 ID（而非展示名），
+    // 展示名可能很长（如 "Muse Spark 1.2 Contributor"）且不利于 --model 匹配。
     app.settings
         .resolve(&app.settings.active_model)
-        .map(|target| format!("{}/{}", target.provider.name, target.model.name))
+        .map(|target| format!("{}/{}", target.provider.id, target.model.id))
         .unwrap_or_else(|_| "unconfigured".into())
 }
 
