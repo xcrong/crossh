@@ -818,12 +818,17 @@ fn wait_for_model(
         if event::poll(Duration::from_millis(80))? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if key.code == KeyCode::Esc
-                        || (key.modifiers.contains(KeyModifiers::CONTROL)
-                            && key.code == KeyCode::Char('c'))
-                    {
+                    if key.code == KeyCode::Esc {
                         task.abort();
                         return Ok(WaitResult::Cancelled);
+                    }
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('c')
+                    {
+                        input::clear_input(app);
+                        app.status = "Input cleared".into();
+                        terminal.draw(|frame| render(frame, app))?;
+                        continue;
                     }
                     if key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Up {
                         input::dequeue_queue(app);
