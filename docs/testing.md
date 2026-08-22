@@ -67,6 +67,7 @@ ADR 0012）：spec 的行为契约条目就是测试的输入，测试名带 spe
 | Forwarding | start/stop，启动后立即停止，旧回执不得重新激活，关闭 pane 停止全部规则 |
 | Settings | 默认值、规范化、持久化迁移，provider/model 引用修复，Unicode/IME 输入 |
 | Agent | provider wire contract（审批策略留在 agent 层，不进入 SDK 工具定义），SSE 分块，tool call 聚合，取消和 workspace 路径隔离 |
+| Agent TUI | `/` 候选浮层开/关、候选数量变化均不触发整屏重绘（`\x1b[2J`）；浮层关闭后残行被清除（无残留字符）；首帧/尺寸变化/transcript 变化越过可视区仍整屏重绘；光标恒在编辑器行内（`spec_20260822_main_screen_dock_incremental__*`） |
 | Update | manifest 结构/签名校验（缺失或无效签名拒绝，篡改任意字段拒绝，语义等价字节通过，旧客户端忽略签名字段）、大小/checksum，归档安全，原子替换和失败回滚；`crossh-sign-manifest` generate/sign/verify 端到端行为（签名后验签通过、篡改/缺签名/无私钥或非法私钥失败且不改文件、私钥可从环境变量读取）；更新请求默认先走加速前缀 `https://gh-proxy.com/`（GitHub release URL 重写、非 github.com 域名不重写、候选序列加速优先且去重、传输类错误可回退原站而校验类错误不回退） |
 
 ## CI 规则

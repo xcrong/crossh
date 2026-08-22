@@ -8,8 +8,11 @@
 //! - `dock`（编辑器 + footer）固定在屏幕底部，每帧原位重绘；
 //! - 追加/尾部改写需要新行时，先在底行显式滚动（`\r\n`×N）腾出空间再写入，
 //!   避免新行落在 dock 行上随后被 dock 重绘覆盖；
-//! - 只有变化越过可视区（scrollback 不可改写）、首帧或尺寸/dock 高度变化时
-//!   才整屏重绘（`\x1b[2J` + 重印尾部），不向 scrollback 复制重复内容。
+//! - 只有变化越过可视区（scrollback 不可改写）、首帧或尺寸变化时
+//!   才整屏重绘（`\x1b[2J` + 重印尾部），不向 scrollback 复制重复内容；
+//! - dock 高度变化（浮层开/关）走增量路径：变高时 dock 覆写 transcript 底部行
+//!   （等效滚动），变矮时先清除残行再增量写入（对齐 pi 的 TuiMainScreen，
+//!   见 spec 20260822-main-screen-dock-incremental）。
 
 use crate::ansi::{CURSOR_MARKER, SEGMENT_RESET, normalize_terminal_output, visible_width};
 
@@ -147,7 +150,6 @@ impl MainScreenRenderer {
 
         let first_frame = self.previous_width == 0;
         let size_changed = self.previous_width != width || self.previous_height != height;
-        let dock_resized = self.prev_dock_len != dock_len;
 
         // transcript 与已提交前缀的共同长度
         let common = self
@@ -165,7 +167,15 @@ impl MainScreenRenderer {
         let tail_start_old = old_len - visible_old;
 
         let mut buffer = crate::terminal::BEGIN_SYNCHRONIZED_OUTPUT.to_string();
-        let incremental = !first_frame && !size_changed && !dock_resized;
+
+        // 对齐 pi TuiMainScreen（spec_20260822_main_screen_dock_incremental）：
+        // dock 高度变化（浮层开/关）不再强制整屏重绘；变化行在可视区内时一律增量。
+        // dock 变矮（浮层关闭）时旧 dock 多出的行需主动清除（残行清除先于
+        // transcript 增量写入，避免新写入行被随后的清除擦掉）。
+        let incremental = !first_frame && !size_changed;
+        if incremental && self.prev_dock_len > dock_len {
+            Self::clear_residual(&mut buffer, height, self.prev_dock_len, dock_len);
+        }
 
         if incremental && common == old_len && new_len >= old_len {
             // ── 纯追加：N 行新内容接在已提交尾部之后 ──
@@ -187,7 +197,7 @@ impl MainScreenRenderer {
             self.printed.truncate(common);
             self.printed.extend_from_slice(&transcript[common..]);
         } else {
-            // ── 整屏重绘：首帧 / 尺寸变化 / dock 高度变化 / 变化越过可视区 ──
+            // ── 整屏重绘：首帧 / 尺寸变化 / 变化越过可视区 ──
             // 只重印能放下的 transcript 尾部，避免把头部重复灌入 scrollback
             buffer.push_str("\x1b[2J\x1b[H");
             let skip = transcript.len().saturating_sub(viewport);
@@ -218,6 +228,28 @@ impl MainScreenRenderer {
             None => buffer.push_str(crate::terminal::HIDE_CURSOR),
         }
         buffer
+    }
+
+    /// 清除旧 dock 的全部行（浮层关闭等 dock 变矮场景）。
+    ///
+    /// 清除范围是整个旧 dock 区域（`prev_dock_len` 行）而非只清"残行区"：
+    /// dock 变矮同时 transcript 追加触发滚动（`scroll_n > 0`）时，`\r\n` 滚动
+    /// 会把残行区之外的旧 dock 底部行上移到新 dock 顶附近，只清残行区会留下
+    /// 残留（review P2 组合）；整体清除后无论是否滚动，旧内容都不可能残留。
+    /// 必须在 transcript 增量写入之前调用：新写入行可能落在清除区，
+    /// 先清再写才能保证写入内容不被随后的清除擦掉。
+    fn clear_residual(buffer: &mut String, height: usize, prev_dock_len: usize, dock_len: usize) {
+        if prev_dock_len <= dock_len {
+            return;
+        }
+        debug_assert!(
+            prev_dock_len <= height,
+            "prev_dock_len 应已在上一帧 min(height) 过"
+        );
+        let start = height - prev_dock_len + 1;
+        for i in 0..prev_dock_len {
+            buffer.push_str(&format!("\x1b[{};1H\x1b[2K", start + i));
+        }
     }
 
     /// 把 dock 行写到屏幕底部（调用方保证在 BEGIN_SYNC 区间内）
@@ -375,17 +407,162 @@ mod tests {
     }
 
     #[test]
-    fn spec_main_screen__dock_resize_triggers_full_repaint() {
+    fn spec_main_screen__dock_resize_is_incremental_and_clears_residue() {
+        // 原 spec_main_screen__dock_resize_triggers_full_repaint 语义被
+        // spec_20260822_main_screen_dock_incremental 替换：dock 高度变化不再整屏重绘。
         let mut r = MainScreenRenderer::default();
         let _ = r.render_frame_regular(vec!["a".into()], vec!["d".into(), "f".into()], 20, 10);
+        // dock 变高（浮层出现）：不 2J，新行写入
         let out = r.render_frame_regular(
             vec!["a".into()],
             vec!["d".into(), "x".into(), "f".into()],
             20,
             10,
         );
-        assert!(out.contains("\x1b[2J"));
+        assert!(!out.contains("\x1b[2J"), "dock 变高不应整屏重绘: {out:?}");
         assert!(out.contains("x"));
+        // dock 变矮（浮层消失）：不 2J，旧浮层行被清除（2K 总数 > dock 行数）
+        let out2 = r.render_frame_regular(vec!["a".into()], vec!["d".into(), "f".into()], 20, 10);
+        assert!(!out2.contains("\x1b[2J"), "dock 变矮不应整屏重绘: {out2:?}");
+        assert!(
+            out2.matches("\x1b[2K").count() >= 3,
+            "残行应被清除（1 清除 + 2 dock 行）: {out2:?}"
+        );
+    }
+
+    #[test]
+    fn spec_20260822_main_screen_dock_incremental__popup_open_covers_transcript_tail_incrementally()
+    {
+        // 契约 1：浮层出现（dock 变高）且 transcript 无新增 → 无 2J，
+        // 浮层行从新 dock 起始行覆写（原 transcript 底部行被等效滚动出视口）
+        let mut r = MainScreenRenderer::default();
+        // 首帧视口 8 行全满（height=10, dock=2）
+        let transcript: Vec<String> = (0..8).map(|i| format!("t{i}")).collect();
+        let _ = r.render_frame_regular(
+            transcript.clone(),
+            vec!["edit".into(), "footer".into()],
+            20,
+            10,
+        );
+        // 浮层出现：dock 2→4 行，transcript 不变
+        let dock = vec!["pop1".into(), "pop2".into(), "edit".into(), "footer".into()];
+        let out = r.render_frame_regular(transcript, dock, 20, 10);
+        assert!(!out.contains("\x1b[2J"), "浮层出现帧不应整屏重绘: {out:?}");
+        assert!(
+            out.contains("\x1b[7;1H"),
+            "dock 应从新起始行第 7 行写入: {out:?}"
+        );
+        assert!(out.contains("pop1"), "浮层首行应显示: {out:?}");
+        assert!(out.contains("pop2"), "浮层次行应显示: {out:?}");
+        // transcript 底部行不被重写（无 t6/t7 的 2K 重写痕迹，仅 dock 行被清写）
+        assert!(
+            !out.contains("\x1b[6;1H\x1b[2K"),
+            "transcript 区不应被清写: {out:?}"
+        );
+    }
+
+    #[test]
+    fn spec_20260822_main_screen_dock_incremental__popup_close_clears_residue_without_repaint() {
+        // 契约 2：浮层消失（dock 变矮）且 transcript 无新增 → 无 2J，残行被清除
+        let mut r = MainScreenRenderer::default();
+        let transcript: Vec<String> = (0..8).map(|i| format!("t{i}")).collect();
+        // 浮层在：dock 4 行（7-10 行），视口 6 行，transcript 8 行溢出 2 行
+        let _ = r.render_frame_regular(
+            transcript.clone(),
+            vec!["pop1".into(), "pop2".into(), "edit".into(), "footer".into()],
+            20,
+            10,
+        );
+        // 浮层消失：dock 4→2，transcript 不变
+        let out = r.render_frame_regular(transcript, vec!["edit".into(), "footer".into()], 20, 10);
+        assert!(!out.contains("\x1b[2J"), "浮层关闭帧不应整屏重绘: {out:?}");
+        // 残行（旧 popup 占的屏幕行）被清除：2K 总数 > dock 行数 2
+        assert!(out.matches("\x1b[2K").count() > 2, "残行应被清除: {out:?}");
+    }
+
+    #[test]
+    fn spec_20260822_main_screen_dock_incremental__popup_change_with_streaming_growth_stays_incremental()
+     {
+        // 契约 3：浮层开/关同时 transcript 有新增/改写 → 无 2J，新行与浮层互不干扰
+        let mut r = MainScreenRenderer::default();
+        let t0: Vec<String> = (0..8).map(|i| format!("t{i}")).collect();
+        let _ = r.render_frame_regular(t0.clone(), vec!["edit".into(), "footer".into()], 20, 10);
+        // 浮层出现同时 transcript 追加 1 行
+        let mut t1 = t0.clone();
+        t1.push("t8".into());
+        let out = r.render_frame_regular(
+            t1,
+            vec!["pop".into(), "edit".into(), "footer".into()],
+            20,
+            10,
+        );
+        assert!(
+            !out.contains("\x1b[2J"),
+            "浮层+流式增长不应整屏重绘: {out:?}"
+        );
+        assert!(out.contains("t8"), "新 transcript 行应写入: {out:?}");
+        assert!(out.contains("pop"), "浮层应显示: {out:?}");
+        // 反向：浮层消失同时尾部改写
+        let mut t2: Vec<String> = (0..8).map(|i| format!("t{i}")).collect();
+        t2[7] = "changed".into();
+        let out2 = r.render_frame_regular(t2, vec!["edit".into(), "footer".into()], 20, 10);
+        assert!(
+            !out2.contains("\x1b[2J"),
+            "浮层关闭+改写不应整屏重绘: {out2:?}"
+        );
+        assert!(out2.contains("changed"), "改写行应写入: {out2:?}");
+    }
+
+    #[test]
+    fn spec_20260822_main_screen_dock_incremental__dock_shrink_with_scroll_clears_whole_old_dock() {
+        // P2 review 组合：dock 变矮 + transcript 追加触发 scroll_n>0 时，
+        // \r\n 滚动会把"残行区之外的旧 dock 底部行"上移到新 dock 顶附近，
+        // 只清残行区会在滚动后留下残留——旧 dock 区域必须整体清除。
+        let mut r = MainScreenRenderer::default();
+        let t0: Vec<String> = (0..8).map(|i| format!("t{i}")).collect();
+        // 首帧：dock=4（浮层在），视口 6，重印 t2..t7 @ 1..6，dock @ 7..10
+        let _ = r.render_frame_regular(
+            t0.clone(),
+            vec!["pop1".into(), "pop2".into(), "edit".into(), "footer".into()],
+            20,
+            10,
+        );
+        // 浮层消失 + transcript 追加 1 行：dock 4→2，视口 8，追加需滚动 1 行
+        let mut t1 = t0.clone();
+        t1.push("t8".into());
+        let out = r.render_frame_regular(t1, vec!["edit".into(), "footer".into()], 20, 10);
+        assert!(!out.contains("\x1b[2J"), "不应整屏重绘: {out:?}");
+        // 旧 dock 区域 7..10 四行必须在 dock 重写前整体清除，滚动代入的旧行才不会残留
+        let clear_all = "\x1b[7;1H\x1b[2K\x1b[8;1H\x1b[2K\x1b[9;1H\x1b[2K\x1b[10;1H\x1b[2K";
+        assert!(out.contains(clear_all), "旧 dock 四行应整体清除: {out:?}");
+        assert!(out.contains("t8"), "新行应写入: {out:?}");
+        assert!(!out.contains("pop1"), "旧浮层内容不应残留: {out:?}");
+    }
+
+    #[test]
+    fn spec_20260822_main_screen_dock_incremental__size_change_still_full_repaints() {
+        // 契约 6：终端尺寸变化仍整屏重绘（行为保持）
+        let mut r = MainScreenRenderer::default();
+        let _ = r.render_frame_regular(vec!["a".into()], vec!["d".into()], 20, 10);
+        let out = r.render_frame_regular(vec!["a".into()], vec!["d".into()], 30, 12);
+        assert!(out.contains("\x1b[2J"), "尺寸变化应整屏重绘: {out:?}");
+    }
+
+    #[test]
+    fn spec_20260822_main_screen_dock_incremental__cursor_stays_inside_dock_after_popup_toggle() {
+        // 契约 8：浮层开/关帧后硬件光标仍定位在编辑器行内
+        let mut r = MainScreenRenderer::default();
+        let t: Vec<String> = (0..5).map(|i| format!("t{i}")).collect();
+        let _ = r.render_frame_regular(t.clone(), vec!["edit".into(), "footer".into()], 20, 10);
+        // 浮层出现：dock 3 行，编辑器行 = 第 8 行（10-3+1），光标列 = "edit"+1
+        let dock = vec![
+            format!("edit{}", CURSOR_MARKER),
+            "x".into(),
+            "footer".into(),
+        ];
+        let out = r.render_frame_regular(t, dock, 20, 10);
+        assert!(!out.contains("\x1b[2J"));
+        assert!(out.contains("\x1b[8;5H"), "光标应在第 8 行第 5 列: {out:?}");
     }
 
     #[test]
