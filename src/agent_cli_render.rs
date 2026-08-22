@@ -153,15 +153,23 @@ fn build_footer(app: &App, width: usize) -> Vec<String> {
     let right = format!("{} · {}", active_model_label(app), app.thinking.label());
     let left_w = visible_width_safe(&stats);
     let right_w = visible_width_safe(&right);
-    let stats_line = if left_w + right_w < width {
+    // 优先保证右侧 model·thinking 可见（用户刚用 /model 切换后需要立即反馈）。
+    // 旧逻辑在 left+right>=width 时直接丢弃 right，导致长模型名（如 muse-spark-1.2）切换后底部不显示。
+    let stats_line = if left_w + right_w + 1 < width {
         format!(
             "{}{}{}",
             stats,
             " ".repeat(width - left_w - right_w - 1),
             right
         )
+    } else if right_w + 1 >= width {
+        truncate_ansi(&right, width)
     } else {
-        truncate_ansi(&stats, width)
+        let avail_left = width.saturating_sub(right_w + 1);
+        let left_trunc = truncate_ansi(&stats, avail_left);
+        let left_trunc_w = visible_width_safe(&left_trunc);
+        let pad = width.saturating_sub(left_trunc_w + right_w + 1);
+        format!("{}{} {}", left_trunc, " ".repeat(pad), right)
     };
     vec![truncate_ansi(&first_raw, width), stats_line]
 }
