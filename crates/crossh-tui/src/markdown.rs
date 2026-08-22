@@ -8,6 +8,27 @@ use crate::ansi::{normalize_terminal_output, visible_width, wrap_text_with_ansi}
 use crate::component::Component;
 use std::fmt::Write as _;
 
+/// 强调闭合标记定位：首个「前一字符非空白」的 `marker` 出现位置（字节偏移）。
+/// 空内容（紧贴开符号）不视为合法闭合。
+fn emphasis_close(src_after_open: &str, marker: &str) -> Option<usize> {
+    let mut from = 0usize;
+    while let Some(rel) = src_after_open[from..].find(marker) {
+        let abs = from + rel;
+        if abs > 0 && !src_after_open[..abs].ends_with(char::is_whitespace) {
+            return Some(abs);
+        }
+        from = abs + marker.len();
+    }
+    None
+}
+
+fn starts_with_visible_char(s: &str) -> bool {
+    s.chars()
+        .next()
+        .map(|c| !c.is_whitespace())
+        .unwrap_or(false)
+}
+
 /// 主题着色函数集（pi 的 MarkdownTheme）
 #[derive(Clone)]
 pub struct MarkdownTheme {
@@ -77,45 +98,54 @@ impl Markdown {
     }
 
     // ── 行内解析 ──
+    //
+    // 全程使用 &str 的字节下标（与 find()/strip_prefix() 返回值一致），
+    // 避免字符下标与字节长度混用导致的吞字。
+    // 强调标记遵循 CommonMark flanking 规则的最小子集：
+    // 开符号后必须非空白、闭符号前必须非空白——
+    // 否则路径中的 `zed-*`、算式中的 `2 * 3` 会被错误配对并吞字。
     fn render_inline(&self, src: &str) -> String {
         let mut out = String::new();
-        let chars: Vec<char> = src.chars().collect();
-        let mut i = 0;
-        while i < chars.len() {
-            let rest: String = chars[i..].iter().collect();
+        let mut i = 0usize;
+        while i < src.len() {
+            let rest = &src[i..];
             // `code`
             if let Some(line) = rest.strip_prefix('`')
                 && let Some(end) = line.find('`')
+                && end > 0
             {
-                let code: String = line[..end].to_string();
-                let styled = (self.theme.code)(&code);
+                let styled = (self.theme.code)(&line[..end]);
                 let _ = write!(out, "{}", styled);
-                i += end + 2;
+                i += 1 + end + 1;
                 continue;
             }
             // **bold**
             if let Some(line) = rest.strip_prefix("**")
-                && let Some(end) = line.find("**")
+                && starts_with_visible_char(line)
+                && let Some(end) = emphasis_close(line, "**")
             {
                 let inner = self.render_inline(&line[..end]);
                 let _ = write!(out, "\x1b[1m{}\x1b[22m", inner);
-                i += end + 4;
+                i += 2 + end + 2;
                 continue;
             }
             // ~~del~~
             if let Some(line) = rest.strip_prefix("~~")
-                && let Some(end) = line.find("~~")
+                && starts_with_visible_char(line)
+                && let Some(end) = emphasis_close(line, "~~")
             {
                 let inner = self.render_inline(&line[..end]);
                 let _ = write!(out, "\x1b[9m{}\x1b[29m", inner);
-                i += end + 4;
+                i += 2 + end + 2;
                 continue;
             }
             // [text](href)
             if rest.starts_with('[')
                 && let Some(close) = rest.find(']')
+                && close > 0
                 && rest[close + 1..].starts_with('(')
                 && let Some(paren_end) = rest[close + 1..].find(')')
+                && paren_end > 1
             {
                 let text = &rest[1..close];
                 let href = &rest[close + 2..close + 1 + paren_end];
@@ -131,15 +161,17 @@ impl Markdown {
             }
             // *italic*（不吞 ** 已处理）
             if let Some(line) = rest.strip_prefix('*')
+                && starts_with_visible_char(line)
                 && !line.starts_with('*')
-                && let Some(end) = line.find('*')
+                && let Some(end) = emphasis_close(line, "*")
             {
                 let inner = self.render_inline(&line[..end]);
                 let _ = write!(out, "\x1b[3m{}\x1b[23m", inner);
-                i += end + 2;
+                i += 1 + end + 1;
                 continue;
             }
-            let ch = chars[i];
+            // 默认：原样输出一个字符，按其 UTF-8 字节宽度推进
+            let ch = rest.chars().next().unwrap();
             out.push(ch);
             i += ch.len_utf8();
         }
@@ -442,5 +474,101 @@ mod tests {
         assert_eq!(visible_width(&lines[0]), 20);
         // 内容行：左 padding 2 空格 + 文本
         assert!(strip_terminal_sequences(&lines[1]).starts_with("  text"));
+    }
+}
+
+#[test]
+fn probe_inline_only() {
+    use crate::ansi::strip_terminal_sequences;
+    let md = Markdown::new("", 0, 0);
+    let cases = [
+        "熟悉 gpui",
+        "（在 ~/.cargo",
+        "熟悉 gpui / gpui_platform（在 ~/.cargo/git/checkouts/zed-*/）",
+        "执行 cargo check",
+    ];
+    for c in cases {
+        let out = md.render_inline(c);
+        assert_eq!(
+            strip_terminal_sequences(&out),
+            c,
+            "inline 丢字: {c:?} -> {out:?}"
+        );
+    }
+}
+
+#[test]
+fn probe_blocks_only() {
+    use crate::ansi::strip_terminal_sequences;
+    let md = Markdown::new("", 0, 0);
+    let c = "熟悉 gpui / gpui_platform（在 ~/.cargo/git/checkouts/zed-*/）";
+    let out = md.render_blocks(c, 80);
+    let joined: String = out.iter().map(|l| strip_terminal_sequences(l)).collect();
+    assert!(joined.contains("熟悉"), "blocks 丢字: {joined:?}");
+    assert!(joined.contains("在"), "blocks 丢字: {joined:?}");
+}
+#[cfg(test)]
+mod markdown_char_loss_tests {
+    #![allow(non_snake_case)]
+    use super::*;
+    use crate::ansi::strip_terminal_sequences;
+
+    /// 回归：render_inline 曾用 len_utf8() 步进 Vec<char> 下标（字符/字节单位混用），
+    /// CJK 一次跳 3 个下标吞掉后续字符；且游离 `*` 会与行内任意 `*` 错误配对。
+    #[test]
+    fn spec_20260822_agent_tui_pi_parity__inline_keeps_cjk_around_ascii_boundaries() {
+        let md = Markdown::new("", 0, 0);
+        let cases = [
+            // (源文本, 渲染后的可见文本——合法强调消耗标记符)
+            ("熟悉 gpui", "熟悉 gpui"),
+            ("（在 ~/.cargo", "（在 ~/.cargo"),
+            ("**加粗** 后续文本", "加粗 后续文本"),
+            ("**加粗**中文", "加粗中文"),
+            ("2 * 3 与 4 * 5", "2 * 3 与 4 * 5"),
+            (
+                "路径 zed-* 与 *配对* 星号，以及 `未闭合反引号 的行",
+                "路径 zed-* 与 配对 星号，以及 `未闭合反引号 的行",
+            ),
+            (
+                "执行 cargo check / test / fmt，并跑 scripts/check-architecture.sh",
+                "执行 cargo check / test / fmt，并跑 scripts/check-architecture.sh",
+            ),
+        ];
+        for (src, expected) in cases {
+            let out = md.render_inline(src);
+            assert_eq!(
+                strip_terminal_sequences(&out),
+                expected,
+                "inline 丢字: {src:?} -> {out:?}"
+            );
+        }
+    }
+
+    /// 端到端：整段 Markdown 渲染后可见文本不丢字（忽略换行与补白空格）
+    #[test]
+    fn spec_20260822_agent_tui_pi_parity__markdown_rendering_preserves_characters() {
+        let cases = [
+            "熟悉 gpui / gpui_platform（在 ~/.cargo/git/checkouts/zed-*/）",
+            "- 会日语 Skill：\n- terminal-pty-capture 端到端调试",
+            "### 3. 工程纪律",
+            "Git 操作检查 git diff，需要权限",
+            "帮我看看这个 bug 为什么复现；给 XX 功能加个设置项",
+        ];
+        for case in cases {
+            let mut md = Markdown::new(case, 0, 1);
+            let out = md.render(80);
+            let src_plain: String = case.chars().filter(|c| !c.is_whitespace()).collect();
+            let out_plain: String = out
+                .iter()
+                .map(|l| strip_terminal_sequences(l))
+                .collect::<String>()
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            assert_eq!(
+                src_plain, out_plain,
+                "渲染丢字! 源: {case:?}\n输出: {out:?}"
+            );
+        }
     }
 }

@@ -94,15 +94,14 @@ impl MainScreenRenderer {
             .zip(transcript.iter())
             .take_while(|(old, new)| old == new)
             .count();
-        let pure_append =
-            !first_frame && !size_changed && !dock_resized && common == self.printed.len();
+        let old_len = self.printed.len();
+        let viewport = height.saturating_sub(dock_len);
 
         let mut buffer = crate::terminal::BEGIN_SYNCHRONIZED_OUTPUT.to_string();
-        if pure_append {
-            // ── 增量路径：先追加新 transcript 行，再原位重绘 dock ──
+        if !first_frame && !size_changed && !dock_resized && common == old_len {
+            // ── 纯追加：新 transcript 行从上一帧 dock 顶行开始覆盖写 ──
             let new_lines = &transcript[common..];
             if !new_lines.is_empty() {
-                // 从上一帧 dock 顶行开始覆盖写（该行之上是最后一条已提交的 transcript 行）
                 let start_row = height - self.prev_dock_len + 1;
                 buffer.push_str(&format!("\x1b[{start_row};1H"));
                 for (i, line) in new_lines.iter().enumerate() {
@@ -113,14 +112,36 @@ impl MainScreenRenderer {
                     buffer.push_str(line);
                 }
             }
+            self.printed.extend_from_slice(new_lines);
             // dock 原位重绘
             self.write_dock(&mut buffer, &dock, height);
-            self.printed.extend_from_slice(new_lines);
+        } else if !first_frame
+            && !size_changed
+            && !dock_resized
+            && old_len.saturating_sub(common) <= viewport
+        {
+            // ── 尾部原位重写（流式输出主路径）：变化的后缀全部还在屏幕上，
+            //    仅擦写受影响行，不整屏清空、不污染 scrollback。
+            //    流式增量通常只改动最后一条消息的末尾一两行，走这里。──
+            let tail_start = old_len.saturating_sub(viewport);
+            let first_row = common - tail_start + 1;
+            buffer.push_str(&format!("\x1b[{first_row};1H"));
+            let new_tail = &transcript[common..];
+            for (i, line) in new_tail.iter().enumerate() {
+                if i > 0 {
+                    buffer.push_str("\r\n");
+                }
+                buffer.push_str("\x1b[2K");
+                buffer.push_str(line);
+            }
+            // 新增行超出屏幕底部时自然滚动；随后 dock 绝对定位重绘
+            self.printed.truncate(common);
+            self.printed.extend_from_slice(new_tail);
+            self.write_dock(&mut buffer, &dock, height);
         } else {
-            // ── 整屏重绘：首帧 / 尺寸变化 / dock 高度变化 / 前缀被改写 ──
+            // ── 整屏重绘：首帧 / 尺寸变化 / dock 高度变化 / 变化越过可视区 ──
             // 只重印能放下的 transcript 尾部，避免把头部重复灌入 scrollback
             buffer.push_str("\x1b[2J\x1b[H");
-            let viewport = height.saturating_sub(dock_len);
             let skip = transcript.len().saturating_sub(viewport);
             for (i, line) in transcript[skip..].iter().enumerate() {
                 if i > 0 {
@@ -217,17 +238,48 @@ mod tests {
     }
 
     #[test]
+    fn spec_main_screen__streaming_delta_rewrites_tail_in_place_without_repaint() {
+        let mut r = MainScreenRenderer::default();
+        let _ = r.render_frame_regular(
+            vec!["a".into(), "hello wor".into()],
+            vec!["d".into()],
+            20,
+            10,
+        );
+        // 流式增量：最后一行内容变化 → 原位擦写，不整屏清空
+        let out = r.render_frame_regular(
+            vec!["a".into(), "hello world!".into()],
+            vec!["d".into()],
+            20,
+            10,
+        );
+        assert!(!out.contains("\x1b[2J"), "流式不应全屏重绘: {out:?}");
+        assert!(out.contains("world!"));
+        assert!(out.contains("\x1b[2K"), "应有行内擦写");
+        // wrap 使行数增加也仍走原位重写
+        let out = r.render_frame_regular(
+            vec!["a".into(), "hello world!".into(), "more".into()],
+            vec!["d".into()],
+            20,
+            10,
+        );
+        assert!(!out.contains("\x1b[2J"), "追加换行也不应全屏重绘: {out:?}");
+        assert!(out.contains("more"));
+    }
+
+    #[test]
     fn spec_main_screen__rewritten_prefix_triggers_full_repaint_not_duplication() {
         let mut r = MainScreenRenderer::default();
         let long: Vec<String> = (0..30).map(|i| format!("line{i}")).collect();
         let _ = r.render_frame_regular(long.clone(), vec!["d".into()], 20, 10);
-        // 前缀被改写（如折叠切换）：必须整屏重绘；改写点在尾部视口内应可见
+        // 变化点越过可视区（视口 9 行，改写 index 15 → 距末尾 15 行）：
+        // 必须整屏重绘；变化行本身已在 scrollback 之上、不可达，故不重印
         let mut changed = long.clone();
-        changed[25] = "CHANGED".into();
+        changed[15] = "CHANGED".into();
         let out = r.render_frame_regular(changed, vec!["d".into()], 20, 10);
         assert!(out.contains("\x1b[2J"), "expected full repaint: {out:?}");
-        assert!(out.contains("CHANGED"));
-        // 重印只含尾部视口（height-dock=9 行），不含头部
+        // 重印只含尾部视口（height-dock=9 行），含末行、不含头部
+        assert!(out.contains("line29"), "tail should be reprinted: {out:?}");
         assert!(
             !out.contains("line0\r\n"),
             "head should not be reprinted: {out:?}"
