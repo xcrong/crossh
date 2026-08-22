@@ -60,7 +60,10 @@ impl MainScreenRenderer {
         };
         let scroll_n = m.saturating_sub(cap);
         let start_row = first_row.saturating_sub(scroll_n).max(1);
-        let cap2 = viewport - start_row + 1;
+        // start_row≥1 故 start_row-1 不会下溢；当 start_row 越过视口底
+        // （first_row=viewport+1 且 scroll_n=0 的空追加）时容量为 0，
+        // 不能用裸减法（旧代码这里 viewport - start_row 无符号下溢 panic）。
+        let cap2 = viewport.saturating_sub(start_row - 1);
         let skip = m.saturating_sub(cap2);
         WritePlan {
             scroll_n,
@@ -404,5 +407,20 @@ mod tests {
         // last_document 是完整提交记录（供重放），包含全部已提交 transcript
         assert_eq!(doc.len(), 50);
         assert_eq!(strip_terminal_sequences(&doc[49]), "line49");
+    }
+
+    #[test]
+    fn spec_main_screen__empty_append_when_viewport_full_does_not_panic() {
+        // 回归：视口已满（old_len >= viewport）且 transcript 无变化的增量帧
+        // （status spinner、popup 候选内容变化等只改 dock 内容、不改高度）
+        // 走纯追加分支（n=0）：first_row=viewport+1、scroll_n=0 时
+        // start_row=viewport+1，旧代码 cap2 = viewport - start_row + 1 无符号下溢 panic。
+        let mut r = MainScreenRenderer::default();
+        let full: Vec<String> = (0..11).map(|i| format!("t{i}")).collect(); // 视口 9 行，超出 2 行
+        let _ = r.render_frame_regular(full.clone(), vec!["d1".into()], 20, 10);
+        // transcript 不变、dock 内容变化（高度不变）→ n=0 的增量帧，不得 panic
+        let out = r.render_frame_regular(full, vec!["d2".into()], 20, 10);
+        assert!(out.contains("d2"));
+        assert!(!out.contains("\x1b[2J"), "空追加不应整屏重绘: {out:?}");
     }
 }
