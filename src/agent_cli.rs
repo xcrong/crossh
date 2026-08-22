@@ -253,6 +253,21 @@ pub(crate) fn run_with_options(
         // 恢复序列尽力写入；无论成败都必须关闭 raw mode，避免把终端留在异常状态
         let _ = write_stdout(&mut stdout, &seq);
     } else {
+        // regular 退出：清底部 dock（popup+editor+footer），避免 /exit 时浮层残留。
+        // 对齐 pi `TuiMainScreen.beforeTerminalStop` 的“移到内容末尾换行”语义；
+        // crossh 的 dock 与 transcript 分离，需显式清 dock 区域。
+        // 优先用渲染器记录的高度（dock 实际绘制位置），避免窗口刚 resize 后 ioctl 新高度错位。
+        let stored_h = app.main_renderer.previous_height();
+        let height = if stored_h != 0 {
+            stored_h
+        } else {
+            terminal::size().map(|(_, h)| h as usize).unwrap_or(24)
+        }
+        .max(1);
+        let seq = app.main_renderer.exit_sequence(height);
+        if !seq.is_empty() {
+            let _ = write_stdout(&mut stdout, &seq);
+        }
         let _ = execute!(stdout, Show);
     }
     terminal::disable_raw_mode().map_err(|e| e.to_string())?;

@@ -49,6 +49,30 @@ impl MainScreenRenderer {
         &self.printed
     }
 
+    pub fn dock_len(&self) -> usize {
+        self.prev_dock_len
+    }
+
+    pub fn previous_height(&self) -> usize {
+        self.previous_height
+    }
+
+    /// regular 退出时清除底部 dock（对齐 pi `TuiMainScreen.beforeTerminalStop`）。
+    /// `height` 为当前终端行数；返回包裹同步输出的清行序列。
+    pub fn exit_sequence(&self, height: usize) -> String {
+        if height == 0 || self.prev_dock_len == 0 || self.prev_dock_len > height {
+            return String::new();
+        }
+        let mut buffer = crate::terminal::BEGIN_SYNCHRONIZED_OUTPUT.to_string();
+        let start = height - self.prev_dock_len + 1;
+        for i in 0..self.prev_dock_len {
+            buffer.push_str(&format!("\x1b[{};1H\x1b[2K", start + i));
+        }
+        buffer.push_str(&format!("\x1b[{start};1H"));
+        buffer.push_str(crate::terminal::END_SYNCHRONIZED_OUTPUT);
+        buffer
+    }
+
     /// 计算追加 M 行时的滚动量、起始行与跳过数。
     ///
     /// `visible_old`：当前屏幕上 transcript 区已占用的行数；
@@ -599,5 +623,33 @@ mod tests {
         let out = r.render_frame_regular(full, vec!["d2".into()], 20, 10);
         assert!(out.contains("d2"));
         assert!(!out.contains("\x1b[2J"), "空追加不应整屏重绘: {out:?}");
+    }
+
+    #[test]
+    fn spec_main_screen__exit_clears_dock_to_avoid_popup_residue() {
+        // 回归：/exit 时浮层仍在，退出必须清 dock 避免残留
+        let mut r = MainScreenRenderer::default();
+        let _ = r.render_frame_regular(
+            vec!["a".into()],
+            vec!["pop1".into(), "pop2".into(), "edit".into(), "footer".into()],
+            20,
+            10,
+        );
+        assert_eq!(r.dock_len(), 4);
+        let seq = r.exit_sequence(10);
+        assert!(seq.contains(crate::terminal::BEGIN_SYNCHRONIZED_OUTPUT));
+        assert!(seq.contains(crate::terminal::END_SYNCHRONIZED_OUTPUT));
+        // 4 行 dock 整体清除
+        assert!(seq.contains("\x1b[7;1H\x1b[2K"));
+        assert!(seq.contains("\x1b[10;1H\x1b[2K"));
+        assert!(seq.contains("\x1b[7;1H"), "光标应回到清后区域首行");
+        assert!(!seq.contains("\x1b[2J"), "退出不清全屏");
+    }
+
+    #[test]
+    fn spec_main_screen__exit_with_empty_dock_is_noop() {
+        let r = MainScreenRenderer::default();
+        assert_eq!(r.exit_sequence(10), "");
+        assert_eq!(r.exit_sequence(0), "");
     }
 }
