@@ -454,11 +454,33 @@ fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
                 _ => {}
             }
             if input::is_enter_key(key.code) && !key.modifiers.contains(KeyModifiers::SHIFT) {
+                // 区分“补全命令名”与“补全参数”（如 /model <name>）：
+                // - 无参数时：exact = 输入完整等于某个候选命令（/model == /model）
+                // - 有参数时：exact = 参数部分完整等于某个候选 insert/display
+                //   旧逻辑用整行 trimmed 与候选 insert 比较（"/model foo" vs "foo" 恒不等），
+                //   导致输入完整模型名后回车仍被当作“补全”而原地重写，需额外空格才清空候选。
                 let trimmed = app.input.trim().to_ascii_lowercase();
-                let exact = candidates.iter().any(|c| {
-                    c.display.to_ascii_lowercase() == trimmed
-                        || c.insert.to_ascii_lowercase() == trimmed
-                });
+                let trimmed_start = app.input.trim_start();
+                let slash_content = trimmed_start
+                    .strip_prefix('/')
+                    .or_else(|| trimmed_start.strip_prefix('、'))
+                    .unwrap_or("");
+                let has_arg = slash_content.chars().any(|c| c.is_whitespace());
+                let exact = if has_arg {
+                    let arg_part = slash_content
+                        .find(|c: char| c.is_whitespace())
+                        .map(|pos| slash_content[pos..].trim().to_ascii_lowercase())
+                        .unwrap_or_default();
+                    candidates.iter().any(|c| {
+                        c.insert.to_ascii_lowercase() == arg_part
+                            || c.display.to_ascii_lowercase() == arg_part
+                    })
+                } else {
+                    candidates.iter().any(|c| {
+                        c.display.to_ascii_lowercase() == trimmed
+                            || c.insert.to_ascii_lowercase() == trimmed
+                    })
+                };
                 if !exact {
                     let cand = candidates[app.slash_selected].clone();
                     slash::apply_slash_completion(app, &cand);
