@@ -55,6 +55,13 @@ pub(super) fn find_session(
                 .is_some_and(|name| name.eq_ignore_ascii_case(selector))
     }))
 }
+fn reset_view_state(app: &mut App) {
+    app.main_renderer.reset();
+    app.screen_renderer.reset();
+    app.alt_screen.primary_scroll_view.scroll_to(0);
+    app.conversation_lines.clear();
+}
+
 pub(super) fn resume_session(app: &mut App, summary: AgentSessionSummary) {
     if app.session_path.is_none() {
         push_error(app, "Session persistence is disabled by --no-session.");
@@ -73,6 +80,7 @@ pub(super) fn resume_session(app: &mut App, summary: AgentSessionSummary) {
             app.session = session;
             app.messages = restore_visible_messages(&app.session.messages);
             input::clear_input(app);
+            reset_view_state(app);
             app.status = format!("Resumed {}", session_name(app));
         }
         Err(error) => push_error(app, error),
@@ -87,6 +95,7 @@ pub(super) fn new_session(app: &mut App) {
         app.skills = load_skills(&app.workspace);
         app.prompts = load_prompts(&app.workspace);
         input::clear_input(app);
+        reset_view_state(app);
         app.status = "New in-memory session".into();
         return;
     }
@@ -100,6 +109,7 @@ pub(super) fn new_session(app: &mut App) {
             app.skills = load_skills(&app.workspace);
             app.prompts = load_prompts(&app.workspace);
             input::clear_input(app);
+            reset_view_state(app);
             app.status = "New session".into();
         }
         Err(error) => push_error(app, error),
@@ -171,6 +181,7 @@ pub(super) fn rewind_session(app: &mut App, turn: usize) {
     }
     app.messages = restore_visible_messages(&app.session.messages);
     persist_session(app);
+    reset_view_state(app);
     app.status = format!("Rewound to user turn {turn}");
 }
 pub(super) fn format_session_list(sessions: &[AgentSessionSummary]) -> String {

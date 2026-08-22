@@ -48,12 +48,17 @@ fn render_regular(app: &mut App, width: usize, height: usize) -> io::Result<()> 
     let content_width = width.max(1);
     let transcript_lines = build_transcript(app, content_width);
 
-    // dock = 编辑器 + footer 两行
+    // dock = 编辑器 + footer 两行，顶部可叠加 / 候选浮层
     let mut editor = build_editor(app);
     editor.max_visible_lines = editor_max_visible_lines(height).min(height.saturating_sub(4));
     let editor_lines = editor.render(width);
     let footer_lines = build_footer(app, width);
-    let dock_lines: Vec<String> = editor_lines.into_iter().chain(footer_lines).collect();
+    let mut dock_lines: Vec<String> = Vec::new();
+    if let Some(popup) = build_slash_popup(app, width) {
+        dock_lines.extend(popup);
+    }
+    dock_lines.extend(editor_lines);
+    dock_lines.extend(footer_lines);
 
     let frame = app
         .main_renderer
@@ -62,6 +67,73 @@ fn render_regular(app: &mut App, width: usize, height: usize) -> io::Result<()> 
     stdout.write_all(frame.as_bytes())?;
     stdout.flush()?;
     Ok(())
+}
+
+fn build_slash_popup(app: &App, width: usize) -> Option<Vec<String>> {
+    let cands = slash::slash_candidates(app);
+    if cands.is_empty() {
+        return None;
+    }
+    // 仅在单行以 / 或 、 开头的命令输入时展示（与 handle_key 的 gating 一致）
+    if app.input.contains('\n') {
+        return None;
+    }
+    let trimmed = app.input.trim_start();
+    if !(trimmed.starts_with('/') || trimmed.starts_with('、')) {
+        return None;
+    }
+    let selected = app.slash_selected.min(cands.len().saturating_sub(1));
+    let popup_width = (width.saturating_sub(6))
+        .clamp(32, 64)
+        .max(20)
+        .min(width.saturating_sub(2).max(20));
+    let inner_w = popup_width.saturating_sub(2);
+    let hint = if cands.len() == 1 {
+        " Tab/Enter 补全 "
+    } else {
+        " ↑↓ 选择 Tab/Enter 补全 "
+    };
+    let hint_w = visible_width_safe(hint);
+    let mut lines: Vec<String> = Vec::new();
+    // 顶部边框（嵌入 hint）
+    if hint_w + 4 <= popup_width {
+        let remaining = popup_width.saturating_sub(2 + hint_w + 2);
+        let left = 1usize;
+        let right = remaining.saturating_sub(left);
+        lines.push(format!(
+            "┌{}┤{}├{}┐",
+            "─".repeat(left),
+            hint,
+            "─".repeat(right)
+        ));
+    } else {
+        lines.push(format!("┌{}┐", "─".repeat(popup_width.saturating_sub(2))));
+    }
+    for (idx, cand) in cands.iter().enumerate() {
+        let is_sel = idx == selected;
+        // 构造内部文本： display 左对齐 14 列 + desc
+        let mut inner = format!(" {:<14} {}", cand.display, cand.desc);
+        // 截断并补齐到 inner_w
+        let vw = visible_width_safe(&inner);
+        if vw > inner_w {
+            inner = truncate_ansi(&inner, inner_w);
+        }
+        let pad = inner_w.saturating_sub(visible_width_safe(&inner));
+        inner.push_str(&" ".repeat(pad));
+        let content = if is_sel {
+            // 选中行：反显 + 加粗，模拟旧版 bg/accent
+            format!("\x1b[7m\x1b[1m{}\x1b[22m\x1b[27m", inner)
+        } else {
+            // 未选中：display 高亮
+            // 对 display 部分单独着色，简化为整体着色
+            inner
+        };
+        lines.push(format!("│{}│", content));
+    }
+    lines.push(format!("└{}┘", "─".repeat(popup_width.saturating_sub(2))));
+    // 左对齐浮层：直接返回 popup_width 宽的行，写入时会以 \x1b[2K 清行后左对齐显示
+    // 为了与旧版 input.x 对齐，可在每行左侧加少量空格（已包含在 dock 布局中）
+    Some(lines)
 }
 
 /// footer 两行（regular 与 fullscreen 共用）：
@@ -105,7 +177,9 @@ fn render_fullscreen(app: &mut App, width: usize, height: usize) -> io::Result<(
         .primary_scroll_view
         .update_layout(content_lines.len(), height);
 
-    // ── 3. dock 高度分配：VStack[transcript(fill), dock(editor+footer, shrink)] ──
+    // ── 3. dock 高度分配：VStack[transcript(fill), dock(editor+footer+popup, shrink)] ──
+    let popup_lines = build_slash_popup(app, width);
+    let popup_len = popup_lines.as_ref().map(|v| v.len()).unwrap_or(0);
     let mut editor = build_editor(app);
     // pi 的 editor.js：maxVisibleLines = max(5, floor(rows*30%))，组件内部自行裁剪
     let max_editor = editor_max_visible_lines(height);
@@ -114,21 +188,26 @@ fn render_fullscreen(app: &mut App, width: usize, height: usize) -> io::Result<(
     // 编辑器实际高度 = 边框2 + 可见文本行数（由组件自身裁剪；这里按总行数截断）
     let editor_lines_n = editor_all.len().min(max_editor + 2);
     let footer_lines_n = 2.min(height.saturating_sub(3));
+    let dock_basis = popup_len + editor_lines_n + footer_lines_n;
     let entries = vec![
         crossh_tui::layout::StackEntry::fill(),
         crossh_tui::layout::StackEntry {
-            basis: Some(editor_lines_n + footer_lines_n),
+            basis: Some(dock_basis),
             grow: 0,
             shrink: 1,
             min_size: 4,
             max_size: usize::MAX,
         },
     ];
-    let intrinsic = [0usize, editor_lines_n + footer_lines_n];
+    let intrinsic = [0usize, dock_basis];
     let sizes = crossh_tui::layout::allocate_stack_sizes(&entries, &intrinsic, Some(height));
     let transcript_h = sizes[0].max(1);
     let dock_h = sizes[1];
-    let editor_h = dock_h.saturating_sub(footer_lines_n).max(3);
+    // popup 固定高度，剩余分配给 editor
+    let editor_h = dock_h
+        .saturating_sub(popup_len)
+        .saturating_sub(footer_lines_n)
+        .max(3);
 
     // ── 4. 组装全屏行 ──
     let scroll_top = app.alt_screen.primary_scroll_view.scroll_top;
@@ -155,6 +234,12 @@ fn render_fullscreen(app: &mut App, width: usize, height: usize) -> io::Result<(
         screen.push(line);
     }
 
+    // 候选浮层（位于编辑器上方，随 dock 一起出现/消失）
+    if let Some(popup) = popup_lines {
+        for line in popup {
+            screen.push(line);
+        }
+    }
     // 编辑器（截断到分配高度）
     let editor_lines = editor.render(width);
     for line in editor_lines.into_iter().take(editor_h) {
