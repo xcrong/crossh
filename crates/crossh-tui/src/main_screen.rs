@@ -6,8 +6,10 @@
 //! 渲染模型（与 pi 的 inline 模式一致）：
 //! - `transcript`（对话行）只追加进 scrollback，已打印的行不再重写；
 //! - `dock`（编辑器 + footer）固定在屏幕底部，每帧原位重绘；
-//! - 仅当 transcript 前缀被改写（/resume、Ctrl-T 折叠切换等）或 dock 高度变化时
-//!   才做整屏重绘（`\x1b[2J` + 重印尾部），避免向 scrollback 复制重复内容。
+//! - 追加/尾部改写需要新行时，先在底行显式滚动（`\r\n`×N）腾出空间再写入，
+//!   避免新行落在 dock 行上随后被 dock 重绘覆盖；
+//! - 只有变化越过可视区（scrollback 不可改写）、首帧或尺寸/dock 高度变化时
+//!   才整屏重绘（`\x1b[2J` + 重印尾部），不向 scrollback 复制重复内容。
 
 use crate::ansi::{CURSOR_MARKER, SEGMENT_RESET, normalize_terminal_output, visible_width};
 
@@ -21,6 +23,16 @@ pub struct MainScreenRenderer {
     previous_height: usize,
 }
 
+/// 写入路径的几何计算结果
+struct WritePlan {
+    /// 需要先在底行执行的滚动行数
+    scroll_n: usize,
+    /// 新内容写入的起始屏幕行（1-based）
+    start_row: usize,
+    /// 跳过的新内容行数（超出屏幕容量的头部）
+    skip: usize,
+}
+
 impl MainScreenRenderer {
     pub fn reset(&mut self) {
         self.printed.clear();
@@ -32,6 +44,53 @@ impl MainScreenRenderer {
     /// 最后一帧的可见屏幕行（供 afterTerminalStop 重放到主屏 scrollback）
     pub fn last_document(&self) -> &[String] {
         &self.printed
+    }
+
+    /// 计算追加 M 行时的滚动量、起始行与跳过数。
+    ///
+    /// `visible_old`：当前屏幕上 transcript 区已占用的行数；
+    /// `first_row`：本次写入对应旧内容所在的屏幕行（纯追加时为 visible_old+1）。
+    fn plan_rows(&self, first_row: usize, m: usize, viewport: usize, height: usize) -> WritePlan {
+        let _ = height;
+        // first_row 可能是「已提交尾部的下一行」（超出视口一行），此时容量为 0
+        let cap = if first_row > viewport {
+            0
+        } else {
+            viewport - first_row + 1
+        };
+        let scroll_n = m.saturating_sub(cap);
+        let start_row = first_row.saturating_sub(scroll_n).max(1);
+        let cap2 = viewport - start_row + 1;
+        let skip = m.saturating_sub(cap2);
+        WritePlan {
+            scroll_n,
+            start_row,
+            skip,
+        }
+    }
+
+    /// 在底行滚动 `n` 行腾出空间（autowrap 开启时底行的 `\r\n` 恰好各滚动一行）
+    fn emit_scroll(buffer: &mut String, height: usize, n: usize) {
+        if n > 0 {
+            buffer.push_str(&format!("\x1b[{height};1H"));
+            for _ in 0..n {
+                buffer.push_str("\r\n");
+            }
+        }
+    }
+
+    fn write_lines(buffer: &mut String, lines: &[String], start_row: usize) {
+        if lines.is_empty() {
+            return;
+        }
+        buffer.push_str(&format!("\x1b[{start_row};1H"));
+        for (i, line) in lines.iter().enumerate() {
+            if i > 0 {
+                buffer.push_str("\r\n");
+            }
+            buffer.push_str("\x1b[2K");
+            buffer.push_str(line);
+        }
     }
 
     fn normalize_lines(lines: Vec<String>, width: usize) -> (Vec<String>, Option<(usize, usize)>) {
@@ -95,49 +154,35 @@ impl MainScreenRenderer {
             .take_while(|(old, new)| old == new)
             .count();
         let old_len = self.printed.len();
-        let viewport = height.saturating_sub(dock_len);
+        let new_len = transcript.len();
+        let viewport = height - dock_len;
+
+        // 当前 transcript 区已占用的行数，以及旧 tail 的起始索引
+        let visible_old = old_len.min(viewport);
+        let tail_start_old = old_len - visible_old;
 
         let mut buffer = crate::terminal::BEGIN_SYNCHRONIZED_OUTPUT.to_string();
-        if !first_frame && !size_changed && !dock_resized && common == old_len {
-            // ── 纯追加：新 transcript 行从上一帧 dock 顶行开始覆盖写 ──
-            let new_lines = &transcript[common..];
-            if !new_lines.is_empty() {
-                let start_row = height - self.prev_dock_len + 1;
-                buffer.push_str(&format!("\x1b[{start_row};1H"));
-                for (i, line) in new_lines.iter().enumerate() {
-                    if i > 0 {
-                        buffer.push_str("\r\n");
-                    }
-                    buffer.push_str("\x1b[2K");
-                    buffer.push_str(line);
-                }
-            }
-            self.printed.extend_from_slice(new_lines);
-            // dock 原位重绘
-            self.write_dock(&mut buffer, &dock, height);
-        } else if !first_frame
-            && !size_changed
-            && !dock_resized
-            && old_len.saturating_sub(common) <= viewport
-        {
-            // ── 尾部原位重写（流式输出主路径）：变化的后缀全部还在屏幕上，
-            //    仅擦写受影响行，不整屏清空、不污染 scrollback。
-            //    流式增量通常只改动最后一条消息的末尾一两行，走这里。──
-            let tail_start = old_len.saturating_sub(viewport);
-            let first_row = common - tail_start + 1;
-            buffer.push_str(&format!("\x1b[{first_row};1H"));
-            let new_tail = &transcript[common..];
-            for (i, line) in new_tail.iter().enumerate() {
-                if i > 0 {
-                    buffer.push_str("\r\n");
-                }
-                buffer.push_str("\x1b[2K");
-                buffer.push_str(line);
-            }
-            // 新增行超出屏幕底部时自然滚动；随后 dock 绝对定位重绘
+        let incremental = !first_frame && !size_changed && !dock_resized;
+
+        if incremental && common == old_len && new_len >= old_len {
+            // ── 纯追加：N 行新内容接在已提交尾部之后 ──
+            let n = new_len - old_len;
+            let plan = self.plan_rows(visible_old + 1, n, viewport, height);
+            Self::emit_scroll(&mut buffer, height, plan.scroll_n);
+            let lines = &transcript[old_len + plan.skip..];
+            Self::write_lines(&mut buffer, lines, plan.start_row);
+            self.printed.extend_from_slice(&transcript[old_len..]);
+        } else if incremental && old_len.saturating_sub(common) <= viewport {
+            // ── 尾部原位改写（流式输出主路径）：变化的后缀全部还在屏幕上，
+            //    仅擦写受影响行。流式增量通常只改动最后一条消息的末尾一两行。──
+            let first_row = common - tail_start_old + 1;
+            let m = new_len - common;
+            let plan = self.plan_rows(first_row, m, viewport, height);
+            Self::emit_scroll(&mut buffer, height, plan.scroll_n);
+            let lines = &transcript[common + plan.skip..];
+            Self::write_lines(&mut buffer, lines, plan.start_row);
             self.printed.truncate(common);
-            self.printed.extend_from_slice(new_tail);
-            self.write_dock(&mut buffer, &dock, height);
+            self.printed.extend_from_slice(&transcript[common..]);
         } else {
             // ── 整屏重绘：首帧 / 尺寸变化 / dock 高度变化 / 变化越过可视区 ──
             // 只重印能放下的 transcript 尾部，避免把头部重复灌入 scrollback
@@ -149,7 +194,6 @@ impl MainScreenRenderer {
                 }
                 buffer.push_str(line);
             }
-            self.write_dock(&mut buffer, &dock, height);
             self.printed = transcript;
         }
         self.prev_dock_len = dock_len;
@@ -157,7 +201,8 @@ impl MainScreenRenderer {
         self.previous_height = height;
         buffer.push_str(crate::terminal::END_SYNCHRONIZED_OUTPUT);
 
-        // 硬件光标定位到 dock 内的编辑器位置（行号是屏幕绝对行，恒在界内）
+        // dock 原位重绘 + 硬件光标定位到编辑器位置（恒在界内）
+        self.write_dock(&mut buffer, &dock, height);
         match cursor_in_dock {
             Some((row_in_dock, col)) => {
                 let row = height - dock_len + 1 + row_in_dock;
@@ -192,7 +237,6 @@ impl MainScreenRenderer {
 #[cfg(test)]
 mod tests {
     #![allow(non_snake_case)]
-
     use super::*;
     use crate::ansi::strip_terminal_sequences;
 
@@ -284,6 +328,47 @@ mod tests {
             !out.contains("line0\r\n"),
             "head should not be reprinted: {out:?}"
         );
+    }
+
+    #[test]
+    fn spec_main_screen__append_scrolls_explicitly_instead_of_clobbering_dock() {
+        // 回归：视口已满时追加 N 行必须先显式滚动 N 行，
+        // 否则新行写在 dock 行上、随即被 dock 重绘覆盖（用户消息"消失"）。
+        let mut r = MainScreenRenderer::default();
+        let full: Vec<String> = (0..9).map(|i| format!("t{i}")).collect(); // 视口 9 行占满
+        let _ = r.render_frame_regular(full, vec!["d".into()], 20, 10);
+        let out = r.render_frame_regular(
+            (0..11).map(|i| format!("t{i}")).collect::<Vec<_>>(),
+            vec!["d".into()],
+            20,
+            10,
+        );
+        // 显式滚动 2 行：定位到底行后连发两个 \r\n
+        assert!(out.contains("\x1b[10;1H\r\n\r\n"), "应先滚动: {out:?}");
+        // 写入起点 = 视口语量顶(9-2+1=8)
+        assert!(out.contains("\x1b[8;1H"), "应从第 8 行写入: {out:?}");
+        assert!(out.contains("t10"), "新末行必须出现: {out:?}");
+        assert!(!out.contains("\x1b[2J"));
+    }
+
+    #[test]
+    fn spec_main_screen__suffix_growth_scrolls_within_viewport() {
+        // 尾部改写需要更多行时同样先滚动：视口 9 行满，common=7 起 +4 行 → 需滚 2 行
+        let mut r = MainScreenRenderer::default();
+        let base: Vec<String> = (0..9).map(|i| format!("L{i}")).collect();
+        let _ = r.render_frame_regular(base, vec!["d".into()], 20, 10);
+        let mut next: Vec<String> = (0..9).map(|i| format!("L{i}")).collect();
+        next.truncate(7);
+        next.push("X0".into());
+        next.push("X1".into());
+        next.push("X2".into());
+        next.push("X3".into());
+        let out = r.render_frame_regular(next, vec!["d".into()], 20, 10);
+        // common=7, first_row=8, M=4, cap=2 → scroll 2, start_row=6
+        assert!(out.contains("\x1b[10;1H\r\n\r\n"), "应先滚动 2 行: {out:?}");
+        assert!(out.contains("\x1b[6;1H"), "应从第 6 行写入: {out:?}");
+        assert!(out.contains("X3"));
+        assert!(!out.contains("\x1b[2J"));
     }
 
     #[test]
