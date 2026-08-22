@@ -1900,6 +1900,7 @@ dependencies = [
  "crossh-ssh",
  "crossh-terminal",
  "crossh-theme",
+ "crossh-tui",
  "crossh-ui",
  "crossh-ui-component",
  "crossh-update",
@@ -2010,6 +2011,15 @@ dependencies = [
 [[package]]
 name = "crossh-theme"
 version = "0.18.0"
+
+[[package]]
+name = "crossh-tui"
+version = "0.18.0"
+dependencies = [
+ "base64",
+ "unicode-segmentation",
+ "unicode-width",
+]
 
 [[package]]
 name = "crossh-ui"

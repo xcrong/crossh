@@ -1,0 +1,10 @@
+[package]
+name = "crossh-tui"
+version = "0.18.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+unicode-width = "0.2"
+unicode-segmentation = "1.12"
+base64 = "0.22"

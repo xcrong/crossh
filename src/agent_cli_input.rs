@@ -81,7 +81,6 @@ pub(super) fn dequeue_queue(app: &mut App) -> bool {
             follow_up: Vec::new(),
         });
     app.status = "Dequeued — restored to input".into();
-    app.scroll = u16::MAX;
     true
 }
 

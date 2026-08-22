@@ -18,6 +18,7 @@ members = [
     "crates/crossh-theme",
     "crates/crossh-ssh",
     "crates/crossh-terminal",
+    "crates/crossh-tui",
     "crates/crossh-update",
     "crates/crossh-ui",
     "crates/crossh-ui-component",
@@ -30,6 +31,7 @@ crossh-agent = { path = "crates/crossh-agent" }
 crossh-theme = { path = "crates/crossh-theme" }
 crossh-ssh = { path = "crates/crossh-ssh" }
 crossh-terminal = { path = "crates/crossh-terminal" }
+crossh-tui = { path = "crates/crossh-tui" }
 crossh-update = { path = "crates/crossh-update" }
 crossh-ui = { path = "crates/crossh-ui" }
 crossh-ui-component = { path = "crates/crossh-ui-component" }

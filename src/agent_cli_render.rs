@@ -1,312 +1,481 @@
+//! 渲染 — 按 pi 的 interactive-mode.js 布局树组织：
+//!
+//! ```text
+//! VStack [
+//!   transcriptScrollView {follow: end, primary}   ← grow: 1（对话内容）
+//!   dock VStack [                                  ← shrink: 1
+//!     editorContainer   （边框编辑器，minSize 3）
+//!     footerContainer   （pwd 行 + 统计行）
+//!   ]
+//! ]
+//! ```
+//!
+//! 输出走 `crossh_tui::screen::ScreenRenderer`（diff + 同步输出 + 光标标记）
+
 use super::*;
+use crossh_tui::component::Component;
+use crossterm::terminal;
+use std::io::{self, Write};
+#[cfg(test)]
+use unicode_width::UnicodeWidthStr;
 
-pub(super) fn render(frame: &mut Frame, app: &mut App) {
-    let input_height = input_height(frame.area(), app);
-    let [header, conversation, input, footer] = agent_layout(frame.area(), input_height);
-    let accent = tui_color(theme::accent());
-    let bg = tui_color(theme::canvas());
-    let surface = tui_color(theme::surface());
-    let border = tui_color(theme::border_strong());
-    let text = tui_color(theme::text());
-    let muted = tui_color(theme::muted_text());
-    let faint = tui_color(theme::faint_text());
+/// 编辑器最大可见行：pi 的 maxVisibleLines = max(5, rows*30%)
+fn editor_max_visible_lines(rows: usize) -> usize {
+    (rows * 3 / 10).max(5)
+}
 
-    let header_line = Line::from(vec![
-        Span::styled(
-            " CROSSH ",
-            Style::new().fg(bg).bg(accent).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            " AGENT ",
-            Style::new().fg(accent).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!(
-                "  {}  {}  {}",
-                active_model_label(app),
-                app.thinking.label(),
-                session_name(app)
-            ),
-            Style::new().fg(muted),
-        ),
-    ]);
-    frame.render_widget(
-        Paragraph::new(header_line)
-            .style(Style::new().bg(bg))
-            .block(
-                Block::new()
-                    .borders(Borders::BOTTOM)
-                    .border_style(Style::new().fg(border))
-                    .padding(Padding::top(1)),
-            ),
-        header,
-    );
-
-    let content_width = conversation.width.saturating_sub(4).max(1) as usize;
-    let mut lines = Vec::new();
-    if app.messages.is_empty() {
-        lines.push(Line::styled(
-            "No messages yet. Ask about this project or type /help (、help also works).",
-            Style::new().fg(faint),
-        ));
+/// 主渲染入口（regular=主屏不捕获鼠标/原生选区，fullscreen=AltScreen）
+pub fn render(app: &mut App) -> io::Result<()> {
+    let Ok((cols, rows)) = terminal::size() else {
+        return Ok(());
+    };
+    let width = cols as usize;
+    let height = rows as usize;
+    if width == 0 || height == 0 {
+        return Ok(());
     }
-    for (role, content) in &app.messages {
-        let (label, color) = match role {
-            Role::User => ("you", accent),
-            Role::Reasoning => ("thinking", faint),
-            Role::Agent => ("agent", tui_color(theme::diff_add_fg())),
-            Role::Tool => ("tool", tui_color(theme::warning())),
-            Role::Approval => ("approval", tui_color(theme::accent())),
-            Role::Error => ("error", tui_color(theme::danger())),
-            Role::Notice => ("note", tui_color(theme::info())),
-            Role::Queued => ("queued", tui_color(theme::accent_hover())),
-        };
-        lines.push(Line::styled(
-            format!("[{label}]"),
-            Style::new().fg(color).add_modifier(Modifier::BOLD),
-        ));
-        if matches!(role, Role::Reasoning) && !app.show_reasoning {
-            lines.push(Line::styled(
-                format!("  [thinking hidden: {} chars]", content.len()),
-                Style::new().fg(faint).add_modifier(Modifier::ITALIC),
-            ));
-        } else if matches!(role, Role::Agent) {
-            lines.extend(markdown_content(content, content_width));
-        } else if matches!(role, Role::Tool) && !app.show_tool_details {
-            lines.push(Line::styled(
-                format!(
-                    "  {}",
-                    collapsed_tool_summary(content, content_width.saturating_sub(2))
-                ),
-                Style::new().fg(muted),
-            ));
-        } else {
-            lines.extend(wrap_content(content, content_width));
+    app.flashes.expire();
+    if app.fullscreen {
+        render_fullscreen(app, width, height)
+    } else {
+        render_regular(app, width, height)
+    }
+}
+
+fn render_regular(app: &mut App, width: usize, height: usize) -> io::Result<()> {
+    // regular：transcript 追加进 scrollback（终端原生滚动/框选/右键菜单），
+    // dock（编辑器 + footer）固定屏幕底部原位重绘
+    let content_width = width.max(1);
+    let transcript_lines = build_transcript(app, content_width);
+
+    // dock = 编辑器 + footer 两行
+    let mut editor = build_editor(app);
+    editor.max_visible_lines = editor_max_visible_lines(height).min(height.saturating_sub(4));
+    let editor_lines = editor.render(width);
+    let footer_lines = build_footer(app, width);
+    let dock_lines: Vec<String> = editor_lines.into_iter().chain(footer_lines).collect();
+
+    let frame = app
+        .main_renderer
+        .render_frame_regular(transcript_lines, dock_lines, width, height);
+    let mut stdout = io::stdout();
+    stdout.write_all(frame.as_bytes())?;
+    stdout.flush()?;
+    Ok(())
+}
+
+/// footer 两行（regular 与 fullscreen 共用）：
+/// 第一行 = status（为空时回退 pwd）；第二行 = 统计 + 右对齐 model·thinking
+fn build_footer(app: &App, width: usize) -> Vec<String> {
+    let first_raw = if app.status.is_empty() {
+        format!(" {}", app.workspace.display())
+    } else {
+        format!(" {}", app.status)
+    };
+    let stats = format!(
+        " {} msgs  ~{} tokens  {} ctx",
+        app.session.messages.len(),
+        estimate_tokens(&app.session.messages),
+        app.context_files.len()
+    );
+    let right = format!("{} · {}", active_model_label(app), app.thinking.label());
+    let left_w = visible_width_safe(&stats);
+    let right_w = visible_width_safe(&right);
+    let stats_line = if left_w + right_w < width {
+        format!(
+            "{}{}{}",
+            stats,
+            " ".repeat(width - left_w - right_w - 1),
+            right
+        )
+    } else {
+        truncate_ansi(&stats, width)
+    };
+    vec![truncate_ansi(&first_raw, width), stats_line]
+}
+
+fn render_fullscreen(app: &mut App, width: usize, height: usize) -> io::Result<()> {
+    // ── 1. transcript 内容行（带 ANSI，与 pi 的隐式文档一致）──
+    let content_width = width.max(1);
+    let content_lines = build_transcript(app, content_width);
+
+    // ── 2. ScrollView 布局同步（follow: end）──
+    app.alt_screen.primary_scroll_view.viewport_height = height;
+    app.alt_screen
+        .primary_scroll_view
+        .update_layout(content_lines.len(), height);
+
+    // ── 3. dock 高度分配：VStack[transcript(fill), dock(editor+footer, shrink)] ──
+    let mut editor = build_editor(app);
+    // pi 的 editor.js：maxVisibleLines = max(5, floor(rows*30%))，组件内部自行裁剪
+    let max_editor = editor_max_visible_lines(height);
+    editor.max_visible_lines = max_editor;
+    let editor_all = editor.render(width);
+    // 编辑器实际高度 = 边框2 + 可见文本行数（由组件自身裁剪；这里按总行数截断）
+    let editor_lines_n = editor_all.len().min(max_editor + 2);
+    let footer_lines_n = 2.min(height.saturating_sub(3));
+    let entries = vec![
+        crossh_tui::layout::StackEntry::fill(),
+        crossh_tui::layout::StackEntry {
+            basis: Some(editor_lines_n + footer_lines_n),
+            grow: 0,
+            shrink: 1,
+            min_size: 4,
+            max_size: usize::MAX,
+        },
+    ];
+    let intrinsic = [0usize, editor_lines_n + footer_lines_n];
+    let sizes = crossh_tui::layout::allocate_stack_sizes(&entries, &intrinsic, Some(height));
+    let transcript_h = sizes[0].max(1);
+    let dock_h = sizes[1];
+    let editor_h = dock_h.saturating_sub(footer_lines_n).max(3);
+
+    // ── 4. 组装全屏行 ──
+    let scroll_top = app.alt_screen.primary_scroll_view.scroll_top;
+    let mut screen: Vec<String> = Vec::with_capacity(height);
+
+    // transcript 视口窗口
+    app.conversation_rect = TuiRect {
+        x: 0,
+        y: 0,
+        width: width as i32,
+        height: transcript_h as i32,
+    };
+    app.conversation_lines = content_lines.clone();
+    // 选区边界（内容行坐标 + 列），逐行做列级反显（pi 的 applySelection 列级语义）
+    let sel_bounds = app.alt_screen.selection.bounds();
+    for row in 0..transcript_h {
+        let idx = scroll_top + row;
+        let mut line = content_lines.get(idx).cloned().unwrap_or_default();
+        if let Some((s, e)) = sel_bounds
+            && let Some((sc, ec)) = selection_cols_for_row(idx, s.row, s.col, e.row, e.col)
+        {
+            line = crossh_tui::ansi::style_visible_range(&line, sc, ec);
         }
-        lines.push(Line::default());
+        screen.push(line);
     }
-    let conversation_block = Block::new()
-        .title(" conversation ")
-        .borders(Borders::TOP | Borders::BOTTOM)
-        .border_style(Style::new().fg(border));
-    let viewport_height = conversation_block.inner(conversation).height as usize;
-    app.max_scroll = lines
-        .len()
-        .saturating_sub(viewport_height)
-        .min(u16::MAX as usize) as u16;
-    let scroll = if app.scroll == u16::MAX {
-        app.max_scroll
-    } else {
-        app.scroll.min(app.max_scroll)
-    };
-    if app.scroll != u16::MAX {
-        app.scroll = scroll;
-    }
-    frame.render_widget(
-        Paragraph::new(lines)
-            .style(Style::new().fg(text).bg(bg))
-            .scroll((scroll, 0))
-            .block(conversation_block),
-        conversation,
-    );
 
-    let input_title = if app.queued_inputs.is_empty() {
-        " prompt "
-    } else {
-        " queue next prompt "
-    };
-    let thinking_border = match app.thinking {
-        crossh_agent::ThinkingLevel::Off => faint,
-        crossh_agent::ThinkingLevel::Minimal => muted,
-        crossh_agent::ThinkingLevel::Low => tui_color(theme::info()),
-        crossh_agent::ThinkingLevel::Medium => accent,
-        crossh_agent::ThinkingLevel::High => tui_color(theme::warning()),
-        crossh_agent::ThinkingLevel::XHigh => tui_color(theme::danger()),
-        crossh_agent::ThinkingLevel::Max => tui_color(theme::danger()),
-    };
-    let input_block = Block::new()
-        .title(input_title)
-        .borders(Borders::ALL)
-        .border_style(Style::new().fg(if app.queued_inputs.is_empty() {
-            thinking_border
+    // 编辑器（截断到分配高度）
+    let editor_lines = editor.render(width);
+    for line in editor_lines.into_iter().take(editor_h) {
+        screen.push(line);
+    }
+    while screen.len() < height.saturating_sub(footer_lines_n) {
+        screen.push(String::new());
+    }
+
+    // footer 两行：status/pwd + 统计（与 regular 共用）
+    let footer_lines = build_footer(app, width);
+    screen.truncate(height.saturating_sub(footer_lines.len()));
+    for line in footer_lines {
+        screen.push(line);
+    }
+
+    // ── 5. diff 渲染输出（选区已在视口组装时列级应用）──
+    let frame = app
+        .screen_renderer
+        .render_frame(screen, width, height, None, &app.flashes);
+    let mut stdout = io::stdout();
+    stdout.write_all(frame.as_bytes())?;
+    stdout.flush()?;
+    Ok(())
+}
+
+/// 计算某内容行的选中列区间（pi 的 getSelectionColumns）
+fn selection_cols_for_row(
+    row: usize,
+    start_row: usize,
+    start_col: usize,
+    end_row: usize,
+    end_col: usize,
+) -> Option<(usize, usize)> {
+    if start_row == end_row {
+        return if row == start_row {
+            Some((start_col.min(end_col), end_col.max(start_col)))
         } else {
-            accent
-        }))
-        .padding(Padding::horizontal(1));
-    let input_area = input.inner(Margin::new(2, 1));
-    let input_text = if app.input.is_empty() {
-        "Ask about the project...".to_string()
+            None
+        };
+    }
+    if row == start_row {
+        // 首行：从起始列到行尾
+        Some((start_col, usize::MAX))
+    } else if row == end_row {
+        // 末行：行首到结束列
+        Some((0, end_col))
+    } else if row > start_row && row < end_row {
+        // 中间整行
+        Some((0, usize::MAX))
+    } else {
+        None
+    }
+}
+
+/// 对话内容行构建（角色标签着色 + Markdown/折叠工具输出）
+fn build_transcript(app: &mut App, width: usize) -> Vec<String> {
+    let mut container = crossh_tui::component::Container::new();
+    for (role, content) in &app.messages {
+        match role {
+            Role::User => {
+                // 用户消息：Box 背景 + Markdown（pi 的 UserMessageComponent）
+                let label = styled_label("you", theme_color_user());
+                let mut md = crossh_tui::markdown::Markdown::new(content.clone(), 0, 0);
+                let body = md.render(width.saturating_sub(2));
+                let mut box_lines = vec![label];
+                box_lines.extend(body);
+                let padded: Vec<String> = box_lines
+                    .into_iter()
+                    .map(|l| {
+                        let v = visible_width_safe(&l);
+                        format!(
+                            // pi 的 userMessageBg #343541（dark.json）
+                            " \x1b[48;2;52;53;65m{}\x1b[49m{}",
+                            l,
+                            " ".repeat(width.saturating_sub(v + 1))
+                        )
+                    })
+                    .collect();
+                container.add_child(Box::new(RawLines(padded)));
+            }
+            Role::Agent => {
+                let md = crossh_tui::markdown::Markdown::new(content.clone(), 0, 1);
+                container.add_child(Box::new(md));
+            }
+            Role::Reasoning => {
+                if app.show_reasoning {
+                    let mut md = crossh_tui::markdown::Markdown::new(content.clone(), 0, 1);
+                    // thinkingText = gray italic（pi 的 assistant-thinking 样式）
+                    let lines = md
+                        .render(width)
+                        .into_iter()
+                        .map(|l| format!("\x1b[90m\x1b[3m{}\x1b[23m\x1b[39m", l))
+                        .collect();
+                    container.add_child(Box::new(RawLines(lines)));
+                } else {
+                    let label = format!(
+                        "\x1b[3m\x1b[90m  Thinking… ({} chars, Ctrl-T to show)\x1b[23m\x1b[39m",
+                        content.len()
+                    );
+                    container.add_child(Box::new(RawLines(vec![label, String::new()])));
+                }
+            }
+            Role::Tool => {
+                if app.show_tool_details {
+                    let title = styled_label("tool", "\x1b[33m");
+                    let mut md = crossh_tui::markdown::Markdown::new(content.clone(), 0, 1);
+                    let mut lines = vec![title];
+                    lines.extend(md.render(width));
+                    container.add_child(Box::new(RawLines(lines)));
+                } else {
+                    let compact = one_line(content);
+                    let summary = collapse_tool(&compact, width.saturating_sub(6));
+                    let line = format!("\x1b[33m▸ {}\x1b[39m", summary);
+                    container.add_child(Box::new(RawLines(vec![line])));
+                }
+            }
+            Role::Approval => {
+                let label = styled_label("approval", "\x1b[36m");
+                let mut md = crossh_tui::markdown::Markdown::new(content.clone(), 0, 1);
+                let mut lines = vec![label];
+                lines.extend(md.render(width));
+                container.add_child(Box::new(RawLines(lines)));
+            }
+            Role::Error => {
+                let label = styled_label("error", "\x1b[31m");
+                let mut md = crossh_tui::markdown::Markdown::new(content.clone(), 0, 1);
+                let mut lines = vec![label];
+                lines.extend(md.render(width));
+                container.add_child(Box::new(RawLines(lines)));
+            }
+            Role::Notice => {
+                let label = styled_label("note", "\x1b[34m");
+                let mut md = crossh_tui::markdown::Markdown::new(content.clone(), 0, 1);
+                let mut lines = vec![label];
+                lines.extend(md.render(width));
+                container.add_child(Box::new(RawLines(lines)));
+            }
+            Role::Queued => {
+                let label = styled_label("queued", "\x1b[36m");
+                container.add_child(Box::new(RawLines(vec![label, String::new()])));
+            }
+        }
+    }
+    container.render(width)
+}
+
+/// 编辑器视图（从 App.input 构造，保持既有 input/input_cursor 为唯一真源）
+fn build_editor(app: &mut App) -> crossh_tui::editor::Editor {
+    let mut editor = crossh_tui::editor::Editor::default();
+    let text = if app.input.is_empty() {
+        String::new()
     } else {
         app.input.clone()
     };
-    frame.render_widget(
-        Paragraph::new(input_text)
-            .style(Style::new().fg(if app.input.is_empty() { faint } else { text }))
-            .wrap(Wrap { trim: false })
-            .block(input_block),
-        input,
-    );
-    let (cursor_x, cursor_y) = cursor_position(input_area, &app.input, app.input_cursor);
-    frame.set_cursor_position((cursor_x, cursor_y));
-
-    let slash_cands = slash::slash_candidates(app);
-    if !slash_cands.is_empty() && is_command_input(&app.input) {
-        let selected = app.slash_selected.min(slash_cands.len().saturating_sub(1));
-        let mut popup_lines = Vec::new();
-        for (idx, cand) in slash_cands.iter().enumerate() {
-            let is_sel = idx == selected;
-            let name_style = if is_sel {
-                Style::new().fg(bg).bg(accent).add_modifier(Modifier::BOLD)
-            } else {
-                Style::new().fg(accent).add_modifier(Modifier::BOLD)
-            };
-            let desc_style = if is_sel {
-                Style::new().fg(bg).bg(accent)
-            } else {
-                Style::new().fg(muted)
-            };
-            popup_lines.push(Line::from(vec![
-                Span::styled(format!(" {:<14}", cand.display), name_style),
-                Span::styled(format!(" {}", cand.desc), desc_style),
-            ]));
+    editor.set_text(&text);
+    // 把字节光标换算为编辑器的（行，字符列），使 Home/←→ 等移动在画面上生效
+    let cursor_byte = app.input_cursor.min(text.len());
+    let mut byte_seen = 0usize;
+    for (li, line) in text.split('\n').enumerate() {
+        if cursor_byte <= byte_seen + line.len() {
+            editor.state.cursor_line = li;
+            editor.state.cursor_col = line[..cursor_byte - byte_seen].chars().count();
+            break;
         }
-        let popup_height = (slash_cands.len() as u16 + 2).clamp(3, 10);
-        let popup_width = input.width.saturating_sub(2).clamp(32, 64);
-        let popup_x = input.x;
-        let popup_y = input.y.saturating_sub(popup_height);
-        let mut popup_rect = Rect {
-            x: popup_x,
-            y: popup_y,
-            width: popup_width,
-            height: popup_height,
-        };
-        if popup_rect.y < conversation.y + 1 {
-            popup_rect.y = conversation.y + 1;
-        }
-        if popup_rect.bottom() > input.y {
-            popup_rect.y = input.y.saturating_sub(popup_height);
-        }
-        frame.render_widget(ratatui::widgets::Clear, popup_rect);
-        let hint = if slash_cands.len() == 1 {
-            " Tab/Enter 补全 "
-        } else {
-            " ↑↓ 选择 Tab/Enter 补全 "
-        };
-        frame.render_widget(
-            Paragraph::new(popup_lines).block(
-                Block::bordered()
-                    .border_style(Style::new().fg(accent))
-                    .title(hint)
-                    .style(Style::new().bg(bg)),
-            ),
-            popup_rect,
-        );
+        byte_seen += line.len() + 1; // +1 为 '\n'
     }
-
-    let footer_line = Line::from(vec![
-        Span::styled(format!(" {}", app.status), Style::new().fg(muted)),
-        Span::styled(
-            format!(
-                "    {}  {} msgs  ~{} tokens  {} ctx  {} skills  {} prompts",
-                app.workspace.display(),
-                app.session.messages.len(),
-                estimate_tokens(&app.session.messages),
-                app.context_files.len(),
-                app.skills.len(),
-                app.prompts.len()
-            ),
-            Style::new().fg(faint),
-        ),
-    ]);
-    frame.render_widget(
-        Paragraph::new(footer_line).style(Style::new().bg(surface)),
-        footer,
-    );
+    editor.padding_x = 0;
+    editor
 }
 
-pub(super) fn agent_layout(area: Rect, input_height: u16) -> [Rect; 4] {
-    Layout::vertical([
-        Constraint::Length(HEADER_HEIGHT),
-        Constraint::Fill(1),
-        Constraint::Length(input_height),
-        Constraint::Length(FOOTER_HEIGHT),
-    ])
-    .areas(area)
+/// 已带 ANSI 的预渲染行（适配 Container）
+struct RawLines(Vec<String>);
+
+impl crossh_tui::component::Component for RawLines {
+    fn render(&mut self, _width: usize) -> Vec<String> {
+        std::mem::take(&mut self.0)
+    }
 }
 
-pub(super) fn input_height(area: Rect, app: &App) -> u16 {
-    let width = area.width.saturating_sub(4).max(1) as usize;
-    let lines = visual_line_count(&app.input, width);
+fn styled_label(label: &str, color: &str) -> String {
+    // pi 的消息标签：着色 + 加粗，后跟一个空格
+    format!("{}\x1b[1m[{}]\x1b[22m ", color, label)
+}
+
+fn theme_color_user() -> &'static str {
+    "\x1b[36m"
+}
+
+/// 按可见宽度截断（ANSI 安全，走 crossh-tui 的 truncateToWidth）
+pub(crate) fn truncate_ansi(s: &str, width: usize) -> String {
+    crossh_tui::ansi::truncate_to_width(s, width, "…", false)
+}
+
+pub(crate) fn visible_width_safe(s: &str) -> usize {
+    crossh_tui::ansi::visible_width(s)
+}
+
+fn collapse_tool(content: &str, limit: usize) -> String {
+    let limit = limit.max(8);
+    if visible_width_safe(content) <= limit {
+        return content.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in content.chars() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + cw + 1 > limit.saturating_sub(3) {
+            break;
+        }
+        out.push(ch);
+        used += cw;
+    }
+    out.push('…');
+    out
+}
+
+// ── 兼容保留的纯函数（仅测试引用）──
+#[cfg(test)]
+const HEADER_HEIGHT: u16 = 3;
+#[cfg(test)]
+const FOOTER_HEIGHT: u16 = 1;
+#[cfg(test)]
+const MIN_CONVERSATION_HEIGHT: u16 = 5;
+#[cfg(test)]
+const MAX_VISIBLE_INPUT_LINES: usize = 6;
+
+#[cfg(test)]
+pub fn agent_layout(area: TuiRect, input_height: u16) -> [TuiRect; 4] {
+    let h = area.height as usize;
+    let ih = input_height as usize;
+    let header = TuiRect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: HEADER_HEIGHT as i32,
+    };
+    let footer = TuiRect {
+        x: area.x,
+        y: area.y + area.height - FOOTER_HEIGHT as i32,
+        width: area.width,
+        height: FOOTER_HEIGHT as i32,
+    };
+    let conv_h = (h as i32 - HEADER_HEIGHT as i32 - FOOTER_HEIGHT as i32 - ih as i32)
+        .max(MIN_CONVERSATION_HEIGHT as i32);
+    let conversation = TuiRect {
+        x: area.x,
+        y: area.y + HEADER_HEIGHT as i32,
+        width: area.width,
+        height: conv_h,
+    };
+    let input = TuiRect {
+        x: area.x,
+        y: conversation.y + conversation.height,
+        width: area.width,
+        height: ih as i32,
+    };
+    [header, conversation, input, footer]
+}
+
+#[cfg(test)]
+pub fn input_height(area: TuiRect, app: &App) -> u16 {
+    let w = (area.width as usize).saturating_sub(4).max(1);
+    let lines = visual_line_count(&app.input, w);
     let desired = lines.min(MAX_VISIBLE_INPUT_LINES) as u16 + 2;
-    let max_height = area
+    let max_h = area
         .height
-        .saturating_sub(HEADER_HEIGHT + FOOTER_HEIGHT + MIN_CONVERSATION_HEIGHT)
-        .max(1);
-    desired.min(max_height)
+        .saturating_sub(
+            HEADER_HEIGHT as i32 + FOOTER_HEIGHT as i32 + MIN_CONVERSATION_HEIGHT as i32,
+        )
+        .max(1) as u16;
+    desired.min(max_h)
 }
 
-pub(super) fn cursor_position(area: Rect, input: &str, cursor: usize) -> (u16, u16) {
+#[cfg(test)]
+pub fn cursor_position(area: TuiRect, input: &str, cursor: usize) -> (u16, u16) {
     let prefix = &input[..cursor.min(input.len())];
     let width = area.width.max(1) as usize;
-    let mut column = 0;
+    let mut col = 0;
     let mut row = 0;
-    for character in prefix.chars() {
-        if character == '\n' {
+    for ch in prefix.chars() {
+        if ch == '\n' {
             row += 1;
-            column = 0;
+            col = 0;
             continue;
         }
-        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
-        if column > 0 && column + character_width > width {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if col > 0 && col + cw > width {
             row += 1;
-            column = 0;
+            col = 0;
         }
-        column += character_width;
+        col += cw;
     }
-    if column >= width {
-        row += column / width;
-        column %= width;
+    if col >= width {
+        row += col / width;
+        col %= width;
     }
-    let x = area
-        .x
-        .saturating_add(column.min(width.saturating_sub(1)) as u16);
-    let y = area
-        .y
-        .saturating_add(row.min(u16::MAX as usize) as u16)
-        .min(area.bottom().saturating_sub(1));
+    let x = (area.x.max(0) as u16).saturating_add(col.min(width.saturating_sub(1)) as u16);
+    let y = (area.y.max(0) as u16)
+        .saturating_add(row as u16)
+        .min((area.bottom() - 1).max(0) as u16);
     (x, y)
 }
 
-pub(super) fn visual_line_count(input: &str, width: usize) -> usize {
+#[cfg(test)]
+pub fn visual_line_count(input: &str, width: usize) -> usize {
     input
         .split('\n')
         .map(|line| {
-            let line_width = UnicodeWidthStr::width(line);
-            line_width.max(1).div_ceil(width.max(1))
+            let w = UnicodeWidthStr::width(line);
+            w.max(1).div_ceil(width.max(1))
         })
         .sum::<usize>()
         .max(1)
 }
 
-pub(super) fn scroll_conversation(app: &mut App, delta: i16) {
-    let current = if app.scroll == u16::MAX {
-        app.max_scroll
-    } else {
-        app.scroll.min(app.max_scroll)
-    };
-    let next = if delta < 0 {
-        current.saturating_sub(delta.unsigned_abs())
-    } else {
-        current.saturating_add(delta as u16).min(app.max_scroll)
-    };
-    app.scroll = if next == app.max_scroll {
-        u16::MAX
-    } else {
-        next
-    };
+pub fn scroll_conversation(app: &mut App, delta: i16) {
+    app.alt_screen.primary_scroll_view.scroll_by(delta as i32);
 }
 
-pub(super) fn session_name(app: &App) -> String {
+pub fn session_name(app: &App) -> String {
     app.session.name.clone().unwrap_or_else(|| {
         format!(
             "session {}",
@@ -315,85 +484,13 @@ pub(super) fn session_name(app: &App) -> String {
     })
 }
 
-fn collapsed_tool_summary(content: &str, width: usize) -> String {
-    let compact = one_line(content);
-    let limit = width.saturating_sub(4).max(8);
-    if UnicodeWidthStr::width(compact.as_str()) <= limit {
-        return compact;
-    }
-    let mut result = String::new();
-    let mut used = 0;
-    for character in compact.chars() {
-        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
-        if used + character_width + 3 > limit {
-            break;
-        }
-        result.push(character);
-        used += character_width;
-    }
-    result.push_str("...");
-    result
+#[cfg(test)]
+pub fn wrap_content(content: &str, width: usize) -> Vec<String> {
+    crossh_tui::ansi::wrap_text_with_ansi(content, width)
 }
 
-pub(super) fn wrap_content(content: &str, width: usize) -> Vec<Line<'static>> {
-    let width = width.max(1);
-    let mut lines = Vec::new();
-    for source_line in content.split('\n') {
-        if source_line.is_empty() {
-            lines.push(Line::default());
-            continue;
-        }
-        let mut current = String::new();
-        let mut current_width = 0;
-        for character in source_line.chars() {
-            let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
-            if !current.is_empty() && current_width + character_width > width {
-                lines.push(Line::from(std::mem::take(&mut current)));
-                current_width = 0;
-            }
-            current.push(character);
-            current_width += character_width;
-        }
-        lines.push(Line::from(current));
-    }
-    lines
-}
-
-pub(super) fn markdown_content(content: &str, width: usize) -> Vec<Line<'static>> {
-    let markdown = tui_markdown::from_str(content);
-    wrap_styled_lines(markdown.lines, width)
-}
-
-fn wrap_styled_lines(lines: Vec<Line<'_>>, width: usize) -> Vec<Line<'static>> {
-    let width = width.max(1);
-    let mut wrapped = Vec::new();
-    for line in lines {
-        if line.spans.is_empty() {
-            wrapped.push(Line::default());
-            continue;
-        }
-        let mut spans = Vec::new();
-        let mut line_width = 0;
-        for span in line.spans {
-            let style = span.style;
-            let mut chunk = String::new();
-            for character in span.content.chars() {
-                let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
-                if line_width > 0 && line_width + character_width > width {
-                    if !chunk.is_empty() {
-                        spans.push(Span::styled(std::mem::take(&mut chunk), style));
-                    }
-                    wrapped.push(Line::from(std::mem::take(&mut spans)));
-                    line_width = 0;
-                }
-                chunk.push(character);
-                line_width += character_width;
-            }
-            if !chunk.is_empty() {
-                spans.push(Span::styled(chunk, style));
-            }
-        }
-        wrapped.push(Line::from(spans));
-    }
-    wrapped
+#[cfg(test)]
+pub fn markdown_content(content: &str, width: usize) -> Vec<String> {
+    let mut md = crossh_tui::markdown::Markdown::new(content, 0, 0);
+    md.render(width)
 }

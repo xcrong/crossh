@@ -3,6 +3,8 @@ use super::render::{
 };
 use super::*;
 use crossh_agent::{AgentModel, AgentModelRef, AgentProvider, Protocol};
+use crossh_tui::layout::Rect as TuiRect;
+use unicode_width::UnicodeWidthStr;
 
 fn test_settings() -> AgentSettings {
     let provider = AgentProvider {
@@ -53,8 +55,17 @@ fn app() -> App {
         queue: crossh_agent::MessageQueue::new(),
         event_bus: crossh_agent::EventBus::new(),
         messages: Vec::new(),
-        scroll: u16::MAX,
-        max_scroll: 40,
+        alt_screen: crossh_tui::AltScreen::new(
+            80,
+            24,
+            crossh_tui::alt_screen::AltScreenOptions::default(),
+        ),
+        screen_renderer: crossh_tui::screen::ScreenRenderer::default(),
+        main_renderer: crossh_tui::main_screen::MainScreenRenderer::default(),
+        fullscreen: false,
+        flashes: crossh_tui::screen::FlashContainer::default(),
+        conversation_rect: TuiRect::default(),
+        conversation_lines: Vec::new(),
         show_tool_details: false,
         show_reasoning: false,
         thinking: ThinkingLevel::Medium,
@@ -122,7 +133,6 @@ fn approval_messages_are_added_to_the_visible_stream() {
         app.messages,
         vec![(Role::Approval, "Language-model approval granted".into())]
     );
-    assert_eq!(app.scroll, u16::MAX);
 }
 
 #[test]
@@ -162,7 +172,7 @@ fn markdown_and_wrapping_stay_inside_the_requested_width() {
     assert!(
         markdown_content("# Title\n\nUse **bold** here.", 10)
             .iter()
-            .all(|line| line.width() <= 10)
+            .all(|line| crossh_tui::ansi::visible_width(line) <= 10)
     );
 }
 
@@ -213,19 +223,35 @@ fn tree_rewind_keeps_the_selected_turn_complete() {
 fn input_layout_accounts_for_wrapping_and_wide_characters() {
     assert_eq!(visual_line_count("abcdefgh", 4), 2);
     assert_eq!(visual_line_count("中中文", 4), 2);
-    assert_eq!(cursor_position(Rect::new(0, 0, 4, 3), "abcd", 4), (0, 1));
+    assert_eq!(
+        cursor_position(
+            TuiRect {
+                x: 0,
+                y: 0,
+                width: 4,
+                height: 3
+            },
+            "abcd",
+            4
+        ),
+        (0, 1)
+    );
 }
 
 #[test]
 fn agent_layout_keeps_prompt_below_the_conversation() {
     let mut app = app();
     app.input = "one\ntwo\nthree\nfour\nfive\nsix\nseven".into();
-    let area = Rect::new(0, 0, 80, 16);
+    let area = TuiRect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 16,
+    };
     let [header, conversation, input, footer] = agent_layout(area, input_height(area, &app));
-
     assert_eq!(header.bottom(), conversation.y);
     assert_eq!(conversation.bottom(), input.y);
     assert_eq!(input.bottom(), footer.y);
     assert_eq!(footer.bottom(), area.bottom());
-    assert!(conversation.height >= MIN_CONVERSATION_HEIGHT);
+    assert!(conversation.height >= 5);
 }

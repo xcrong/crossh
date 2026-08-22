@@ -31,6 +31,8 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
 pub(super) struct SlashCandidate {
     pub(super) insert: String,
     pub(super) display: String,
+    /// 候选说明（自动补全浮层展示用；当前渲染管线暂未消费）
+    #[allow(dead_code)]
     pub(super) desc: String,
 }
 

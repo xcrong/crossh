@@ -23,39 +23,32 @@ use crossh_agent::{
     create_session, export_markdown, latest_session, list_sessions, load_context_files,
     load_prompts, load_session, load_skills, review_tool, save_session,
 };
-use crossh_theme as theme;
+use crossh_tui::layout::Rect as TuiRect;
 use crossterm::{
-    event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers, MouseEventKind,
-    },
-    execute,
+    cursor::{Hide, Show},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind},
+    execute, terminal,
 };
-use ratatui::{
-    DefaultTerminal, Frame,
-    layout::{Constraint, Layout, Margin, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph, Wrap},
-};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthChar;
 
 #[path = "agent_cli_input.rs"]
 mod input;
 #[path = "agent_cli_render.rs"]
 mod render;
+#[path = "agent_cli_session.rs"]
+mod session;
 #[path = "agent_cli_slash.rs"]
 mod slash;
 #[cfg(test)]
 use input::{delete_previous_char, delete_previous_word, insert_text, move_cursor, queue_input};
 use render::{render, scroll_conversation, session_name};
+use session::{
+    find_session, fork_session, format_session_list, new_session, open_starting_session,
+    restore_visible_messages, resume_session, rewind_session, tree_text,
+};
 
 const SYSTEM_PROMPT: &str = "You are Crossh Agent, a careful coding assistant running in the user's terminal. Inspect the workspace before making claims, use the smallest appropriate tool, keep changes scoped to the request, and report what you changed and how it was verified. For multi-line changes, prefer the patch tool with a unified diff; use edit only for a short exact replacement. For file and directory tool arguments, always generate workspace-relative paths such as `.` or `README.md`. Do not generate absolute paths; the executor tolerates an in-workspace absolute path only for compatibility. Never use paths outside the workspace.";
 const SPINNER: [&str; 4] = ["|", "/", "-", "\\"];
-const MAX_VISIBLE_INPUT_LINES: usize = 6;
-const HEADER_HEIGHT: u16 = 3;
-const FOOTER_HEIGHT: u16 = 1;
-const MIN_CONVERSATION_HEIGHT: u16 = 5;
 const MAX_FILE_REFERENCE_BYTES: u64 = 32 * 1024;
 const MAX_FILE_REFERENCE_TOTAL_BYTES: u64 = 128 * 1024;
 const MAX_FILE_REFERENCE_COUNT: usize = 32;
@@ -155,8 +148,14 @@ struct App {
     queue: crossh_agent::MessageQueue,
     event_bus: crossh_agent::EventBus,
     messages: Vec<(Role, String)>,
-    scroll: u16,
-    max_scroll: u16,
+    alt_screen: crossh_tui::AltScreen,
+    screen_renderer: crossh_tui::screen::ScreenRenderer,
+    main_renderer: crossh_tui::main_screen::MainScreenRenderer,
+    /// false=regular（主屏+scrollback，原生选区/右键菜单），true=fullscreen（AltScreen）
+    fullscreen: bool,
+    flashes: crossh_tui::screen::FlashContainer,
+    conversation_rect: TuiRect,
+    conversation_lines: Vec<String>,
     show_tool_details: bool,
     show_reasoning: bool,
     thinking: ThinkingLevel,
@@ -209,8 +208,17 @@ pub(crate) fn run_with_options(
         queued_inputs: VecDeque::new(),
         queue: crossh_agent::MessageQueue::new(),
         event_bus: crossh_agent::EventBus::new(),
-        scroll: u16::MAX,
-        max_scroll: 0,
+        alt_screen: crossh_tui::AltScreen::new(
+            80,
+            24,
+            crossh_tui::alt_screen::AltScreenOptions::default(),
+        ),
+        screen_renderer: crossh_tui::screen::ScreenRenderer::default(),
+        main_renderer: crossh_tui::main_screen::MainScreenRenderer::default(),
+        fullscreen: false,
+        flashes: crossh_tui::screen::FlashContainer::default(),
+        conversation_rect: TuiRect::default(),
+        conversation_lines: Vec::new(),
         show_tool_details: false,
         show_reasoning: false,
         thinking: options.thinking.unwrap_or(ThinkingLevel::Medium),
@@ -221,56 +229,159 @@ pub(crate) fn run_with_options(
         started_at: Instant::now(),
     };
 
-    // 启用鼠标捕获以支持滚轮滚动；原生选区可通过 Option/Shift 拖拽绕过捕获（macOS 通用）。
-    execute!(io::stdout(), EnableMouseCapture).map_err(|error| error.to_string())?;
-    let result = ratatui::run(|terminal| run_app(terminal, &mut app));
-    let cleanup = execute!(io::stdout(), DisableMouseCapture);
-    result.and(cleanup).map_err(|error| error.to_string())
+    // 终端生命周期：fullscreen 走 crossh_tui 的 AltScreen 进入/退出序列（备用缓冲 +
+    // 鼠标 + 同步输出，对齐 pi）；regular 不触碰任何全局终端模式——不进备用缓冲、
+    // 不捕获鼠标、不改 autowrap，选区/滚轮/scrollback 全部交给终端原生处理。
+    terminal::enable_raw_mode().map_err(|e| e.to_string())?;
+    let mut stdout = io::stdout();
+    if app.fullscreen {
+        let env: std::collections::HashMap<String, String> = std::env::vars().collect();
+        let enter = app.alt_screen.before_terminal_start(&env);
+        write_stdout(&mut stdout, &enter)?;
+    } else {
+        execute!(stdout, Hide).map_err(|e| e.to_string())?;
+    }
+    let result = run_app(&mut app);
+    if app.fullscreen {
+        // 对称恢复：停鼠标/同步输出 → 重放最后画面到主屏 scrollback
+        let mut seq = app.alt_screen.before_terminal_stop();
+        seq.push_str(&app.alt_screen.after_terminal_stop(
+            false,
+            app.screen_renderer.last_document(),
+            0,
+        ));
+        // 恢复序列尽力写入；无论成败都必须关闭 raw mode，避免把终端留在异常状态
+        let _ = write_stdout(&mut stdout, &seq);
+    } else {
+        let _ = execute!(stdout, Show);
+    }
+    terminal::disable_raw_mode().map_err(|e| e.to_string())?;
+    result.map_err(|e| e.to_string())
 }
 
-fn open_starting_session(
-    workspace: &Path,
-    options: &AgentOptions,
-) -> Result<(Option<PathBuf>, AgentSession), String> {
-    if options.no_session {
-        return Ok((None, AgentSession::new(workspace.to_path_buf())));
-    }
-    if let Some(selector) = options.resume.as_deref() {
-        let summary = find_session(workspace, selector)?
-            .ok_or_else(|| format!("session not found: {selector}"))?;
-        let session = load_session(&summary.path)?;
-        return Ok((Some(summary.path), session));
-    }
-    if options.continue_recent
-        && let Some(summary) = latest_session(workspace)?
-    {
-        let session = load_session(&summary.path)?;
-        return Ok((Some(summary.path), session));
-    }
-    let (path, session) = create_session(workspace)?;
-    Ok((Some(path), session))
+fn write_stdout(stdout: &mut io::Stdout, payload: &str) -> Result<(), String> {
+    use std::io::Write;
+    stdout
+        .write_all(payload.as_bytes())
+        .map_err(|e| e.to_string())?;
+    stdout.flush().map_err(|e| e.to_string())
 }
 
-fn run_app(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
+fn run_app(app: &mut App) -> io::Result<()> {
     loop {
-        terminal.draw(|frame| render(frame, app))?;
-        match event::read()? {
-            Event::Key(key) if key.kind == KeyEventKind::Press => {
-                if handle_key(terminal, app, key)? {
-                    return Ok(());
-                }
+        render(app)?;
+        // flash 到期需要重绘：有活跃 flash 时用 poll 超时驱动帧（pi 的 requestRender 回调）
+        let quit = if !app.flashes.entries.is_empty() {
+            if event::poll(Duration::from_millis(50))? {
+                let event = event::read()?;
+                handle_event(app, event)?
+            } else {
+                false
             }
-            Event::Mouse(mouse) => match mouse.kind {
-                MouseEventKind::ScrollUp => scroll_conversation(app, -3),
-                MouseEventKind::ScrollDown => scroll_conversation(app, 3),
-                _ => {}
-            },
-            _ => {}
+        } else {
+            let event = event::read()?;
+            handle_event(app, event)?
+        };
+        if quit {
+            return Ok(());
         }
     }
 }
 
-fn handle_key(terminal: &mut DefaultTerminal, app: &mut App, key: KeyEvent) -> io::Result<bool> {
+/// 处理单个事件，返回是否退出
+fn handle_event(app: &mut App, event: Event) -> io::Result<bool> {
+    match event {
+        Event::Key(key) if key.kind == KeyEventKind::Press => {
+            if handle_key(app, key)? {
+                return Ok(true);
+            }
+        }
+        Event::Mouse(mouse) => {
+            if !app.fullscreen {
+                // regular：原生终端处理（逐字符自由框选/右键菜单）
+            } else {
+                match mouse.kind {
+                    MouseEventKind::ScrollUp => scroll_conversation(app, -3),
+                    MouseEventKind::ScrollDown => scroll_conversation(app, 3),
+                    MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                        let rect = app.conversation_rect;
+                        if rect.width == 0 || rect.height == 0 {
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64;
+                            app.alt_screen.handle_mouse_down(
+                                mouse.column as usize,
+                                mouse.row as usize,
+                                now,
+                                "",
+                            );
+                        } else if i32::from(mouse.column) >= rect.x
+                            && i32::from(mouse.column) < rect.x + rect.width
+                            && i32::from(mouse.row) >= rect.y
+                            && i32::from(mouse.row) < rect.y + rect.height
+                        {
+                            let col = (i32::from(mouse.column) - rect.x) as usize;
+                            let row_in_view = (i32::from(mouse.row) - rect.y) as usize;
+                            let content_row =
+                                app.alt_screen.primary_scroll_view.scroll_top + row_in_view;
+                            let line = app
+                                .conversation_lines
+                                .get(content_row)
+                                .map(|s| s.as_str())
+                                .unwrap_or("");
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64;
+                            app.alt_screen
+                                .handle_mouse_down(col, content_row, now, line);
+                        }
+                    }
+                    MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+                        let rect = app.conversation_rect;
+                        if rect.width != 0 && rect.height != 0 {
+                            if i32::from(mouse.column) >= rect.x
+                                && i32::from(mouse.column) < rect.x + rect.width
+                                && i32::from(mouse.row) >= rect.y
+                                && i32::from(mouse.row) < rect.y + rect.height
+                            {
+                                let col = (i32::from(mouse.column) - rect.x) as usize;
+                                let row_in_view = (i32::from(mouse.row) - rect.y) as usize;
+                                let content_row =
+                                    app.alt_screen.primary_scroll_view.scroll_top + row_in_view;
+                                app.alt_screen.handle_mouse_drag(col, content_row);
+                            } else {
+                                let col = mouse.column as usize;
+                                let row = mouse.row as usize;
+                                app.alt_screen.handle_mouse_drag(col, row);
+                            }
+                        } else {
+                            app.alt_screen
+                                .handle_mouse_drag(mouse.column as usize, mouse.row as usize);
+                        }
+                    }
+                    MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
+                        // 契约 11：结束选区；非空选区经 OSC52 拷贝并 flash 提示
+                        if app.alt_screen.handle_mouse_up()
+                            && let Some(text) =
+                                app.alt_screen.selected_text(&app.conversation_lines)
+                        {
+                            let seq = crossh_tui::AltScreen::osc52_sequence(&text);
+                            let _ = write_stdout(&mut io::stdout(), &seq);
+                            app.flashes.flash("Copied!", 1200);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn handle_key(app: &mut App, key: KeyEvent) -> io::Result<bool> {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {
             KeyCode::Char('c') => {
@@ -283,7 +394,6 @@ fn handle_key(terminal: &mut DefaultTerminal, app: &mut App, key: KeyEvent) -> i
             }
             KeyCode::Char('o') => {
                 app.show_tool_details = !app.show_tool_details;
-                app.scroll = u16::MAX;
                 app.status = if app.show_tool_details {
                     "Tool output expanded".into()
                 } else {
@@ -293,7 +403,6 @@ fn handle_key(terminal: &mut DefaultTerminal, app: &mut App, key: KeyEvent) -> i
             }
             KeyCode::Char('t') => {
                 app.show_reasoning = !app.show_reasoning;
-                app.scroll = u16::MAX;
                 app.status = if app.show_reasoning {
                     "Thinking expanded".into()
                 } else {
@@ -376,13 +485,13 @@ fn handle_key(terminal: &mut DefaultTerminal, app: &mut App, key: KeyEvent) -> i
         }
         if is_command_input(&app.input) {
             let command = input::take_input(app);
-            return handle_command(terminal, app, command);
+            return handle_command(app, command);
         }
         if let Some(command) = app.input.strip_prefix("!!") {
             let command = command.trim().to_string();
             input::clear_input(app);
             if !command.is_empty() {
-                run_shell_shortcut(terminal, app, command, false)?;
+                run_shell_shortcut(app, command, false)?;
             }
             return Ok(false);
         }
@@ -390,11 +499,11 @@ fn handle_key(terminal: &mut DefaultTerminal, app: &mut App, key: KeyEvent) -> i
             let command = command.trim().to_string();
             input::clear_input(app);
             if !command.is_empty() {
-                run_shell_shortcut(terminal, app, command, true)?;
+                run_shell_shortcut(app, command, true)?;
             }
             return Ok(false);
         }
-        submit(terminal, app)?;
+        submit(app)?;
         return Ok(false);
     }
     if matches!(key.code, KeyCode::PageUp) {
@@ -428,11 +537,10 @@ fn cycle_thinking(app: &mut App) {
     let next = ALL_THINKING_LEVELS[(current + 1) % ALL_THINKING_LEVELS.len()];
     app.thinking = next;
     app.thinking_explicit = true;
-    app.scroll = u16::MAX;
     app.status = format!("Thinking: {}", next.label());
 }
 
-fn submit(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
+fn submit(app: &mut App) -> io::Result<()> {
     let mut prompts = VecDeque::new();
     prompts.push_back(input::take_input(app));
     while let Some(prompt) = prompts
@@ -442,7 +550,7 @@ fn submit(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
         if prompt.trim().is_empty() {
             continue;
         }
-        if !process_prompt(terminal, app, prompt)? {
+        if !process_prompt(app, prompt)? {
             // Restore queued prompts to input instead of discarding.
             app.queue.restore_to_input(&mut app.input);
             app.queued_inputs.clear();
@@ -549,16 +657,11 @@ fn take_steering_for_delivery(app: &mut App) -> Option<String> {
     Some(text)
 }
 
-fn process_prompt(
-    terminal: &mut DefaultTerminal,
-    app: &mut App,
-    prompt: String,
-) -> io::Result<bool> {
+fn process_prompt(app: &mut App, prompt: String) -> io::Result<bool> {
     let user_request = prompt.clone();
     app.session
         .append(Message::new(MessageRole::User, prompt.clone()));
     app.messages.push((Role::User, prompt));
-    app.scroll = u16::MAX;
     persist_session(app);
 
     // New compaction path: threshold/overflow with real entry IDs, history preserved via CompactionEntry.
@@ -633,7 +736,7 @@ fn process_prompt(
             let _ = updates_tx.send(ModelUpdate::Complete(result));
         });
 
-        let response = match wait_for_model(terminal, app, updates_rx, task)? {
+        let response = match wait_for_model(app, updates_rx, task)? {
             WaitResult::Cancelled => {
                 app.messages
                     .push((Role::Notice, "Request cancelled".into()));
@@ -717,7 +820,7 @@ fn process_prompt(
             let approved = match approval_source {
                 ToolApprovalSource::None => true,
                 ToolApprovalSource::LanguageModel => {
-                    match review_tool_animated(terminal, app, &call, &user_request)? {
+                    match review_tool_animated(app, &call, &user_request)? {
                         BackgroundResult::Complete(ReviewDecision::Approved(reason)) => {
                             push_approval(
                                 app,
@@ -747,7 +850,7 @@ fn process_prompt(
                                     call.name
                                 ),
                             );
-                            confirm_tool(terminal, app, &call)?
+                            confirm_tool(app, &call)?
                         }
                         BackgroundResult::Cancelled => {
                             push_approval(app, "Language-model approval cancelled");
@@ -756,10 +859,10 @@ fn process_prompt(
                         }
                     }
                 }
-                ToolApprovalSource::User => confirm_tool(terminal, app, &call)?,
+                ToolApprovalSource::User => confirm_tool(app, &call)?,
             };
             let result = if approved {
-                match execute_tool_animated(terminal, app, call.clone(), app.workspace.clone())? {
+                match execute_tool_animated(app, call.clone(), app.workspace.clone())? {
                     BackgroundResult::Complete(result) => result,
                     BackgroundResult::Cancelled => {
                         app.messages
@@ -807,7 +910,6 @@ enum WaitResult {
 }
 
 fn wait_for_model(
-    terminal: &mut DefaultTerminal,
     app: &mut App,
     receiver: mpsc::Receiver<ModelUpdate>,
     task: tokio::task::JoinHandle<()>,
@@ -839,7 +941,7 @@ fn wait_for_model(
                     {
                         input::clear_input(app);
                         app.status = "Input cleared".into();
-                        terminal.draw(|frame| render(frame, app))?;
+                        render(app)?;
                         continue;
                     }
                     if key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Up {
@@ -864,7 +966,7 @@ fn wait_for_model(
                         input::edit_input(app, key);
                     }
                 }
-                Event::Mouse(mouse) => match mouse.kind {
+                Event::Mouse(mouse) if app.fullscreen => match mouse.kind {
                     MouseEventKind::ScrollUp => scroll_conversation(app, -3),
                     MouseEventKind::ScrollDown => scroll_conversation(app, 3),
                     _ => {}
@@ -874,15 +976,11 @@ fn wait_for_model(
         }
         set_spinner_status(app, "Working", spinner_frame);
         spinner_frame += 1;
-        terminal.draw(|frame| render(frame, app))?;
+        render(app)?;
     }
 }
 
-fn confirm_tool(
-    terminal: &mut DefaultTerminal,
-    app: &mut App,
-    call: &ToolCall,
-) -> io::Result<bool> {
+fn confirm_tool(app: &mut App, call: &ToolCall) -> io::Result<bool> {
     let previous_details = app.show_tool_details;
     app.show_tool_details = true;
     push_approval(
@@ -895,7 +993,7 @@ fn confirm_tool(
     );
     app.status = format!("Allow {}?  y/Enter allow  n/Esc deny", call.name);
     let decision = loop {
-        terminal.draw(|frame| render(frame, app))?;
+        render(app)?;
         if !event::poll(Duration::from_millis(100))? {
             continue;
         }
@@ -907,7 +1005,7 @@ fn confirm_tool(
                 KeyCode::Char('n') | KeyCode::Esc => break false,
                 _ => {}
             },
-            Event::Mouse(mouse) => match mouse.kind {
+            Event::Mouse(mouse) if app.fullscreen => match mouse.kind {
                 MouseEventKind::ScrollUp => scroll_conversation(app, -3),
                 MouseEventKind::ScrollDown => scroll_conversation(app, 3),
                 _ => {}
@@ -944,7 +1042,6 @@ fn tool_approval_source(settings: &AgentSettings, tool_name: &str) -> ToolApprov
 }
 
 fn review_tool_animated(
-    terminal: &mut DefaultTerminal,
     app: &mut App,
     call: &ToolCall,
     user_request: &str,
@@ -974,22 +1071,17 @@ fn review_tool_animated(
         let _ = tx.send(result);
     });
     app.status = format!("Reviewing {tool_name} with the language model");
-    wait_for_background(terminal, app, "Reviewing tool", rx, move || task.abort())
+    wait_for_background(app, "Reviewing tool", rx, move || task.abort())
 }
 
-fn run_shell_shortcut(
-    terminal: &mut DefaultTerminal,
-    app: &mut App,
-    command: String,
-    send_to_agent: bool,
-) -> io::Result<()> {
+fn run_shell_shortcut(app: &mut App, command: String, send_to_agent: bool) -> io::Result<()> {
     let call = ToolCall {
         id: format!("shell-{}", app.session.messages.len()),
         name: "bash".into(),
         arguments: serde_json::json!({"command": command}).to_string(),
     };
     app.messages.push((Role::Tool, format_tool_call(&call)));
-    let result = match execute_tool_animated(terminal, app, call, app.workspace.clone())? {
+    let result = match execute_tool_animated(app, call, app.workspace.clone())? {
         BackgroundResult::Complete(result) => result,
         BackgroundResult::Cancelled => {
             app.status = "Cancelled".into();
@@ -1002,7 +1094,7 @@ fn run_shell_shortcut(
             "The user ran this shell command in the workspace:\n\n`{command}`\n\nCommand output:\n\n```text\n{}\n```\n\nUse this result to continue.",
             result.output
         );
-        process_prompt(terminal, app, prompt)?;
+        process_prompt(app, prompt)?;
     } else {
         app.status = "Command finished without sending output to the model".into();
     }
@@ -1010,7 +1102,6 @@ fn run_shell_shortcut(
 }
 
 fn execute_tool_animated(
-    terminal: &mut DefaultTerminal,
     app: &mut App,
     call: ToolCall,
     workspace: PathBuf,
@@ -1026,7 +1117,7 @@ fn execute_tool_animated(
             &worker_cancel,
         ));
     });
-    wait_for_background(terminal, app, &format!("Running {label}"), rx, move || {
+    wait_for_background(app, &format!("Running {label}"), rx, move || {
         cancel.store(true, Ordering::Relaxed)
     })
 }
@@ -1037,7 +1128,6 @@ enum BackgroundResult<T> {
 }
 
 fn wait_for_background<T>(
-    terminal: &mut DefaultTerminal,
     app: &mut App,
     label: &str,
     receiver: mpsc::Receiver<T>,
@@ -1054,7 +1144,7 @@ fn wait_for_background<T>(
         }
         set_spinner_status(app, label, frame);
         frame += 1;
-        terminal.draw(|frame| render(frame, app))?;
+        render(app)?;
         if event::poll(Duration::from_millis(80))? {
             match event::read()? {
                 Event::Key(key)
@@ -1067,7 +1157,7 @@ fn wait_for_background<T>(
                     app.status = format!("{label} cancelled");
                     return Ok(BackgroundResult::Cancelled);
                 }
-                Event::Mouse(mouse) => match mouse.kind {
+                Event::Mouse(mouse) if app.fullscreen => match mouse.kind {
                     MouseEventKind::ScrollUp => scroll_conversation(app, -3),
                     MouseEventKind::ScrollDown => scroll_conversation(app, 3),
                     _ => {}
@@ -1078,11 +1168,7 @@ fn wait_for_background<T>(
     }
 }
 
-fn handle_command(
-    terminal: &mut DefaultTerminal,
-    app: &mut App,
-    input: String,
-) -> io::Result<bool> {
+fn handle_command(app: &mut App, input: String) -> io::Result<bool> {
     let mut parts = input.trim().splitn(2, char::is_whitespace);
     let command = normalize_command_name(parts.next().unwrap_or_default());
     let argument = parts.next().unwrap_or_default().trim();
@@ -1098,8 +1184,8 @@ fn handle_command(
         "/tools" => push_notice(app, tools_text()),
         "/skills" => push_notice(app, skills_text(app)),
         "/prompts" => push_notice(app, prompts_text(app)),
-        "/skill" => run_skill_command(terminal, app, argument)?,
-        "/prompt" => run_prompt_command(terminal, app, argument)?,
+        "/skill" => run_skill_command(app, argument)?,
+        "/prompt" => run_prompt_command(app, argument)?,
         "/model" => {
             if argument.is_empty() {
                 push_notice(app, model_options_text(app));
@@ -1218,7 +1304,6 @@ fn handle_command(
         "" => {}
         _ => push_error(app, format!("Unknown command: {command}. Try /help.")),
     }
-    app.scroll = u16::MAX;
     Ok(false)
 }
 
@@ -1234,7 +1319,7 @@ fn normalize_command_name(command: &str) -> String {
 }
 
 fn help_text() -> String {
-    "Commands (start with / or 、):\n  /help, /hotkeys       Show commands and shortcuts\n  /model [value]        List or switch provider/model\n  /thinking [level]     Set reasoning level\n  /tools                Show available tools\n  /skills               List project skills\n  /skill NAME [request] Apply a skill to a request\n  /prompts              List prompt templates\n  /prompt NAME [args]   Run a prompt template\n  /new, /clear          Start a fresh session\n  /continue             Resume the most recent session\n  /resume [value]       List or resume a saved session\n  /fork, /clone         Branch the current conversation\n  /name [value]         Set or show the session name\n  /session, /stats      Show session and context details\n  /compact              Compact older conversation context\n  /reload               Reload project instructions and resources\n  /export [path]        Export the session as Markdown\n  /quit, /exit          Quit\n\nShortcuts:\n  Enter                 Send prompt\n  Shift+Enter           Insert a new line\n  Escape                Clear input, then quit\n  Ctrl+C                Clear input, then quit\n  Ctrl+T                Expand or collapse thinking\n  Ctrl+O                Expand or collapse tool output\n  PageUp/PageDown / Mouse wheel  Scroll conversation\n  Up/Down               Browse prompt history / slash candidates\n  Tab / Enter           Complete slash command\n  While working, Enter  Steering (next turn)  Alt+Enter Follow-up  Alt+Up Dequeue\n\nSlash commands show a popup when typing / or 、; ↑↓ to navigate.\nNote: hold Option/Shift while dragging to select text (mouse capture enabled for scrolling)"
+    "Commands (start with / or 、):\n  /help, /hotkeys       Show commands and shortcuts\n  /model [value]        List or switch provider/model\n  /thinking [level]     Set reasoning level\n  /tools                Show available tools\n  /skills               List project skills\n  /skill NAME [request] Apply a skill to a request\n  /prompts              List prompt templates\n  /prompt NAME [args]   Run a prompt template\n  /new, /clear          Start a fresh session\n  /continue             Resume the most recent session\n  /resume [value]       List or resume a saved session\n  /fork, /clone         Branch the current conversation\n  /name [value]         Set or show the session name\n  /session, /stats      Show session and context details\n  /compact              Compact older conversation context\n  /reload               Reload project instructions and resources\n  /export [path]        Export the session as Markdown\n  /quit, /exit          Quit\n\nShortcuts:\n  Enter                 Send prompt\n  Shift+Enter           Insert a new line\n  Escape                Clear input, then quit\n  Ctrl+C                Clear input, then quit\n  Ctrl+T                Expand or collapse thinking\n  Ctrl+O                Expand or collapse tool output\n  PageUp/PageDown / Mouse wheel  Scroll conversation\n  Up/Down               Browse prompt history / slash candidates\n  Tab / Enter           Complete slash command\n  While working, Enter  Steering (next turn)  Alt+Enter Follow-up  Alt+Up Dequeue\n\nSlash commands show a popup when typing / or 、; ↑↓ to navigate.\nNote: the terminal handles text selection and wheel scrolling natively (no mouse capture)"
         .into()
 }
 
@@ -1289,11 +1374,7 @@ fn prompts_text(app: &App) -> String {
     lines.join("\n")
 }
 
-fn run_skill_command(
-    terminal: &mut DefaultTerminal,
-    app: &mut App,
-    argument: &str,
-) -> io::Result<()> {
+fn run_skill_command(app: &mut App, argument: &str) -> io::Result<()> {
     let mut parts = argument.splitn(2, char::is_whitespace);
     let name = parts.next().unwrap_or_default().trim();
     if name.is_empty() {
@@ -1326,15 +1407,11 @@ fn run_skill_command(
             request
         )
     };
-    process_prompt(terminal, app, prompt)?;
+    process_prompt(app, prompt)?;
     Ok(())
 }
 
-fn run_prompt_command(
-    terminal: &mut DefaultTerminal,
-    app: &mut App,
-    argument: &str,
-) -> io::Result<()> {
+fn run_prompt_command(app: &mut App, argument: &str) -> io::Result<()> {
     let mut parts = argument.splitn(2, char::is_whitespace);
     let name = parts.next().unwrap_or_default().trim();
     if name.is_empty() {
@@ -1352,7 +1429,7 @@ fn run_prompt_command(
     };
     let arguments = parts.next().unwrap_or_default().trim();
     let expanded = expand_prompt_template(&prompt.content, arguments);
-    process_prompt(terminal, app, expanded)?;
+    process_prompt(app, expanded)?;
     Ok(())
 }
 
@@ -1400,23 +1477,6 @@ fn session_info(app: &App) -> String {
         app.thinking.label(),
         app.started_at.elapsed().as_secs()
     )
-}
-
-fn format_session_list(sessions: &[AgentSessionSummary]) -> String {
-    if sessions.is_empty() {
-        return "No saved sessions for this project.".into();
-    }
-    let mut lines = vec!["Saved sessions:".to_string()];
-    for (index, session) in sessions.iter().take(20).enumerate() {
-        lines.push(format!(
-            "{:>2}. {}  {} messages  {}",
-            index + 1,
-            session.label(),
-            session.message_count,
-            session.cwd.display()
-        ));
-    }
-    lines.join("\n")
 }
 
 fn switch_model(app: &mut App, selector: &str) -> Result<(), String> {
@@ -1472,158 +1532,6 @@ fn select_model(settings: &mut AgentSettings, selector: &str) -> Result<(), Stri
     settings.active_model.provider = provider_id;
     settings.active_model.model = model_id;
     Ok(())
-}
-
-fn find_session(workspace: &Path, selector: &str) -> Result<Option<AgentSessionSummary>, String> {
-    if Path::new(selector).is_file() {
-        let session = load_session(Path::new(selector))?;
-        return Ok(Some(AgentSessionSummary {
-            path: PathBuf::from(selector),
-            id: session.id,
-            name: session.name,
-            cwd: session.cwd,
-            updated_at: session.updated_at,
-            message_count: session.messages.len(),
-        }));
-    }
-    let sessions = list_sessions(workspace)?;
-    if let Ok(index) = selector.parse::<usize>() {
-        return Ok(index
-            .checked_sub(1)
-            .and_then(|index| sessions.get(index).cloned()));
-    }
-    Ok(sessions.into_iter().find(|session| {
-        session.id.starts_with(selector)
-            || session
-                .name
-                .as_deref()
-                .is_some_and(|name| name.eq_ignore_ascii_case(selector))
-    }))
-}
-
-fn resume_session(app: &mut App, summary: AgentSessionSummary) {
-    if app.session_path.is_none() {
-        push_error(app, "Session persistence is disabled by --no-session.");
-        return;
-    }
-    match load_session(&summary.path) {
-        Ok(session) => {
-            app.workspace = session
-                .cwd
-                .canonicalize()
-                .unwrap_or_else(|_| app.workspace.clone());
-            app.context_files = load_context_files(&app.workspace);
-            app.skills = load_skills(&app.workspace);
-            app.prompts = load_prompts(&app.workspace);
-            app.session_path = Some(summary.path);
-            app.session = session;
-            app.messages = restore_visible_messages(&app.session.messages);
-            input::clear_input(app);
-            app.scroll = u16::MAX;
-            app.status = format!("Resumed {}", session_name(app));
-        }
-        Err(error) => push_error(app, error),
-    }
-}
-
-fn new_session(app: &mut App) {
-    if app.session_path.is_none() {
-        app.session = AgentSession::new(app.workspace.clone());
-        app.messages.clear();
-        app.queued_inputs.clear();
-        app.context_files = load_context_files(&app.workspace);
-        app.skills = load_skills(&app.workspace);
-        app.prompts = load_prompts(&app.workspace);
-        input::clear_input(app);
-        app.status = "New in-memory session".into();
-        return;
-    }
-    match create_session(&app.workspace) {
-        Ok((path, session)) => {
-            app.session_path = Some(path);
-            app.session = session;
-            app.messages.clear();
-            app.queued_inputs.clear();
-            app.context_files = load_context_files(&app.workspace);
-            app.skills = load_skills(&app.workspace);
-            app.prompts = load_prompts(&app.workspace);
-            input::clear_input(app);
-            app.status = "New session".into();
-        }
-        Err(error) => push_error(app, error),
-    }
-}
-
-fn fork_session(app: &mut App) {
-    if app.session_path.is_none() {
-        let mut session = AgentSession::new(app.workspace.clone());
-        session.messages = app.session.messages.clone();
-        session.name = app.session.name.as_ref().map(|name| format!("{name} fork"));
-        app.session = session;
-        app.status = "Forked in-memory session".into();
-        return;
-    }
-    match create_session(&app.workspace) {
-        Ok((path, mut session)) => {
-            session.messages = app.session.messages.clone();
-            session.name = app.session.name.as_ref().map(|name| format!("{name} fork"));
-            if let Err(error) = save_session(&path, &session) {
-                push_error(app, error);
-                return;
-            }
-            app.session_path = Some(path);
-            app.session = session;
-            app.status = "Forked current session".into();
-        }
-        Err(error) => push_error(app, error),
-    }
-}
-
-fn tree_text(app: &App) -> String {
-    let mut lines = vec!["Conversation tree (user turns):".to_string()];
-    let mut turn = 0;
-    for message in &app.session.messages {
-        if message.role != MessageRole::User || message.text.is_empty() {
-            continue;
-        }
-        turn += 1;
-        lines.push(format!("{:>2}. {}", turn, one_line(&message.text)));
-    }
-    if turn == 0 {
-        lines.push("No user turns yet.".into());
-    } else {
-        lines.push("Use /tree NUMBER to rewind this session.".into());
-    }
-    lines.join("\n")
-}
-
-fn rewind_session(app: &mut App, turn: usize) {
-    if turn == 0 {
-        app.session.messages.clear();
-    } else {
-        let user_turns = app
-            .session
-            .messages
-            .iter()
-            .enumerate()
-            .filter(|(_, message)| message.role == MessageRole::User && !message.text.is_empty())
-            .map(|(index, _)| index)
-            .collect::<Vec<_>>();
-        let Some(message_index) = user_turns.get(turn.saturating_sub(1)).copied() else {
-            push_error(app, format!("User turn not found: {turn}"));
-            return;
-        };
-        let end = user_turns
-            .get(turn)
-            .copied()
-            .unwrap_or(app.session.messages.len());
-        debug_assert!(message_index < end);
-        app.session.messages.truncate(end);
-    }
-    app.messages = restore_visible_messages(&app.session.messages);
-    persist_session(app);
-    app.scroll = u16::MAX;
-    app.status = format!("Rewound to user turn {turn}");
 }
 
 fn request_messages(app: &App) -> Vec<Message> {
@@ -1740,32 +1648,6 @@ fn expand_file_references(workspace: &Path, prompt: &str) -> String {
     }
 }
 
-fn restore_visible_messages(messages: &[Message]) -> Vec<(Role, String)> {
-    let mut visible = Vec::new();
-    for message in messages {
-        match message.role {
-            MessageRole::System => visible.push((Role::Notice, message.text.clone())),
-            MessageRole::User => {
-                if !message.text.is_empty() {
-                    visible.push((Role::User, message.text.clone()));
-                }
-            }
-            MessageRole::Assistant => {
-                if !message.text.is_empty() {
-                    visible.push((Role::Agent, message.text.clone()));
-                }
-                for call in &message.tool_calls {
-                    visible.push((Role::Tool, format_tool_call(call)));
-                }
-            }
-        }
-        if let Some(result) = &message.tool_result {
-            visible.push((Role::Tool, format_tool_result(result)));
-        }
-    }
-    visible
-}
-
 fn persist_session(app: &mut App) {
     let Some(path) = &app.session_path else {
         return;
@@ -1821,7 +1703,6 @@ fn append_response_block_if_missing(app: &mut App, start: usize, role: Role, con
 
 fn append_notice(app: &mut App, text: impl Into<String>, role: Role) {
     app.messages.push((role, text.into()));
-    app.scroll = u16::MAX;
 }
 
 fn push_notice(app: &mut App, text: impl Into<String>) {
@@ -1947,11 +1828,7 @@ fn one_line(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn tui_color(value: theme::Rgb) -> Color {
-    let (red, green, blue) = value.channels();
-    Color::Rgb(red, green, blue)
-}
-
 #[cfg(test)]
+#[allow(non_snake_case)]
 #[path = "agent_cli_tests.rs"]
 mod tests;
