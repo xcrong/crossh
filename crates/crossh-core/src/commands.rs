@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use async_channel::Receiver;
 use serde::{Deserialize, Serialize};
@@ -135,7 +135,7 @@ impl CommandHistory {
             return false;
         }
         let records = self.scopes.entry(scope.to_string()).or_default();
-        let now = unix_timestamp();
+        let now = crate::format::unix_timestamp_secs();
         if let Some(record) = records.iter_mut().find(|record| record.command == command) {
             record.count = record.count.saturating_add(1);
             record.last_used = now;
@@ -217,7 +217,7 @@ impl CommandHistory {
             records.remove(index);
         } else {
             records[index].command = replacement;
-            records[index].last_used = unix_timestamp();
+            records[index].last_used = crate::format::unix_timestamp_secs();
         }
         sort_records(records);
         records.truncate(MAX_HISTORY_ENTRIES);
@@ -372,13 +372,6 @@ fn normalize_command(command: &str) -> Option<String> {
         return None;
     }
     Some(command.to_string())
-}
-
-fn unix_timestamp() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 pub fn command_history_cache_path() -> PathBuf {
@@ -708,15 +701,7 @@ fn append_output(output: &Arc<Mutex<String>>, text: &str) {
         return;
     };
     output.push_str(text);
-    if output.len() > MAX_OUTPUT_BYTES {
-        let start = output.len() - MAX_OUTPUT_BYTES;
-        let start = output
-            .char_indices()
-            .find(|(index, _)| *index >= start)
-            .map(|(index, _)| index)
-            .unwrap_or(0);
-        output.drain(..start);
-    }
+    crate::format::truncate_to_limit(&mut output, MAX_OUTPUT_BYTES);
 }
 
 fn shell_command(command: &str, cwd: &Path) -> Command {

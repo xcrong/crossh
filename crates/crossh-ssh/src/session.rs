@@ -11,12 +11,8 @@ use crossh_core::config::HostConfig;
 pub enum AuthChoice {
     /// ssh-agent（读取 SSH_AUTH_SOCK）。
     Agent { user: String },
-    /// 私钥文件（可选口令）。
-    Key {
-        user: String,
-        path: PathBuf,
-        passphrase: Option<String>,
-    },
+    /// 私钥文件。
+    Key { user: String, path: PathBuf },
 }
 
 /// 从 HostConfig 推导认证方式候选列表（依次尝试，首个成功即用）。
@@ -40,7 +36,6 @@ pub fn default_auth_for(host: &HostConfig) -> Vec<AuthChoice> {
             out.push(AuthChoice::Key {
                 user: user.clone(),
                 path,
-                passphrase: None,
             });
         }
     };

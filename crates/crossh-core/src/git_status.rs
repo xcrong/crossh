@@ -4,7 +4,8 @@
 //! their own refresh cadence, but they must not implement a second parser.
 
 use std::path::Path;
-use std::process::Command;
+
+use crate::git::command::try_git_output;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GitStatus {
@@ -24,7 +25,7 @@ impl GitStatus {
 }
 
 pub fn inspect(cwd: &Path) -> Option<GitStatus> {
-    let output = git(
+    let output = try_git_output(
         cwd,
         &[
             "status",
@@ -81,17 +82,6 @@ pub fn parse_status(output: &[u8]) -> Option<GitStatus> {
         status.branch = format!("detached@{}", &oid[..oid.len().min(7)]);
     }
     Some(status)
-}
-
-fn git(cwd: &Path, args: &[&str]) -> Option<Vec<u8>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()
-        .ok()?;
-    output.status.success().then_some(output.stdout)
 }
 
 fn count_xy(status: &mut GitStatus, xy: Option<&[u8]>) {

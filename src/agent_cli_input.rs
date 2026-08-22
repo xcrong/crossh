@@ -1,6 +1,6 @@
 use super::*;
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn queue_input(app: &mut App) {
     queue_steering(app);
 }

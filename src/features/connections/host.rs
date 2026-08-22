@@ -11,10 +11,17 @@ pub(crate) struct HostEntry {
     pub(crate) key: String,
 }
 
+impl HostEntry {
+    pub(crate) fn matches_query(&self, query: &str) -> bool {
+        self.alias.to_ascii_lowercase().contains(query)
+            || self.detail.to_ascii_lowercase().contains(query)
+    }
+}
+
 /// Build navigable host entries from the parsed SSH config.
 pub(crate) fn build_entries(config: &SshConfig) -> Vec<HostEntry> {
     let mut out = Vec::new();
-    for host in config.hosts() {
+    for host in &config.hosts {
         let alias = host.alias().to_string();
         if alias == "*" || alias.starts_with('!') {
             continue;

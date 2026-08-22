@@ -4,9 +4,9 @@
 //! user choice into a bounded Git command and stages the resolved path.
 
 use std::path::Path;
-use std::process::Command;
 
 use crate::git::GitError;
+use crate::git::command::{run_git_path, run_git_paths};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConflictResolution {
@@ -32,28 +32,9 @@ pub fn resolve_conflict(
             ConflictResolution::Theirs => "--theirs",
             ConflictResolution::MarkResolved => unreachable!(),
         };
-        run_git_paths(cwd, &["checkout", side, "--"], path)?;
+        run_git_path(cwd, &["checkout", side, "--"], path)?;
     }
-    run_git_paths(cwd, &["add", "--"], path)
-}
-
-fn run_git_paths(cwd: &Path, args: &[&str], path: &str) -> Result<(), GitError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .arg(path)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    Err(GitError::CommandFailed(if stderr.is_empty() {
-        format!("git 命令失败：{}", output.status)
-    } else {
-        stderr
-    }))
+    run_git_paths(cwd, &["add", "--"], &[path.to_string()])
 }
 
 #[cfg(test)]

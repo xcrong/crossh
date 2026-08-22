@@ -4,9 +4,9 @@
 //! workbench. It deliberately has no GPUI dependency.
 
 use std::path::Path;
-use std::process::Command;
 
 use crate::git::GitError;
+use crate::git::command::{field, run_git_output};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BranchSummary {
@@ -22,7 +22,7 @@ pub struct BranchSummary {
 
 /// Lists local branches, with the current branch first and then recent branches.
 pub fn list_branches(cwd: &Path) -> Result<Vec<BranchSummary>, GitError> {
-    let output = run_git(
+    let output = run_git_output(
         cwd,
         &[
             "for-each-ref".to_string(),
@@ -36,7 +36,7 @@ pub fn list_branches(cwd: &Path) -> Result<Vec<BranchSummary>, GitError> {
 
 /// Switches to an existing local branch after validating its ref name.
 pub fn switch_branch(cwd: &Path, name: &str) -> Result<(), GitError> {
-    run_git(
+    run_git_output(
         cwd,
         &[
             "check-ref-format".to_string(),
@@ -44,7 +44,7 @@ pub fn switch_branch(cwd: &Path, name: &str) -> Result<(), GitError> {
             name.to_string(),
         ],
     )?;
-    run_git(
+    run_git_output(
         cwd,
         &[
             "switch".to_string(),
@@ -54,25 +54,6 @@ pub fn switch_branch(cwd: &Path, name: &str) -> Result<(), GitError> {
         ],
     )?;
     Ok(())
-}
-
-fn run_git(cwd: &Path, args: &[String]) -> Result<Vec<u8>, GitError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()?;
-    if output.status.success() {
-        Ok(output.stdout)
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(GitError::CommandFailed(if stderr.is_empty() {
-            format!("git 命令失败：{}", output.status)
-        } else {
-            stderr
-        }))
-    }
 }
 
 fn parse_branches(output: &[u8]) -> Result<Vec<BranchSummary>, GitError> {
@@ -133,12 +114,6 @@ fn tracking_count(value: &str, marker: &str) -> usize {
         })
         .and_then(|count| count.parse().ok())
         .unwrap_or(0)
-}
-
-fn field(value: &[u8]) -> String {
-    String::from_utf8_lossy(value)
-        .trim_matches(['\r', '\n'])
-        .to_string()
 }
 
 #[cfg(test)]

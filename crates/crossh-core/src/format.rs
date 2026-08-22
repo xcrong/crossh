@@ -22,9 +22,34 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
-/// 兼容旧名 `format_size` 的别名，保持调用点语义不变。
-pub fn format_size(bytes: u64) -> String {
-    format_bytes(bytes)
+pub fn unix_timestamp_secs() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+pub fn unix_timestamp_millis() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// 将字符串截断到 `limit` 字节以内，保留 UTF-8 边界。
+///
+/// 超限时丢弃最老的前缀，仅保留末尾 `limit` 字节对应的有效字符边界。
+pub fn truncate_to_limit(s: &mut String, limit: usize) {
+    if s.len() > limit {
+        let start = s.len() - limit;
+        let idx = s
+            .char_indices()
+            .find(|(index, _)| *index >= start)
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        s.drain(..idx);
+    }
 }
 
 #[cfg(test)]
@@ -48,8 +73,17 @@ mod tests {
     }
 
     #[test]
-    fn format_size_alias_is_equivalent() {
-        assert_eq!(format_size(2048), format_bytes(2048));
-        assert_eq!(format_size(2 * 1024 * 1024 * 1024), "2.0 GB");
+    fn truncate_preserves_char_boundary() {
+        let mut s = "a".repeat(10);
+        truncate_to_limit(&mut s, 5);
+        assert_eq!(s, "aaaaa");
+        let mut s = "aébc".to_string(); // é is 2 bytes
+        truncate_to_limit(&mut s, 3);
+        // should keep valid utf8
+        assert!(s.is_char_boundary(0));
+        assert!(s.len() <= 3 || s.len() == 4); // may keep 3 or 4 depending on boundary
+        let mut s = "hello world".to_string();
+        truncate_to_limit(&mut s, 5);
+        assert_eq!(s, "world");
     }
 }

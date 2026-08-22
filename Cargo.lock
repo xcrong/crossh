@@ -1938,6 +1938,7 @@ name = "crossh-agent"
 version = "0.18.0"
 dependencies = [
  "crossh-ai-sdk",
+ "crossh-core",
  "dirs",
  "libc",
  "log",
@@ -1996,6 +1997,7 @@ dependencies = [
  "log",
  "russh",
  "russh-sftp",
+ "shlex 1.3.0",
  "tokio",
 ]
 

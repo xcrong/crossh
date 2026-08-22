@@ -323,11 +323,8 @@ fn terminal_split_available(width: Pixels) -> bool {
 }
 
 fn terminal_split_left_width(requested: f32, default: f32, min_width: f32, max_width: f32) -> f32 {
-    if requested <= 0.0 {
-        default.clamp(min_width, max_width)
-    } else {
-        requested.clamp(min_width, max_width)
-    }
+    let base = if requested <= 0.0 { default } else { requested };
+    crossh_ui_component::clamp_panel_width(base, min_width, max_width)
 }
 
 fn render_workspace_terminal_toggle(

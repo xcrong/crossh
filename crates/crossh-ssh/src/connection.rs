@@ -508,7 +508,7 @@ async fn authenticate(
 
     for method in methods {
         match method {
-            AuthChoice::Key { user, path, .. } => {
+            AuthChoice::Key { user, path } => {
                 // 先用空口令加载；加密则向 UI 索要口令（最多重试 1 次）。
                 match keys::load_secret_key(path, None) {
                     Ok(key) => {
@@ -698,19 +698,13 @@ async fn run_remote_command(
 
 fn append_remote_output(output: &mut String, bytes: &[u8]) {
     output.push_str(&String::from_utf8_lossy(bytes));
-    if output.len() > MAX_REMOTE_COMMAND_OUTPUT {
-        let start = output.len() - MAX_REMOTE_COMMAND_OUTPUT;
-        let start = output
-            .char_indices()
-            .find(|(index, _)| *index >= start)
-            .map(|(index, _)| index)
-            .unwrap_or(0);
-        output.drain(..start);
-    }
+    crossh_core::format::truncate_to_limit(output, MAX_REMOTE_COMMAND_OUTPUT);
 }
 
 fn shell_quote_remote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
+    shlex::try_quote(value)
+        .map(|cow| cow.into_owned())
+        .unwrap_or_else(|_| format!("'{}'", value.replace('\'', "'\\''")))
 }
 
 /// 尝试用 ssh-agent 上的每个身份认证，成功即返回。
@@ -867,11 +861,10 @@ mod tests {
 
     #[test]
     fn remote_shell_quote_preserves_command_text() {
-        assert_eq!(
-            shell_quote_remote("printf 'hello'"),
-            "'printf '\\''hello'\\'''"
-        );
-        assert_eq!(shell_quote_remote("/srv/app"), "'/srv/app'");
+        assert_eq!(shell_quote_remote("printf 'hello'"), "\"printf 'hello'\"");
+        assert_eq!(shell_quote_remote("/srv/app"), "/srv/app");
+        assert_eq!(shell_quote_remote("a b"), "'a b'");
+        assert_eq!(shell_quote_remote(""), "''");
     }
 
     #[test]

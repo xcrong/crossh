@@ -23,7 +23,7 @@ use gpui::{
     TitlebarOptions, Window, WindowBounds, WindowOptions, div, px, size,
 };
 
-use crate::features::connections::{Connection, ConnectionManager, HostEntry, PendingPrompt};
+use crate::features::connections::{Connection, ConnectionManager, PendingPrompt};
 use crate::features::connections::{PromptDisplay, render_prompt_modal};
 use crate::features::editor_launcher;
 use crate::features::forwarding::ForwardPane;
@@ -902,7 +902,7 @@ impl AppShell {
                 self.connections
                     .entries()
                     .iter()
-                    .position(|entry| host_entry_matches(entry, &query_lower))
+                    .position(|entry| entry.matches_query(&query_lower))
             });
 
         if let Some(idx) = matching_idx {
@@ -1552,21 +1552,6 @@ fn quick_commands_panel_mode(
     })
 }
 
-// 响应式布局计算：主区可用宽度=视口-侧栏-快捷指令宽度，当前通过 `view.rs` 的布局直接计算，保留独立函数供后续 `split` 响应式重构复用。
-#[allow(dead_code)]
-fn available_main_width(
-    viewport_width: Pixels,
-    sidebar_width: f32,
-    quick_commands_width: f32,
-) -> Pixels {
-    px((viewport_width.as_f32() - sidebar_width - quick_commands_width).max(0.))
-}
-
-fn host_entry_matches(entry: &HostEntry, query: &str) -> bool {
-    entry.alias.to_ascii_lowercase().contains(query)
-        || entry.detail.to_ascii_lowercase().contains(query)
-}
-
 fn find_remote_terminal_index<'a>(
     tabs: impl DoubleEndedIterator<Item = (usize, &'a str, bool)>,
     host_key: &str,
@@ -1621,10 +1606,9 @@ pub fn open_main_window(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::{
-        QuickCommandsPanelMode, available_main_width, find_remote_terminal_index,
-        next_char_boundary, previous_char_boundary, quick_commands_panel_mode, selection_bounds,
+        QuickCommandsPanelMode, find_remote_terminal_index, next_char_boundary,
+        previous_char_boundary, quick_commands_panel_mode, selection_bounds,
     };
-    use gpui::px;
 
     #[test]
     fn sidebar_host_reuse_selects_latest_matching_terminal() {
@@ -1662,14 +1646,6 @@ mod tests {
         );
         assert_eq!(quick_commands_panel_mode(false, true), None);
         assert_eq!(quick_commands_panel_mode(false, false), None);
-    }
-
-    #[test]
-    fn main_width_excludes_both_workspace_side_panels() {
-        assert_eq!(available_main_width(px(700.), 216., 240.), px(244.));
-        assert_eq!(available_main_width(px(700.), 44., 40.), px(616.));
-        assert_eq!(available_main_width(px(700.), 216., 0.), px(484.));
-        assert_eq!(available_main_width(px(400.), 216., 240.), px(0.));
     }
 }
 

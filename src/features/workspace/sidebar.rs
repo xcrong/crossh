@@ -23,11 +23,6 @@ use crossh_ui_component::{
     StatusDot, TextInput, Tooltip, rail_avatar, scroll_y,
 };
 
-fn host_entry_matches(entry: &HostEntry, query: &str) -> bool {
-    entry.alias.to_ascii_lowercase().contains(query)
-        || entry.detail.to_ascii_lowercase().contains(query)
-}
-
 /// 侧栏整体布局：标题栏（含设置）+ 搜索框 + 分组列表 + 宽度拖拽。
 pub fn render_sidebar(
     shell: &AppShell,
@@ -77,7 +72,7 @@ pub fn render_sidebar(
     let mut active_entries = Vec::new();
     let mut bank_entries = Vec::new();
     for (idx, entry) in shell.connections.entries().iter().enumerate() {
-        if !query.is_empty() && !host_entry_matches(entry, &query) {
+        if !query.is_empty() && !entry.matches_query(&query) {
             continue;
         }
         let state = shell.connections.state_for_key(&entry.key, cx);

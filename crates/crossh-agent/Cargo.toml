@@ -6,6 +6,7 @@ license = "GPL-3.0-or-later"
 
 [dependencies]
 crossh-ai-sdk = { path = "../crossh-ai-sdk" }
+crossh-core = { path = "../crossh-core" }
 libc = "0.2"
 regex = "1"
 dirs = "6"

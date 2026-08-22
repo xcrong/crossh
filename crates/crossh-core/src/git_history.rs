@@ -4,9 +4,10 @@
 //! It deliberately has no GPUI dependency.
 
 use std::path::Path;
-use std::process::Command;
 
 use crate::git::GitError;
+use crate::git::command::{field, run_git_output};
+use crate::git::numstat::parse_numstat_vec;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitSummary {
@@ -68,7 +69,7 @@ pub fn list_history(cwd: &Path, limit: usize) -> Result<HistorySnapshot, GitErro
         });
     }
     let limit = limit.min(MAX_HISTORY_LIMIT);
-    let output = run_git(
+    let output = run_git_output(
         cwd,
         &[
             "log".to_string(),
@@ -91,7 +92,7 @@ pub fn list_history(cwd: &Path, limit: usize) -> Result<HistorySnapshot, GitErro
 
 pub fn show_commit(cwd: &Path, id: &str) -> Result<CommitDetail, GitError> {
     validate_revision(id)?;
-    let metadata = run_git(
+    let metadata = run_git_output(
         cwd,
         &[
             "show".to_string(),
@@ -105,7 +106,7 @@ pub fn show_commit(cwd: &Path, id: &str) -> Result<CommitDetail, GitError> {
         ],
     )?;
     let summary_and_body = parse_detail_metadata(&metadata)?;
-    let numstat = run_git(
+    let numstat = run_git_output(
         cwd,
         &[
             "show".to_string(),
@@ -123,31 +124,12 @@ pub fn show_commit(cwd: &Path, id: &str) -> Result<CommitDetail, GitError> {
     Ok(CommitDetail {
         summary: summary_and_body.0,
         body: summary_and_body.1,
-        files: parse_numstat(&numstat),
+        files: parse_numstat_vec(&numstat),
     })
 }
 
-fn run_git(cwd: &Path, args: &[String]) -> Result<Vec<u8>, GitError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()?;
-    if output.status.success() {
-        Ok(output.stdout)
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(GitError::CommandFailed(if stderr.is_empty() {
-            format!("git 命令失败：{}", output.status)
-        } else {
-            stderr
-        }))
-    }
-}
-
 fn list_refs(cwd: &Path) -> Result<Vec<HistoryRef>, GitError> {
-    let output = run_git(
+    let output = run_git_output(
         cwd,
         &[
             "for-each-ref".to_string(),
@@ -164,7 +146,7 @@ fn list_refs(cwd: &Path) -> Result<Vec<HistoryRef>, GitError> {
     // Detached HEAD does not have a branch decoration, but it is still useful
     // to show the selected commit as the active revision in the graph.
     if !refs.iter().any(|reference| reference.current)
-        && let Ok(head) = run_git(cwd, &["rev-parse".to_string(), "HEAD".to_string()])
+        && let Ok(head) = run_git_output(cwd, &["rev-parse".to_string(), "HEAD".to_string()])
     {
         let target = field(&head);
         if !target.is_empty() {
@@ -267,60 +249,6 @@ fn parse_detail_metadata(output: &[u8]) -> Result<(CommitSummary, String), GitEr
         },
         body,
     ))
-}
-
-fn parse_numstat(output: &[u8]) -> Vec<CommitFileChange> {
-    let records = output.split(|byte| *byte == 0).collect::<Vec<_>>();
-    let mut files = Vec::new();
-    let mut index = 0;
-    while let Some(record) = records.get(index) {
-        index += 1;
-        if record.is_empty() {
-            continue;
-        }
-        let mut fields = record.splitn(3, |byte| *byte == b'\t');
-        let Some(added) = fields.next() else { continue };
-        let Some(deleted) = fields.next() else {
-            continue;
-        };
-        let Some(path) = fields.next() else { continue };
-        let (path, old_path) = if path.is_empty() {
-            let Some(old_path) = records.get(index) else {
-                continue;
-            };
-            let Some(new_path) = records.get(index + 1) else {
-                continue;
-            };
-            index += 2;
-            (
-                String::from_utf8_lossy(new_path).into_owned(),
-                Some(String::from_utf8_lossy(old_path).into_owned()),
-            )
-        } else {
-            (String::from_utf8_lossy(path).into_owned(), None)
-        };
-        files.push(CommitFileChange {
-            path,
-            old_path,
-            insertions: parse_count(added),
-            deletions: parse_count(deleted),
-            binary: added == b"-" || deleted == b"-",
-        });
-    }
-    files
-}
-
-fn parse_count(value: &[u8]) -> usize {
-    std::str::from_utf8(value)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0)
-}
-
-fn field(value: &[u8]) -> String {
-    String::from_utf8_lossy(value)
-        .trim_end_matches(['\r', '\n'])
-        .to_string()
 }
 
 fn validate_revision(id: &str) -> Result<(), GitError> {

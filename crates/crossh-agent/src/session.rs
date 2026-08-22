@@ -8,7 +8,6 @@ use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -63,7 +62,7 @@ fn format_timestamp(millis: u64) -> String {
 
 impl AgentSession {
     pub fn new(cwd: impl Into<PathBuf>) -> Self {
-        let now = unix_millis();
+        let now = crossh_core::format::unix_timestamp_millis();
         let pid = std::process::id();
         let sequence = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
         Self {
@@ -78,12 +77,12 @@ impl AgentSession {
 
     pub fn append(&mut self, message: Message) {
         self.messages.push(message);
-        self.updated_at = unix_millis();
+        self.updated_at = crossh_core::format::unix_timestamp_millis();
     }
 
     pub fn set_name(&mut self, name: Option<String>) {
         self.name = name.filter(|name| !name.trim().is_empty());
-        self.updated_at = unix_millis();
+        self.updated_at = crossh_core::format::unix_timestamp_millis();
     }
 
     /// Keep the newest messages while preserving a visible marker that older
@@ -133,7 +132,7 @@ impl AgentSession {
                 ),
             ),
         );
-        self.updated_at = unix_millis();
+        self.updated_at = crossh_core::format::unix_timestamp_millis();
         removed
     }
 }
@@ -197,13 +196,6 @@ struct SessionHeader<'a> {
     name: &'a Option<String>,
     created_at: u64,
     updated_at: u64,
-}
-
-#[derive(Serialize)]
-#[allow(dead_code)]
-struct SessionMessage<'a> {
-    kind: &'static str,
-    message: &'a Message,
 }
 
 pub fn create_session(cwd: &Path) -> Result<(PathBuf, AgentSession), String> {
@@ -654,12 +646,6 @@ fn restrict_file(path: &Path) -> Result<(), String> {
 
 fn short_id(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
-}
-
-fn unix_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_millis() as u64)
 }
 
 #[cfg(test)]

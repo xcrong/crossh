@@ -78,12 +78,6 @@ impl SshConfig {
         Ok(cfg)
     }
 
-    /// 列出所有「具名」主机（排除纯通配模式如 `*`、`*.example.com` 的展示）。
-    /// 这里返回所有 Host 块，让 UI 自行过滤/展示。
-    pub fn hosts(&self) -> &[HostConfig] {
-        &self.hosts
-    }
-
     /// 解析用户输入的目标名：跨块「首匹配胜出」合并有效配置。
     /// - 标量键（HostName/User/Port/ProxyJump）：首个命中块的值生效。
     /// - IdentityFile / 三类转发：所有命中块累加。

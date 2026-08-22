@@ -3,11 +3,16 @@
 //! No `gpui` imports: this module only shells out to `git` and parses its
 //! `--porcelain=v2` status, `--numstat` counters, and unified diff output.
 
+pub mod command;
+pub mod numstat;
+
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use self::command::{git_output, git_output_limited, git_result, run_git, run_git_paths};
+use self::numstat::numstat_map;
 use crate::git_status::{GitStatus, parse_status};
 
 const MAX_DIFF_BYTES: u64 = 2 * 1024 * 1024;
@@ -354,21 +359,6 @@ fn current_branch(cwd: &Path) -> Result<Option<String>, GitError> {
     Ok((branch != "HEAD").then_some(branch))
 }
 
-fn run_git_paths(cwd: &Path, args: &[&str], paths: &[String]) -> Result<(), GitError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .args(paths)
-        .output()?;
-    git_result(output)
-}
-
-fn run_git(cwd: &Path, args: &[&str]) -> Result<(), GitError> {
-    let output = Command::new("git").arg("-C").arg(cwd).args(args).output()?;
-    git_result(output)
-}
-
 fn apply_hunk(
     cwd: &Path,
     entry: &FileChange,
@@ -408,19 +398,6 @@ fn apply_hunk(
         .expect("git apply stdin must be piped")
         .write_all(&patch)?;
     git_result(child.wait_with_output()?)
-}
-
-fn git_result(output: std::process::Output) -> Result<(), GitError> {
-    if output.status.success() {
-        return Ok(());
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let message = if stderr.is_empty() {
-        format!("git 命令失败：{}", output.status)
-    } else {
-        stderr
-    };
-    Err(GitError::CommandFailed(message))
 }
 
 fn diff_args(entry: &FileChange, staged: bool) -> Vec<&str> {
@@ -497,109 +474,6 @@ fn untracked_diff(cwd: &Path, entry: &FileChange) -> Result<Option<FileDiff>, Gi
         lines: produced,
         ..FileDiff::default()
     }))
-}
-
-/// 运行只读 Git 命令并返回 stdout，保留失败原因供界面显示。
-fn git_output(cwd: &Path, args: &[&str]) -> Result<Vec<u8>, GitError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()?;
-    git_stdout(output)
-}
-
-/// 解析 `--numstat` 输出为 path -> (insertions, deletions)。
-fn numstat_map(output: &[u8]) -> HashMap<String, (usize, usize)> {
-    let mut map = HashMap::new();
-    let records = output.split(|byte| *byte == 0).collect::<Vec<_>>();
-    let mut index = 0;
-    while let Some(record) = records.get(index) {
-        index += 1;
-        if record.is_empty() {
-            continue;
-        }
-        let mut parts = record.splitn(3, |byte| *byte == b'\t');
-        let Some(added) = parts.next() else { continue };
-        let Some(deleted) = parts.next() else {
-            continue;
-        };
-        let path = parts.next().unwrap_or_default();
-        // `--numstat -z` encodes renamed paths as an empty third field followed
-        // by old and new path records. The current path is the last record.
-        let path = if path.is_empty() {
-            let _old = records.get(index);
-            let Some(new) = records.get(index + 1) else {
-                continue;
-            };
-            index += 2;
-            *new
-        } else {
-            path
-        };
-        let key = String::from_utf8_lossy(path).into_owned();
-        let insertions = std::str::from_utf8(added)
-            .ok()
-            .and_then(|n| n.parse().ok())
-            .unwrap_or(0);
-        let deletions = std::str::from_utf8(deleted)
-            .ok()
-            .and_then(|n| n.parse().ok())
-            .unwrap_or(0);
-        map.insert(key, (insertions, deletions));
-    }
-    map
-}
-
-fn git_output_limited(cwd: &Path, args: &[&str], limit: u64) -> Result<Vec<u8>, GitError> {
-    let mut child = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let stderr = child.stderr.take().expect("piped stderr must exist");
-    let stderr_reader = std::thread::spawn(move || {
-        let mut stderr_bytes = Vec::new();
-        let _ = stderr.take(64 * 1024).read_to_end(&mut stderr_bytes);
-        stderr_bytes
-    });
-    let mut stdout = child.stdout.take().expect("piped stdout must exist");
-    let mut bytes = Vec::new();
-    stdout.by_ref().take(limit + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > limit {
-        let _ = child.kill();
-        let _ = child.wait();
-        let _ = stderr_reader.join();
-        return Err(GitError::DiffTooLarge);
-    }
-    let status = child.wait()?;
-    let stderr_bytes = stderr_reader.join().unwrap_or_default();
-    if status.success() {
-        Ok(bytes)
-    } else {
-        Err(command_error(status, &stderr_bytes))
-    }
-}
-
-fn git_stdout(output: std::process::Output) -> Result<Vec<u8>, GitError> {
-    if output.status.success() {
-        Ok(output.stdout)
-    } else {
-        Err(command_error(output.status, &output.stderr))
-    }
-}
-
-fn command_error(status: std::process::ExitStatus, stderr: &[u8]) -> GitError {
-    let stderr = String::from_utf8_lossy(stderr).trim().to_string();
-    GitError::CommandFailed(if stderr.is_empty() {
-        format!("git 命令失败：{status}")
-    } else {
-        stderr
-    })
 }
 
 /// 解析统一 diff 输出为逐行结构。

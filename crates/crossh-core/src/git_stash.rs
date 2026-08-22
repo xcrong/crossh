@@ -4,9 +4,9 @@
 //! It deliberately has no GPUI dependency.
 
 use std::path::Path;
-use std::process::Command;
 
 use crate::git::GitError;
+use crate::git::command::{field, run_git_output};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StashSummary {
@@ -17,7 +17,7 @@ pub struct StashSummary {
 }
 
 pub fn list_stashes(cwd: &Path) -> Result<Vec<StashSummary>, GitError> {
-    let output = run_git(
+    let output = run_git_output(
         cwd,
         &[
             "stash".to_string(),
@@ -29,7 +29,7 @@ pub fn list_stashes(cwd: &Path) -> Result<Vec<StashSummary>, GitError> {
 }
 
 pub fn push_stash(cwd: &Path) -> Result<(), GitError> {
-    run_git(
+    run_git_output(
         cwd,
         &[
             "stash".to_string(),
@@ -64,7 +64,7 @@ fn run_stash_operation(
         args.push("--index".to_string());
     }
     args.push(selector.to_string());
-    run_git(cwd, &args)?;
+    run_git_output(cwd, &args)?;
     Ok(())
 }
 
@@ -108,30 +108,6 @@ fn validate_selector(selector: &str) -> Result<(), GitError> {
         return Err(GitError::CommandFailed("Stash 引用无效".to_string()));
     }
     Ok(())
-}
-
-fn run_git(cwd: &Path, args: &[String]) -> Result<Vec<u8>, GitError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()?;
-    if output.status.success() {
-        return Ok(output.stdout);
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    Err(GitError::CommandFailed(if stderr.is_empty() {
-        format!("git 命令失败：{}", output.status)
-    } else {
-        stderr
-    }))
-}
-
-fn field(value: &[u8]) -> String {
-    String::from_utf8_lossy(value)
-        .trim_matches(['\r', '\n'])
-        .to_string()
 }
 
 #[cfg(test)]

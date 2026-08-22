@@ -6,7 +6,7 @@ use crate::session::{
     session_root,
 };
 use std::collections::BTreeMap;
-#[allow(unused_imports)]
+#[cfg(test)]
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
