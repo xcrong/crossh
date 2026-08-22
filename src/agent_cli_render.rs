@@ -211,12 +211,13 @@ fn selection_cols_for_row(
 }
 
 /// 对话内容行构建（角色标签着色 + Markdown/折叠工具输出）
-fn build_transcript(app: &mut App, width: usize) -> Vec<String> {
+pub(super) fn build_transcript(app: &mut App, width: usize) -> Vec<String> {
     let mut container = crossh_tui::component::Container::new();
     for (role, content) in &app.messages {
         match role {
             Role::User => {
-                // 用户消息：Box 背景 + Markdown（pi 的 UserMessageComponent）
+                // 用户消息：全宽背景 + Markdown（pi 的 UserMessageComponent）；
+                // 与 agent 消息左侧对齐（背景从第 0 列开始，无前导空格）
                 let label = styled_label("you", theme_color_user());
                 let mut md = crossh_tui::markdown::Markdown::new(content.clone(), 0, 0);
                 let body = md.render(width.saturating_sub(2));
@@ -226,11 +227,11 @@ fn build_transcript(app: &mut App, width: usize) -> Vec<String> {
                     .into_iter()
                     .map(|l| {
                         let v = visible_width_safe(&l);
+                        // pi 的 userMessageBg #343541（dark.json）
                         format!(
-                            // pi 的 userMessageBg #343541（dark.json）
-                            " \x1b[48;2;52;53;65m{}\x1b[49m{}",
+                            "\x1b[48;2;52;53;65m{}{}\x1b[49m",
                             l,
-                            " ".repeat(width.saturating_sub(v + 1))
+                            " ".repeat(width.saturating_sub(v))
                         )
                     })
                     .collect();

@@ -1,8 +1,10 @@
 use super::render::{
-    agent_layout, cursor_position, input_height, markdown_content, visual_line_count, wrap_content,
+    agent_layout, build_transcript, cursor_position, input_height, markdown_content,
+    visual_line_count, wrap_content,
 };
 use super::*;
 use crossh_agent::{AgentModel, AgentModelRef, AgentProvider, Protocol};
+use crossh_tui::ansi::visible_width;
 use crossh_tui::layout::Rect as TuiRect;
 use unicode_width::UnicodeWidthStr;
 
@@ -254,4 +256,38 @@ fn agent_layout_keeps_prompt_below_the_conversation() {
     assert_eq!(input.bottom(), footer.y);
     assert_eq!(footer.bottom(), area.bottom());
     assert!(conversation.height >= 5);
+}
+
+#[test]
+fn user_message_background_aligns_flush_left_like_agent_messages() {
+    let mut app = app();
+    app.messages = vec![(Role::User, "hi".into()), (Role::Agent, "reply".into())];
+    let width = 40;
+    let lines = build_transcript(&mut app, width);
+    // 用户消息行：背景序列从第 0 列开始（无前导空格），可见宽度铺满整行
+    let user_lines: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.contains("48;2;52;53;65"))
+        .collect();
+    assert!(user_lines.len() >= 2, "label 行与正文行都应带背景");
+    for l in &user_lines {
+        assert!(
+            l.starts_with("\x1b[48;"),
+            "用户行应以背景序列开头（左侧对齐）: {l:?}"
+        );
+        assert_eq!(visible_width(l), width, "背景应铺满整行: {l:?}");
+    }
+    // agent 正文行从第 0 列开始，与用户行左对齐
+    let agent_line = lines
+        .iter()
+        .find(|l| strip(l).contains("reply"))
+        .expect("agent line");
+    assert!(
+        !strip(agent_line).starts_with(' '),
+        "agent 行不应有前导空格"
+    );
+
+    fn strip(s: &str) -> String {
+        crossh_tui::ansi::strip_terminal_sequences(s)
+    }
 }
