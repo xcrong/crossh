@@ -1,10 +1,11 @@
 use super::render::{
-    agent_layout, build_transcript, cursor_position, input_height, markdown_content,
-    visual_line_count, wrap_content,
+    agent_layout, build_editor, build_footer, build_slash_popup, build_transcript, cursor_position,
+    input_height, markdown_content, visual_line_count, wrap_content,
 };
 use super::*;
 use crossh_agent::{AgentModel, AgentModelRef, AgentProvider, Protocol};
 use crossh_tui::ansi::visible_width;
+use crossh_tui::component::Component;
 use crossh_tui::layout::Rect as TuiRect;
 use unicode_width::UnicodeWidthStr;
 
@@ -289,5 +290,93 @@ fn user_message_background_aligns_flush_left_like_agent_messages() {
 
     fn strip(s: &str) -> String {
         crossh_tui::ansi::strip_terminal_sequences(s)
+    }
+}
+
+#[test]
+fn slash_popup_height_is_stable_across_candidate_count_changes() {
+    // 回归：候选数变化（8→2→1…）不得改变 popup 高度。
+    // 旧实现 popup 随候选数伸缩，dock 高度随之变化，
+    // 触发整屏 \x1b[2J 重绘，打字时页面闪烁。
+    let mut app = app();
+    // 追加第二个模型，使 /model 参数候选数量能真实跨 2→1 变化
+    app.settings.providers[0].models.push(AgentModel {
+        id: "zephyr-7b".into(),
+        name: "zephyr-7b".into(),
+        reasoning: false,
+        context_window: 32_000,
+        max_tokens: 8_000,
+    });
+    let width = 80;
+    for input in [
+        "/",
+        "/mod",
+        "/model",
+        "/model q",
+        "/model z",
+        "/model local/zephyr-7b",
+    ] {
+        app.input = input.into();
+        app.input_cursor = input.len();
+        let popup = build_slash_popup(&app, width).unwrap_or_default();
+        assert_eq!(
+            popup.len(),
+            2 + 8,
+            "popup 高度应恒为 2 边框 + 8 候选视口行 (input={input:?}): {popup:?}"
+        );
+    }
+}
+
+#[test]
+fn slash_popup_changes_do_not_trigger_full_screen_repaint() {
+    use crossh_tui::main_screen::MainScreenRenderer;
+    let mut app = app();
+    let width = 80;
+    let height = 24;
+
+    fn dock_lines(app: &mut App, width: usize) -> Vec<String> {
+        let mut editor = build_editor(app);
+        editor.max_visible_lines = 8;
+        let mut lines = Vec::new();
+        if let Some(popup) = build_slash_popup(app, width) {
+            lines.extend(popup);
+        }
+        lines.extend(editor.render(width));
+        lines.extend(build_footer(app, width));
+        lines
+    }
+
+    let mut renderer = MainScreenRenderer::default();
+    app.settings.providers[0].models.push(AgentModel {
+        id: "zephyr-7b".into(),
+        name: "zephyr-7b".into(),
+        reasoning: false,
+        context_window: 32_000,
+        max_tokens: 8_000,
+    });
+    app.input = "/model".into();
+    app.input_cursor = app.input.len();
+    let transcript = build_transcript(&mut app, width);
+    let first =
+        renderer.render_frame_regular(transcript, dock_lines(&mut app, width), width, height);
+    assert!(first.contains("\x1b[2J"), "首帧整屏重绘是预期行为");
+
+    // 候选数量/内容变化（/model → /model q → /model z → 完全匹配）：
+    // 只应原位重绘，不得 2J
+    for input in [
+        "/model q",
+        "/model z",
+        "/model qw",
+        "/model local/zephyr-7b",
+    ] {
+        app.input = input.into();
+        app.input_cursor = app.input.len();
+        let transcript = build_transcript(&mut app, width);
+        let frame =
+            renderer.render_frame_regular(transcript, dock_lines(&mut app, width), width, height);
+        assert!(
+            !frame.contains("\x1b[2J"),
+            "候选变化不应整屏重绘 (input={input:?}): {frame:?}"
+        );
     }
 }

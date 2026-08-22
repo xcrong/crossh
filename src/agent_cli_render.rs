@@ -69,7 +69,7 @@ fn render_regular(app: &mut App, width: usize, height: usize) -> io::Result<()> 
     Ok(())
 }
 
-fn build_slash_popup(app: &App, width: usize) -> Option<Vec<String>> {
+pub(super) fn build_slash_popup(app: &App, width: usize) -> Option<Vec<String>> {
     let cands = slash::slash_candidates(app);
     if cands.is_empty() {
         return None;
@@ -109,7 +109,15 @@ fn build_slash_popup(app: &App, width: usize) -> Option<Vec<String>> {
     } else {
         lines.push(format!("┌{}┐", "─".repeat(popup_width.saturating_sub(2))));
     }
-    for (idx, cand) in cands.iter().enumerate() {
+    // 候选视口固定行数：候选数量变化只改行内容、不改 popup 高度。
+    // 否则（旧实现）每敲一个字符候选 8→1→5… 都触发 dock 高度变化，
+    // 进而整屏 \x1b[2J 重绘（打字时页面闪烁）。
+    const POPUP_CANDIDATE_ROWS: usize = 8;
+    for idx in 0..POPUP_CANDIDATE_ROWS {
+        let Some(cand) = cands.get(idx) else {
+            lines.push(format!("│{}│", " ".repeat(inner_w)));
+            continue;
+        };
         let is_sel = idx == selected;
         // 构造内部文本： display 左对齐 14 列 + desc
         let mut inner = format!(" {:<14} {}", cand.display, cand.desc);
@@ -138,7 +146,7 @@ fn build_slash_popup(app: &App, width: usize) -> Option<Vec<String>> {
 
 /// footer 两行（regular 与 fullscreen 共用）：
 /// 第一行 = status（为空时回退 pwd）；第二行 = 统计 + 右对齐 model·thinking
-fn build_footer(app: &App, width: usize) -> Vec<String> {
+pub(super) fn build_footer(app: &App, width: usize) -> Vec<String> {
     let first_raw = if app.status.is_empty() {
         format!(" {}", app.workspace.display())
     } else {
@@ -397,7 +405,7 @@ pub(super) fn build_transcript(app: &mut App, width: usize) -> Vec<String> {
 }
 
 /// 编辑器视图（从 App.input 构造，保持既有 input/input_cursor 为唯一真源）
-fn build_editor(app: &mut App) -> crossh_tui::editor::Editor {
+pub(super) fn build_editor(app: &mut App) -> crossh_tui::editor::Editor {
     let mut editor = crossh_tui::editor::Editor::default();
     let text = if app.input.is_empty() {
         String::new()
