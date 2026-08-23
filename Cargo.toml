@@ -59,12 +59,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sys-locale = "0.3"
 toml = "0.8"
-ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 crossterm = "0.29"
 unicode-width = "0.2"
 shlex = "1"
 schemars = "1"
-tui-markdown = { version = "0.3.8", default-features = false }
 
 [dev-dependencies]
 assets = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930" }

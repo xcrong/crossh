@@ -56,7 +56,6 @@ fn app() -> App {
         slash_selected: 0,
         queued_inputs: VecDeque::new(),
         queue: crossh_agent::MessageQueue::new(),
-        event_bus: crossh_agent::EventBus::new(),
         messages: Vec::new(),
         alt_screen: crossh_tui::AltScreen::new(
             80,

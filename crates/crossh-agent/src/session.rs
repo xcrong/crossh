@@ -13,7 +13,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 const SESSION_VERSION: u32 = 3;
-pub const CURRENT_SESSION_VERSION: u32 = 3;
 const MAX_CONTEXT_FILE_BYTES: u64 = 128 * 1024;
 const MAX_TOTAL_CONTEXT_FILE_BYTES: u64 = 256 * 1024;
 const MAX_INSTRUCTION_FILE_BYTES: u64 = 128 * 1024;

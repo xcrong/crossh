@@ -1,71 +1,86 @@
-# Crossh 简化扫描报告（2026-08-23）
+# Crossh 简化扫描报告（2026-08-23，代码取证版）
 
-触发原因：用户 `@find-simplifications` 手动触发，要求对全仓可简化点进行证据化审计，重点关注死代码 / 重复表示 / 投机泛化 / 手写轮子。
+触发原因：用户手动触发简化扫描，并明确要求**以当前代码为唯一真相，不采信历史审计文档的结论**。本报告覆盖同日早前一版基于历史文档推演的报告，全部结论重新取证。
 
-扫描方式：意图基线 `AGENTS.md`、`docs/architecture.md`、全部 ADR（0001-0015）、`docs/engineering-notes/README.md` 与近四轮审计（2026-08-17 code-review、2026-08-18 架构冗余、2026-08-20 简化、2026-08-21 文档漂移、2026-08-22 简化）。分片扫描（因 subagent 延迟，改为主线程串行巡检 + 交叉验证）：
+扫描方式：意图基线 `AGENTS.md`、`docs/architecture.md`、ADR 目录标题（仅用于识别受保护表面，不作证据）。分片并行扫描四域（根 crate features/shared/bin、crossh-core+crossh-ssh、UI 五 crate + 视图层、agent/ai-sdk/update/terminal/settings/scripts/Cargo.toml），每条候选由主线程回到源码逐项复核消费者计数后才收录。
 
-- 根 crate feature（workspace/terminal/git/sftp/forwarding/connections）与 `src/shared`、`src/bin`、`src/agent_cli*`
-- `crates/crossh-ssh` / `crates/crossh-core` / `crates/crossh-agent` / `crates/crossh-terminal`
-- `crates/crossh-ui` / `crates/crossh-ui-component` / `crates/crossh-theme` / `crates/crossh-assets` / `crates/crossh-tui` 与 `src/features/*/view+render`
-- settings / updater / infrastructure / scripts / `Cargo.toml` 依赖图
+锚点命令（主线程亲跑）：
 
-锚点命令：`cargo check --workspace`（通过）、`cargo clippy --workspace --all-targets 2>&1`（1 处 `deny(clippy::overly_complex_bool_expr)` 阻断，`crates/crossh-tui/src/scroll_view.rs:125`）、`grep -rn "allow(dead_code|unused"`（`src` 剩余 11 处、`crates` 剩余 0 处，见 N-2）、`wc -l` 文件尺寸（`shell.rs:1679 view.rs:1584 agent_cli.rs:1871` 均 < 2000）、`grep -rn "host_entry_matches|available_main_width|clamp_panel_width|terminal_split|format_size|unix_millis|passphrase|SessionMessage|shell_quote_remote|truncate_to_limit"` 逐项核验跨 crate 复用。未改动生产代码，报告本身为文档变更。
+- `cargo clippy --workspace --all-targets`：**零 warning、零 error**。
+- 全仓 `#[allow(dead_code|unused)]`：仅 9 处（`git_launcher.rs×3` 双 binary 挂载、`features/git/mod.rs×5` visual-tests、`toaster.rs×1` ADR 0013、`crossh-tui/ansi.rs:550` unused_assignments），均为已注释的必要豁免。
+- 根 crate 无 `lib.rs`（纯 bin），dead_code lint 全覆盖；库 crate 的盲区（`pub` 跨 crate 表面）由全仓 grep 消费者计数补齐。
 
 ## 总体结论
 
-仓库已连续四轮收敛，**2026-08-22 的 S-1~S-12 中有 9 项已在 24 小时内闭环**（见“与上一轮衔接”），未引入新的整模块债务。本轮仅有 **1 项阻断级逻辑缺陷 + 3 项低危残留 shim/死符号** 需要处置，其余为受保护表面的有意保留，不建议单独立项：
+**不是"大量"历史遗留**：编译器锚点干净，主体（shared 逻辑层、connections 连接池、forwarding tracker、git/sftp 输入层、theme token、图标、terminal 事件、update 链路、scripts/CI 引用图）经逐一核验均为活代码。真正的历史遗留集中在**三坨**，均可归因到明确的演进节点：
 
-1. **阻断缺陷**：`crossh-tui` 的 `scroll_view.rs:125` 逻辑错误触发 `#[deny(clippy::overly_complex_bool_expr)]`，`cargo clippy --workspace --all-targets` 编译失败（N-1，高，阻断 CI）。
-2. **薄 shim 残留**：`src/features/sftp/logic.rs:155 format_size -> format_bytes` 的 2 行委托在 `format.rs` 权威化后仍保留，`render.rs:98,322` 可直呼 `format_bytes`（N-2，低）。
-3. **死符号 3 处**：`quick_commands_rail.rs:276 background_task_badge`（永远 `rail_status_badge` 直调）、`registry.rs:318 compose_entry`（`compose` 已由 `compose_state_for/compose_visible` 消费）、`agent_cli_slash.rs:35 SlashCandidate.desc`（渲染管线未消费）（N-3~N-5，均低）。
-4. **已闭环的重复**：`host_entry_matches`→`HostEntry::matches_query`、`shell_quote_remote`→`shlex::try_quote`、`truncate_to_limit` 下沉到 `crossh-core::format`、`unix_timestamp` 双 helper 收敛、`AuthChoice::Key.passphrase` 删除、`git/command.rs` + `git/numstat.rs` 抽离、`terminal_split_left_width` 已委托 `clamp_panel_width`——均不再立项。
-
-已验证无问题的受保护表面：`crossh-ssh` 的 `run_connection select!` + `WeakEntity` 池、`known_hosts` 决策链、`crossh-update` 的 `signature`（ADR 0014）、`crossh-theme`→`crossh-ui/theme` 的透传（22 个 `color()` 为 ADR 0003 有意隔离）、`crossh-assets` 的 `IconName` 嵌入、`check-architecture.sh` 的 `terminal_element.rs:2196` 白名单与逻辑 crate 零 `gpui` 污染（`cargo check` 全绿）、`git/mod.rs:70-113` 的 5 处与 `git_launcher.rs:34/40/52` 的 3 处 `visual-tests` / 双 binary 豁免（已注释）、`ansi.rs:550` 的 `allow(unused_assignments)` 与 `select.rs/panel.rs` 的 `allow(clippy::*)` 为测试/类型复杂度豁免。`crossh-tui` 的 `visible_width/wrap_text_with_ansi/MAIN_SCREEN` 等与 `ScreenRenderer` 的同步输出管线（`BEGIN_SYNC/OSC52`）属新 crate 内聚，无跨 crate 重复。
+1. **ADR 0015 引入的 agent 运行时层未接线**（最大一块）：生产路径 `src/agent_cli*` 绕过 `AgentSessionRuntime`/`SessionManager` 抽象直调 `session.rs` 自由函数，导致 runtime.rs + manager.rs 整体仅测试可达；`EventBus` 只有 emit 半边，6 个事件变体从未 emit 也从未 match。
+2. **crossh-ui-component 的"P0-2 建议形态"结构化 API 批次**：一批只有定义与自测、无任何 feature 视图调用的投机封装（ListPane/SelectableRow/ModalTextInput/SplitResizer 对称 API 等），部分源码注释自认无外部消费。
+3. **少量重复表示与死符号**：git 状态 metric 链双实现、`queued_inputs` 影子队列双记账、根 Cargo.toml 两个零引用死依赖等。
 
 ## 发现
 
 | 编号 | 问题 | 严重度 | 证据与消费者结论 |
 | --- | --- | --- | --- |
-| N-1 | `scroll_view.rs:125` 逻辑错误阻断 `clippy --deny` | 高 | `crates/crossh-tui/src/scroll_view.rs:125 self.following_end = self.follow_end && next == max && lines >= 0 \|\| (lines < 0 && false);` 中 `\|\| (lines < 0 && false)` 恒为 `false`（clippy `overly_complex_bool_expr` 已 `deny`，`cargo clippy --workspace --all-targets` 编译失败），且 `126-128 if lines < 0 { self.following_end = false; }` 与该分支语义重复——负向滚动的 `following_end` 被两处同时置 false。消费者：生产（`ScrollView::scroll_by` 被 `crates/crossh-tui/src/alt_screen.rs` 与 TUI 滚动容器生产调用）。修复为 `self.following_end = self.follow_end && next == max && lines >= 0;` 并保留 `if lines < 0` 分支或合并为单一 `if`，`cargo clippy --workspace --all-targets -- -D warnings` 为门禁。**保留论点**：无——`deny` 已阻断，必修。 |
-| N-2 | `sftp/logic.rs:155` 的 `format_size` 薄 shim 残留 | 低 | `src/features/sftp/logic.rs:155-157 pub(crate) fn format_size(bytes:u64)->String { format_bytes(bytes) }` 仅被 `src/features/sftp/render.rs:98,322` 与 `view.rs:1167` 测试调用；`crates/crossh-core/src/format.rs:10 format_bytes` 为权威（`sftp.rs:10` 与 `logic.rs:7` 已直连）。`crates/crossh-core/src/format.rs` 的历史 `format_size` 别名已删除，本处为唯一残留 shim。消费者：生产但可直呼 `format_bytes`（crate 内 2 处）。**保留论点**：`format_size` 语义与 `format_bytes` 完全等价，迁移仅改 2 行导入+测试别名，无行为差异；若侧栏/状态栏需统一命名可保留一处别名，但当前 `crossh-core::format_bytes` 已为唯一真相。 |
-| N-3 | `quick_commands_rail.rs:276` 死函数 `background_task_badge` | 低 | `src/features/workspace/quick_commands_rail.rs:276 #[allow(dead_code)] fn background_task_badge(status: BackgroundTaskStatus) -> impl IntoElement { rail_status_badge(...) }` 全仓仅定义处命中（`grep` 无生产调用），渲染路径直接 `rail_status_badge(background_task_color(status), theme::surface())`。消费者：非生产（`allow(dead_code)` 压制）。历史注释"保留独立函数以便后续轨道与状态栏样式统一"——但 `status_bar` 与 `sidebar` 已各自直调 `rail_status_badge`，抽离未发生。**保留论点**：若后续需统一 `BadgeTone` 映射可保留包装，但当前 `rail_status_badge` 已为统一入口，死函数仅增 1 符号噪音。 |
-| N-4 | `registry.rs:318` 死 getter `compose_entry` | 低 | `src/features/workspace/registry.rs:318 #[allow(dead_code)] pub(crate) fn compose_entry(&self, view: ActiveView) -> Option<&ComposeEntry>` 生产零调用（注释"预留查询接口：当前生产路径通过 `compose_state_for/compose_visible` 访问"），`compose` 的权威访问为 `registry.rs:340 compose_state_for` 与 `compose_visible`。消费者：非生产（`allow(dead_code)` 压制）。**保留论点**：`compose_entry` 为调试/未来复用预留，但 `compose_visible` 已暴露 `bool` 语义，保留 raw `Option<&ComposeEntry>` 无额外能力；可改为 `#[cfg(test)]` 或删除。 |
-| N-5 | `agent_cli_slash.rs:35` 死字段 `SlashCandidate.desc` | 低 | `src/agent_cli_slash.rs:35 #[allow(dead_code)] pub(super) desc: String` 注释"候选说明（自动补全浮层展示用；当前渲染管线暂未消费）"，`grep` 仅 `slash_candidates` 构造处写入、无读取。消费者：非生产（测试/渲染均未消费）。**保留论点**：为后续 slash 浮层说明文案预留，但保留未消费字段使 `SlashCandidate` 多 1 分配/克隆；可待浮层消费时再补，或改为 `#[cfg(test)]` 桩。 |
-| — | `toaster.rs:13` `Warning`/`Error` 枚举 | 信息 | `src/features/workspace/toaster.rs:12 #[allow(dead_code)] Warning, Error` 注释"ADR 0013 契约预留语气；构造点只在 `cfg(test)` 测试中"，`grep` 仅测试 `toaster.rs:94-120` 的 `NoticeLevel::Warning/Error` 断言。消费者：非生产但为 ADR 0013 的有意预留（`NoticeLevel` 的 `Info/Warning/Error` 三态为 `AppShell` toaster 的契约），**本轮不进入 backlog**，属受保护表面。 |
+| S-1 | 根 Cargo.toml 死依赖 `ratatui`(:62) 与 `tui-markdown`(:67) | 高 | 主线程复核：`grep -rn "ratatui\|tui_markdown" src crates tests --include='*.rs'` = **0 命中**；仓库无 build.rs。消费者分类：无。反方论点：可能为 agent_cli TUI 迁移预留——但零引用即纯编译成本。 |
+| S-2 | `crossh-agent` 运行时抽象整体仅测试可达 | 高 | `AgentSessionRuntime`(runtime.rs:22)、`AgentSessionServices`(runtime.rs:11)、`SessionManager`(manager.rs:18)、`FsSessionManager`(manager.rs:31)、`InMemorySessionManager`(manager.rs:57)：全仓外部消费者=0（主线程复核，仅剩 `lib.rs:41-42` re-export）。生产端 `src/agent_cli.rs:19-25`、`src/agent_cli_session.rs` 直调 `session.rs` 自由函数 create/load/save/list/latest_session。分类：仅测试。**这是 ADR 0015 裁决过的边界，但"生产绕过该层直调自由函数"是结构性新证据，需裁定而非静默清理。** 反方论点：可嵌入 GUI 的 Runtime 隔离层是既定设计，未来 GUI 内嵌 agent 时需要。 |
+| S-3 | `EventBus` 只有 emit 半边接线 | 高 | 主线程复核 `event.rs` 全文：`subscribe()` 唯一调用点是同文件 `#[cfg(test)]`(:141,:165)；生产只 emit 不 listen。9 个变体中 `AgentEnd/AgentSettled/EntryAppended/SessionInfoChanged/ThinkingLevelChanged/ModelChanged` 从未 emit 也从未 match；`QueueUpdate/CompactionStart/CompactionEnd` 有生产 emit（src/agent_cli.rs:594,643,687,706,724）但落空。分类：emit 生产 / subscribe 仅测试。与 S-2 同属 ADR 0015 层，一并裁定。 |
+| S-4 | Git 状态 metric 七段链双实现 | 中高 | `src/features/git/render.rs:251-285` 与 `src/features/workspace/view.rs:615-639` 为主线程逐行比对确认的同构实现（↑/↓/+/~/?/!/clean → `StatusMetric` + 相同 `BadgeTone` 映射），任一处改 tone/阈值即静默漂移。分类：生产×2。反方论点：两处上下文容器不同，但不影响 metric 链抽成共享纯函数。 |
+| S-5 | `queued_inputs` 影子队列与 `MessageQueue` 双记账 | 中 | 主线程复核 38 处触点：`src/agent_cli.rs:147` 字段、入队恒成对双写（agent_cli_input.rs:14,37 ↔ queue.push_* :13,:36）、drain 路径按值字符串反查手工同步（agent_cli.rs 多处、agent_cli_input.rs:65-68）、`agent_cli.rs:583` `.or_else(\|\| app.queued_inputs.pop_front())` 兜底——两份表示已经需要启发式对齐，即漂移证据。分类：生产。建议以 `MessageQueue` 为单源删除影子队列。反方论点：process_prompt 取消时的独立缓冲依赖，可由 `restore_to_input` 覆盖。 |
+| S-6 | crossh-ui-component 投机 API 批次（8 项，仅定义+自测） | 中 | 全部经 scout 全仓计数 + 抽样复核：`ModalTextInput/ModalDialogActions`(modal_field.rs:74,104)、`ListPane/PaneFrame`(list_pane.rs:36,45)、`SelectableRow` 结构体形态(selectable_row.rs:33)、`SplitResizer::{handle_side,handle_left}`(split_resizer.rs:76-89) 及 `SidePanel` 同名方法(panel.rs:148-156)——后者源码注释**自认**"除便捷写法外无直接外部消费点"；`danger_banner/warning_banner`(banner.rs:276-283)、`RAIL_AVATAR_PITCH`(panel.rs:41)。分类：非生产（仅模块内测试）。视图实际只走函数式入口（list_pane()/selectable_row()/Banner::new().tone()）。建议整批裁定：删或降 `#[cfg(test)]`。反方论点：P0-2 形态批次若仍规划迁移则保留接口。 |
+| S-7 | 枚举死变体 3 组 | 中 | `ButtonVariant::{Info,Warning,Success}`(button.rs:31-33)：全仓构造 0，style() 存在永不可达 match 臂；`AvatarKind::Host`(avatar.rs:11)：唯一"构造点"是 `sidebar.rs:315-330` 整段被注释的主机 rail 代码；`BannerTone::Info`(banner.rs:26)：生产构造 0，仅测试 assert_ne 提及。分类：非生产。反方论点：tone 三分支对称性是组件契约；主机 rail 属规划内功能（见 S-8 同根因）。 |
+| S-8 | sidebar 主机活跃头像尸体代码 | 低中 | `sidebar.rs:274-280` 计算 `active_remote_key` 后唯一消费者是被注释的 `:315-330` 代码块，`:333 let _ = &active_remote_key;` 压制 unused。分类：生产函数内的死计算。与 S-7 的 `AvatarKind::Host` 同根因，应一并裁定恢复或删除。 |
+| S-9 | `TerminalProcessInfo` seam 生产恒 None | 中低 | `crates/crossh-core/src/terminal/session.rs:6` 定义；唯一生产调用方传 `None`（title.rs:37 local_terminal_title 的 process 参数）；`process_display_name`(title.rs:241) 仅测试激活。整个 session.rs 模块仅含此类型。分类：投机 seam。反方论点：进程信息注入是终端标题的自然扩展点，成本为一个 Option 参数。 |
+| S-10 | `compose_bar.rs` line_bounds 死副本 | 低 | 主线程读源确认：`compose_bar.rs:15-22` 私有 fn 与 `sftp/logic.rs` 逐字等价；`:228 let _ = line_bounds; // 保留 helper 供未来扩展` 显式自认死代码。真身在 sftp/logic.rs 且有 3 处生产消费。分类：非生产。直接删。 |
+| S-11 | `MessageQueue` 死方法 5 个 | 低 | 主线程复核：`pop_next`(:83)、`pop_steering`(:93)、`has_steering`(:100)、`pending_count`(:103)、`take_all`(:110) 全仓零调用（forwarding/view.rs 的 take_all 是另一类型同名方法）；`clear_queue`(:107) 是 take_all 的纯别名，仅 `agent_cli_input.rs:59` 一处使用。生产实际只用 push_steening/push_follow_up、is_empty、restore_to_input 与字段访问。反方论点：对齐 pi 的 clearQueue/popNext 语义是有意命名。 |
+| S-12 | `CURRENT_SESSION_VERSION` 双常量零读取 | 低 | `entry.rs:6` 与 `session.rs:16` 两份定义，`ENTRY_VERSION` 别名再导出（lib.rs:39），全仓读取=0；实际写文件用私有常量（session.rs 写端 :220、读校验 :268）。两份重复常量有漂移风险。 |
+| S-13 | 手写 IME/caret 单行渲染残留 ×4 | 低中 | 统一路径 `TextInput`(text_input.rs)/`ModalField`(modal_field.rs) 已存在，仍有手写残留：`compose_bar.rs:80-230`（多行场景，迁移有工作量）、`git/render.rs:1100-1161`、`settings/agent.rs:300-330`、`sftp/view.rs:1070-1095`。`sftp/view.rs:771-772` 注释自证同类迁移可行。分类：生产×4，随各 feature 变更顺带迁移，不单独立项。 |
+| S-14 | 测试镜像 SDK 私有 wire 逻辑 | 低 | `crates/crossh-agent/src/providers.rs:71-116` 复制 SDK 内私有 `Utf8StreamDecoder`；`:100-190` 复制 `apply_model_options`/thinking 映射。全部 #[cfg(test)]。SDK wire 行为变更时测试可静默背离实现。反方论点：SDK 私有函数无法直接断言的权宜之计。 |
+| S-15 | `verify_manifest_signature`（pinned-key 版）零调用 | 低 | `crates/crossh-update/src/signature.rs:25`：生产与 release.yml 均走 `verify_manifest_signature_with_key`(model.rs:163、bin:114)。合理 lib 面，信息级。 |
+| S-16 | 杂项信息级 | 信息 | `Event::Stop(payload)` 产出后零读者（StreamAccumulator 忽略、应用侧 `=> {}`）；`AuthStyle::None` 仅 SDK 测试 CustomAdapter 使用（ProviderAdapter 扩展点的必要认证形态）；`config.rs:65` 测试 fixture 写入幽灵键 `terminal_show_timestamps`（serde 键名实为 show_timestamps，被静默丢弃）；`shell_quote`(core/terminal/shell.rs:426) 与 `shell_quote_remote`(ssh/connection.rs:704) 现均委托 shlex::try_quote，仅剩 5 行薄重复，收益不足以立项。 |
 
-薄候选（不足单独立项，收集备查）：`crates/crossh-tui/src/ansi.rs:550 #[allow(unused_assignments)] { current_visible = 0; }` 为 `non_snake_case` 测试模块内的临时抑制，非生产；`crates/crossh-ui-component/src/panel.rs:392 #[allow(non_snake_case)]` 等 6 处 `non_snake_case`/`clippy::type_complexity` 为 GPUI 测试/类型豁免，已最小化。
+## 否决记录（scout 报告后被主线程复核推翻）
+
+- ~~"`list_changes` 全仓零生产调用点，仅 #[cfg(test)] 消费"~~：**否决**。`crates/crossh-core/src/git_conflict.rs:46,74,90` 在生产冲突解析路径消费 `list_changes`（stash/conflict 操作是产品功能）。mod.rs 其余命中为测试。
+- ~~"ProviderAdapter 是无人使用的预留扩展点"~~：排除。`Client::complete/stream` + `builtin_adapter`(ai-sdk/lib.rs:612) 完整内部消费链，三个内置 adapter 均经此路由。
 
 ## 处置 Backlog
 
 | 优先级 | 编号 | 建议处置 | 说明 |
 | --- | --- | --- | --- |
-| P0 | N-1 | 直接修（阻断） | `crates/crossh-tui/src/scroll_view.rs:125` 改为 `self.following_end = self.follow_end && next == max && lines >= 0;`（删除 `\|\| (lines < 0 && false)`），`126-128` 的 `if lines < 0 { self.following_end = false; }` 保留或与前式合并为 `if` 三分支；`cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo test -p crossh-tui` 为门禁。 |
-| P3 | N-2 | 直接修（删 shim） | 删除 `src/features/sftp/logic.rs:155-157 format_size`，`render.rs:8` `use crate::features::sftp::logic::format_size` 改为 `use crossh_core::format::format_bytes;`，`render.rs:98,322` 直呼 `format_bytes`，`view.rs:1167` 测试随之 `format_bytes` 或保留本地 `use super::logic::format_bytes` 别名；`cargo test --workspace --lib` 含 `sftp::logic` 仍绿。 |
-| P3 | N-3 | 直接修（删死代码） | 删除 `quick_commands_rail.rs:275-279 background_task_badge` 及其 `#[allow(dead_code)]`；若后续需统一 `BadgeTone` 再由 `rail_status_badge` 包装重建。`cargo check --workspace` 零 `dead_code` 新增。 |
-| P3 | N-4 | 直接修（可选） | 二选一：删除 `registry.rs:317-321 compose_entry`，或收窄为 `#[cfg(test)]` / `#[cfg(debug_assertions)]` 调试接口；同步删除 `#[allow(dead_code)]`。与 `compose` 的 per-view 响应式重构同批亦可。 |
-| P3 | N-5 | 随功能变更顺带 | 保留 `desc` 直至 slash 浮层消费说明文案（`slash_candidates` 已产 `display/insert`，`desc` 为第三列），或立即删除并在浮层 spec 中重建；不单独立项，随 `agent_cli` 浮层渲染顺带。`cargo clippy` 零 `dead_code` 过期为门禁。 |
+| P1 | S-1 | ✅ 已闭环（同日直接修） | Cargo.toml 死依赖 `ratatui`/`tui-markdown` 已删除，净减编译依赖。 |
+| P1 | S-4 | ⛔ 结构性受阻，维持现状 | 落地时发现：`features/git` 仅经 `#[path]` 挂载于 `crossh-git` 独立二进制（ADR 0008），主二进制模块树中不存在 `features::git`，两处调用点在不同编译单元；`src/shared/` 禁 GPUI 类型，唯一共享点是把它推进 crossh-ui-component 并镜像 GitStatus 字段——以小结构体重复换整链重复属 ADR 级取舍。已回退合并尝试，双实现为拆分边界的结构性代价。 |
+| P2 | S-2+S-3 | ✅ 已闭环（ADR 0015 修订） | 已删除 runtime.rs/manager.rs/EventBus 及全部落空 emit 点与死变体；生产直调自由函数确立为正式契约，详见 ADR 0015 修订节。 |
+| P2 | S-5 | spec 认领 | 删除影子队列涉及时序语义（steer 注入时机、取消恢复路径），建议短 spec 以 `spec_20260821_agent_runtime_*` 测试为回归哨兵。 |
+| P2 | S-6+S-7 | 决策（批次裁定） | ui-component 投机 API 批次 + 死枚举变体一并裁定：若 P0-2 形态迁移仍在规划，标注 owner 与目标 spec；否则整批删除（含不可达 match 臂）。 |
+| P3 | S-8 | 随 S-7 顺带 | 主机 rail 若恢复则消费 `active_remote_key` 并解除 AvatarKind::Host；否则删 :274-280、:315-333。 |
+| P3 | S-10 | ✅ 已闭环（同日直接修） | compose_bar line_bounds 死副本与 `let _ = line_bounds;` 自引用已删。 |
+| P3 | S-11 | ✅ 已闭环（同日直接修） | pop_next/pop_steering/has_steering/pending_count/take_all 已删，take_all 内联进 clear_queue。 |
+| P3 | S-12 | ✅ 已闭环（同日直接修） | entry.rs 与 session.rs 的公开 CURRENT_SESSION_VERSION、lib.rs 的 ENTRY_VERSION 别名均已删，session.rs 私有 SESSION_VERSION 为单源。 |
+| P3 | S-9 | 随功能变更顺带 | 进程标题注入若有产品计划由 spec 接管；否则删 TerminalProcessInfo 与 None 参数通路。 |
 
-受保护表面中"有意保留"项（本轮不进入 backlog）：
+## 执行记录（2026-08-23，用户授权全权处理）
 
-- `toaster.rs:13 Warning/Error`（ADR 0013）、`git/mod.rs:70/82/93/103/113` 的 5 处 `visual-tests` 夹具与 `git_launcher.rs:34/40/52` 的双 binary 挂载（ADR 0008）、`ansi.rs:550` 的 `unused_assignments` 与 `select.rs:543` 的 `clippy::type_complexity` 等最小豁免、`terminal_element.rs:2196` 白名单、`crossh-tui` 的 `ansi::visible_width/wrap_text_with_ansi` 与 `MainScreenRenderer` 的同步输出管线（`BEGIN_SYNC`/`END_SYNC`/`OSC52` 为 pi-tui 1:1 移植契约，不与 `crossh-core` 重复）。
+- 删除：`crates/crossh-agent/src/runtime.rs`、`manager.rs` 整文件；event.rs 的 EventBus/AgentSessionEvent/Listener 与 2 个测试；MessageQueue 5 个死方法；agent_cli 三文件共 9 处落空 emit 与 event_bus 字段；Cargo.toml 两个死依赖；compose_bar 死副本；版本常量三份收敛为一份。净 -916 行。
+- 门禁：`cargo fmt --check` 通过、`scripts/check-architecture.sh` 通过、`cargo clippy --workspace --all-targets` 零警告、`cargo test --workspace` 全绿（`spec_20260820_terminal_compose_bar__no_view_send_is_noop` 单次失败为 Zed 测试调度器检测 PTY 线程活动的既有抖动，隔离重跑 3 次及整 bin 重跑均通过）。
+- 文档：ADR 0015 追加修订节、architecture.md 的 crossh-agent 条目同步。
+- 未动：S-5 影子队列（需 spec）、S-6/S-7/S-8 P0-2 批次与主机 rail 尸体（需产品裁定）、S-9 TerminalProcessInfo seam、S-13~S-16 信息级。
+
+## 受保护表面中"有意保留"项（本轮验证过，不入 backlog）
+
+- `#[allow(dead_code)]` 全部 9 处豁免（git_launcher 双 binary、visual-tests fixtures、toaster NoticeLevel、ansi.rs 测试赋值）。
+- `crossh-tui` 与 core/terminal 无镜像类型；同步输出管线（BEGIN_SYNC/OSC52）为移植契约。
+- IconName 41 变体、theme 21 token、TerminalEvent/TerminalViewEvent、ShellMenuAction 抽查变体、widgets 7 helper：逐一验证均有生产消费。
+- `crossh-ssh` run_connection select! 生命周期、known_hosts 决策链、Zed/GPUI 固定 revision、Lucide 1.27.0。
 
 ## 与 SDD 工作流的衔接
 
-- **直接修类（豁免清单内）**：N-1 为 `deny` 阻断的逻辑修复 + 冗余分支清理，N-2~N-4 为死代码/薄 shim 删除，均无行为变更（或仅收缩未暴露的 `pub(crate)` 符号），可直接修并以 `cargo fmt --check` / `scripts/check-architecture.sh` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test --workspace`（含 `env -u CROSSH_UPDATE_SIGNING_KEY` 干净环境，`--workspace` 覆盖 `crossh-tui`）验证。N-1 需优先合入以解阻 CI。
-- **需 spec 认领类**：无。本轮未发现需新增 spec 的行为变更；N-5 的 `desc` 字段若需消费应随 slash 浮层渲染 spec 一并处置。
-- **决策类（ADR）**：无。本轮未发现需新增 ADR 的结构性边界变更；`crossh-tui` 的引入（`20260822-agent-tui-pi-parity.md`）与 `scroll_view` 的移植属既有 spec 范畴。
+- 已直接修：S-1、S-2+S-3（经 ADR 0015 修订）、S-10、S-11、S-12；门禁全过（fmt / check-architecture / clippy 零警告 / cargo test --workspace 全绿）。
+- S-4 经落地验证为 ADR 0008 二进制拆分的结构性代价，维持现状并回退合并尝试。
+- 仍需 spec：S-5（影子队列删除，涉及时序）。
+- 仍需决策：S-6+S-7（P0-2 批次去留）、S-8（主机 rail 恢复与否）。
 
 ## 本轮未决项
 
-- N-1 的 `scroll_by` 在 `following_end == true` 时取 `start = max` 的语义需与 `update_layout` 的 `following_end` 保持一致（`update_layout:93 following_end = follow_end && content_height > viewport_height`），修复后需以 `spec_20260822_agent_tui_pi_parity` 的滚动契约（`scroll_by` 的 `followingEnd` 与 `lines < 0` 重置）为回归哨兵。
-- N-2 删除 `format_size` 后 `view.rs:1167` 测试的 `format_size_uses_human_readable_units` 可直接复用 `crossh_core::format::tests` 或保留本地 `format_bytes` 包装的 thin re-export 测试，两种形态均满足 `docs/testing.md` 的行为矩阵（Matrix `format_bytes` 条目）。
-- N-3~N-5 的删除与 `allow(dead_code)` 清理需与 `cargo clippy --workspace --all-targets` 的零 `dead_code` 过期保持同步；`git/mod.rs` 与 `git_launcher.rs` 的 8 处必要豁免已注释，不应随清理误删。
-- 与历史审计衔接：`2026-08-22` 的 S-1（`git/command.rs`）、S-2（`git/numstat.rs`）、S-3（`crossh_core::format::truncate_to_limit`）、S-4（`shell_quote_remote→shlex::try_quote`）、S-5（`HostEntry::matches_query`）、S-8（`AuthChoice::Key.passphrase` 删除）、S-12（`unix_timestamp_{secs,millis}` 下沉到 `format.rs`）已闭环；S-6（`shell.rs` 的 `available_main_width` 死克隆）已在巡检中确认删除（`shell.rs:1555-1580` 已无该函数）；S-7（`terminal_split_left_width`）已委托 `clamp_panel_width`（`view.rs:327`）；S-10（`SshConfig.hosts` 的 getter 双真相）已收敛为仅字段（`ssh_config.rs:63` 仅 `pub hosts`）；S-9 的 3 处过期抑制（`agent_cli_input.rs` 的 `allow(dead_code)`、`crossh-agent/src/session.rs:SessionMessage`、`manager.rs:fs`）已删除，剩余 11 处均为必要豁免；S-11 的 `format_size` 别名在 `crossh-core/src/format.rs` 已删除，本轮 N-2 为 `sftp/logic.rs` 的最后一层 shim。`2026-08-20` 的 S-1~S-10 与 `2026-08-18` 的 S-1/S-2 已全部完成，无回退。
-
-每条候选的最强反方论证（为什么保留）：
-
-- N-1：`|| (lines < 0 && false)` 是否为"负向滚动永不跟随"的显式防御？——该防御已由 `126-128 if lines < 0 { self.following_end = false; }` 显式实现，`|| false` 仅使前式恒等，下次阅读者会误判为"正向跟随或负向某条件"，删后语义更清晰且 `deny` 已阻断。
-- N-2：`format_size` 包装是否隔离了 `sftp` 对 `crossh-core` 的直接依赖？——`logic.rs:7` 已 `use crossh_core::format::format_bytes;`，`sftp/logic` 本就属 `crossh-core` 消费侧，保留包装仅增 1 跳，无隔离收益。
-- N-3：`background_task_badge` 是否为后续 `StatusBar` 与 `Rail` 的 Badge 统一样式预留？——预留已由 `rail_status_badge` + `background_task_color` 实现，轨道徽章仅 `rail_status_badge` 一处调用，包装无额外映射。
-- N-4：`compose_entry` 是否为 `compose` 的调试探针？——`compose_state_for` 已暴露 `(String,usize,Option<usize>,String,Option<usize>)` 全量，`compose_visible` 暴露 `bool`，raw `Option<&ComposeEntry>` 未在 `src/features/workspace` 生产路径消费，调试可由 `#[cfg(test)]` 桩覆盖。
-- N-5：`SlashCandidate.desc` 是否为浮层第二列说明的占位？——确为占位，但"占而不消"使 `SlashCandidate` 的 `desc: String` 在每次 `slash_candidates` 中分配 28 个空串（`SLASH_COMMANDS` 全量），真需第二列时重建成本仅 1 字段+渲染分支，当前保留为负收益。
+- S-6/S-7/S-8 的裁定需产品输入：P0-2 形态迁移与主机 rail 是否仍在路线图上，代码本身无法回答。
+- 演进史说明：仓库 git 历史仅 8 个压缩提交，演进脉络以 specs/ADRs 为准；本报告按用户要求未将其作为证据。

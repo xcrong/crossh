@@ -12,15 +12,6 @@ use crate::shared::i18n;
 
 use super::shell::AppShell;
 
-fn line_bounds(text: &str, cursor: usize) -> (usize, usize) {
-    let start = text[..cursor].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
-    let end = text[cursor..]
-        .find('\n')
-        .map(|idx| cursor + idx)
-        .unwrap_or(text.len());
-    (start, end)
-}
-
 pub(crate) fn render_compose_bar(
     shell: &mut AppShell,
     window: &Window,
@@ -225,7 +216,6 @@ pub(crate) fn render_compose_bar(
         }
         // 额外处理：值以 \n 结尾时，split 会产生末尾空行，已在上面渲染；
         // 但需确保光标在末尾空行时能显示 caret（已通过 cursor_line 计算覆盖）
-        let _ = line_bounds; // 保留 helper 供未来扩展
     }
     input = input.child(ime_input_canvas(focus.clone(), cx.entity()));
 

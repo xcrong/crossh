@@ -146,7 +146,6 @@ struct App {
     slash_selected: usize,
     queued_inputs: VecDeque<String>,
     queue: crossh_agent::MessageQueue,
-    event_bus: crossh_agent::EventBus,
     messages: Vec<(Role, String)>,
     alt_screen: crossh_tui::AltScreen,
     screen_renderer: crossh_tui::screen::ScreenRenderer,
@@ -207,7 +206,6 @@ pub(crate) fn run_with_options(
         slash_selected: 0,
         queued_inputs: VecDeque::new(),
         queue: crossh_agent::MessageQueue::new(),
-        event_bus: crossh_agent::EventBus::new(),
         alt_screen: crossh_tui::AltScreen::new(
             80,
             24,
@@ -591,11 +589,6 @@ fn submit(app: &mut App) -> io::Result<()> {
             app.queued_inputs.clear();
             app.input_cursor = app.input.len();
             app.status = "Cancelled — queued prompts restored".into();
-            app.event_bus
-                .emit(crossh_agent::AgentSessionEvent::QueueUpdate {
-                    steering: app.queue.steering.clone(),
-                    follow_up: app.queue.follow_up.clone(),
-                });
             return Ok(());
         }
         if prompts.is_empty() && (!app.queue.is_empty() || !app.queued_inputs.is_empty()) {
@@ -640,11 +633,6 @@ fn submit(app: &mut App) -> io::Result<()> {
                 None
             };
             if let Some(text) = next.filter(|s| !s.trim().is_empty()) {
-                app.event_bus
-                    .emit(crossh_agent::AgentSessionEvent::QueueUpdate {
-                        steering: app.queue.steering.clone(),
-                        follow_up: app.queue.follow_up.clone(),
-                    });
                 prompts.push_back(text);
             } else if !app.queued_inputs.is_empty() {
                 prompts.push_back(
@@ -684,11 +672,6 @@ fn take_steering_for_delivery(app: &mut App) -> Option<String> {
         }
         t
     };
-    app.event_bus
-        .emit(crossh_agent::AgentSessionEvent::QueueUpdate {
-            steering: app.queue.steering.clone(),
-            follow_up: app.queue.follow_up.clone(),
-        });
     Some(text)
 }
 
@@ -703,10 +686,6 @@ fn process_prompt(app: &mut App, prompt: String) -> io::Result<bool> {
     let context_limit = active_context_limit(app);
     let tokens_used = estimate_tokens(&app.session.messages);
     if let Some(reason) = crossh_agent::should_compact(tokens_used, context_limit) {
-        app.event_bus
-            .emit(crossh_agent::AgentSessionEvent::CompactionStart {
-                reason: reason.as_str().into(),
-            });
         let result =
             crossh_agent::summarize_for_compaction(&app.session, context_limit / 4, reason);
         // Apply the actual truncation via the legacy compact, but report the
@@ -721,12 +700,6 @@ fn process_prompt(app: &mut App, prompt: String) -> io::Result<bool> {
                 ),
             ));
         }
-        app.event_bus
-            .emit(crossh_agent::AgentSessionEvent::CompactionEnd {
-                reason: reason.as_str().into(),
-                aborted: false,
-                will_retry: false,
-            });
         persist_session(app);
     } else {
         let removed = app.session.compact(compaction_limit(app));

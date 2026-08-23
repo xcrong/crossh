@@ -21,11 +21,6 @@ pub(super) fn queue_steering(app: &mut App) {
         app.queue.steering.len(),
         app.queue.follow_up.len()
     );
-    app.event_bus
-        .emit(crossh_agent::AgentSessionEvent::QueueUpdate {
-            steering: app.queue.steering.clone(),
-            follow_up: app.queue.follow_up.clone(),
-        });
 }
 
 pub(super) fn queue_follow_up(app: &mut App) {
@@ -44,11 +39,6 @@ pub(super) fn queue_follow_up(app: &mut App) {
         app.queue.steering.len(),
         app.queue.follow_up.len()
     );
-    app.event_bus
-        .emit(crossh_agent::AgentSessionEvent::QueueUpdate {
-            steering: app.queue.steering.clone(),
-            follow_up: app.queue.follow_up.clone(),
-        });
 }
 
 /// 对齐 pi 的 `app.message.dequeue`（Alt+Up）：将 queued 消息恢复到输入框并清空队列。
@@ -75,11 +65,6 @@ pub(super) fn dequeue_queue(app: &mut App) -> bool {
         app.history_cursor = None;
     }
     app.queued_inputs.clear();
-    app.event_bus
-        .emit(crossh_agent::AgentSessionEvent::QueueUpdate {
-            steering: Vec::new(),
-            follow_up: Vec::new(),
-        });
     app.status = "Dequeued — restored to input".into();
     true
 }

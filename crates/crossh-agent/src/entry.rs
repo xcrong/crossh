@@ -3,8 +3,6 @@
 use crate::{Message, ThinkingLevel};
 use serde::{Deserialize, Serialize};
 
-pub const CURRENT_SESSION_VERSION: u32 = 3;
-
 /// A single node in the session tree.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionEntry {
