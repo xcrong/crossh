@@ -4,7 +4,7 @@
 #  更新: 修改 pkgver 后执行 `updpkgsums` 刷新校验和，再 `makepkg --printsrcinfo > .SRCINFO`
 
 pkgname=crossh-bin
-pkgver=0.19.0
+pkgver=0.20.0
 pkgrel=1
 pkgdesc="Lightweight SSH client based on GPUI (prebuilt binary from GitHub Release)"
 arch=('x86_64' 'aarch64')

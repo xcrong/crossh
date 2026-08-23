@@ -1,6 +1,6 @@
 pkgbase = crossh-bin
 	pkgdesc = Lightweight SSH client based on GPUI (prebuilt binary from GitHub Release)
-	pkgver = 0.19.0
+	pkgver = 0.20.0
 	pkgrel = 1
 	url = https://github.com/xcrong/crossh
 	arch = x86_64
@@ -24,9 +24,9 @@ pkgbase = crossh-bin
 	optdepends = openssh: for ssh config parsing compatibility
 	provides = crossh
 	conflicts = crossh
-	source_x86_64 = crossh-bin-0.19.0-x86_64.tar.gz::https://github.com/xcrong/crossh/releases/download/v0.19.0/crossh-0.19.0-linux-x86_64.tar.gz
+	source_x86_64 = crossh-bin-0.20.0-x86_64.tar.gz::https://github.com/xcrong/crossh/releases/download/v0.20.0/crossh-0.20.0-linux-x86_64.tar.gz
 	sha256sums_x86_64 = SKIP
-	source_aarch64 = crossh-bin-0.19.0-aarch64.tar.gz::https://github.com/xcrong/crossh/releases/download/v0.19.0/crossh-0.19.0-linux-aarch64.tar.gz
+	source_aarch64 = crossh-bin-0.20.0-aarch64.tar.gz::https://github.com/xcrong/crossh/releases/download/v0.20.0/crossh-0.20.0-linux-aarch64.tar.gz
 	sha256sums_aarch64 = SKIP
 
 pkgname = crossh-bin
