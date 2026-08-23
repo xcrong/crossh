@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 
 use async_channel::Sender;
 
-use crossh_core::format::format_bytes;
 use crossh_ssh::SftpCmd;
 
 const SUPPORTED_TEXT_EXTENSIONS: &[&str] = &[
@@ -151,11 +150,6 @@ pub(crate) fn unique_local_path(path: &Path) -> Option<PathBuf> {
 pub(crate) fn try_send_command(tx: &Sender<SftpCmd>, command: SftpCmd) -> Result<(), &'static str> {
     tx.try_send(command).map_err(|_| "sftp channel unavailable")
 }
-
-pub(crate) fn format_size(bytes: u64) -> String {
-    format_bytes(bytes)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

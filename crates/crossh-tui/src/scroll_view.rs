@@ -122,7 +122,7 @@ impl ScrollView {
         let next = (start + lines).clamp(0, max);
         let moved = next - start;
         self.scroll_top = next as usize;
-        self.following_end = self.follow_end && next == max && lines >= 0 || (lines < 0 && false);
+        self.following_end = self.follow_end && next == max && lines >= 0;
         if lines < 0 {
             self.following_end = false;
         }

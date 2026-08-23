@@ -1,4 +1,5 @@
 use super::*;
+use crossh_core::format::format_bytes;
 
 impl Render for SftpPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -95,7 +96,7 @@ impl Render for SftpPane {
             let size = if is_dir {
                 String::new()
             } else {
-                format_size(e.size)
+                format_bytes(e.size)
             };
             let row = div()
                 .id(("entry", idx))
@@ -319,8 +320,8 @@ impl Render for SftpPane {
                 SharedString::from(format!(
                     "{}: {} / {} ({}%)",
                     p.label,
-                    format_size(p.transferred),
-                    p.total.map(format_size).unwrap_or_else(|| "?".into()),
+                    format_bytes(p.transferred),
+                    p.total.map(format_bytes).unwrap_or_else(|| "?".into()),
                     pct
                 )),
             ));

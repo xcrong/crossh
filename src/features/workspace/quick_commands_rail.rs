@@ -272,12 +272,6 @@ fn render_background_task(task: BackgroundTask, cx: &mut Context<AppShell>) -> A
         .into_any_element()
 }
 
-// 快速命令轨道徽章的独立样式封装：当前渲染路径通过 `rail_status_badge` 直接调用，保留独立函数以便后续轨道与状态栏样式统一。
-#[allow(dead_code)]
-fn background_task_badge(status: BackgroundTaskStatus) -> impl IntoElement {
-    rail_status_badge(background_task_color(status), theme::surface())
-}
-
 #[cfg(test)]
 const fn quick_commands_rail_item_pitch() -> f32 {
     QUICK_COMMANDS_RAIL_ITEM_SIZE + QUICK_COMMANDS_RAIL_ITEM_GAP

@@ -30,7 +30,6 @@ use crossh_ui::{icons, theme};
 use crossh_ui_component::{Button, ButtonSize, ButtonVariant, ModalDialog, TextInput, scroll_y};
 
 use super::logic::*;
-
 #[path = "end_caret.rs"]
 mod end_caret;
 use self::end_caret::EndCaretInput;
@@ -1165,10 +1164,13 @@ mod tests {
 
     #[test]
     fn format_size_uses_human_readable_units() {
-        assert_eq!(format_size(0), "0 B");
-        assert_eq!(format_size(1024), "1.0 KB");
-        assert_eq!(format_size(1024 * 1024), "1.0 MB");
-        assert_eq!(format_size(1024 * 1024 * 1024), "1.0 GB");
+        assert_eq!(crossh_core::format::format_bytes(0), "0 B");
+        assert_eq!(crossh_core::format::format_bytes(1024), "1.0 KB");
+        assert_eq!(crossh_core::format::format_bytes(1024 * 1024), "1.0 MB");
+        assert_eq!(
+            crossh_core::format::format_bytes(1024 * 1024 * 1024),
+            "1.0 GB"
+        );
     }
 
     #[test]

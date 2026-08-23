@@ -127,7 +127,8 @@ impl Render for AppShell {
             .child(main_column)
             .children(quick_commands);
         let status_bar = render_workspace_status_bar(self, available_main_width, cx);
-        let linux_titlebar = crate::features::workspace::linux_titlebar::render_linux_titlebar(window, cx);
+        let linux_titlebar =
+            crate::features::workspace::linux_titlebar::render_linux_titlebar(window, cx);
 
         let mut root =
             div()

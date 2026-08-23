@@ -319,7 +319,7 @@ mod tests {
     #[gpui::test]
     fn modal_field_builder_sets_placeholder_scroll_and_handlers(cx: &mut TestAppContext) {
         let s = state("cmd", 3, None);
-        let handle = cx.update(|cx| gpui::ScrollHandle::new());
+        let handle = cx.update(|_cx| gpui::ScrollHandle::new());
         let field: ModalField<()> = ModalField::new("prompt", focus(cx), &s)
             .placeholder("Type here")
             .scrollable(handle.clone())

@@ -1,8 +1,8 @@
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, Context, Decorations, IntoElement, ParentElement, Styled, Window, WindowButton,
     WindowButtonLayout, WindowControlArea, div, px,
 };
-use gpui::prelude::FluentBuilder as _;
 use gpui::{InteractiveElement as _, StatefulInteractiveElement as _};
 
 use crossh_ui::{icons, theme};
@@ -30,10 +30,16 @@ pub fn render_linux_titlebar(
     let decorations = window.window_decorations();
     let is_maximized = window.is_maximized();
     let window_controls = window.window_controls();
-    let button_layout = cx
-        .button_layout()
-        .unwrap_or_else(WindowButtonLayout::linux_default);
-
+    let button_layout = cx.button_layout().unwrap_or_else(|| {
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        {
+            WindowButtonLayout::linux_default()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+        {
+            WindowButtonLayout::default()
+        }
+    });
     let left_controls = render_window_controls(
         &button_layout.left,
         is_maximized,
@@ -89,14 +95,11 @@ pub fn render_linux_titlebar(
                 }
             }
         })
-        .on_mouse_down(
-            gpui::MouseButton::Right,
-            move |event, window, _| {
-                if window_controls.window_menu {
-                    window.show_window_menu(event.position);
-                }
-            },
-        )
+        .on_mouse_down(gpui::MouseButton::Right, move |event, window, _| {
+            if window_controls.window_menu {
+                window.show_window_menu(event.position);
+            }
+        })
         .child(
             div()
                 .flex()
@@ -158,14 +161,11 @@ fn render_window_controls(
     }
 }
 
-fn render_single_button(
-    button: WindowButton,
-    is_maximized: bool,
-    _cx: &App,
-) -> impl IntoElement {
+fn render_single_button(button: WindowButton, is_maximized: bool, _cx: &App) -> impl IntoElement {
     let (icon_name, id, action) = match button {
         WindowButton::Minimize => (icons::IconName::Minus, "minimize", ButtonAction::Minimize),
         WindowButton::Maximize => {
+            #[allow(clippy::if_same_then_else)]
             let icon = if is_maximized {
                 icons::IconName::Square // restore 用同一图标，Zed 亦如此区分文字
             } else {

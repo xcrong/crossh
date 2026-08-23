@@ -306,10 +306,8 @@ fn run_app(app: &mut App) -> io::Result<()> {
 /// 处理单个事件，返回是否退出
 fn handle_event(app: &mut App, event: Event) -> io::Result<bool> {
     match event {
-        Event::Key(key) if key.kind == KeyEventKind::Press => {
-            if handle_key(app, key)? {
-                return Ok(true);
-            }
+        Event::Key(key) if key.kind == KeyEventKind::Press && handle_key(app, key)? => {
+            return Ok(true);
         }
         Event::Mouse(mouse) => {
             if !app.fullscreen {
