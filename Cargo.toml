@@ -6,7 +6,10 @@ license = "GPL-3.0-or-later"
 default-run = "crossh"
 
 [features]
+default = ["wayland", "x11"]
 visual-tests = []
+wayland = ["gpui_platform/wayland"]
+x11 = ["gpui_platform/x11"]
 
 [workspace]
 members = [
@@ -36,7 +39,7 @@ crossh-update = { path = "crates/crossh-update" }
 crossh-ui = { path = "crates/crossh-ui" }
 crossh-ui-component = { path = "crates/crossh-ui-component" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930", features = ["font-kit"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930", features = ["font-kit", "wayland", "x11"] }
 itertools = "0.14"
 terminal = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930" }
 settings = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930" }
@@ -67,7 +70,7 @@ tui-markdown = { version = "0.3.8", default-features = false }
 assets = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930" }
 pretty_assertions = "1"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930", features = ["test-support"] }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930", features = ["font-kit", "test-support"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930", features = ["font-kit", "test-support", "wayland", "x11"] }
 
 [[test]]
 name = "visual_capture"
