@@ -127,6 +127,7 @@ impl Render for AppShell {
             .child(main_column)
             .children(quick_commands);
         let status_bar = render_workspace_status_bar(self, available_main_width, cx);
+        let linux_titlebar = crate::features::workspace::linux_titlebar::render_linux_titlebar(window, cx);
 
         let mut root =
             div()
@@ -155,6 +156,7 @@ impl Render for AppShell {
                 }))
                 .on_action(cx.listener(AppShell::handle_quit))
                 .on_key_down(cx.listener(AppShell::handle_shell_key_down))
+                .children(linux_titlebar)
                 .child(workspace)
                 .child(status_bar);
 

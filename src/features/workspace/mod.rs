@@ -13,6 +13,7 @@ pub(crate) mod registry;
 pub(crate) mod rename_editor;
 pub(crate) mod settings;
 pub(crate) mod shell;
+pub(crate) mod linux_titlebar;
 pub(crate) mod sidebar;
 pub(crate) mod status;
 pub(crate) mod tab_strip;
