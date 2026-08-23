@@ -58,23 +58,27 @@ cp "$GIT_BIN" "$APPDIR/usr/bin/crossh-git"
 cp "$UPDATER_BIN" "$APPDIR/usr/bin/crossh-updater"
 cp README.md LICENSE "$APPDIR/"
 
-cat > "$APPDIR/usr/share/applications/$APP_NAME.desktop" <<EOF
+cat > "$APPDIR/usr/share/applications/io.crossh.app.desktop" <<EOF
 [Desktop Entry]
 Name=crossh
 Comment=Lightweight SSH client
 Exec=crossh
-Icon=crossh
+Icon=io.crossh.app
 Terminal=false
 Type=Application
 Categories=Development;Network;
-StartupWMClass=crossh
+StartupWMClass=io.crossh.app
 EOF
-ln -s "usr/share/applications/$APP_NAME.desktop" "$APPDIR/$APP_NAME.desktop"
+ln -s "usr/share/applications/io.crossh.app.desktop" "$APPDIR/crossh.desktop"
+# 兼容旧路径：部分桌面环境仍通过 crossh.desktop 查找
+ln -s "io.crossh.app.desktop" "$APPDIR/usr/share/applications/crossh.desktop"
 
 rsvg-convert -w 512 -h 512 assets/appicon/icon-master.svg \
-    -o "$APPDIR/usr/share/icons/hicolor/512x512/apps/$APP_NAME.png"
-ln -s "usr/share/icons/hicolor/512x512/apps/$APP_NAME.png" "$APPDIR/$APP_NAME.png"
-ln -s "$APP_NAME.png" "$APPDIR/.DirIcon"
+    -o "$APPDIR/usr/share/icons/hicolor/512x512/apps/io.crossh.app.png"
+ln -s "usr/share/icons/hicolor/512x512/apps/io.crossh.app.png" "$APPDIR/crossh.png"
+# 兼容旧 Icon=crossh
+ln -s "io.crossh.app.png" "$APPDIR/usr/share/icons/hicolor/512x512/apps/crossh.png"
+ln -s "io.crossh.app.png" "$APPDIR/.DirIcon"
 
 cat > "$APPDIR/AppRun" <<'EOF'
 #!/bin/sh

@@ -1,0 +1,113 @@
+# Maintainer: xcrong <hi@xcrong.me>
+#  crossh-bin — 预编译二进制包，直接从 GitHub Release 拉取
+#  仓库: https://github.com/xcrong/crossh
+#  更新: 修改 pkgver 后执行 `updpkgsums` 刷新校验和，再 `makepkg --printsrcinfo > .SRCINFO`
+
+pkgname=crossh-bin
+pkgver=0.19.0
+pkgrel=1
+pkgdesc="Lightweight SSH client based on GPUI (prebuilt binary from GitHub Release)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/xcrong/crossh"
+license=('GPL3')
+provides=('crossh')
+conflicts=('crossh')
+depends=(
+    'hicolor-icon-theme'
+    'wayland'
+    'libxkbcommon'
+    'libxkbcommon-x11'
+    'libxcb'
+    'libxcb-render'
+    'libxcb-shape'
+    'libxcb-xfixes'
+    'libxcb-shm'
+    'fontconfig'
+    'freetype2'
+    'expat'
+    'harfbuzz'
+    'gcc-libs'
+    'glibc'
+)
+optdepends=(
+    'openssh: for ssh config parsing compatibility'
+)
+# Release 产物由 scripts/package-linux.sh 生成：
+#   crossh-<ver>-linux-x86_64.tar.gz  (x86_64)
+#   crossh-<ver>-linux-aarch64.tar.gz (aarch64)
+# 需与 Cargo.toml version 保持一致
+source_x86_64=("${pkgname}-${pkgver}-x86_64.tar.gz::https://github.com/xcrong/crossh/releases/download/v${pkgver}/crossh-${pkgver}-linux-x86_64.tar.gz")
+source_aarch64=("${pkgname}-${pkgver}-aarch64.tar.gz::https://github.com/xcrong/crossh/releases/download/v${pkgver}/crossh-${pkgver}-linux-aarch64.tar.gz")
+# 首次提交可用 SKIP，发布后请用 `updpkgsums` 填入真实 sha256
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+    # 解压后的目录名: crossh-<ver>-linux-<arch>
+    local _arch
+    case "$CARCH" in
+        x86_64) _arch="x86_64" ;;
+        aarch64) _arch="aarch64" ;;
+        *) _arch="$CARCH" ;;
+    esac
+    local _srcdir="crossh-${pkgver}-linux-${_arch}"
+
+    # 1. 二进制
+    install -Dm755 "${srcdir}/crossh" "${pkgdir}/usr/bin/crossh"
+    install -Dm755 "${srcdir}/crossh-agent" "${pkgdir}/usr/bin/crossh-agent"
+    install -Dm755 "${srcdir}/crossh-git" "${pkgdir}/usr/bin/crossh-git"
+    install -Dm755 "${srcdir}/crossh-updater" "${pkgdir}/usr/bin/crossh-updater"
+
+    # 2. 共享资源 (字体/图标/主题) — 与 package-linux.sh 的 tarball 结构一致
+    if [[ -d "${srcdir}/resources/crossh-assets" ]]; then
+        install -dm755 "${pkgdir}/usr/share/crossh"
+        cp -a "${srcdir}/resources/crossh-assets" "${pkgdir}/usr/share/crossh/"
+        # 同时提供 /usr/share/crossh-assets 兼容路径
+        mkdir -p "${pkgdir}/usr/share"
+        ln -s "crossh/crossh-assets" "${pkgdir}/usr/share/crossh-assets"
+    fi
+
+    # 3. Desktop Entry — 必须与 WindowOptions.app_id="io.crossh.app" 和
+    #    main.rs:set_app_identity("io.crossh.app") 一致，否则 Wayland dock 无图标
+    install -Dm644 /dev/stdin "${pkgdir}/usr/share/applications/io.crossh.app.desktop" <<'DESKTOP'
+[Desktop Entry]
+Name=crossh
+GenericName=SSH Client
+Comment=Lightweight SSH client
+Exec=crossh %u
+Icon=io.crossh.app
+Terminal=false
+Type=Application
+Categories=Development;Network;
+StartupWMClass=io.crossh.app
+MimeType=x-scheme-handler/ssh;
+Keywords=ssh;terminal;remote;
+DESKTOP
+    # 兼容旧名
+    ln -s "io.crossh.app.desktop" "${pkgdir}/usr/share/applications/crossh.desktop"
+
+    # 4. 图标 — 从 tarball 内的 brand/crossh-logo.svg 生成 512x512 PNG
+    #    tarball 已含该 SVG: resources/crossh-assets/brand/crossh-logo.svg (即 assets/appicon/icon-master.svg)
+    local _svg="${srcdir}/resources/crossh-assets/brand/crossh-logo.svg"
+    local _pngdir="${pkgdir}/usr/share/icons/hicolor/512x512/apps"
+    install -dm755 "${_pngdir}"
+    if [[ -f "${_svg}" ]] && command -v rsvg-convert >/dev/null 2>&1; then
+        rsvg-convert -w 512 -h 512 "${_svg}" -o "${_pngdir}/io.crossh.app.png"
+    elif [[ -f "${_svg}" ]]; then
+        # 回退：直接安装 SVG 为 hicolor/scalable
+        install -Dm644 "${_svg}" "${pkgdir}/usr/share/icons/hicolor/scalable/apps/io.crossh.app.svg"
+        # 同时为需要 PNG 的环境提供一个占位拷贝（若 rsvg 不可用）
+        cp "${_svg}" "${_pngdir}/io.crossh.app.png" 2>/dev/null || true
+    fi
+    # 兼容旧 Icon=crossh
+    if [[ -f "${_pngdir}/io.crossh.app.png" ]]; then
+        ln -s "io.crossh.app.png" "${_pngdir}/crossh.png"
+    fi
+    if [[ -f "${pkgdir}/usr/share/icons/hicolor/scalable/apps/io.crossh.app.svg" ]]; then
+        ln -s "io.crossh.app.svg" "${pkgdir}/usr/share/icons/hicolor/scalable/apps/crossh.svg"
+    fi
+
+    # 5. 许可证与文档
+    install -Dm644 "${srcdir}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+    install -Dm644 "${srcdir}/README.md" "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+}
