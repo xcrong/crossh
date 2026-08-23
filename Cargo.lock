@@ -1935,7 +1935,7 @@ checksum = "61803da095bee82a81bb1a452ecc25d3b2f1416d1897eb86430c6159ef717c17"
 
 [[package]]
 name = "crossh"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "assets",
  "async-channel 2.5.0",
@@ -1979,7 +1979,7 @@ dependencies = [
 
 [[package]]
 name = "crossh-agent"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "crossh-ai-sdk",
  "crossh-core",
@@ -1995,7 +1995,7 @@ dependencies = [
 
 [[package]]
 name = "crossh-ai-sdk"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "futures-util",
  "reqwest",
@@ -2005,14 +2005,14 @@ dependencies = [
 
 [[package]]
 name = "crossh-assets"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "rust-embed",
 ]
 
 [[package]]
 name = "crossh-core"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "async-channel 2.5.0",
  "base64",
@@ -2032,7 +2032,7 @@ dependencies = [
 
 [[package]]
 name = "crossh-ssh"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "anyhow",
  "async-channel 2.5.0",
@@ -2047,7 +2047,7 @@ dependencies = [
 
 [[package]]
 name = "crossh-terminal"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "chrono",
  "crossh-core",
@@ -2056,11 +2056,11 @@ dependencies = [
 
 [[package]]
 name = "crossh-theme"
-version = "0.20.0"
+version = "0.21.0"
 
 [[package]]
 name = "crossh-tui"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "base64",
  "unicode-segmentation",
@@ -2069,7 +2069,7 @@ dependencies = [
 
 [[package]]
 name = "crossh-ui"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "assets",
  "crossh-assets",
@@ -2079,7 +2079,7 @@ dependencies = [
 
 [[package]]
 name = "crossh-ui-component"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "crossh-ui",
  "gpui",
@@ -2087,7 +2087,7 @@ dependencies = [
 
 [[package]]
 name = "crossh-update"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "base64",
  "dirs",
