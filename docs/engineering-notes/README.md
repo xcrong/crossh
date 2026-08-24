@@ -20,3 +20,4 @@
 | agent TUI 打字时页面整屏闪烁；每敲一个字符候选浮层一变就 2J 全屏重绘；浮层开/关在 scrollback 留整屏重复副本；滚轮/鼠标正常但视觉跳动 | `2J`, `dock_resized`, `render_frame_regular`, popup, 候选浮层, 整屏重绘, 闪烁, flicker, repaint, 每键重绘, capture_frames, 残行清除, 浮层开/关, scrollback 副本 | [TUI 整屏重绘风暴](tui-render-frame-2j.md) |
 | 编译时 rustc SIGBUS 崩溃；大编译期间整机卡死/自动重启；测试长时间无输出后失败 | `SIGBUS`, `rustc`, `RTL9210`, `NVMe`, `USB`, `I/O error`, `DART panic`, 卡死, 强制重启, 外置盘 | [rustc SIGBUS 与外置盘 I/O 故障](rustc-sigbus-usb-nvme-failure.md) |
 | agent TUI 运行中突然崩溃；`attempt to subtract with overflow` at main_screen.rs:63；界面在转 Working spinner 或候选在变 | `attempt to subtract with overflow`, `plan_rows`, `cap2`, `start_row`, 视口已满, empty append, n=0, 空追加, main_screen, Working spinner, 运行中崩溃 | [main_screen 增量路径空追加下溢](main-screen-incremental-panic.md) |
+| `git commit` 卡在 clippy 后被超时切断；提交未落库但改动还在暂存区 | `git commit`, `pre-commit`, `clippy -D warnings`, `timeout`, 超时, 钩子, 提交慢 | [pre-commit 钩子耗时与提交超时设置](pre-commit-hook-duration.md) |
