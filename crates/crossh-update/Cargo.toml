@@ -1,6 +1,6 @@
 [package]
 name = "crossh-update"
-version = "0.21.1"
+version = "0.22.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 
