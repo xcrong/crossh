@@ -15,8 +15,8 @@ scripts/check-architecture.sh
 echo "==> cargo fmt --check"
 cargo fmt --check
 
-echo "==> cargo clippy --all-targets -- -D warnings"
-cargo clippy --all-targets --quiet -- -D warnings
+echo "==> cargo clippy --workspace --all-targets -- -D warnings"
+cargo clippy --workspace --all-targets --quiet -- -D warnings
 
 if [ "${CROSSH_HOOK_TEST:-0}" = "1" ]; then
     echo "==> cargo test --release"

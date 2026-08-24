@@ -91,7 +91,7 @@ ADR 0012）：spec 的行为契约条目就是测试的输入，测试名带 spe
 ```sh
 cargo fmt --check
 scripts/check-architecture.sh
-cargo clippy --all-targets -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
