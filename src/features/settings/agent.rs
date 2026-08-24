@@ -478,7 +478,7 @@ impl SettingsWindow {
         match field {
             AgentInputField::ProviderId => provider.id.clone(),
             AgentInputField::ProviderName => provider.name.clone(),
-            AgentInputField::Url => provider.url.clone(),
+            AgentInputField::Url => model.map(|model| model.url.clone()).unwrap_or_default(),
             AgentInputField::Model => model.map(|model| model.id.clone()).unwrap_or_default(),
             AgentInputField::ModelName => model.map(|model| model.name.clone()).unwrap_or_default(),
             AgentInputField::ApiKey => provider.api_key.clone(),
@@ -498,7 +498,7 @@ impl SettingsWindow {
         match field {
             AgentInputField::ProviderId => provider.id = value,
             AgentInputField::ProviderName => provider.name = value,
-            AgentInputField::Url => provider.url = value,
+            AgentInputField::Url => model.url = value,
             AgentInputField::Model => model.id = value,
             AgentInputField::ModelName => model.name = value,
             AgentInputField::ApiKey => provider.api_key = value,
@@ -568,13 +568,13 @@ impl SettingsWindow {
         self.agent_draft.providers.push(AgentProvider {
             id: id.clone(),
             name: format!("Provider {number}"),
-            protocol: Protocol::OpenAiChat,
-            url: String::new(),
             api_key_env: String::new(),
             api_key: String::new(),
             models: vec![AgentModel {
                 id: "model".into(),
                 name: "Model".into(),
+                protocol: Protocol::OpenAiChat,
+                url: "https://example.test/v1/chat/completions".into(),
                 reasoning: false,
                 context_window: 128_000,
                 max_tokens: 32_000,
@@ -651,6 +651,8 @@ impl SettingsWindow {
         provider.models.push(AgentModel {
             id: format!("model-{number}"),
             name: format!("Model {number}"),
+            protocol: Protocol::OpenAiChat,
+            url: "https://example.test/v1/chat/completions".into(),
             reasoning: false,
             context_window: 128_000,
             max_tokens: 32_000,

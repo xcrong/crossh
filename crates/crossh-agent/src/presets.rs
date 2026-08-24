@@ -4,8 +4,8 @@
 //! 锚定版本：`pi-coding-agent 0.84.1 / pi-ai 0.84.1`
 //! 原始地址：`https://raw.githubusercontent.com/earendil-works/pi-mono/main/packages/ai/src/providers/data/opencode-go.json`
 //!
-//! `pi` 侧一个逻辑供应商 `opencode-go` 按 `api` 拆为 3 组 `baseUrl`，`crossh` 的
-//! `AgentProvider` 以 `protocol + url` 为维度，因而拆为 3 个物理 provider。
+//! 单供应商 `opencode` 承载全部模型，`AgentModel.protocol/url` 区分协议
+//! （AnthropicMessages / OpenAiChat / OpenAiResponses）。
 //! 后续新增预设只需在此追加 `AgentProvider` 并在 `builtin_presets()` 中注册。
 //!
 //! 动态更新：`builtin_presets()` 会优先尝试读取 `pi` 的本地缓存
@@ -20,76 +20,38 @@ use crate::Protocol;
 use crate::policy::{AgentModel, AgentProvider};
 use serde_json::Value as JsonValue;
 
-pub const OPENCODE_GO_ID: &str = "opencode-go";
-pub const OPENCODE_GO_OPENAI_ID: &str = "opencode-go-openai";
-pub const OPENCODE_GO_RESPONSES_ID: &str = "opencode-go-responses";
+pub const OPENCODE_GO_ID: &str = "opencode";
+
+const ANTHROPIC_URL: &str = "https://opencode.ai/zen/v1/messages";
+const CHAT_URL: &str = "https://opencode.ai/zen/v1/chat/completions";
+const RESPONSES_URL: &str = "https://opencode.ai/zen/v1/responses";
 
 pub fn is_builtin_preset_id(id: &str) -> bool {
-    matches!(
-        id,
-        OPENCODE_GO_ID | OPENCODE_GO_OPENAI_ID | OPENCODE_GO_RESPONSES_ID
-    )
+    id == OPENCODE_GO_ID
 }
 
 /// 返回所有内置预设。调用方负责去重（已存在同 `id` 的用户配置优先）。
 pub fn builtin_presets() -> Vec<AgentProvider> {
-    let (anthropic, openai_chat, openai_responses) = load_dynamic_or_baked();
-    vec![
-        AgentProvider {
-            id: OPENCODE_GO_ID.into(),
-            name: "opencode-go".into(),
-            protocol: Protocol::AnthropicMessages,
-            // pi 的 baseUrl 为 https://opencode.ai/zen/go，Anthropic SDK 会自动追加 /v1/messages；
-            // crossh 直接 POST 到 provider.url，需要完整路径
-            url: "https://opencode.ai/zen/go/v1/messages".into(),
-            api_key_env: "OPENCODE_API_KEY".into(),
-            api_key: String::new(),
-            models: anthropic,
-        },
-        AgentProvider {
-            id: OPENCODE_GO_OPENAI_ID.into(),
-            name: "opencode-go (OpenAI Chat)".into(),
-            protocol: Protocol::OpenAiChat,
-            url: "https://opencode.ai/zen/go/v1/chat/completions".into(),
-            api_key_env: "OPENCODE_API_KEY".into(),
-            api_key: String::new(),
-            models: openai_chat,
-        },
-        AgentProvider {
-            id: OPENCODE_GO_RESPONSES_ID.into(),
-            name: "opencode-go (Responses)".into(),
-            protocol: Protocol::OpenAiResponses,
-            url: "https://opencode.ai/zen/go/v1/responses".into(),
-            api_key_env: "OPENCODE_API_KEY".into(),
-            api_key: String::new(),
-            models: openai_responses,
-        },
-    ]
+    let models = load_dynamic_or_baked();
+    vec![AgentProvider {
+        id: OPENCODE_GO_ID.into(),
+        name: "opencode".into(),
+        api_key_env: "OPENCODE_API_KEY".into(),
+        api_key: String::new(),
+        models,
+    }]
 }
 
-fn load_dynamic_or_baked() -> (Vec<AgentModel>, Vec<AgentModel>, Vec<AgentModel>) {
-    let baked_anthropic = anthropic_models().into_iter().map(sanitize_model).collect();
-    let baked_chat = openai_chat_models()
-        .into_iter()
-        .map(sanitize_model)
-        .collect();
-    let baked_responses = openai_responses_models()
-        .into_iter()
-        .map(sanitize_model)
-        .collect();
+fn load_dynamic_or_baked() -> Vec<AgentModel> {
+    let baked = baked_models();
     let Some(dynamic) = load_pi_dynamic_models() else {
-        return (baked_anthropic, baked_chat, baked_responses);
+        return baked;
     };
-    let anthropic = merge_models(baked_anthropic, dynamic.anthropic);
-    let chat = merge_models(baked_chat, dynamic.openai_chat);
-    let responses = merge_models(baked_responses, dynamic.openai_responses);
-    (anthropic, chat, responses)
+    merge_models(baked, dynamic.models)
 }
 
 struct DynamicGroups {
-    anthropic: Vec<AgentModel>,
-    openai_chat: Vec<AgentModel>,
-    openai_responses: Vec<AgentModel>,
+    models: Vec<AgentModel>,
 }
 
 fn sanitize_model(mut model: AgentModel) -> AgentModel {
@@ -105,6 +67,13 @@ fn sanitize_model(mut model: AgentModel) -> AgentModel {
     {
         model.max_tokens = model.context_window.saturating_sub(1_024).max(1);
     }
+    if model.url.trim().is_empty() {
+        model.url = match model.protocol {
+            Protocol::AnthropicMessages => ANTHROPIC_URL.into(),
+            Protocol::OpenAiChat => CHAT_URL.into(),
+            Protocol::OpenAiResponses => RESPONSES_URL.into(),
+        };
+    }
     model
 }
 
@@ -115,15 +84,17 @@ fn load_pi_dynamic_models() -> Option<DynamicGroups> {
         .join("models-store.json");
     let data = std::fs::read_to_string(path).ok()?;
     let store: JsonValue = serde_json::from_str(&data).ok()?;
-    let entry = store.get("opencode-go")?;
+    // 新 pi 使用 `opencode`，旧缓存可能仍为 `opencode-go`
+    let entry = store.get("opencode").or_else(|| store.get("opencode-go"))?;
     let models = entry.get("models")?.as_array()?;
-    let mut anthropic = Vec::new();
-    let mut openai_chat = Vec::new();
-    let mut openai_responses = Vec::new();
+    let mut out = Vec::new();
     for model in models {
         let id = model.get("id")?.as_str()?;
         let name = model.get("name").and_then(JsonValue::as_str).unwrap_or(id);
-        let reasoning = model.get("reasoning")?.as_bool().unwrap_or(false);
+        let reasoning = model
+            .get("reasoning")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false);
         let context_window = model
             .get("contextWindow")
             .and_then(JsonValue::as_u64)
@@ -132,29 +103,42 @@ fn load_pi_dynamic_models() -> Option<DynamicGroups> {
             .get("maxTokens")
             .and_then(JsonValue::as_u64)
             .unwrap_or(32_000) as u32;
-        let api = model.get("api")?.as_str().unwrap_or("");
+        let api = model.get("api").and_then(JsonValue::as_str).unwrap_or("");
+        let base_url = model
+            .get("baseUrl")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("");
+        let (protocol, url) = match api {
+            "anthropic-messages" => (
+                Protocol::AnthropicMessages,
+                format!("{}/v1/messages", base_url.trim_end_matches('/')),
+            ),
+            "openai-completions" => (
+                Protocol::OpenAiChat,
+                format!("{}/chat/completions", base_url.trim_end_matches('/')),
+            ),
+            "openai-responses" => (
+                Protocol::OpenAiResponses,
+                format!("{}/responses", base_url.trim_end_matches('/')),
+            ),
+            // google-generative-ai 等暂无对应 Protocol，按 OpenAiChat 处理或跳过
+            _ => continue,
+        };
         let agent_model = sanitize_model(AgentModel {
             id: id.into(),
             name: name.into(),
+            protocol,
+            url,
             reasoning,
             context_window: context_window.max(1),
             max_tokens: max_tokens.max(1),
         });
-        match api {
-            "anthropic-messages" => anthropic.push(agent_model),
-            "openai-completions" => openai_chat.push(agent_model),
-            "openai-responses" => openai_responses.push(agent_model),
-            _ => {}
-        }
+        out.push(agent_model);
     }
-    if anthropic.is_empty() && openai_chat.is_empty() && openai_responses.is_empty() {
+    if out.is_empty() {
         return None;
     }
-    Some(DynamicGroups {
-        anthropic,
-        openai_chat,
-        openai_responses,
-    })
+    Some(DynamicGroups { models: out })
 }
 
 fn merge_models(mut baseline: Vec<AgentModel>, dynamic: Vec<AgentModel>) -> Vec<AgentModel> {
@@ -168,11 +152,21 @@ fn merge_models(mut baseline: Vec<AgentModel>, dynamic: Vec<AgentModel>) -> Vec<
     baseline
 }
 
+fn baked_models() -> Vec<AgentModel> {
+    let mut all = Vec::new();
+    all.extend(anthropic_models());
+    all.extend(openai_chat_models());
+    all.extend(openai_responses_models());
+    all
+}
+
 fn anthropic_models() -> Vec<AgentModel> {
     vec![
         AgentModel {
             id: "minimax-m3".into(),
             name: "MiniMax-M3".into(),
+            protocol: Protocol::AnthropicMessages,
+            url: ANTHROPIC_URL.into(),
             reasoning: true,
             context_window: 1_000_000,
             max_tokens: 131_072,
@@ -180,6 +174,8 @@ fn anthropic_models() -> Vec<AgentModel> {
         AgentModel {
             id: "qwen3.7-max".into(),
             name: "Qwen3.7 Max".into(),
+            protocol: Protocol::AnthropicMessages,
+            url: ANTHROPIC_URL.into(),
             reasoning: true,
             context_window: 1_000_000,
             max_tokens: 65_536,
@@ -187,6 +183,8 @@ fn anthropic_models() -> Vec<AgentModel> {
         AgentModel {
             id: "qwen3.7-plus".into(),
             name: "Qwen3.7 Plus".into(),
+            protocol: Protocol::AnthropicMessages,
+            url: ANTHROPIC_URL.into(),
             reasoning: true,
             context_window: 1_000_000,
             max_tokens: 65_536,
@@ -194,6 +192,8 @@ fn anthropic_models() -> Vec<AgentModel> {
         AgentModel {
             id: "qwen3.8-max".into(),
             name: "Qwen3.8 Max".into(),
+            protocol: Protocol::AnthropicMessages,
+            url: ANTHROPIC_URL.into(),
             reasoning: true,
             context_window: 1_000_000,
             max_tokens: 131_072,
@@ -206,6 +206,8 @@ fn openai_chat_models() -> Vec<AgentModel> {
         AgentModel {
             id: "deepseek-v4-flash".into(),
             name: "DeepSeek V4 Flash (New)".into(),
+            protocol: Protocol::OpenAiChat,
+            url: CHAT_URL.into(),
             reasoning: true,
             context_window: 1_000_000,
             max_tokens: 384_000,
@@ -213,6 +215,8 @@ fn openai_chat_models() -> Vec<AgentModel> {
         AgentModel {
             id: "deepseek-v4-pro".into(),
             name: "DeepSeek V4 Pro".into(),
+            protocol: Protocol::OpenAiChat,
+            url: CHAT_URL.into(),
             reasoning: true,
             context_window: 1_000_000,
             max_tokens: 384_000,
@@ -220,6 +224,8 @@ fn openai_chat_models() -> Vec<AgentModel> {
         AgentModel {
             id: "glm-5.1".into(),
             name: "GLM-5.1".into(),
+            protocol: Protocol::OpenAiChat,
+            url: CHAT_URL.into(),
             reasoning: true,
             context_window: 202_752,
             max_tokens: 32_768,
@@ -227,6 +233,8 @@ fn openai_chat_models() -> Vec<AgentModel> {
         AgentModel {
             id: "glm-5.2".into(),
             name: "GLM-5.2".into(),
+            protocol: Protocol::OpenAiChat,
+            url: CHAT_URL.into(),
             reasoning: true,
             context_window: 1_000_000,
             max_tokens: 131_072,
@@ -234,6 +242,8 @@ fn openai_chat_models() -> Vec<AgentModel> {
         AgentModel {
             id: "hy3".into(),
             name: "Hy3".into(),
+            protocol: Protocol::OpenAiChat,
+            url: CHAT_URL.into(),
             reasoning: true,
             context_window: 256_000,
             max_tokens: 64_000,
@@ -241,6 +251,8 @@ fn openai_chat_models() -> Vec<AgentModel> {
         AgentModel {
             id: "kimi-k2.6".into(),
             name: "Kimi K2.6".into(),
+            protocol: Protocol::OpenAiChat,
+            url: CHAT_URL.into(),
             reasoning: true,
             context_window: 262_144,
             max_tokens: 65_536,
@@ -248,6 +260,8 @@ fn openai_chat_models() -> Vec<AgentModel> {
         AgentModel {
             id: "kimi-k2.7-code".into(),
             name: "Kimi K2.7 Code".into(),
+            protocol: Protocol::OpenAiChat,
+            url: CHAT_URL.into(),
             reasoning: true,
             context_window: 262_144,
             max_tokens: 261_120,
@@ -255,6 +269,8 @@ fn openai_chat_models() -> Vec<AgentModel> {
         AgentModel {
             id: "kimi-k3".into(),
             name: "Kimi K3".into(),
+            protocol: Protocol::OpenAiChat,
+            url: CHAT_URL.into(),
             reasoning: true,
             context_window: 1_048_576,
             max_tokens: 131_072,
@@ -262,6 +278,8 @@ fn openai_chat_models() -> Vec<AgentModel> {
         AgentModel {
             id: "mimo-v2.5".into(),
             name: "MiMo V2.5".into(),
+            protocol: Protocol::OpenAiChat,
+            url: CHAT_URL.into(),
             reasoning: true,
             context_window: 1_000_000,
             max_tokens: 128_000,
@@ -269,6 +287,8 @@ fn openai_chat_models() -> Vec<AgentModel> {
         AgentModel {
             id: "mimo-v2.5-pro".into(),
             name: "MiMo V2.5 Pro".into(),
+            protocol: Protocol::OpenAiChat,
+            url: CHAT_URL.into(),
             reasoning: true,
             context_window: 1_048_576,
             max_tokens: 128_000,
@@ -276,6 +296,8 @@ fn openai_chat_models() -> Vec<AgentModel> {
         AgentModel {
             id: "minimax-m2.7".into(),
             name: "MiniMax-M2.7".into(),
+            protocol: Protocol::OpenAiChat,
+            url: CHAT_URL.into(),
             reasoning: true,
             context_window: 204_800,
             max_tokens: 131_072,
@@ -283,6 +305,8 @@ fn openai_chat_models() -> Vec<AgentModel> {
         AgentModel {
             id: "qwen3.6-plus".into(),
             name: "Qwen3.6 Plus".into(),
+            protocol: Protocol::OpenAiChat,
+            url: CHAT_URL.into(),
             reasoning: true,
             context_window: 1_000_000,
             max_tokens: 65_536,
@@ -295,6 +319,8 @@ fn openai_responses_models() -> Vec<AgentModel> {
         AgentModel {
             id: "gpt-5.6-luna".into(),
             name: "GPT-5.6 Luna (2x usage)".into(),
+            protocol: Protocol::OpenAiResponses,
+            url: RESPONSES_URL.into(),
             reasoning: true,
             context_window: 1_050_000,
             max_tokens: 128_000,
@@ -302,6 +328,8 @@ fn openai_responses_models() -> Vec<AgentModel> {
         AgentModel {
             id: "grok-4.5".into(),
             name: "Grok 4.5".into(),
+            protocol: Protocol::OpenAiResponses,
+            url: RESPONSES_URL.into(),
             reasoning: true,
             context_window: 500_000,
             max_tokens: 498_976,
@@ -314,41 +342,53 @@ mod tests {
     use super::*;
 
     #[test]
-    fn baked_presets_contain_opencode_go_with_expected_models() {
+    fn baked_presets_contain_opencode_with_expected_models() {
         // 直接验证 baked 基线，避免受本地 `~/.pi/agent/models-store.json` 动态覆盖影响
-        let anthropic = anthropic_models();
-        let chat = openai_chat_models();
-        let responses = openai_responses_models();
-        assert_eq!(anthropic.len(), 4);
-        assert!(anthropic.iter().any(|m| m.id == "minimax-m3"));
-        assert_eq!(chat.len(), 12);
-        assert_eq!(responses.len(), 2);
+        let models = baked_models();
+        assert_eq!(models.len(), 18);
+        assert!(
+            models
+                .iter()
+                .any(|m| m.id == "minimax-m3" && m.protocol == Protocol::AnthropicMessages)
+        );
+        assert!(
+            models
+                .iter()
+                .any(|m| m.id == "deepseek-v4-flash" && m.protocol == Protocol::OpenAiChat)
+        );
+        assert!(
+            models
+                .iter()
+                .any(|m| m.id == "gpt-5.6-luna" && m.protocol == Protocol::OpenAiResponses)
+        );
+        // URL 正确性
+        assert!(
+            models
+                .iter()
+                .filter(|m| m.protocol == Protocol::AnthropicMessages)
+                .all(|m| m.url == ANTHROPIC_URL)
+        );
+        assert!(
+            models
+                .iter()
+                .filter(|m| m.protocol == Protocol::OpenAiChat)
+                .all(|m| m.url == CHAT_URL)
+        );
     }
 
     #[test]
-    fn builtin_presets_contain_opencode_go_with_expected_models() {
+    fn builtin_presets_contain_opencode_with_expected_models() {
         let presets = builtin_presets();
-        assert_eq!(presets.len(), 3);
+        assert_eq!(presets.len(), 1);
         let go = presets.iter().find(|p| p.id == OPENCODE_GO_ID).unwrap();
-        assert_eq!(go.protocol, Protocol::AnthropicMessages);
-        assert_eq!(go.url, "https://opencode.ai/zen/go/v1/messages");
+        assert_eq!(go.id, "opencode");
         // 动态 overlay 可能使数量大于 baked 基线（pi 侧 4h 刷新追加模型）
-        assert!(go.models.len() >= 4);
+        assert!(go.models.len() >= 18);
         assert!(go.models.iter().any(|m| m.id == "minimax-m3"));
-
-        let chat = presets
-            .iter()
-            .find(|p| p.id == OPENCODE_GO_OPENAI_ID)
-            .unwrap();
-        assert_eq!(chat.protocol, Protocol::OpenAiChat);
-        assert!(chat.models.len() >= 12);
-
-        let resp = presets
-            .iter()
-            .find(|p| p.id == OPENCODE_GO_RESPONSES_ID)
-            .unwrap();
-        assert_eq!(resp.protocol, Protocol::OpenAiResponses);
-        assert!(resp.models.len() >= 2);
+        // 校验 URL 已修正为不含 /go
+        assert!(go.models.iter().any(|m| m.url == ANTHROPIC_URL));
+        assert!(go.models.iter().any(|m| m.url == CHAT_URL));
+        assert!(go.models.iter().any(|m| m.url == RESPONSES_URL));
     }
 
     #[test]
@@ -357,6 +397,8 @@ mod tests {
             AgentModel {
                 id: "a".into(),
                 name: "A".into(),
+                protocol: Protocol::OpenAiChat,
+                url: CHAT_URL.into(),
                 reasoning: false,
                 context_window: 100,
                 max_tokens: 10,
@@ -364,6 +406,8 @@ mod tests {
             AgentModel {
                 id: "b".into(),
                 name: "B".into(),
+                protocol: Protocol::OpenAiChat,
+                url: CHAT_URL.into(),
                 reasoning: false,
                 context_window: 100,
                 max_tokens: 10,
@@ -373,6 +417,8 @@ mod tests {
             AgentModel {
                 id: "b".into(),
                 name: "B-new".into(),
+                protocol: Protocol::AnthropicMessages,
+                url: ANTHROPIC_URL.into(),
                 reasoning: true,
                 context_window: 200,
                 max_tokens: 20,
@@ -380,6 +426,8 @@ mod tests {
             AgentModel {
                 id: "c".into(),
                 name: "C".into(),
+                protocol: Protocol::OpenAiChat,
+                url: CHAT_URL.into(),
                 reasoning: true,
                 context_window: 300,
                 max_tokens: 30,

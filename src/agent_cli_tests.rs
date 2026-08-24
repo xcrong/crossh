@@ -13,13 +13,13 @@ fn test_settings() -> AgentSettings {
     let provider = AgentProvider {
         id: "local".into(),
         name: "Local".into(),
-        protocol: Protocol::OpenAiChat,
-        url: "http://127.0.0.1:11434/v1/chat/completions".into(),
         api_key_env: String::new(),
         api_key: String::new(),
         models: vec![AgentModel {
             id: "qwen3-coder".into(),
             name: "qwen3-coder".into(),
+            protocol: Protocol::OpenAiChat,
+            url: "http://127.0.0.1:11434/v1/chat/completions".into(),
             reasoning: true,
             context_window: 128_000,
             max_tokens: 32_000,
@@ -302,6 +302,8 @@ fn slash_popup_height_is_stable_across_candidate_count_changes() {
     app.settings.providers[0].models.push(AgentModel {
         id: "zephyr-7b".into(),
         name: "zephyr-7b".into(),
+        protocol: Protocol::OpenAiChat,
+        url: "http://127.0.0.1:11434/v1/chat/completions".into(),
         reasoning: false,
         context_window: 32_000,
         max_tokens: 8_000,
@@ -349,6 +351,8 @@ fn slash_popup_changes_do_not_trigger_full_screen_repaint() {
     app.settings.providers[0].models.push(AgentModel {
         id: "zephyr-7b".into(),
         name: "zephyr-7b".into(),
+        protocol: Protocol::OpenAiChat,
+        url: "http://127.0.0.1:11434/v1/chat/completions".into(),
         reasoning: false,
         context_window: 32_000,
         max_tokens: 8_000,

@@ -615,6 +615,8 @@ impl SettingsWindow {
                 .push(AgentModel {
                     id: "model".into(),
                     name: "Model".into(),
+                    protocol: Protocol::OpenAiChat,
+                    url: "https://example.test/v1/chat/completions".into(),
                     reasoning: false,
                     context_window: 128_000,
                     max_tokens: 32_000,
@@ -648,7 +650,19 @@ impl SettingsWindow {
         let mut provider_rows = div().w_full().flex().flex_col().gap_1();
         for (index, provider) in self.agent_draft.providers.iter().enumerate() {
             let selected = index == provider_index;
-            let protocol = provider.protocol.label();
+            let protocol = if provider.models.is_empty() {
+                String::new()
+            } else {
+                // 模型级协议：展示去重后的协议列表或模型数
+                let mut protocols: Vec<String> = provider
+                    .models
+                    .iter()
+                    .map(|m| m.protocol.label().to_string())
+                    .collect();
+                protocols.sort();
+                protocols.dedup();
+                format!("{} | {} models", protocols.join("/"), provider.models.len())
+            };
             let row = div()
                 .id(format!("settings-agent-provider-row-{index}"))
                 .w_full()
@@ -1018,7 +1032,12 @@ impl SettingsWindow {
             .flex_wrap()
             .justify_end();
         for protocol in ALL_PROTOCOLS {
-            let selected = protocol == self.agent_draft.providers[provider_index].protocol;
+            let selected = self
+                .agent_draft
+                .providers
+                .get(provider_index)
+                .and_then(|p| p.models.get(self.agent_model_index))
+                .is_some_and(|m| m.protocol == protocol);
             protocols = protocols.child(
                 div()
                     .id(format!("settings-agent-protocol-{protocol:?}"))
@@ -1041,7 +1060,28 @@ impl SettingsWindow {
                     })
                     .child(SharedString::from(protocol.label()))
                     .on_click(cx.listener(move |this, _ev, _window, cx| {
-                        this.agent_draft.providers[this.agent_provider_index].protocol = protocol;
+                        if let Some(model) = this
+                            .agent_draft
+                            .providers
+                            .get_mut(this.agent_provider_index)
+                            .and_then(|p| p.models.get_mut(this.agent_model_index))
+                        {
+                            model.protocol = protocol;
+                            // 若 url 为空或仍为旧协议的默认 url，同步为新协议默认 url
+                            if model.url.trim().is_empty() {
+                                model.url = match protocol {
+                                    Protocol::AnthropicMessages => {
+                                        "https://opencode.ai/zen/v1/messages".into()
+                                    }
+                                    Protocol::OpenAiChat => {
+                                        "https://opencode.ai/zen/v1/chat/completions".into()
+                                    }
+                                    Protocol::OpenAiResponses => {
+                                        "https://opencode.ai/zen/v1/responses".into()
+                                    }
+                                };
+                            }
+                        }
                         this.agent_error = None;
                         cx.notify();
                     })),
@@ -1089,7 +1129,7 @@ impl SettingsWindow {
                                 div()
                                     .text_xs()
                                     .text_color(theme::muted_text())
-                                    .child(SharedString::from(selected_provider.protocol.label())),
+                                    .child(SharedString::from(selected_model.protocol.label())),
                             ),
                     ),
             );
@@ -1126,8 +1166,10 @@ impl SettingsWindow {
             );
         let provider_ready = !selected_provider.api_key.trim().is_empty()
             || !selected_provider.api_key_env.trim().is_empty()
-            || selected_provider.url.contains("localhost")
-            || selected_provider.url.contains("127.0.0.1");
+            || selected_provider
+                .models
+                .iter()
+                .any(|m| m.url.contains("localhost") || m.url.contains("127.0.0.1"));
         let provider_status = if provider_ready {
             i18n::text("settings.agent_provider_ready")
         } else {

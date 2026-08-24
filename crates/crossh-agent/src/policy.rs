@@ -42,8 +42,6 @@ pub const ALL_THINKING_LEVELS: [ThinkingLevel; 7] = [
 pub struct AgentProvider {
     pub id: String,
     pub name: String,
-    pub protocol: Protocol,
-    pub url: String,
     #[serde(default)]
     pub api_key_env: String,
     #[serde(default)]
@@ -55,6 +53,8 @@ pub struct AgentProvider {
 pub struct AgentModel {
     pub id: String,
     pub name: String,
+    pub protocol: Protocol,
+    pub url: String,
     #[serde(default)]
     pub reasoning: bool,
     #[serde(default = "default_context_window")]
@@ -114,28 +114,29 @@ impl AgentSettings {
     /// 已存在同 `id` 的用户配置优先，预设不会覆盖；已存在的预设供应商模型
     /// 会按 `validate` 规则自动修正 `max_tokens` 以避免旧缓存导致启动失败。
     pub fn with_builtin_presets(mut self) -> Self {
+        // 破旧立新：旧的 3 供应商拆分直接丢弃，由单供应商 `opencode-go` 替代。
+        // 若文件残留旧分片 id，直接移除；已存在的单供应商则用新预设刷新模型列表，
+        // 避免用户本地残留的 4 条旧模型导致启动后缺模型。
+        const LEGACY_SPLIT_IDS: [&str; 2] = ["opencode-go-openai", "opencode-go-responses"];
+        self.providers
+            .retain(|p| !LEGACY_SPLIT_IDS.contains(&p.id.as_str()));
         let presets = crate::presets::builtin_presets();
-        let existing: std::collections::BTreeSet<String> =
-            self.providers.iter().map(|p| p.id.clone()).collect();
         for preset in presets {
-            if !existing.contains(&preset.id) {
+            if let Some(pos) = self.providers.iter().position(|p| p.id == preset.id) {
+                // 刷新内置预设：保留用户已填的 api_key/api_key_env，其余用预设覆盖
+                let existing = &self.providers[pos];
+                let api_key = existing.api_key.clone();
+                let api_key_env = existing.api_key_env.clone();
+                self.providers[pos] = preset;
+                self.providers[pos].api_key = api_key;
+                self.providers[pos].api_key_env = api_key_env;
+            } else {
                 self.providers.push(preset);
             }
         }
-        // 修正旧版本已持久化的预设（模型 max_tokens / URL 曾为 base 而非完整路径，
-        // 会触发校验失败或 404 HTML）。
-        let mut preset_urls = std::collections::BTreeMap::new();
-        for preset in crate::presets::builtin_presets() {
-            preset_urls.insert(preset.id, preset.url);
-        }
+        // 纠正旧模型 max_tokens 越界（历史缓存曾出现 max == context）
         for provider in &mut self.providers {
             if crate::presets::is_builtin_preset_id(&provider.id) {
-                if let Some(correct_url) = preset_urls.get(&provider.id) {
-                    // 旧缓存为 https://opencode.ai/zen/go 或 .../v1（缺少 /v1/messages 等后缀）
-                    if provider.url != *correct_url {
-                        provider.url = correct_url.clone();
-                    }
-                }
                 for model in &mut provider.models {
                     if model.max_tokens >= model.context_window
                         || model.context_window.saturating_sub(model.max_tokens) < 1_024
@@ -156,11 +157,11 @@ impl AgentSettings {
         for provider in &mut self.providers {
             provider.id = provider.id.trim().into();
             provider.name = provider.name.trim().into();
-            provider.url = provider.url.trim().into();
             provider.api_key_env = provider.api_key_env.trim().into();
             for model in &mut provider.models {
                 model.id = model.id.trim().into();
                 model.name = model.name.trim().into();
+                model.url = model.url.trim().into();
             }
         }
         self.steering_mode = self.steering_mode.trim().to_ascii_lowercase();
@@ -194,9 +195,6 @@ impl AgentSettings {
             if !provider_ids.insert(provider.id.as_str()) {
                 return Err("Provider IDs must be unique");
             }
-            if !(provider.url.starts_with("http://") || provider.url.starts_with("https://")) {
-                return Err("API URL must start with http:// or https://");
-            }
             if !provider.api_key_env.is_empty()
                 && !provider.api_key_env.chars().enumerate().all(|(index, ch)| {
                     ch == '_' || ch.is_ascii_alphanumeric() && (index > 0 || !ch.is_ascii_digit())
@@ -206,11 +204,14 @@ impl AgentSettings {
             }
             let mut model_ids = std::collections::BTreeSet::new();
             for model in &provider.models {
-                if model.id.is_empty() || model.name.is_empty() {
-                    return Err("Model ID and name are required");
+                if model.id.is_empty() || model.name.is_empty() || model.url.is_empty() {
+                    return Err("Model ID, name, and URL are required");
                 }
                 if !model_ids.insert(model.id.as_str()) {
                     return Err("Model IDs must be unique within a provider");
+                }
+                if !(model.url.starts_with("http://") || model.url.starts_with("https://")) {
+                    return Err("Model API URL must start with http:// or https://");
                 }
                 if model.context_window == 0 || model.max_tokens == 0 {
                     return Err("Model token limits must be greater than zero");

@@ -6,13 +6,13 @@ fn configured_settings() -> AgentSettings {
     let provider = AgentProvider {
         id: "local".into(),
         name: "Local".into(),
-        protocol: Protocol::OpenAiChat,
-        url: "http://127.0.0.1:11434/v1/chat/completions".into(),
         api_key_env: String::new(),
         api_key: String::new(),
         models: vec![AgentModel {
             id: "qwen3-coder".into(),
             name: "qwen3-coder".into(),
+            protocol: Protocol::OpenAiChat,
+            url: "http://127.0.0.1:11434/v1/chat/completions".into(),
             reasoning: true,
             context_window: 128_000,
             max_tokens: 32_000,
@@ -93,13 +93,13 @@ fn multi_provider_models_resolve_independently() {
     settings.providers.push(AgentProvider {
         id: "reviewer".into(),
         name: "Reviewer".into(),
-        protocol: Protocol::AnthropicMessages,
-        url: "https://example.test/messages".into(),
         api_key_env: "REVIEWER_API_KEY".into(),
         api_key: String::new(),
         models: vec![AgentModel {
             id: "review-model".into(),
             name: "Review Model".into(),
+            protocol: Protocol::AnthropicMessages,
+            url: "https://example.test/messages".into(),
             reasoning: true,
             context_window: 200_000,
             max_tokens: 8_000,
@@ -151,6 +151,8 @@ fn model_output_limit_maps_to_each_protocol() {
     let model = AgentModel {
         id: "m".into(),
         name: "M".into(),
+        protocol: Protocol::OpenAiChat,
+        url: "https://example.test/chat".into(),
         reasoning: false,
         context_window: 10_000,
         max_tokens: 1_234,
@@ -164,9 +166,10 @@ fn model_output_limit_maps_to_each_protocol() {
             sdk::CompletionRequest::new(protocol, "", &model.id, 4_096, Vec::new(), Vec::new());
         let mut wire = sdk::builtin_adapter(protocol)
             .encode_request(&request)
-            .expect("built-in adapter request should be valid");
-        apply_model_options(&mut wire.body, protocol, &model);
-        assert_eq!(wire.body[key], 1_234);
+            .expect("built-in adapter request should be valid")
+            .body;
+        apply_model_options(&mut wire, protocol, &model);
+        assert_eq!(wire[key], 1_234);
     }
 }
 
@@ -627,6 +630,8 @@ fn explicit_thinking_options_map_to_provider_wire_fields() {
     let model = AgentModel {
         id: "reasoning".into(),
         name: "Reasoning".into(),
+        protocol: Protocol::OpenAiChat,
+        url: "https://example.test/chat".into(),
         reasoning: true,
         context_window: 10_000,
         max_tokens: 4_000,

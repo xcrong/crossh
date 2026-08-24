@@ -56,8 +56,8 @@ fn sdk_request(
 ) -> sdk::CompletionRequest {
     let tools = builtin_tools().into_iter().map(|tool| tool.tool).collect();
     let mut request = sdk::CompletionRequest::new(
-        target.provider.protocol,
-        target.provider.url.clone(),
+        target.model.protocol,
+        target.model.url.clone(),
         target.model.id.clone(),
         target.model.max_tokens,
         messages.to_vec(),

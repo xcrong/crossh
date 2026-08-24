@@ -75,14 +75,14 @@ max_tool_rounds = 60
 [[agent.providers]]
 id = "local"
 name = "Local"
-protocol = "openai-chat"
-url = "http://127.0.0.1:11434/v1/chat/completions"
 api_key_env = ""
 api_key = ""
 
 [[agent.providers.models]]
 id = "qwen3-coder"
 name = "qwen3-coder"
+protocol = "openai-chat"
+url = "http://127.0.0.1:11434/v1/chat/completions"
 reasoning = true
 context_window = 128000
 max_tokens = 32000
