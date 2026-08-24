@@ -208,19 +208,90 @@ fn render_memory(snapshot: &Option<SystemSnapshot>) -> AnyElement {
 }
 
 fn render_disk(snapshot: &Option<SystemSnapshot>) -> AnyElement {
-    let (used_str, pct) = match snapshot {
-        Some(s) => match (s.disk_used, s.disk_total) {
-            (Some(used), Some(total)) => {
-                let txt = format!(
-                    "{} used, {} free",
-                    format_bytes(used),
-                    format_bytes(total - used)
-                );
-                (txt, s.disk_usage_percent)
-            }
-            _ => (placeholder(), None),
-        },
-        None => (placeholder(), None),
+    match snapshot {
+        None => render_disk_placeholder(),
+        Some(s) if !s.disks.is_empty() => render_disks_list(s),
+        Some(s) => render_disk_legacy(s),
+    }
+}
+
+fn render_disks_list(s: &SystemSnapshot) -> AnyElement {
+    let disks = &s.disks;
+    let mut col = div().flex().flex_col().gap_1().child(section_label("Disk"));
+    for (idx, disk) in disks.iter().enumerate() {
+        col = col.child(render_single_disk_entry(disk, idx, disks.len()));
+    }
+    col.into_any_element()
+}
+
+fn render_single_disk_entry(
+    disk: &crossh_core::system_stats::DiskSnapshot,
+    idx: usize,
+    total: usize,
+) -> AnyElement {
+    let label = if total > 1 {
+        format!("Disk {} ({})", idx + 1, disk.mount_point)
+    } else if disk.mount_point == "/" || disk.mount_point == "C:\\" {
+        "Disk".to_string()
+    } else {
+        format!("Disk ({})", disk.mount_point)
+    };
+    let used_str = disk
+        .used_space
+        .map(|used| {
+            format!(
+                "{} used, {} free",
+                format_bytes(used),
+                format_bytes(disk.total_space - used)
+            )
+        })
+        .unwrap_or_else(placeholder);
+    let pct = disk.usage_percent;
+    let read_str = format_rate(disk.read_rate);
+    let write_str = format_rate(disk.write_rate);
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .mt_1()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_size(px(10.))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme::text())
+                        .child(SharedString::from(label)),
+                )
+                .child(value_text(format_percent(pct))),
+        )
+        .child(bar(pct))
+        .child(value_text(used_str))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(value_text(format!("R {}", read_str)))
+                .child(value_text(format!("W {}", write_str))),
+        )
+        .into_any_element()
+}
+
+fn render_disk_legacy(s: &SystemSnapshot) -> AnyElement {
+    let (used_str, pct) = match (s.disk_used, s.disk_total) {
+        (Some(used), Some(total)) => {
+            let txt = format!(
+                "{} used, {} free",
+                format_bytes(used),
+                format_bytes(total - used)
+            );
+            (txt, s.disk_usage_percent)
+        }
+        _ => (placeholder(), None),
     };
     div()
         .flex()
@@ -236,6 +307,32 @@ fn render_disk(snapshot: &Option<SystemSnapshot>) -> AnyElement {
         )
         .child(bar(pct))
         .child(value_text(used_str))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(value_text(format!("R {}", placeholder())))
+                .child(value_text(format!("W {}", placeholder()))),
+        )
+        .into_any_element()
+}
+
+fn render_disk_placeholder() -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(section_label("Disk"))
+                .child(value_text(placeholder())),
+        )
+        .child(bar(None))
+        .child(value_text(placeholder()))
         .into_any_element()
 }
 
