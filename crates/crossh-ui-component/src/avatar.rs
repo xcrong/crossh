@@ -8,7 +8,6 @@ use crate::theme;
 pub enum AvatarKind {
     #[default]
     Project,
-    Host,
     Command,
 }
 
@@ -37,7 +36,6 @@ impl RenderOnce for Avatar {
     fn render(self, _window: &mut gpui::Window, _cx: &mut App) -> impl IntoElement {
         let color = match self.kind {
             AvatarKind::Project => theme::accent(),
-            AvatarKind::Host => theme::info(),
             AvatarKind::Command => theme::muted_text(),
         };
         div()

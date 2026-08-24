@@ -335,7 +335,6 @@ mod tests {
         let rows = state.visible_rows();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].entry.id, second.id);
-        assert_eq!(rows[0].graph.commit_id, second.id);
         assert_eq!(state.selected.as_deref(), Some(second.id.as_str()));
     }
 }

@@ -32,49 +32,15 @@ pub fn selectable_row(
         .hover(|style| style.bg(theme::raised()))
 }
 
-/// 结构化封装的 `SelectableRow`，与 [`selectable_row`] 函数等价，满足
-/// Issue P0-2 建议的 `SelectableRow { id, selected, height, on_select }` 形态。
-///
-/// `on_select` 回调由调用方在返回的 `Div` 上通过 `.on_click` 追加，
-/// 组件仅负责一致的选中态边框与背景，保持无状态与可组合。
-#[derive(Clone)]
-pub struct SelectableRow {
-    id: SharedString,
-    selected: bool,
-    height: Pixels,
-}
-
-impl SelectableRow {
-    pub fn new(id: impl Into<SharedString>, selected: bool, height: impl Into<Pixels>) -> Self {
-        Self {
-            id: id.into(),
-            selected,
-            height: height.into(),
-        }
-    }
-
-    /// 产出与 [`selectable_row`] 等价的骨架 `Div`。
-    pub fn scaffold(self) -> Stateful<Div> {
-        selectable_row(self.id, self.selected, self.height)
-    }
-
-    /// 别名，保持与 `ListPane::div` 对称的调用体验。
-    pub fn div(self) -> Stateful<Div> {
-        self.scaffold()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use gpui::px;
 
-    use super::{SelectableRow, selectable_row};
+    use super::selectable_row;
 
     #[test]
     fn selectable_row_builders_are_chainable() {
         let _row = selectable_row("row-1", true, px(34.));
         let _row2 = selectable_row("row-2", false, px(60.));
-        let _row3 = SelectableRow::new("row-3", true, px(68.)).scaffold();
-        let _row4 = SelectableRow::new("row-4", false, px(78.)).div();
     }
 }

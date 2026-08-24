@@ -5,7 +5,6 @@
 //! 视觉层级完全塌缩。本组件以 `BannerTone` 显式区分语义：
 //! - `Danger`  — 破坏性确认（丢弃工作区、删除 stash），红系 `diff_del_bg / danger`
 //! - `Warning` — 需决策的阻塞状态（冲突解决），黄系 `warning` / `surface`
-//! - `Info`    — 保留的通用预留，供后续非破坏性提示复用
 //!
 //! 布局：
 //! - `Stacked` — 标题 + 描述 纵向堆叠，操作区右对齐（丢弃确认）
@@ -24,7 +23,6 @@ pub enum BannerTone {
     #[default]
     Danger,
     Warning,
-    Info,
 }
 
 impl BannerTone {
@@ -32,7 +30,6 @@ impl BannerTone {
         match self {
             Self::Danger => theme::diff_del_bg(),
             Self::Warning => theme::surface(),
-            Self::Info => theme::surface(),
         }
     }
 
@@ -40,7 +37,6 @@ impl BannerTone {
         match self {
             Self::Danger => theme::danger(),
             Self::Warning => theme::warning(),
-            Self::Info => theme::info(),
         }
     }
 
@@ -272,16 +268,6 @@ impl RenderOnce for Banner {
     }
 }
 
-/// `Danger` 语义的快捷构造，语义等价于 `Banner::new(id).tone(Danger)`。
-pub fn danger_banner(id: impl Into<ElementId>) -> Banner {
-    Banner::new(id).tone(BannerTone::Danger)
-}
-
-/// `Warning` 语义的快捷构造，供冲突等阻塞态复用。
-pub fn warning_banner(id: impl Into<ElementId>) -> Banner {
-    Banner::new(id).tone(BannerTone::Warning)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{Banner, BannerLayout, BannerTone};
@@ -314,10 +300,8 @@ mod tests {
     }
 
     #[test]
-    fn warning_and_info_tones_are_distinct_from_danger() {
+    fn warning_tone_is_distinct_from_danger() {
         assert_ne!(BannerTone::Danger, BannerTone::Warning);
-        assert_ne!(BannerTone::Danger, BannerTone::Info);
-        assert_ne!(BannerTone::Warning, BannerTone::Info);
     }
 
     #[test]

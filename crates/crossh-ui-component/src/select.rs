@@ -34,8 +34,6 @@ pub struct SelectOption {
     pub id: String,
     /// 显示文本
     pub label: SharedString,
-    /// 是否禁用（不可点）
-    pub disabled: bool,
 }
 
 impl SelectOption {
@@ -44,14 +42,7 @@ impl SelectOption {
         Self {
             id: id.into(),
             label: label.into(),
-            disabled: false,
         }
-    }
-
-    /// 设置是否禁用
-    pub fn disabled(mut self, disabled: bool) -> Self {
-        self.disabled = disabled;
-        self
     }
 }
 
@@ -65,7 +56,6 @@ pub struct Select {
     options: Vec<SelectOption>,
     selected_index: Option<usize>,
     placeholder: Option<SharedString>,
-    disabled: bool,
     is_open: bool,
     on_toggle: Option<ToggleHandler>,
     on_select: Option<SelectHandler>,
@@ -79,7 +69,6 @@ impl Select {
             options: Vec::new(),
             selected_index: None,
             placeholder: None,
-            disabled: false,
             is_open: false,
             on_toggle: None,
             on_select: None,
@@ -101,12 +90,6 @@ impl Select {
     /// 未选中时的占位文本
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.placeholder = Some(placeholder.into());
-        self
-    }
-
-    /// 是否禁用整个控件
-    pub fn disabled(mut self, disabled: bool) -> Self {
-        self.disabled = disabled;
         self
     }
 
@@ -132,53 +115,22 @@ impl Select {
     }
 }
 
-/// 在面板内寻找下一个可用选项（跳过 disabled），支持循环。
-fn next_enabled_index(
-    options: &[SelectOption],
-    current: Option<usize>,
-    direction: i32,
-) -> Option<usize> {
-    if options.is_empty() {
+/// 计算下一个选中索引：全部选项可用，循环导航；`current` 为 `None` 时
+/// 向下取首项、向上取末项；越界或选项为空返回 `None`。
+fn next_index(len: usize, current: Option<usize>, direction: i32) -> Option<usize> {
+    if len == 0 {
         return None;
     }
-    // 若当前无选中，方向向下取首个可用，向上取末个可用
-    if current.is_none() {
-        if direction > 0 {
-            for (idx, opt) in options.iter().enumerate() {
-                if !opt.disabled {
-                    return Some(idx);
-                }
-            }
-        } else {
-            for (idx, opt) in options.iter().enumerate().rev() {
-                if !opt.disabled {
-                    return Some(idx);
-                }
-            }
-        }
-        return None;
+    match current {
+        None => (direction > 0).then_some(0).or(Some(len - 1)),
+        Some(current) if current >= len => None,
+        Some(current) => Some(((current as i32 + direction).rem_euclid(len as i32)) as usize),
     }
-    let current = current.unwrap();
-    if current >= options.len() {
-        return None;
-    }
-    let len = options.len() as i32;
-    let mut idx = current as i32;
-    for _ in 0..options.len() {
-        idx = (idx + direction).rem_euclid(len);
-        if let Some(opt) = options.get(idx as usize)
-            && !opt.disabled
-        {
-            return Some(idx as usize);
-        }
-    }
-    None
 }
 
 impl RenderOnce for Select {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let disabled = self.disabled;
-        let is_open = self.is_open && !disabled;
+        let is_open = self.is_open;
         let placeholder = self.placeholder.clone();
         let selected_index = self.selected_index;
         let on_toggle = self.on_toggle.clone();
@@ -211,29 +163,16 @@ impl RenderOnce for Select {
             .rounded(px(theme::RADIUS_SM))
             .text_xs()
             .text_color(theme::text())
-            .when(!disabled, |this| {
-                this.cursor_pointer()
-                    .hover(|style| style.border_color(theme::focus_ring()))
-                    .track_focus(&focus.tab_stop(true).tab_index(0))
-            })
-            .when(disabled, |this| {
-                this.cursor_default()
-                    .bg(theme::surface())
-                    .border_color(theme::border())
-                    .text_color(theme::faint_text())
-            })
-            .when(focused && !disabled, |this| {
-                this.border_color(theme::focus_ring())
-            });
+            .cursor_pointer()
+            .hover(|style| style.border_color(theme::focus_ring()))
+            .track_focus(&focus.tab_stop(true).tab_index(0))
+            .when(focused, |this| this.border_color(theme::focus_ring()));
 
         // 键盘处理：Enter/Space 触发 toggle，Esc 关闭，Arrow 导航
         let on_toggle_for_key = on_toggle.clone();
         let on_select_for_key = on_select.clone();
         let options_for_key = options.clone();
         trigger = trigger.on_key_down(move |event: &KeyDownEvent, window, cx| {
-            if disabled {
-                return;
-            }
             let key = event.keystroke.key.to_lowercase();
             // 兼容 " " / "space" / "enter"
             if key == "enter" || key == " " || key == "space" {
@@ -246,7 +185,7 @@ impl RenderOnce for Select {
                 }
             } else if key == "arrowdown" || key == "down" {
                 if is_open && let Some(handler) = &on_select_for_key {
-                    let next = next_enabled_index(&options_for_key, selected_index, 1);
+                    let next = next_index(options_for_key.len(), selected_index, 1);
                     if let Some(idx) = next {
                         handler(idx, window, cx);
                     }
@@ -255,14 +194,14 @@ impl RenderOnce for Select {
                 && is_open
                 && let Some(handler) = &on_select_for_key
             {
-                let next = next_enabled_index(&options_for_key, selected_index, -1);
+                let next = next_index(options_for_key.len(), selected_index, -1);
                 if let Some(idx) = next {
                     handler(idx, window, cx);
                 }
             }
         });
 
-        if !disabled && let Some(handler) = on_toggle.clone() {
+        if let Some(handler) = on_toggle.clone() {
             let handler = handler.clone();
             trigger = trigger.on_click(move |event, window, cx| {
                 handler(event, window, cx);
@@ -335,7 +274,6 @@ impl RenderOnce for Select {
 
             for (idx, option) in options.iter().enumerate() {
                 let selected = Some(idx) == selected_index;
-                let opt_disabled = option.disabled;
                 let label = option.label.clone();
                 let row_id = ElementId::Name(format!("{}-option-{}", self.id, option.id).into());
                 let mut row = div()
@@ -348,21 +286,12 @@ impl RenderOnce for Select {
                     .gap_2()
                     .rounded(px(theme::RADIUS_SM))
                     .text_xs()
-                    .text_color(if opt_disabled {
-                        theme::faint_text()
-                    } else {
-                        theme::text()
-                    })
-                    .when(selected && !opt_disabled, |this| {
-                        this.bg(theme::accent_soft())
-                    })
-                    .when(opt_disabled, |this| this.cursor_default())
-                    .when(!opt_disabled, |this| {
-                        this.cursor_pointer()
-                            .hover(|style| style.bg(theme::raised()))
-                    });
+                    .text_color(theme::text())
+                    .when(selected, |this| this.bg(theme::accent_soft()))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme::raised()));
 
-                if !opt_disabled && let Some(handler) = on_select.clone() {
+                if let Some(handler) = on_select.clone() {
                     row = row.on_click(move |_event, window, cx| {
                         // 阻止冒泡：面板是触发器的子元素，若不拦截，
                         // 行点击会继续冒泡到触发器的 on_click 二次翻转。
@@ -373,13 +302,9 @@ impl RenderOnce for Select {
 
                 // 选中标识
                 if selected {
-                    row = row.child(icons::icon(icons::IconName::Check, 13.).text_color(
-                        if opt_disabled {
-                            theme::faint_text()
-                        } else {
-                            theme::accent()
-                        },
-                    ));
+                    row = row.child(
+                        icons::icon(icons::IconName::Check, 13.).text_color(theme::accent()),
+                    );
                 } else {
                     row = row.child(div().w(px(13.)).h(px(13.)));
                 }
@@ -410,7 +335,7 @@ impl RenderOnce for Select {
 
 #[cfg(test)]
 mod tests {
-    use super::{Select, SelectOption, next_enabled_index};
+    use super::{Select, SelectOption, next_index};
     use gpui::prelude::*;
     use gpui::{
         Context, ElementId, InputEvent, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent,
@@ -423,13 +348,12 @@ mod tests {
     fn select_builder_keeps_fields() {
         let opts = vec![
             SelectOption::new("a", "Alpha"),
-            SelectOption::new("b", "Beta").disabled(true),
+            SelectOption::new("b", "Beta"),
         ];
         let select = Select::new("test-select")
             .options(opts.clone())
             .selected(Some(0))
             .placeholder("请选择")
-            .disabled(true)
             .is_open(true)
             .on_toggle(|_, _, _| {})
             .on_select(|_, _, _| {});
@@ -438,42 +362,26 @@ mod tests {
         assert_eq!(select.options, opts);
         assert_eq!(select.selected_index, Some(0));
         assert_eq!(select.placeholder.as_deref(), Some("请选择"));
-        assert!(select.disabled);
         assert!(select.is_open);
         assert!(select.on_toggle.is_some());
         assert!(select.on_select.is_some());
     }
 
     #[test]
-    fn next_enabled_skips_disabled_and_wraps() {
-        let opts = vec![
-            SelectOption::new("a", "A"),
-            SelectOption::new("b", "B").disabled(true),
-            SelectOption::new("c", "C"),
-        ];
-        // 当前 0，向下应跳过 1 到 2
-        assert_eq!(next_enabled_index(&opts, Some(0), 1), Some(2));
+    fn next_index_wraps_around() {
+        let len = 3;
+        // 1 向下到 2
+        assert_eq!(next_index(len, Some(1), 1), Some(2));
         // 2 向下应回到 0（循环）
-        assert_eq!(next_enabled_index(&opts, Some(2), 1), Some(0));
+        assert_eq!(next_index(len, Some(2), 1), Some(0));
         // 0 向上应到 2
-        assert_eq!(next_enabled_index(&opts, Some(0), -1), Some(2));
-        // 无选中时向下取首个可用
-        assert_eq!(next_enabled_index(&opts, None, 1), Some(0));
-        // 全禁用返回 None
-        let all_disabled = vec![
-            SelectOption::new("a", "A").disabled(true),
-            SelectOption::new("b", "B").disabled(true),
-        ];
-        assert_eq!(next_enabled_index(&all_disabled, Some(0), 1), None);
-        assert_eq!(next_enabled_index(&all_disabled, None, 1), None);
-    }
-
-    #[test]
-    fn select_option_disabled_builder() {
-        let opt = SelectOption::new("x", "X").disabled(true);
-        assert!(opt.disabled);
-        assert_eq!(opt.id, "x");
-        assert_eq!(opt.label.as_ref(), "X");
+        assert_eq!(next_index(len, Some(0), -1), Some(2));
+        // 无选中时向下取首项、向上取末项
+        assert_eq!(next_index(len, None, 1), Some(0));
+        assert_eq!(next_index(len, None, -1), Some(2));
+        // 越界与空选项返回 None
+        assert_eq!(next_index(len, Some(5), 1), None);
+        assert_eq!(next_index(0, None, 1), None);
     }
 
     // ── 行为契约 ──────────────────────────────────────────────────────────

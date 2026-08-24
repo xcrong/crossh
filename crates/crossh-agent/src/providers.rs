@@ -72,41 +72,6 @@ fn sdk_request(
 }
 
 #[cfg(test)]
-#[derive(Default)]
-pub(super) struct Utf8StreamDecoder {
-    bytes: Vec<u8>,
-}
-
-#[cfg(test)]
-impl Utf8StreamDecoder {
-    pub(super) fn push(&mut self, chunk: &[u8]) -> String {
-        self.bytes.extend_from_slice(chunk);
-        match std::str::from_utf8(&self.bytes) {
-            Ok(text) => {
-                let text = text.to_string();
-                self.bytes.clear();
-                text
-            }
-            Err(error) if error.error_len().is_none() => {
-                let valid = error.valid_up_to();
-                let text = String::from_utf8_lossy(&self.bytes[..valid]).into_owned();
-                self.bytes.drain(..valid);
-                text
-            }
-            Err(_) => {
-                let text = String::from_utf8_lossy(&self.bytes).into_owned();
-                self.bytes.clear();
-                text
-            }
-        }
-    }
-
-    pub(super) fn finish(self) -> String {
-        String::from_utf8_lossy(&self.bytes).into_owned()
-    }
-}
-
-#[cfg(test)]
 fn sdk_request_for_messages(
     protocol: sdk::Protocol,
     model: &str,

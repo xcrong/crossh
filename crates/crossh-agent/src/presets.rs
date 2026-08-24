@@ -20,21 +20,21 @@ use crate::Protocol;
 use crate::policy::{AgentModel, AgentProvider};
 use serde_json::Value as JsonValue;
 
-pub const OPENCODE_GO_ID: &str = "opencode";
+pub const OPENCODE_ID: &str = "opencode";
 
 const ANTHROPIC_URL: &str = "https://opencode.ai/zen/v1/messages";
 const CHAT_URL: &str = "https://opencode.ai/zen/v1/chat/completions";
 const RESPONSES_URL: &str = "https://opencode.ai/zen/v1/responses";
 
 pub fn is_builtin_preset_id(id: &str) -> bool {
-    id == OPENCODE_GO_ID
+    id == OPENCODE_ID
 }
 
 /// 返回所有内置预设。调用方负责去重（已存在同 `id` 的用户配置优先）。
 pub fn builtin_presets() -> Vec<AgentProvider> {
     let models = load_dynamic_or_baked();
     vec![AgentProvider {
-        id: OPENCODE_GO_ID.into(),
+        id: OPENCODE_ID.into(),
         name: "opencode".into(),
         api_key_env: "OPENCODE_API_KEY".into(),
         api_key: String::new(),
@@ -380,7 +380,7 @@ mod tests {
     fn builtin_presets_contain_opencode_with_expected_models() {
         let presets = builtin_presets();
         assert_eq!(presets.len(), 1);
-        let go = presets.iter().find(|p| p.id == OPENCODE_GO_ID).unwrap();
+        let go = presets.iter().find(|p| p.id == OPENCODE_ID).unwrap();
         assert_eq!(go.id, "opencode");
         // 动态 overlay 可能使数量大于 baked 基线（pi 侧 4h 刷新追加模型）
         assert!(go.models.len() >= 18);

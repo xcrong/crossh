@@ -16,7 +16,6 @@ pub struct BranchSummary {
     pub ahead: usize,
     pub behind: usize,
     pub upstream_gone: bool,
-    pub commit: String,
     pub subject: String,
 }
 
@@ -27,7 +26,7 @@ pub fn list_branches(cwd: &Path) -> Result<Vec<BranchSummary>, GitError> {
         &[
             "for-each-ref".to_string(),
             "--sort=-committerdate".to_string(),
-            "--format=%(HEAD)%00%(refname:short)%00%(upstream:short)%00%(upstream:track)%00%(objectname:short)%00%(subject)%00".to_string(),
+            "--format=%(HEAD)%00%(refname:short)%00%(upstream:short)%00%(upstream:track)%00%(subject)%00".to_string(),
             "refs/heads".to_string(),
         ],
     )?;
@@ -61,9 +60,9 @@ fn parse_branches(output: &[u8]) -> Result<Vec<BranchSummary>, GitError> {
     for fields in output
         .split(|byte| *byte == 0)
         .collect::<Vec<_>>()
-        .chunks(6)
+        .chunks(5)
     {
-        if fields.len() < 6 {
+        if fields.len() < 5 {
             continue;
         }
         let name = field(fields[1]);
@@ -79,8 +78,7 @@ fn parse_branches(output: &[u8]) -> Result<Vec<BranchSummary>, GitError> {
             ahead,
             behind,
             upstream_gone,
-            commit: field(fields[4]),
-            subject: field(fields[5]),
+            subject: field(fields[4]),
         });
     }
     branches.sort_by(|left, right| {

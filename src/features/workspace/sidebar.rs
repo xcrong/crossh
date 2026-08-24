@@ -271,15 +271,6 @@ pub fn render_sidebar(
 
 /// 收起主机栏时保留活跃项目与连接主机，便于直接切换工作目标。
 pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
-    let active_remote_key = match shell.workspace.active_view {
-        Some(ActiveView::RemoteTab(idx)) => shell
-            .workspace
-            .sessions
-            .remote_tabs
-            .get(idx)
-            .map(|tab| tab.host_key.clone()),
-        _ => None,
-    };
     let mut project_name_counts = BTreeMap::new();
     for dir in shell.workspace.sessions.local_dirs.values() {
         *project_name_counts
@@ -330,26 +321,6 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
             }),
         ));
     }
-    // 主机活跃头像已隐藏（按需求注释）
-    // for (index, entry) in shell.connections.entries().iter().enumerate() {
-    //     if !is_active_connection(&shell.connections.state_for_key(&entry.key, cx)) {
-    //         continue;
-    //     }
-    //     let alias = entry.alias.clone();
-    //     let avatar = Avatar::new(&alias).kind(AvatarKind::Host);
-    //     let selected = active_remote_key.as_deref() == Some(entry.key.as_str());
-    //     activity = activity.child(rail_avatar(
-    //         ("sidebar-rail-host", index),
-    //         avatar,
-    //         alias.clone(),
-    //         selected,
-    //         cx.listener(move |this, _ev, _window, cx| {
-    //             this.open_host(index, cx);
-    //         }),
-    //     ));
-    // }
-    let _ = &active_remote_key;
-
     let add_entries = rail_add_menu_entries(
         shell
             .workspace_settings

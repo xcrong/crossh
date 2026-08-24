@@ -26,7 +26,7 @@ pub use policy::{
     ALL_PROTOCOLS, ALL_THINKING_LEVELS, AgentModel, AgentModelRef, AgentProvider,
     AgentReviewResult, AgentSettings, ResolvedModel, review_tool,
 };
-pub use presets::{OPENCODE_GO_ID, builtin_presets};
+pub use presets::{OPENCODE_ID, builtin_presets};
 pub use providers::complete_stream_with_options;
 pub use tools::{AgentToolDefinition, builtin_tools, execute_tool_with_cancel};
 
@@ -120,7 +120,7 @@ fn join_blocks<'a>(
 #[cfg(test)]
 use policy::{MAX_TOOL_OUTPUT_BYTES, parse_review_result};
 #[cfg(test)]
-use providers::{Utf8StreamDecoder, apply_model_options, apply_thinking_option, wire_messages};
+use providers::{apply_model_options, apply_thinking_option, wire_messages};
 #[cfg(test)]
 use serde_json::json;
 #[cfg(test)]

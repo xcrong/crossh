@@ -34,13 +34,11 @@ app_menu:
 
 settings:
   title: 设置
-  close: 关闭设置
   general: 通用
   terminal: 终端
   providers: 模型供应商
   agent: Agent
   agent_provider: 供应商
-  agent_provider_description: 管理多个 API 供应商，并在下方编辑当前选中的供应商。
   agent_connection: 连接配置
   agent_connection_method: 连接方式
   agent_base_url: Base URL
@@ -54,13 +52,7 @@ settings:
   agent_provider_add: 添加供应商
   agent_provider_remove: 删除当前供应商
   agent_provider_id: 供应商 ID
-  agent_provider_id_description: 模型引用所使用的稳定标识。
   agent_provider_name: 供应商名称
-  agent_provider_name_description: 模型选择器中显示的名称。
-  agent_protocol: API 协议
-  agent_protocol_description: 接口使用的报文格式，与供应商和模型相互独立。
-  agent_url: Chat Completions 地址
-  agent_url_description: 所选 API 协议对应的完整接口 URL。
   agent_models: 供应商模型
   agent_models_description: 管理当前供应商提供的模型。
   agent_model_add: 添加模型
@@ -68,17 +60,12 @@ settings:
   agent_model_edit: 编辑模型
   agent_model_editor_close: 关闭模型编辑
   agent_model_id: 模型 API ID
-  agent_model_id_description: 原样发送给当前供应商的模型标识。
   agent_model_name: 模型名称
-  agent_model_name_description: 模型选择器与 Agent 顶栏中显示的名称。
   agent_reasoning: 推理支持
-  agent_reasoning_description: 声明该模型能返回独立的 reasoning content。
   agent_reasoning_on: 已启用
   agent_reasoning_off: 已停用
   agent_context_window: 上下文窗口
-  agent_context_window_description: 直接输入该模型的最大上下文数字。
   agent_max_tokens: 最大输出 Token
-  agent_max_tokens_description: 直接输入该模型的最大输出 Token 数字。
   agent_active_model: 主模型
   agent_active_model_description: 用于对话、推理和发起工具调用的模型。
   agent_reviewer_model: 审批模型
@@ -86,15 +73,12 @@ settings:
   agent_rounds: 最大工具轮次
   agent_rounds_description: 每条提示允许连续执行的模型/工具迭代次数，默认为 200。
   agent_credential: API Key
-  agent_credential_description: 直接保存在 Crossh 设置中，优先于环境变量回退值使用。
   agent_credential_env: API Key 环境变量
-  agent_credential_env_description: 直接密钥留空时使用的可选回退；本地接口两项都可以留空。
   agent_api_key_show: 显示 API Key
   agent_api_key_hide: 隐藏 API Key
   agent_status: 配置
   agent_save: 保存 Agent 配置
   agent_save_description: 保存 Agent 使用的模型角色与执行策略。
-  provider_status: 供应商配置
   provider_save: 保存供应商配置
   provider_save_description: API Key 与模型信息会保存在本机 Crossh 设置文件中。
   about: 关于
@@ -149,14 +133,11 @@ settings:
 sidebar:
   active: 活跃
   bank: 主机
-  local: 本地
   no_active_connections: 暂无活动连接
   no_hosts_in_bank: 暂无主机
   no_projects: 暂无项目
   search_placeholder: 筛选主机或输入 user@host:port
   no_ssh_hosts: 未找到 ~/.ssh/config 中的主机
-  no_matches: 没有匹配项，按 Enter 快速连接
-  entry_count: "%{count} 个入口"
 
 tooltip:
   new_terminal: 新建终端
@@ -332,9 +313,6 @@ prompt:
   reject: 拒绝
   confirm: 确定
   cancel: 取消
-  passphrase_for: "请输入 %{path} 的私钥口令："
-  wrong_passphrase_retry: "私钥口令错误，请重试："
-  password_for: "请输入 %{user} 的密码："
 
 tab_close:
   title: 关闭标签页？
@@ -393,7 +371,6 @@ sftp:
   upload: 上传
   choose_file: 选择文件
   loading: 加载中…
-  file_too_large: "文件过大（%{size}，上限 %{limit}）"
   name_placeholder: 输入名称
 
 forward:
@@ -448,7 +425,6 @@ default_command:
   save: 保存
 
 compose:
-  title: 批量输入
   placeholder: 本地输入，按 Ctrl+Enter 发送到终端
   send: 发送
   send_tooltip: 发送（Ctrl+Enter）

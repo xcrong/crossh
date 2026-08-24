@@ -12,10 +12,9 @@ use gpui::{
 use crate::theme;
 
 /// 拖拽手柄所在的面板边缘。
-///
 /// 两侧都是真实契约：`Right`（默认）覆盖终端分栏、Git 变更/历史面板与
-/// 侧边栏；`Left` 被 Quick Commands 面板消费（`handle_left()`），该面板
-/// 固定在窗口右侧、手柄贴在面板左边缘。禁止按"单侧够用"收紧为单一
+/// 侧边栏；`Left` 由 `SidePanel::handle_side(SplitHandleSide::Left)` 显式
+/// 指定，用于手柄贴左边缘的面板。禁止按“单侧够用”收紧为单一
 /// 方向——新增侧向面板时直接选取变体即可，无需改动组件。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SplitHandleSide {
@@ -72,20 +71,10 @@ impl SplitResizer {
         self
     }
 
-    /// 显式指定手柄方向。通用 setter，`handle_left()` 便捷写法依此实现；
-    /// 除便捷写法外无直接外部消费点，保留为对称 API。
+    /// 显式指定手柄方向。
     pub fn handle_side(mut self, handle_side: SplitHandleSide) -> Self {
         self.handle_side = handle_side;
         self
-    }
-
-    /// 手柄贴左边缘的便捷写法。
-    ///
-    /// 生产消费者：Quick Commands 面板（`src/features/workspace/view.rs`
-    /// `render_quick_commands`），面板固定在窗口右侧、宽度随指针向右边缘
-    /// 的距离变化，故手柄必须贴左边缘。勿删。
-    pub fn handle_left(self) -> Self {
-        self.handle_side(SplitHandleSide::Left)
     }
 
     /// 在手柄内渲染 1px 视觉线（拖拽中/悬停高亮）。
@@ -219,7 +208,7 @@ mod tests {
         let resizer = SplitResizer::new("panel-resize", dragging, width)
             .min_width(10.)
             .max_width(420.)
-            .handle_left()
+            .handle_side(SplitHandleSide::Left)
             .line();
         assert_eq!(resizer.handle_side, SplitHandleSide::Left);
         assert!(resizer.line);

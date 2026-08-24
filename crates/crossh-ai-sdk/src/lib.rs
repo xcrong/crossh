@@ -1456,4 +1456,13 @@ mod tests {
         assert_eq!(wire.body["prompt"], "hello");
         assert_eq!(wire.headers[0].0, "x-provider");
     }
+
+    #[test]
+    fn utf8_stream_decoder_waits_for_split_codepoints() {
+        let mut decoder = Utf8StreamDecoder::default();
+        let bytes = "中".as_bytes();
+        assert_eq!(decoder.push(&bytes[..1]), "");
+        assert_eq!(decoder.push(&bytes[1..]), "中");
+        assert_eq!(decoder.finish(), "");
+    }
 }

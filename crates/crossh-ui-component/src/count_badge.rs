@@ -38,11 +38,6 @@ impl CountBadge {
         self
     }
 
-    pub fn height(mut self, height: impl Into<gpui::Pixels>) -> Self {
-        self.height = height.into();
-        self
-    }
-
     pub fn padding_x(mut self, padding: impl Into<gpui::Pixels>) -> Self {
         self.padding_x = padding.into();
         self
@@ -90,7 +85,6 @@ mod tests {
         let badge = CountBadge::new("3");
         assert_eq!(badge.label.as_ref(), "3");
         assert_eq!(badge.min_width, px(18.));
-        assert_eq!(badge.height, px(18.));
         assert_eq!(badge.padding_x, px(4.));
         assert_eq!(badge.padding_y, px(4.));
         assert!(!badge.unbounded);
@@ -101,12 +95,10 @@ mod tests {
         let badge = CountBadge::new(format!("{}/{}", 12, 50))
             .unbounded()
             .min_width(px(20.))
-            .height(px(20.))
             .padding_x(px(8.))
             .padding_y(px(4.));
         assert!(badge.unbounded);
         assert_eq!(badge.min_width, px(20.));
-        assert_eq!(badge.height, px(20.));
         assert_eq!(badge.padding_x, px(8.));
         assert_eq!(badge.padding_y, px(4.));
     }

@@ -27,18 +27,9 @@ pub enum PanelSide {
     Right,
 }
 
-/// 可选的面板度量聚合，便于调用方复用同一组常量。
-#[derive(Clone, Copy, Debug)]
-pub struct PanelMetrics {
-    pub min_width: f32,
-    pub max_width: f32,
-    pub rail_width: f32,
-}
-
 /// Rail 头像项尺寸与间距的公开常量，契约 8 要求 pitch = 30 + 4 = 34。
 pub const RAIL_AVATAR_SIZE: f32 = 30.0;
 pub const RAIL_AVATAR_GAP: f32 = 4.0;
-pub const RAIL_AVATAR_PITCH: f32 = RAIL_AVATAR_SIZE + RAIL_AVATAR_GAP;
 /// 透明占位色，用于未选中态的边框/背景。
 const TRANSPARENT: gpui::Rgba = gpui::Rgba {
     r: 0.0,
@@ -79,7 +70,6 @@ pub struct SidePanel {
     bg: gpui::Rgba,
     border_color: gpui::Rgba,
     line: bool,
-    handle_side: Option<SplitHandleSide>,
     children: Vec<AnyElement>,
 }
 
@@ -104,7 +94,6 @@ impl SidePanel {
             bg,
             border_color,
             line: false,
-            handle_side: None,
             children: Vec::new(),
         }
     }
@@ -145,44 +134,6 @@ impl SidePanel {
         self
     }
 
-    /// 显式指定手柄贴左边缘；通常由 `PanelSide::Right` 自动推导，保留为对称 API。
-    pub fn handle_left(self) -> Self {
-        self.handle_side(SplitHandleSide::Left)
-    }
-
-    pub fn handle_side(mut self, side: SplitHandleSide) -> Self {
-        self.handle_side = Some(side);
-        self
-    }
-
-    /// 推导有效手柄方向：显式设置优先，否则 Left→Right、Right→Left。
-    pub fn effective_handle_side(&self) -> SplitHandleSide {
-        if let Some(side) = self.handle_side {
-            side
-        } else {
-            match self.side {
-                PanelSide::Left => SplitHandleSide::Right,
-                PanelSide::Right => SplitHandleSide::Left,
-            }
-        }
-    }
-
-    /// 当前宽度经 clamp 后的实际渲染宽度；NaN 回退到 `min_width`。
-    pub fn resolved_width(&self) -> f32 {
-        clamp_panel_width(self.width.get(), self.min_width, self.max_width)
-    }
-
-    /// 展开态的 resolved 宽度；`expanded == false` 时按隐藏态计 0（不渲染面板时可用）。
-    /// 保留 `expanded` 参数以满足 spec 对 `resolved_width(&self, expanded: bool)` 的形态描述。
-    pub fn resolved_width_expanded(&self, expanded: bool) -> f32 {
-        if expanded { self.resolved_width() } else { 0.0 }
-    }
-
-    /// 静态 clamp 辅助：不依赖实例，常用于 `available_main_width` 之前的宽度换算。
-    pub fn clamp_width(value: f32, min_width: f32, max_width: f32) -> f32 {
-        clamp_panel_width(value, min_width, max_width)
-    }
-
     pub fn child(mut self, child: impl IntoElement) -> Self {
         self.children.push(child.into_any_element());
         self
@@ -197,7 +148,7 @@ impl SidePanel {
 impl RenderOnce for SidePanel {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let resolved = clamp_panel_width(self.width.get(), self.min_width, self.max_width);
-        let handle_side = self.effective_handle_side();
+        let handle_side = handle_side_for(self.side);
         let mut resizer =
             SplitResizer::new(self.id.clone(), self.dragging.clone(), self.width.clone())
                 .min_width(self.min_width)
@@ -221,6 +172,14 @@ impl RenderOnce for SidePanel {
             PanelSide::Right => outer.border_l_1(),
         };
         outer.children(self.children).child(resizer)
+    }
+}
+
+/// 手柄方向纯推导：Left 面板手柄贴右、Right 面板手柄贴左。
+fn handle_side_for(side: PanelSide) -> SplitHandleSide {
+    match side {
+        PanelSide::Left => SplitHandleSide::Right,
+        PanelSide::Right => SplitHandleSide::Left,
     }
 }
 
@@ -391,101 +350,43 @@ pub fn rail_status_badge(color: gpui::Rgba, border: gpui::Rgba) -> impl IntoElem
 #[cfg(test)]
 #[allow(non_snake_case)]
 mod tests {
-    use std::cell::Cell;
-    use std::rc::Rc;
-
-    use gpui::px;
-
     use super::{
-        PanelSide, RAIL_AVATAR_GAP, RAIL_AVATAR_PITCH, RAIL_AVATAR_SIZE, Rail, SidePanel,
-        available_main_width, clamp_panel_width,
+        PanelSide, RAIL_AVATAR_GAP, RAIL_AVATAR_SIZE, Rail, available_main_width,
+        clamp_panel_width, handle_side_for,
     };
     use crate::split_resizer::SplitHandleSide;
-
-    fn panel(side: PanelSide, value: f32, min: f32, max: f32) -> SidePanel {
-        let width = Rc::new(Cell::new(value));
-        let dragging = Rc::new(Cell::new(false));
-        let p = match side {
-            PanelSide::Left => SidePanel::left("test", width, dragging),
-            PanelSide::Right => SidePanel::right("test", width, dragging),
-        };
-        p.min_width(min).max_width(max)
-    }
+    use gpui::px;
 
     #[test]
-    fn spec_20260820_side_panel_rail__resolved_width_clamps_min_max() {
-        assert_eq!(
-            panel(PanelSide::Left, 100., 216., 360.).resolved_width(),
-            216.
-        );
-        assert_eq!(
-            panel(PanelSide::Left, 500., 216., 360.).resolved_width(),
-            360.
-        );
-        assert_eq!(
-            panel(PanelSide::Left, 300., 216., 360.).resolved_width(),
-            300.
-        );
-        assert_eq!(SidePanel::clamp_width(300., 216., 360.), 300.);
+    fn spec_20260820_side_panel_rail__clamp_panel_width_clamps_min_max() {
         assert_eq!(clamp_panel_width(100., 216., 360.), 216.);
+        assert_eq!(clamp_panel_width(500., 216., 360.), 360.);
+        assert_eq!(clamp_panel_width(300., 216., 360.), 300.);
     }
 
     #[test]
-    fn spec_20260820_side_panel_rail__resolved_width_handles_nan_negative_and_overflow() {
+    fn spec_20260820_side_panel_rail__clamp_panel_width_handles_nan_negative_and_overflow() {
         assert_eq!(clamp_panel_width(f32::NAN, 216., 360.), 216.);
         assert_eq!(clamp_panel_width(f32::INFINITY, 216., 360.), 360.);
         assert_eq!(clamp_panel_width(f32::NEG_INFINITY, 216., 360.), 216.);
         assert_eq!(clamp_panel_width(-100., 216., 360.), 216.);
         assert_eq!(clamp_panel_width(720., 216., 360.), 360.);
-        // 超出 max 2 倍仍被 clamp
-        assert_eq!(
-            panel(PanelSide::Left, 720., 216., 360.).resolved_width(),
-            360.
-        );
-        assert_eq!(
-            panel(PanelSide::Right, f32::NAN, 240., 460.).resolved_width(),
-            240.
-        );
     }
 
     #[test]
-    fn spec_20260820_side_panel_rail__rail_pitch_is_34() {
+    fn spec_20260820_side_panel_rail__rail_avatar_constants() {
         assert_eq!(RAIL_AVATAR_SIZE, 30.0);
         assert_eq!(RAIL_AVATAR_GAP, 4.0);
-        assert_eq!(RAIL_AVATAR_PITCH, 34.0);
-        assert_eq!(RAIL_AVATAR_SIZE + RAIL_AVATAR_GAP, RAIL_AVATAR_PITCH);
     }
 
     #[test]
     fn spec_20260820_side_panel_rail__drag_handle_side_left_defaults_to_right() {
-        let p = panel(PanelSide::Left, 250., 216., 360.);
-        assert_eq!(p.effective_handle_side(), SplitHandleSide::Right);
-        assert_eq!(p.side, PanelSide::Left);
+        assert_eq!(handle_side_for(PanelSide::Left), SplitHandleSide::Right);
     }
 
     #[test]
     fn spec_20260820_side_panel_rail__drag_handle_side_right_defaults_to_left() {
-        let p = panel(PanelSide::Right, 300., 240., 460.);
-        assert_eq!(p.effective_handle_side(), SplitHandleSide::Left);
-        assert_eq!(p.side, PanelSide::Right);
-    }
-
-    #[test]
-    fn spec_20260820_side_panel_rail__handle_left_overrides_side() {
-        let width = Rc::new(Cell::new(300.));
-        let dragging = Rc::new(Cell::new(false));
-        let p = SidePanel::left("p", width, dragging)
-            .min_width(216.)
-            .max_width(360.)
-            .handle_left();
-        assert_eq!(p.effective_handle_side(), SplitHandleSide::Left);
-        let width = Rc::new(Cell::new(300.));
-        let dragging = Rc::new(Cell::new(false));
-        let p2 = SidePanel::right("p2", width, dragging)
-            .min_width(240.)
-            .max_width(460.)
-            .handle_side(SplitHandleSide::Right);
-        assert_eq!(p2.effective_handle_side(), SplitHandleSide::Right);
+        assert_eq!(handle_side_for(PanelSide::Right), SplitHandleSide::Left);
     }
 
     #[test]
@@ -502,15 +403,5 @@ mod tests {
         assert_eq!(rail_left.side, PanelSide::Left);
         let rail_right = Rail::right("rail-right", 40.);
         assert_eq!(rail_right.side, PanelSide::Right);
-    }
-
-    #[test]
-    fn spec_20260820_side_panel_rail__resolved_width_expanded_flag() {
-        let p = panel(PanelSide::Left, 300., 216., 360.);
-        assert_eq!(p.resolved_width_expanded(true), 300.);
-        assert_eq!(p.resolved_width_expanded(false), 0.0);
-        let p2 = panel(PanelSide::Left, 50., 216., 360.);
-        assert_eq!(p2.resolved_width_expanded(true), 216.);
-        assert_eq!(p2.resolved_width_expanded(false), 0.0);
     }
 }

@@ -2,8 +2,6 @@
 //!
 //! Threshold: proactive when context usage > 75%. Overflow: hard limit.
 
-use crate::Message;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompactionReason {
     Threshold,
@@ -19,12 +17,6 @@ impl CompactionReason {
             Self::Manual => "manual",
         }
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct CompactionDecision {
-    pub reason: Option<CompactionReason>,
-    pub tokens_before: usize,
 }
 
 pub fn should_compact(tokens_used: usize, context_limit: usize) -> Option<CompactionReason> {
@@ -91,17 +83,6 @@ pub fn summarize_for_compaction(
         removed,
     }
 }
-/// Legacy helper for tests that only have a slice of messages.
-/// Derive a temporary session to compute the entry id correctly.
-pub fn summarize_for_compaction_messages(
-    messages: &[Message],
-    keep_recent_tokens: usize,
-    reason: CompactionReason,
-) -> CompactionResult {
-    let mut tmp = crate::session::AgentSession::new("/tmp");
-    tmp.messages = messages.to_vec();
-    summarize_for_compaction(&tmp, keep_recent_tokens, reason)
-}
 
 #[cfg(test)]
 mod tests {
@@ -122,7 +103,9 @@ mod tests {
             Message::new(Role::User, "b".repeat(4000)),
             Message::new(Role::User, "c".repeat(4000)),
         ];
-        let r = summarize_for_compaction_messages(&msgs, 1000, CompactionReason::Threshold);
+        let mut session = crate::session::AgentSession::new("/tmp");
+        session.messages = msgs;
+        let r = summarize_for_compaction(&session, 1000, CompactionReason::Threshold);
         assert!(r.removed > 0);
         assert!(!r.summary.is_empty());
         assert!(r.first_kept_entry_id.contains("-m"));

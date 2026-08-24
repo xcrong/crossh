@@ -64,52 +64,6 @@ impl SharedTextState {
     }
 }
 
-/// 建议的收敛形态：把 3 个 `render_*_editor` 的 6 个差异参数收口为两段配置。
-///
-/// - `ModalTextInput` 承载输入框差异（id / placeholder / 是否需要横向滚动）
-/// - `ModalDialogActions` 承载对话框差异（标题 / 图标 / 宽度 / 主按钮文案）
-///
-/// 三个 `render_*_editor` 通过 `render_modal_single_line_editor` 收敛到一处，
-/// 仅此 6 个参数不同，其余 div 样式/选中高亮/caret/marked/ime 均由 `ModalField` 统一。
-pub struct ModalTextInput {
-    pub id: SharedString,
-    pub focus: FocusHandle,
-    pub state: SharedTextState,
-    pub placeholder: SharedString,
-    pub scroll: Option<gpui::ScrollHandle>,
-}
-
-impl ModalTextInput {
-    pub fn new(
-        id: impl Into<SharedString>,
-        focus: FocusHandle,
-        state: SharedTextState,
-        placeholder: impl Into<SharedString>,
-    ) -> Self {
-        Self {
-            id: id.into(),
-            focus,
-            state,
-            placeholder: placeholder.into(),
-            scroll: None,
-        }
-    }
-
-    pub fn scrollable(mut self, handle: gpui::ScrollHandle) -> Self {
-        self.scroll = Some(handle);
-        self
-    }
-}
-
-pub struct ModalDialogActions {
-    pub title: SharedString,
-    pub icon: crossh_ui::icons::IconName,
-    pub width: gpui::Pixels,
-    pub scrim_id: SharedString,
-    pub card_id: SharedString,
-    pub primary_label: SharedString,
-}
-
 impl<V> ModalField<V> {
     pub fn new(id: impl Into<ElementId>, focus: FocusHandle, state: &SharedTextState) -> Self {
         Self {
@@ -133,16 +87,6 @@ impl<V> ModalField<V> {
     /// 仅 quick_command 等需要横向滚动的模态使用；无滚动的 rename/default 保持无 scroll。
     pub fn scrollable(mut self, handle: gpui::ScrollHandle) -> Self {
         self.scroll = Some(handle);
-        self
-    }
-
-    pub fn caret_height(mut self, height: impl Into<gpui::Pixels>) -> Self {
-        self.caret_height = height.into();
-        self
-    }
-
-    pub fn text_size(mut self, size: impl Into<gpui::Pixels>) -> Self {
-        self.text_size = size.into();
         self
     }
 
@@ -323,13 +267,9 @@ mod tests {
         let field: ModalField<()> = ModalField::new("prompt", focus(cx), &s)
             .placeholder("Type here")
             .scrollable(handle.clone())
-            .caret_height(px(18.))
-            .text_size(px(12.))
             .on_key_down(|_, _, _| {});
         assert_eq!(field.placeholder.as_deref(), Some("Type here"));
         assert!(field.scroll.is_some());
-        assert_eq!(field.caret_height, px(18.));
-        assert_eq!(field.text_size, px(12.));
         assert!(field.on_key_down.is_some());
     }
 

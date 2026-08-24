@@ -110,7 +110,7 @@ impl Default for AgentSettings {
 }
 
 impl AgentSettings {
-    /// 将内置预设（目前为 `opencode-go` 三协议）合并到当前设置中。
+    /// 将内置预设（单供应商 `opencode`，协议已下沉到 model 层）合并到当前设置中。
     /// 已存在同 `id` 的用户配置优先，预设不会覆盖；已存在的预设供应商模型
     /// 会按 `validate` 规则自动修正 `max_tokens` 以避免旧缓存导致启动失败。
     pub fn with_builtin_presets(mut self) -> Self {

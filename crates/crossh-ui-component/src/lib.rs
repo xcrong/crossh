@@ -38,23 +38,23 @@ pub mod theme {
 
 pub use avatar::{Avatar, AvatarKind};
 pub use badge::{Badge, BadgeTone};
-pub use banner::{Banner, BannerLayout, BannerTone, danger_banner, warning_banner};
+pub use banner::{Banner, BannerLayout, BannerTone};
 pub use button::{Button, ButtonSize, ButtonVariant};
 pub use count_badge::CountBadge;
 pub use hint::Hint;
 pub use layout::{h_flex, scroll_y};
-pub use list_pane::{ListPane, PaneFrame, list_pane, pane_operation_error};
+pub use list_pane::{list_pane, pane_operation_error};
 pub use list_state::{ListState, list_empty, list_state_body};
 pub use modal::ModalDialog;
-pub use modal_field::{ModalDialogActions, ModalField, ModalTextInput, SharedTextState};
+pub use modal_field::{ModalField, SharedTextState};
 pub use pane_toolbar::{PaneToolbar, pane_toolbar};
 pub use panel::{
-    PanelSide, RAIL_AVATAR_GAP, RAIL_AVATAR_PITCH, RAIL_AVATAR_SIZE, Rail, SidePanel,
+    PanelSide, RAIL_AVATAR_GAP, RAIL_AVATAR_SIZE, Rail, SidePanel,
     available_main_width as panel_available_main_width, clamp_panel_width, rail_avatar,
     rail_avatar_wide, rail_status_badge,
 };
 pub use select::{Select, SelectOption};
-pub use selectable_row::{SelectableRow, selectable_row};
+pub use selectable_row::selectable_row;
 pub use split_resizer::{SplitHandleSide, SplitResizer};
 pub use status_bar::StatusBar;
 pub use status_dot::StatusDot;

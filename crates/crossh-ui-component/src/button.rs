@@ -11,12 +11,6 @@ use crate::theme;
 use crate::tooltip::Tooltip;
 
 /// Visual intent for a button.
-///
-/// `Info`/`Warning`/`Success` currently have no production construction
-/// points but are intentionally kept as reserved semantic variants: the
-/// variant set is a component API contract aligned with the theme tones
-/// (see ADR 0013's ToastTone argument — tone mapping belongs to the shared
-/// component layer so features can pick a tone without touching theme code).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ButtonVariant {
     #[default]
@@ -25,9 +19,6 @@ pub enum ButtonVariant {
     Secondary,
     Ghost,
     Danger,
-    Info,
-    Warning,
-    Success,
     Link,
 }
 
@@ -82,27 +73,6 @@ impl ButtonVariant {
                 border: theme::danger(),
                 hover_background: theme::danger_hover(),
                 active_background: theme::danger_hover(),
-            },
-            Self::Info => ButtonStyle {
-                background: theme::info(),
-                foreground: theme::canvas(),
-                border: theme::info(),
-                hover_background: theme::info(),
-                active_background: theme::info(),
-            },
-            Self::Warning => ButtonStyle {
-                background: theme::warning(),
-                foreground: theme::canvas(),
-                border: theme::warning(),
-                hover_background: theme::warning(),
-                active_background: theme::warning(),
-            },
-            Self::Success => ButtonStyle {
-                background: theme::accent(),
-                foreground: theme::canvas(),
-                border: theme::accent(),
-                hover_background: theme::accent_hover(),
-                active_background: theme::accent_hover(),
             },
             Self::Link => ButtonStyle {
                 background: transparent_black().into(),

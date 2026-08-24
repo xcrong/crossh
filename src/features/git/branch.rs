@@ -120,7 +120,6 @@ mod tests {
             ahead: 0,
             behind: 0,
             upstream_gone: false,
-            commit: "1234567".to_string(),
             subject: format!("Commit for {name}"),
         }
     }

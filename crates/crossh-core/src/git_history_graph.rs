@@ -16,12 +16,10 @@ pub struct HistoryGraphEdge {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryGraphRow {
-    pub commit_id: String,
     pub node_lane: usize,
     pub node_color: usize,
     pub node_has_incoming: bool,
     pub incoming_edges: Vec<HistoryGraphEdge>,
-    pub lane_count: usize,
     pub edges: Vec<HistoryGraphEdge>,
 }
 
@@ -130,15 +128,12 @@ pub fn layout_history(entries: &[CommitSummary]) -> Vec<HistoryGraphRow> {
         }
 
         rows.push(HistoryGraphRow {
-            commit_id: entry.id.clone(),
             node_lane,
             node_color,
             node_has_incoming,
             incoming_edges,
-            lane_count: before.len().max(next.len()).max(node_lane + 1),
             edges,
         });
-        lanes = next;
     }
 
     rows
@@ -172,7 +167,6 @@ mod tests {
 
         assert_eq!(rows[0].node_lane, 0);
         assert!(!rows[0].node_has_incoming);
-        assert_eq!(rows[0].lane_count, 2);
         assert_eq!(
             rows[0].edges,
             vec![

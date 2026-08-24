@@ -126,11 +126,6 @@ impl TabItem {
         self
     }
 
-    pub fn max_label_width(mut self, width: impl Into<Pixels>) -> Self {
-        self.max_label_width = width.into();
-        self
-    }
-
     pub fn child(mut self, child: impl IntoElement) -> Self {
         self.children.push(child.into_any_element());
         self

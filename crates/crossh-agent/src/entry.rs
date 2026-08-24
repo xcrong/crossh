@@ -1,6 +1,6 @@
 //! Tree-shaped session entries, aligned with pi-agent's `SessionEntry`.
 
-use crate::{Message, ThinkingLevel};
+use crate::Message;
 use serde::{Deserialize, Serialize};
 
 /// A single node in the session tree.
@@ -51,21 +51,6 @@ impl SessionEntry {
             data: SessionEntryData::Message { message },
         }
     }
-
-    pub fn is_message(&self) -> bool {
-        matches!(self.data, SessionEntryData::Message { .. })
-    }
-
-    pub fn as_message(&self) -> Option<&Message> {
-        match &self.data {
-            SessionEntryData::Message { message } => Some(message),
-            _ => None,
-        }
-    }
-}
-
-pub fn thinking_level_label(level: ThinkingLevel) -> String {
-    level.label().to_string()
 }
 
 #[cfg(test)]

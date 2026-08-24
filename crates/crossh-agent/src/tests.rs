@@ -678,15 +678,6 @@ fn explicit_thinking_options_map_to_provider_wire_fields() {
 }
 
 #[test]
-fn utf8_stream_decoder_waits_for_split_codepoints() {
-    let mut decoder = Utf8StreamDecoder::default();
-    let bytes = "中".as_bytes();
-    assert_eq!(decoder.push(&bytes[..1]), "");
-    assert_eq!(decoder.push(&bytes[1..]), "中");
-    assert_eq!(decoder.finish(), "");
-}
-
-#[test]
 fn fallback_grep_uses_regular_expressions() {
     let workspace = tempfile::tempdir().unwrap();
     fs::write(
