@@ -280,6 +280,12 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
             .map(|tab| tab.host_key.clone()),
         _ => None,
     };
+    let mut project_name_counts = BTreeMap::new();
+    for dir in shell.workspace.sessions.local_dirs.values() {
+        *project_name_counts
+            .entry(local_dir_name_key(&dir.project_dir))
+            .or_insert(0usize) += 1;
+    }
     let mut activity = div()
         .id("sidebar-rail-activity")
         .w_full()
@@ -299,13 +305,25 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
     {
         let project_dir = dir.project_dir.clone();
         let label = local_dir_name(&project_dir);
+        let duplicate = project_name_counts
+            .get(&local_dir_name_key(&project_dir))
+            .copied()
+            .unwrap_or(0)
+            > 1;
+        let avatar_source = if duplicate {
+            local_dir_label(&project_dir, true)
+        } else {
+            label.clone()
+        };
         let project_id = project_dir.to_string_lossy().to_string();
-        let avatar = Avatar::new(&label).kind(AvatarKind::Project);
+        let tooltip_label = local_dir_label(&project_dir, duplicate);
+        let tooltip = SharedString::from(format!("{tooltip_label} — {project_id}"));
+        let avatar = Avatar::new(&avatar_source).kind(AvatarKind::Project);
         let selected = is_active_local_dir(shell, dir);
         activity = activity.child(rail_avatar(
             SharedString::from(format!("sidebar-rail-project-{project_id}")),
             avatar,
-            label,
+            tooltip,
             selected,
             cx.listener(move |this, _ev, _window, cx| {
                 this.activate_local_dir(project_dir.clone(), cx);
