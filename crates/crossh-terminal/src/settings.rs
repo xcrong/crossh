@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_FONT_SIZE: f32 = 14.0;
-pub const DEFAULT_SCROLLBACK: usize = 1000;
+pub const DEFAULT_SCROLLBACK: usize = 10_000;
 pub const MIN_FONT_SIZE: f32 = 10.0;
 pub const MAX_FONT_SIZE: f32 = 24.0;
 pub const MIN_SCROLLBACK: usize = 100;
