@@ -161,8 +161,12 @@ impl Render for AppShell {
                 .child(workspace)
                 .child(status_bar);
 
+        let system_monitor_card =
+            crate::features::workspace::system_monitor::render_system_monitor_card(
+                self, window, cx,
+            );
+        root = root.children(system_monitor_card);
         root = root.children(self.render_toaster());
-
         if matches!(
             prompt,
             PromptDisplay::HostKey { .. } | PromptDisplay::Credential { .. }

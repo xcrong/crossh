@@ -13,6 +13,7 @@ dirs = "6"
 glob = "0.3"
 libc = "0.2"
 shellexpand = "3"
+sysinfo = "0.37"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 tempfile = "3"

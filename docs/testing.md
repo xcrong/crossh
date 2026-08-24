@@ -61,6 +61,7 @@ ADR 0012）：spec 的行为契约条目就是测试的输入，测试名带 spe
 | Editor | 本地会话状态栏「在外部编辑器中打开」按钮以当次点击的 `cwd` 为目标启动分离进程（显式 `editor_command` 优先，否则按代码内置的固定候选列表在 PATH 检测首个可执行命令，空白命令视为未配置回退检测），无可用编辑器显示 Error Toast（`toast.editor_not_found`），启动失败显示 Error Toast（`toast.editor_spawn_failed`），编辑器设置 round-trip 持久化且默认值不写入 settings.toml；设置中编辑器选择是下拉框，选项为展开时实时自动检测的已安装编辑器（按固定候选顺序、去重、取首个命中路径）加固定「自动检测」项，选择即写入/清除 `editor_command`，检测候选列表由 `editor_launcher::DEFAULT_EDITOR_PRIORITY` 常量承载、不可配置，旧配置中的 `editor_priority` 字段被忽略 |
 | Compose | 终端 compose 输入条：状态栏开关展开/收起于 `status_bar` 之上、`sidebar` 与 `quick_commands` 之间，宽度受 `available_main_width` 约束；`Ctrl/Cmd+Enter` 批量投递整段文本并回车执行，`Shift+Enter` 换行；本地无延迟编辑，经 `WorkspacePane::run_command` / `send_text` 投递（见 `docs/specs/20260820-terminal-compose-bar.md`，`in-progress` 待收尾） |
 | PinnedTab | 固定标签默认命令：固定标签可配置默认命令，随项目恢复时按需执行；右键菜单提供编辑/重载/清除（见 `docs/specs/20260821-pinned-tab-default-command.md`，`in-progress` 待收尾） |
+| Monitor | 系统监视器：状态栏右侧 Activity 按钮切换本机 CPU / Memory / 主磁盘 / Network 浮动卡片，浮层定位于状态栏上方靠右（`absolute`，不挤压终端布局）；可见时每 2 秒刷新，隐藏后采样停止且过期写入被拒绝；不可用/回绕数据以 `--` 占位；默认隐藏不持久化；`crossh-core::system_stats` 零 `gpui` 依赖（见 `docs/specs/20260824-system-monitor-card.md`） |
 | Terminal | chunk 边界等价，alternate screen/mouse/keyboard mode，resize，退出和通知 |
 | Connection | 连接状态，host-key/credential 应答只能消费一次，断线后可重新获取连接；认证候选生成只含 Key/Agent（显式密钥 → 默认密钥 → agent 顺序），密码认证经 UI 凭据兜底 |
 | SFTP | list/read/write/upload/download，dirty editor，保存失败，关闭确认 |

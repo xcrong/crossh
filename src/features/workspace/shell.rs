@@ -54,6 +54,7 @@ use crossh_core::commands::{
 use crossh_core::config::{HostConfig, SshConfig};
 use crossh_core::git::{pull, push};
 use crossh_core::git_status::inspect;
+use crossh_core::system_stats::{SystemMonitorState, SystemSampler};
 use crossh_ssh::{HostKeyDecision, RemoteCommandStatus};
 use crossh_terminal::settings::TerminalSettings;
 use crossh_ui::context_menu::{ContextMenuState, MenuEntry, ShellMenuAction, render_context_menu};
@@ -184,6 +185,9 @@ pub struct AppShell {
     _git_status_refresh_task: Option<Task<()>>,
     /// 最近一次状态栏 Git 同步操作的进行/错误状态，按会话独立记录。
     pub(crate) git_sync: BTreeMap<LocalSessionId, GitSyncState>,
+    pub(crate) system_monitor: SystemMonitorState,
+    system_sampler: Option<SystemSampler>,
+    _system_monitor_task: Option<Task<()>>,
     quit_confirmation_open: bool,
     shutdown_in_progress: bool,
     /// 标签页关闭确认框是否已打开，防止重复弹出。
@@ -284,6 +288,9 @@ impl AppShell {
             compose_scroll: gpui::ScrollHandle::new(),
             _git_status_refresh_task: None,
             git_sync: BTreeMap::new(),
+            system_monitor: SystemMonitorState::new(),
+            system_sampler: None,
+            _system_monitor_task: None,
             quit_confirmation_open: false,
             shutdown_in_progress: false,
             tab_close_confirmation_open: false,
@@ -1387,6 +1394,56 @@ impl AppShell {
                 }
             }
         }));
+    }
+
+    pub(crate) fn toggle_system_monitor(&mut self, cx: &mut Context<Self>) {
+        self.system_monitor.toggle();
+        if self.system_monitor.visible {
+            self.system_sampler = Some(SystemSampler::new());
+            self.start_system_monitor_task(cx);
+        } else {
+            self.system_sampler = None;
+            self._system_monitor_task.take();
+        }
+        cx.notify();
+    }
+
+    fn start_system_monitor_task(&mut self, cx: &mut Context<Self>) {
+        self._system_monitor_task.take();
+        let expected_generation = self.system_monitor.generation;
+        self._system_monitor_task = Some(cx.spawn(async move |weak, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(2))
+                    .await;
+                let now = std::time::Instant::now();
+                let should_continue = weak
+                    .update(cx, |this, cx| {
+                        if this.system_monitor.generation != expected_generation
+                            || !this.system_monitor.visible
+                        {
+                            return false;
+                        }
+                        if let Some(sampler) = this.system_sampler.as_mut() {
+                            let snapshot = sampler.sample(now);
+                            this.system_monitor
+                                .apply_snapshot(snapshot, expected_generation);
+                        }
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+                if !should_continue {
+                    break;
+                }
+            }
+        }));
+        let now = std::time::Instant::now();
+        if let Some(sampler) = self.system_sampler.as_mut() {
+            let snapshot = sampler.sample(now);
+            let generation = self.system_monitor.generation;
+            self.system_monitor.apply_snapshot(snapshot, generation);
+        }
     }
 
     /// 把目录记入「最近本地目录」历史（最近优先、去重、截断到上限）并持久化。

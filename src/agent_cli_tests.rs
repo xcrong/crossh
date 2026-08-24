@@ -15,6 +15,8 @@ fn test_settings() -> AgentSettings {
         name: "Local".into(),
         api_key_env: String::new(),
         api_key: String::new(),
+        protocol: None,
+        url: None,
         models: vec![AgentModel {
             id: "qwen3-coder".into(),
             name: "qwen3-coder".into(),

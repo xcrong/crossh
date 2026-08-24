@@ -49,7 +49,7 @@ impl From<SettingsFile> for SettingsSnapshot {
                 check_on_startup: file.updates_check_on_startup,
             },
             workspace: file.workspace.normalized(),
-            agent: file.agent,
+            agent: file.agent.migrate_legacy_provider_fields(),
         }
     }
 }

@@ -46,14 +46,26 @@ pub struct AgentProvider {
     pub api_key_env: String,
     #[serde(default)]
     pub api_key: String,
+    /// 旧版 provider 级协议/地址，保留仅用于兼容 `settings.toml` 中仍以 provider 为单位
+    /// 存放的旧数据；新版已下沉到 model 级，序列化时不再写入。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<Protocol>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     pub models: Vec<AgentModel>,
+}
+
+fn default_protocol() -> Protocol {
+    Protocol::OpenAiChat
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct AgentModel {
     pub id: String,
     pub name: String,
+    #[serde(default = "default_protocol")]
     pub protocol: Protocol,
+    #[serde(default)]
     pub url: String,
     #[serde(default)]
     pub reasoning: bool,
@@ -171,6 +183,32 @@ impl AgentSettings {
         self.follow_up_mode = self.follow_up_mode.trim().to_ascii_lowercase();
         if self.follow_up_mode != "all" {
             self.follow_up_mode = "one-at-a-time".into();
+        }
+        self
+    }
+
+    /// 将旧版 `settings.toml` 中 provider 级 `protocol/url` 迁移到 model 级。
+    /// 旧文件里 `[[agent.providers.models]]` 缺少 `protocol/url`，而 provider 仍存
+    /// 有这两个字段；新版要求 model 必备。迁移以 `url.is_empty()` 为遗留信号：
+    /// 仅当 model url 为空时才用 provider 的值回填，避免覆盖用户显式配置。
+    pub fn migrate_legacy_provider_fields(mut self) -> Self {
+        for provider in &mut self.providers {
+            let provider_protocol = provider.protocol;
+            let provider_url = provider.url.clone();
+            for model in &mut provider.models {
+                if model.url.trim().is_empty() {
+                    if let Some(url) = provider_url.as_ref()
+                        && !url.trim().is_empty()
+                    {
+                        model.url = url.trim().to_string();
+                    }
+                    if let Some(proto) = provider_protocol {
+                        model.protocol = proto;
+                    }
+                }
+            }
+            provider.protocol = None;
+            provider.url = None;
         }
         self
     }

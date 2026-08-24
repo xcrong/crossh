@@ -8,6 +8,8 @@ fn configured_settings() -> AgentSettings {
         name: "Local".into(),
         api_key_env: String::new(),
         api_key: String::new(),
+        protocol: None,
+        url: None,
         models: vec![AgentModel {
             id: "qwen3-coder".into(),
             name: "qwen3-coder".into(),
@@ -95,6 +97,8 @@ fn multi_provider_models_resolve_independently() {
         name: "Reviewer".into(),
         api_key_env: "REVIEWER_API_KEY".into(),
         api_key: String::new(),
+        protocol: None,
+        url: None,
         models: vec![AgentModel {
             id: "review-model".into(),
             name: "Review Model".into(),

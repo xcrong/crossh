@@ -16,6 +16,7 @@ pub(crate) mod settings;
 pub(crate) mod shell;
 pub(crate) mod sidebar;
 pub(crate) mod status;
+pub(crate) mod system_monitor;
 pub(crate) mod tab_strip;
 pub(crate) mod toaster;
 pub(crate) mod toaster_view;

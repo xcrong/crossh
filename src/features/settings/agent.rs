@@ -570,6 +570,8 @@ impl SettingsWindow {
             name: format!("Provider {number}"),
             api_key_env: String::new(),
             api_key: String::new(),
+            protocol: None,
+            url: None,
             models: vec![AgentModel {
                 id: "model".into(),
                 name: "Model".into(),

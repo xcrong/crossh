@@ -38,6 +38,8 @@ pub fn builtin_presets() -> Vec<AgentProvider> {
         name: "opencode".into(),
         api_key_env: "OPENCODE_API_KEY".into(),
         api_key: String::new(),
+        protocol: None,
+        url: None,
         models,
     }]
 }

@@ -541,8 +541,28 @@ pub(crate) fn render_workspace_status_bar(
         }
     }
 
-    StatusBar::new("workspace-status-bar")
-        .child(left)
+    let right = div()
+        .flex()
+        .items_center()
+        .gap_1()
+        .child(
+            Button::new("status-system-monitor")
+                .size(ButtonSize::Icon(px(22.)))
+                .variant(ButtonVariant::Ghost)
+                .selected(shell.system_monitor.visible)
+                .icon(icons::icon(icons::IconName::Activity, 13.).text_color(
+                    if shell.system_monitor.visible {
+                        theme::accent()
+                    } else {
+                        theme::muted_text()
+                    },
+                ))
+                .tooltip(i18n::text("tooltip.system_monitor"))
+                .on_click(cx.listener(|this, _ev, _window, cx| {
+                    this.toggle_system_monitor(cx);
+                }))
+                .into_any_element(),
+        )
         .child(render_status_bar_toggle(
             "status-quick-commands",
             icons::IconName::PanelRight,
@@ -550,7 +570,11 @@ pub(crate) fn render_workspace_status_bar(
             shell.workspace_settings.show_quick_commands,
             AppShell::toggle_quick_commands,
             cx,
-        ))
+        ));
+
+    StatusBar::new("workspace-status-bar")
+        .child(left)
+        .child(right)
         .into_any_element()
 }
 

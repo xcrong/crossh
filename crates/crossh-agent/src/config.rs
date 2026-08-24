@@ -29,7 +29,10 @@ pub fn load() -> AgentSettings {
     };
     match fs::read_to_string(path) {
         Ok(contents) => match toml::from_str::<AgentSettingsFile>(&contents) {
-            Ok(file) => file.agent.with_builtin_presets(),
+            Ok(file) => file
+                .agent
+                .migrate_legacy_provider_fields()
+                .with_builtin_presets(),
             Err(error) => {
                 log::warn!("failed to parse agent settings: {error}");
                 AgentSettings::default().with_builtin_presets()

@@ -147,6 +147,7 @@ define_icons! {
     ArrowLeft => "icons/arrow-left.svg",
     ArrowLeftRight => "icons/arrow-left-right.svg",
     ArrowUp => "icons/arrow-up.svg",
+    Activity => "icons/activity.svg",
     Bot => "icons/bot.svg",
     Check => "icons/check.svg",
     ChevronDown => "icons/chevron-down.svg",
