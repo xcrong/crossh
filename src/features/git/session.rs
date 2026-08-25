@@ -429,11 +429,7 @@ impl GitSession {
             .iter()
             .filter(|change| {
                 !change.staged
-                    && !matches!(
-                        change.status,
-                        crossh_core::git::ChangeStatus::Untracked
-                            | crossh_core::git::ChangeStatus::Conflict
-                    )
+                    && !matches!(change.status, crossh_core::git::ChangeStatus::Conflict)
                     && self.selected_changes.contains(&ChangeKey::from(*change))
             })
             .map(|change| change.path.clone())
@@ -451,11 +447,7 @@ impl GitSession {
                     .find(|change| ChangeKey::from(*change) == *key)
                     .is_some_and(|change| {
                         !change.staged
-                            && !matches!(
-                                change.status,
-                                crossh_core::git::ChangeStatus::Untracked
-                                    | crossh_core::git::ChangeStatus::Conflict
-                            )
+                            && !matches!(change.status, crossh_core::git::ChangeStatus::Conflict)
                     })
             })
     }

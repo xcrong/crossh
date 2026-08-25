@@ -886,7 +886,7 @@ impl GitWindow {
                 .flex_1()
                 .size_full()
                 .min_w_0()
-                .font_family("Zed Mono")
+                .font_family("Lilex")
                 .with_sizing_behavior(ListSizingBehavior::Auto)
                 .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
                 .into_any_element()
@@ -1205,7 +1205,7 @@ fn render_diff_line(
                     .px_2()
                     .flex_shrink_0()
                     .whitespace_nowrap()
-                    .text_xs()
+                    .text_sm()
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(foreground)
                     .child(SharedString::from(line.text.clone())),
@@ -1216,7 +1216,6 @@ fn render_diff_line(
     }
     let number = |value: Option<u32>| value.map(|n| n.to_string()).unwrap_or_default();
     div()
-        .min_w(content_width)
         .h(px(DIFF_ROW_HEIGHT))
         .flex_none()
         .flex()
@@ -1230,7 +1229,7 @@ fn render_diff_line(
                 .flex_shrink_0()
                 .px_2()
                 .whitespace_nowrap()
-                .text_xs()
+                .text_sm()
                 .text_color(foreground)
                 .child(SharedString::from(line.text.clone())),
         )

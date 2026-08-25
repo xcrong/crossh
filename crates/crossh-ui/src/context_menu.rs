@@ -187,7 +187,7 @@ pub fn clamp_menu_position<A>(
             y = (viewport.height.as_f32() - height - MENU_PADDING).max(0.0);
         }
     }
-    Point::new(px(x), px(y))
+    Point::new(px(x.round()), px(y.round()))
 }
 
 /// 渲染 scrim + 菜单。scrim 覆盖拥有者根 div，点击任意处（左/右键）关闭。
@@ -233,8 +233,8 @@ pub fn render_context_menu<A: Clone + 'static, T: 'static>(
     let mut menu = div()
         .id("ctx-menu")
         .absolute()
-        .left(px(relative.x.as_f32()))
-        .top(px(relative.y.as_f32()))
+        .left(px(relative.x.as_f32().round()))
+        .top(px(relative.y.as_f32().round()))
         .w(px(CONTEXT_MENU_WIDTH))
         .max_h(px(max_height))
         .p_1()
@@ -293,12 +293,10 @@ pub fn render_context_menu<A: Clone + 'static, T: 'static>(
             .flex()
             .items_center()
             .gap_2()
-            .rounded(px(theme::RADIUS_SM))
-            .text_xs()
-            .text_color(if danger {
-                theme::danger()
-            } else if disabled {
+            .text_color(if disabled {
                 theme::faint_text()
+            } else if danger {
+                theme::danger()
             } else {
                 theme::text()
             });

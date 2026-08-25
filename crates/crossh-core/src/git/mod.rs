@@ -292,14 +292,41 @@ pub fn unstage_hunk(cwd: &Path, entry: &FileChange, hunk_index: usize) -> Result
 
 /// 丢弃指定路径的工作区修改，但保留索引中的内容。
 ///
-/// 调用方应先确认路径是已跟踪的工作区改动；未跟踪文件不属于该操作。
+/// 已跟踪文件通过 `git restore --worktree` 还原；未跟踪文件通过 `git clean -f -d`
+/// 删除，必要时回退到文件系统直接删除以覆盖被忽略文件的边界情况。
 pub fn discard_worktree(cwd: &Path, paths: &[String]) -> Result<(), GitError> {
     if paths.is_empty() {
         return Ok(());
     }
-    run_git_paths(cwd, &["restore", "--worktree", "--"], paths)
+    // 混合批次（已跟踪 + 未跟踪）下，批量 restore 会因未跟踪路径而整体失败，
+    // 因此逐路径处理，确保已跟踪文件的还原不受未跟踪文件影响。
+    for path in paths {
+        let single = vec![path.clone()];
+        let restore = run_git_paths(cwd, &["restore", "--worktree", "--"], &single);
+        if restore.is_ok() {
+            continue;
+        }
+        let clean = run_git_paths(cwd, &["clean", "-f", "-d", "--"], &single);
+        if clean.is_ok() {
+            let full = cwd.join(path);
+            if !full.exists() {
+                continue;
+            }
+            // `git clean` 对被忽略的未跟踪文件可能不生效，回退到直接文件系统删除。
+            let fs_result = if full.is_dir() {
+                std::fs::remove_dir_all(&full)
+            } else {
+                std::fs::remove_file(&full)
+            };
+            if fs_result.is_ok() && !full.exists() {
+                continue;
+            }
+        }
+        // 两种方式均未成功，返回 restore 的原始错误以保留可诊断信息。
+        restore?;
+    }
+    Ok(())
 }
-
 /// 提交当前暂存区。
 pub fn commit(cwd: &Path, message: &str) -> Result<(), GitError> {
     let message = message.trim();
