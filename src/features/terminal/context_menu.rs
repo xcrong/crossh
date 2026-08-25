@@ -1,7 +1,7 @@
 //! Terminal-owned context-menu actions and entry construction.
 
 use crate::shared::i18n;
-use crossh_ui::context_menu::{MenuEntry, MenuItem};
+use crossh_ui_component::context_menu::{MenuEntry, MenuItem};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TerminalMenuAction {

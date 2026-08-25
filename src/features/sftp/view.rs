@@ -22,11 +22,12 @@ use crate::shared::utf16::{
     byte_index_for_utf16, replace_utf16_range, utf16_len, utf16_offset_for_byte, utf16_slice,
 };
 use crossh_ssh::{MAX_EDITOR_FILE_BYTES, RemoteEntry, SftpCmd, SftpEvent};
-use crossh_ui::context_menu::{
-    ContextMenuState, MenuEntry, MenuItem, SftpMenuAction, render_context_menu,
-};
+use crossh_ui::context_menu::SftpMenuAction;
 use crossh_ui::widgets::{ime_caret_bounds, ime_input_canvas, marked_text_span, printable_char};
 use crossh_ui::{icons, theme};
+use crossh_ui_component::context_menu::{
+    ContextMenuState, MenuEntry, MenuItem, render_context_menu,
+};
 use crossh_ui_component::{Button, ButtonSize, ButtonVariant, ModalDialog, TextInput, scroll_y};
 
 use super::logic::*;

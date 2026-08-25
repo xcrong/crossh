@@ -8,8 +8,9 @@ use gpui::{
 use crossh_core::commands::{
     BackgroundTask, BackgroundTaskManager, BackgroundTaskStatus, CommandRecord,
 };
-use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
+use crossh_ui::context_menu::ShellMenuAction;
 use crossh_ui::theme;
+use crossh_ui_component::context_menu::{MenuEntry, MenuItem};
 use crossh_ui_component::{
     Avatar, AvatarKind, RAIL_AVATAR_GAP, RAIL_AVATAR_SIZE, Rail, Tooltip, rail_avatar_wide,
     rail_status_badge,

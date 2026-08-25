@@ -13,8 +13,8 @@ use crate::features::workspace::view::{LocalSession, LocalSessionId};
 
 use super::AppShell;
 use crate::features::workspace::view::ActiveView;
-use crossh_ui::context_menu::{MenuEntry, ShellMenuAction};
-
+use crossh_ui::context_menu::ShellMenuAction;
+use crossh_ui_component::context_menu::MenuEntry;
 static NEXT_SETTINGS_DIR: AtomicUsize = AtomicUsize::new(500);
 
 /// 测试专用的同步批量关闭：与 `stop_local_project` 相同的快照+detach 语义，

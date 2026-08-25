@@ -9,6 +9,7 @@ pub mod avatar;
 pub mod badge;
 pub mod banner;
 pub mod button;
+pub mod context_menu;
 pub mod count_badge;
 pub mod hint;
 pub mod layout;
@@ -40,6 +41,10 @@ pub use avatar::{Avatar, AvatarKind};
 pub use badge::{Badge, BadgeTone};
 pub use banner::{Banner, BannerLayout, BannerTone};
 pub use button::{Button, ButtonSize, ButtonVariant};
+pub use context_menu::{
+    CONTEXT_MENU_WIDTH, ContextMenuState, MenuEntry, MenuItem, clamp_menu_position,
+    estimate_menu_height, render_context_menu,
+};
 pub use count_badge::CountBadge;
 pub use hint::Hint;
 pub use layout::{h_flex, scroll_y};

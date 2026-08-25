@@ -10,6 +10,7 @@ use gpui::{
     TitlebarOptions, UniformListScrollHandle, WindowBounds, WindowOptions, px,
 };
 
+use crate::shared::text_editing::TextEditingState;
 use crossh_core::git::{
     commit, diff, discard_worktree, pull, push, scan_changes, stage, stage_hunk, unstage,
     unstage_hunk,
@@ -24,9 +25,7 @@ use crossh_core::git_stash::{
     pop_stash as pop_git_stash, push_stash as push_git_stash,
 };
 use crossh_core::terminal::path_display_name;
-use crossh_ui::context_menu::ContextMenuState;
-
-use crate::shared::text_editing::TextEditingState;
+use crossh_ui_component::context_menu::ContextMenuState;
 
 use super::context_menu::{self, GitMenuAction};
 use super::editor::CommitEditor;

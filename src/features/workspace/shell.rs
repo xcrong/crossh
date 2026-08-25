@@ -57,9 +57,10 @@ use crossh_core::git_status::inspect;
 use crossh_core::system_stats::{SystemMonitorState, SystemSampler};
 use crossh_ssh::{HostKeyDecision, RemoteCommandStatus};
 use crossh_terminal::settings::TerminalSettings;
-use crossh_ui::context_menu::{ContextMenuState, MenuEntry, ShellMenuAction, render_context_menu};
+use crossh_ui::context_menu::ShellMenuAction;
 use crossh_ui::theme;
 use crossh_ui::widgets::printable_char;
+use crossh_ui_component::context_menu::{ContextMenuState, MenuEntry, render_context_menu};
 
 use super::command_editor::QuickCommandEditor;
 use super::local_paths::{current_local_cwd, normalize_local_cwd, normalize_recent_dirs};

@@ -18,8 +18,9 @@ use crate::features::workspace::shell::AppShell;
 use crate::features::workspace::status::{conn_state_dot_color, local_tab_dot_color};
 use crate::features::workspace::view::{ActiveView, LocalSessionId, Tab};
 use crate::shared::i18n;
-use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
+use crossh_ui::context_menu::ShellMenuAction;
 use crossh_ui::{icons, theme};
+use crossh_ui_component::context_menu::{MenuEntry, MenuItem};
 use crossh_ui_component::{Button, ButtonSize, ButtonVariant, TabItem, TabStrip, Tooltip};
 
 // 容器不绑定 click；标签名与关闭按钮分别绑定，避免事件叠加。

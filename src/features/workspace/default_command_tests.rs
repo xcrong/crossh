@@ -305,16 +305,16 @@ fn spec_20260821_pinned_tab_default_command_reload_disabled_when_none_or_running
     );
     let reload = entries
         .iter()
-        .find(|e| matches!(e, crossh_ui::context_menu::MenuEntry::Item(item) if item.id == "reload-default-command"))
+        .find(|e| matches!(e, crossh_ui_component::context_menu::MenuEntry::Item(item) if item.id == "reload-default-command"))
         .expect("reload entry");
-    if let crossh_ui::context_menu::MenuEntry::Item(item) = reload {
+    if let crossh_ui_component::context_menu::MenuEntry::Item(item) = reload {
         assert!(item.disabled, "无命令时重载应 disabled (契约 5)");
     }
     let clear = entries
         .iter()
-        .find(|e| matches!(e, crossh_ui::context_menu::MenuEntry::Item(item) if item.id == "clear-default-command"))
+        .find(|e| matches!(e, crossh_ui_component::context_menu::MenuEntry::Item(item) if item.id == "clear-default-command"))
         .expect("clear entry");
-    if let crossh_ui::context_menu::MenuEntry::Item(item) = clear {
+    if let crossh_ui_component::context_menu::MenuEntry::Item(item) = clear {
         assert!(item.disabled, "无命令时清除应 disabled (契约 7)");
     }
     // 有命令但 is_command_running=true 时 reload disabled
@@ -329,9 +329,9 @@ fn spec_20260821_pinned_tab_default_command_reload_disabled_when_none_or_running
     );
     let reload_running = entries_running
         .iter()
-        .find(|e| matches!(e, crossh_ui::context_menu::MenuEntry::Item(item) if item.id == "reload-default-command"))
+        .find(|e| matches!(e, crossh_ui_component::context_menu::MenuEntry::Item(item) if item.id == "reload-default-command"))
         .expect("reload entry");
-    if let crossh_ui::context_menu::MenuEntry::Item(item) = reload_running {
+    if let crossh_ui_component::context_menu::MenuEntry::Item(item) = reload_running {
         assert!(item.disabled, "运行中时重载应 disabled (契约 6)");
     }
 }
@@ -345,7 +345,7 @@ fn spec_20260821_pinned_tab_default_command_unpinned_has_no_default_command_entr
         99, false, false, true, dir, None, false,
     );
     assert!(
-        !entries.iter().any(|e| matches!(e, crossh_ui::context_menu::MenuEntry::Item(item) if item.id.contains("default-command"))),
+        !entries.iter().any(|e| matches!(e, crossh_ui_component::context_menu::MenuEntry::Item(item) if item.id.contains("default-command"))),
         "未固定标签不应出现默认命令三项 (契约 9)"
     );
 }

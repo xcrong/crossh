@@ -16,8 +16,9 @@ use crate::features::workspace::status::conn_state_dot_color;
 use crate::features::workspace::view::{ActiveView, LocalDir};
 use crate::shared::i18n::{self};
 use crossh_core::terminal::path_display_name;
-use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
+use crossh_ui::context_menu::ShellMenuAction;
 use crossh_ui::{icons, theme};
+use crossh_ui_component::context_menu::{MenuEntry, MenuItem};
 use crossh_ui_component::{
     Avatar, AvatarKind, Button, ButtonSize, ButtonVariant, CountBadge, Hint, Rail, SidePanel,
     StatusDot, TextInput, Tooltip, rail_avatar, scroll_y,
@@ -453,7 +454,8 @@ fn local_dir_name_key(path: &Path) -> String {
 #[cfg(test)]
 mod rail_add_menu_tests {
     use super::rail_add_menu_entries;
-    use crossh_ui::context_menu::{MenuEntry, ShellMenuAction};
+    use crossh_ui::context_menu::ShellMenuAction;
+    use crossh_ui_component::context_menu::MenuEntry;
     use std::path::Path;
 
     #[test]

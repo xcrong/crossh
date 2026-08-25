@@ -25,8 +25,9 @@ use crate::features::workspace::toaster::{ToastNotice, ToastTone};
 use crate::shared::i18n;
 use crossh_core::commands::{BackgroundTask, BackgroundTaskStatus, CommandRecord};
 use crossh_core::git_status::GitStatus;
-use crossh_ui::context_menu::{MenuEntry, MenuItem, ShellMenuAction};
+use crossh_ui::context_menu::ShellMenuAction;
 use crossh_ui::{icons, theme};
+use crossh_ui_component::context_menu::{MenuEntry, MenuItem};
 use crossh_ui_component::{
     BadgeTone, Button, ButtonSize, ButtonVariant, CountBadge, ModalDialog, ModalField,
     SharedTextState, SidePanel, SplitResizer, StatusBar, StatusDot, StatusMetric, Tooltip,

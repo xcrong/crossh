@@ -1,7 +1,7 @@
 //! Git 变更列表的上下文菜单动作与条目。
 
 use crate::shared::i18n;
-use crossh_ui::context_menu::{MenuEntry, MenuItem};
+use crossh_ui_component::context_menu::{MenuEntry, MenuItem};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum GitMenuAction {
