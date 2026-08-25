@@ -96,8 +96,7 @@ echo "==> clearing quarantine/provenance for local run"
 # 本地 adhoc 包会被 Gatekeeper 判 rejected 并打上 com.apple.provenance，
 # 导致 /Applications/crossh.app 或直接执行 Contents/MacOS/crossh 被 SIGKILL 9。
 # cargo run 能跑是因为 target/debug/crossh 是纯 Mach-O linker-signed，不走 bundle 校验。
-# com.apple.provenance 是内核托管的 xattr，xattr -cr 在新系统上会静默失败，
-# 必须重签一次才能清掉 Gatekeeper 缓存（参考 uv#16726）。
+# com.apple.provenance 在新系统上 xattr -cr 可能静默失败，重签可 bust Gatekeeper 缓存（参考 uv#16726）。
 xattr -cr "$APP_DIR" 2>/dev/null || true
 codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP_DIR" 2>/dev/null || true
 
@@ -112,3 +111,9 @@ ditto -c -k --keepParent "$APP_DIR" "$ZIP"
 echo "==> done:"
 echo "    $APP_DIR"
 echo "    $ZIP"
+echo ""
+echo "==> install to /Applications (无需 sudo):"
+echo "    rm -rf /Applications/crossh.app"
+echo "    cp -R \"$APP_DIR\" /Applications/  # 避免 cp -rp 保留旧 xattr"
+echo "    xattr -cr /Applications/crossh.app 2>/dev/null || true"
+echo "    codesign --force --deep --sign - --identifier $BUNDLE_ID /Applications/crossh.app"
