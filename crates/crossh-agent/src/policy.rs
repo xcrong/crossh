@@ -123,25 +123,41 @@ impl Default for AgentSettings {
 
 impl AgentSettings {
     /// 将内置预设（单供应商 `opencode`，协议已下沉到 model 层）合并到当前设置中。
-    /// 已存在同 `id` 的用户配置优先，预设不会覆盖；已存在的预设供应商模型
-    /// 会按 `validate` 规则自动修正 `max_tokens` 以避免旧缓存导致启动失败。
+    /// 旧的 2 个分片 id 直接丢弃；已存在的 `opencode` 供应商做增量合并：
+    /// 预设新增的模型自动补齐，已存在的同 id 模型保留用户编辑（协议/URL 等），
+    /// 用户自定义模型（id 不在预设）完整保留。仅 `api_key/api_key_env` 始终保留用户值。
     pub fn with_builtin_presets(mut self) -> Self {
-        // 破旧立新：旧的 3 供应商拆分直接丢弃，由单供应商 `opencode-go` 替代。
-        // 若文件残留旧分片 id，直接移除；已存在的单供应商则用新预设刷新模型列表，
-        // 避免用户本地残留的 4 条旧模型导致启动后缺模型。
         const LEGACY_SPLIT_IDS: [&str; 2] = ["opencode-go-openai", "opencode-go-responses"];
         self.providers
             .retain(|p| !LEGACY_SPLIT_IDS.contains(&p.id.as_str()));
         let presets = crate::presets::builtin_presets();
         for preset in presets {
             if let Some(pos) = self.providers.iter().position(|p| p.id == preset.id) {
-                // 刷新内置预设：保留用户已填的 api_key/api_key_env，其余用预设覆盖
-                let existing = &self.providers[pos];
+                let existing = self.providers[pos].clone();
                 let api_key = existing.api_key.clone();
                 let api_key_env = existing.api_key_env.clone();
+                let existing_models = existing.models;
                 self.providers[pos] = preset;
                 self.providers[pos].api_key = api_key;
                 self.providers[pos].api_key_env = api_key_env;
+                // 以预设模型为基准，保留用户对同 id 模型的编辑，并追加用户自定义模型
+                let mut merged = self.providers[pos].models.clone();
+                let mut index_by_id: std::collections::HashMap<String, usize> = merged
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| (m.id.clone(), i))
+                    .collect();
+                for user_model in existing_models {
+                    if let Some(&idx) = index_by_id.get(&user_model.id) {
+                        // 同 id：保留用户编辑的完整记录（协议/URL/自定义上下文等）
+                        merged[idx] = user_model;
+                    } else {
+                        // 用户自定义模型：追加保留
+                        index_by_id.insert(user_model.id.clone(), merged.len());
+                        merged.push(user_model);
+                    }
+                }
+                self.providers[pos].models = merged;
             } else {
                 self.providers.push(preset);
             }

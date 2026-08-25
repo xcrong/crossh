@@ -15,6 +15,10 @@
 //! 缓存缺失时回退到 baked 基线；网络刷新由 `pi` 负责，`crossh` 仅消费缓存，
 //! 后续可按需增加 `crossh` 自身的 `~/.config/crossh/agent/remote-catalog.json`
 //! 定时拉取（复用 `pi` 的 `REMOTE_CATALOG_REFRESH_INTERVAL_MS = 4h` 与 `withRemoteCatalog` 逻辑）。
+//! 外部扩展：`~/.config/crossh/agent/providers/*.json` 可直接放置 `pi` 格式的供应商
+//! JSON（`pi-ai/dist/providers/data/*.json` 的 grouped-by-api 格式，或
+//! `~/.pi/agent/models.json` 的 `{"providers":{...}}` 格式），启动时自动加载为
+//! 额外供应商，实现零成本接入新供应商。
 
 use crate::Protocol;
 use crate::policy::{AgentModel, AgentProvider};
@@ -30,10 +34,11 @@ pub fn is_builtin_preset_id(id: &str) -> bool {
     id == OPENCODE_ID
 }
 
-/// 返回所有内置预设。调用方负责去重（已存在同 `id` 的用户配置优先）。
+/// 返回所有内置预设 + 外部 `pi` 兼容供应商。外部供应商通过
+/// `~/.config/crossh/agent/providers/*.json` 提供，格式兼容 `pi` 的两种形态。
 pub fn builtin_presets() -> Vec<AgentProvider> {
     let models = load_dynamic_or_baked();
-    vec![AgentProvider {
+    let mut out = vec![AgentProvider {
         id: OPENCODE_ID.into(),
         name: "opencode".into(),
         api_key_env: "OPENCODE_API_KEY".into(),
@@ -41,7 +46,202 @@ pub fn builtin_presets() -> Vec<AgentProvider> {
         protocol: None,
         url: None,
         models,
-    }]
+    }];
+    out.extend(load_external_pi_providers());
+    out
+}
+
+/// 扫描 `~/.config/crossh/agent/providers/*.json` 并按 `pi` 格式解析。
+pub fn load_external_pi_providers() -> Vec<AgentProvider> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let dir = home
+        .join(".config")
+        .join("crossh")
+        .join("agent")
+        .join("providers");
+    let entries = std::fs::read_dir(&dir).ok();
+    let mut providers = Vec::new();
+    let Some(entries) = entries else {
+        return providers;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let data = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let value: JsonValue = match serde_json::from_str(&data) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        // 形态 B: {"providers": {"id": {"baseUrl": "...", "api": "...", "models": [...]}}}
+        if let Some(map) = value.get("providers").and_then(|v| v.as_object()) {
+            for (pid, pval) in map {
+                if let Some(provider) = parse_pi_custom_provider(pid, pval) {
+                    providers.push(provider);
+                }
+            }
+            continue;
+        }
+        // 形态 A: grouped-by-api {"anthropic-messages": {"model": {...}}, "openai-completions": {...}}
+        if let Some(provider) = parse_pi_grouped_provider(&value, &path) {
+            providers.push(provider);
+        }
+    }
+    providers
+}
+
+fn parse_pi_custom_provider(id: &str, value: &JsonValue) -> Option<AgentProvider> {
+    let base_url = value
+        .get("baseUrl")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let api = value
+        .get("api")
+        .and_then(|v| v.as_str())
+        .unwrap_or("openai-completions");
+    let (protocol, url_suffix) = pi_api_to_protocol(api)?;
+    let models = value.get("models").and_then(|v| v.as_array())?;
+    let mut out_models = Vec::new();
+    for m in models {
+        let mid = m.get("id").and_then(|v| v.as_str())?;
+        let name = m.get("name").and_then(|v| v.as_str()).unwrap_or(mid);
+        let reasoning = m
+            .get("reasoning")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let context_window = m
+            .get("contextWindow")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(128_000) as u32;
+        let max_tokens = m
+            .get("maxTokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(32_000) as u32;
+        // per-model api 覆盖 provider api，若存在则优先
+        let model_api = m.get("api").and_then(|v| v.as_str()).unwrap_or(api);
+        let model_base = m
+            .get("baseUrl")
+            .and_then(|v| v.as_str())
+            .unwrap_or(base_url);
+        let (mproto, msuffix) = pi_api_to_protocol(model_api).unwrap_or((protocol, url_suffix));
+        let url = if model_base.trim().is_empty() {
+            match mproto {
+                Protocol::AnthropicMessages => ANTHROPIC_URL.into(),
+                Protocol::OpenAiChat => CHAT_URL.into(),
+                Protocol::OpenAiResponses => RESPONSES_URL.into(),
+            }
+        } else {
+            format!("{}{msuffix}", model_base.trim_end_matches('/'))
+        };
+        out_models.push(sanitize_model(AgentModel {
+            id: mid.into(),
+            name: name.into(),
+            protocol: mproto,
+            url,
+            reasoning,
+            context_window: context_window.max(1),
+            max_tokens: max_tokens.max(1),
+        }));
+    }
+    if out_models.is_empty() {
+        return None;
+    }
+    Some(AgentProvider {
+        id: id.into(),
+        name: id.into(),
+        api_key_env: format!("{}_API_KEY", id.to_ascii_uppercase().replace('-', "_")),
+        api_key: String::new(),
+        protocol: None,
+        url: None,
+        models: out_models,
+    })
+}
+
+fn parse_pi_grouped_provider(value: &JsonValue, path: &std::path::Path) -> Option<AgentProvider> {
+    let obj = value.as_object()?;
+    // 推断 provider id：优先取首个模型内 provider 字段，否则用文件名
+    let mut provider_id: Option<String> = None;
+    let mut models = Vec::new();
+    for (api, group) in obj {
+        let group_obj = group.as_object()?;
+        for (_mid, mval) in group_obj {
+            let mid = mval.get("id").and_then(|v| v.as_str())?;
+            let name = mval.get("name").and_then(|v| v.as_str()).unwrap_or(mid);
+            let api_str = mval.get("api").and_then(|v| v.as_str()).unwrap_or(api);
+            let base_url = mval.get("baseUrl").and_then(|v| v.as_str()).unwrap_or("");
+            let reasoning = mval
+                .get("reasoning")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let context_window = mval
+                .get("contextWindow")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(128_000) as u32;
+            let max_tokens = mval
+                .get("maxTokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(32_000) as u32;
+            if provider_id.is_none()
+                && let Some(pid) = mval.get("provider").and_then(|v| v.as_str())
+            {
+                provider_id = Some(pid.to_string());
+            }
+            let (protocol, suffix) = pi_api_to_protocol(api_str)?;
+            // google-generative-ai 等暂不支持，跳过
+            let url = if base_url.trim().is_empty() {
+                match protocol {
+                    Protocol::AnthropicMessages => ANTHROPIC_URL.into(),
+                    Protocol::OpenAiChat => CHAT_URL.into(),
+                    Protocol::OpenAiResponses => RESPONSES_URL.into(),
+                }
+            } else {
+                format!("{}{suffix}", base_url.trim_end_matches('/'))
+            };
+            models.push(sanitize_model(AgentModel {
+                id: mid.into(),
+                name: name.into(),
+                protocol,
+                url,
+                reasoning,
+                context_window: context_window.max(1),
+                max_tokens: max_tokens.max(1),
+            }));
+        }
+    }
+    if models.is_empty() {
+        return None;
+    }
+    let pid = provider_id.unwrap_or_else(|| {
+        path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("pi-provider")
+            .to_string()
+    });
+    Some(AgentProvider {
+        id: pid.clone(),
+        name: pid.clone(),
+        api_key_env: format!("{}_API_KEY", pid.to_ascii_uppercase().replace('-', "_")),
+        api_key: String::new(),
+        protocol: None,
+        url: None,
+        models,
+    })
+}
+
+fn pi_api_to_protocol(api: &str) -> Option<(Protocol, &'static str)> {
+    match api {
+        "anthropic-messages" => Some((Protocol::AnthropicMessages, "/v1/messages")),
+        "openai-completions" | "openai-chat" => Some((Protocol::OpenAiChat, "/chat/completions")),
+        "openai-responses" => Some((Protocol::OpenAiResponses, "/responses")),
+        _ => None,
+    }
 }
 
 fn load_dynamic_or_baked() -> Vec<AgentModel> {
@@ -380,8 +580,10 @@ mod tests {
 
     #[test]
     fn builtin_presets_contain_opencode_with_expected_models() {
+        // 外部 pi 兼容供应商（~/.config/crossh/agent/providers/*.json）会追加到内置列表，
+        // 测试仅校验 opencode 存在且模型完整，不校验总数。
         let presets = builtin_presets();
-        assert_eq!(presets.len(), 1);
+        assert!(presets.iter().any(|p| p.id == OPENCODE_ID));
         let go = presets.iter().find(|p| p.id == OPENCODE_ID).unwrap();
         assert_eq!(go.id, "opencode");
         // 动态 overlay 可能使数量大于 baked 基线（pi 侧 4h 刷新追加模型）
@@ -392,7 +594,6 @@ mod tests {
         assert!(go.models.iter().any(|m| m.url == CHAT_URL));
         assert!(go.models.iter().any(|m| m.url == RESPONSES_URL));
     }
-
     #[test]
     fn merge_models_overlays_dynamic_onto_baseline() {
         let baseline = vec![

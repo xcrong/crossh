@@ -834,7 +834,6 @@ impl SettingsWindow {
         let selected_provider = &self.agent_draft.providers[provider_index];
         let provider_id = self.agent_input(AgentInputField::ProviderId, window, cx);
         let provider_name = self.agent_input(AgentInputField::ProviderName, window, cx);
-        let url = self.agent_input(AgentInputField::Url, window, cx);
         let api_key = self.agent_input(AgentInputField::ApiKey, window, cx);
         let key_env = self.agent_input(AgentInputField::KeyEnv, window, cx);
 
@@ -1003,91 +1002,10 @@ impl SettingsWindow {
                 }));
             model_rows = model_rows.child(row);
         }
-        let reasoning = settings_choice_button(
-            "settings-agent-reasoning".into(),
-            if selected_model.reasoning {
-                i18n::text("settings.agent_reasoning_on")
-            } else {
-                i18n::text("settings.agent_reasoning_off")
-            },
-            selected_model.reasoning,
-            cx.listener(|this, _ev, _window, cx| {
-                let model = &mut this.agent_draft.providers[this.agent_provider_index].models
-                    [this.agent_model_index];
-                model.reasoning = !model.reasoning;
-                this.agent_error = None;
-                cx.notify();
-            }),
-        );
         let status_description = self
             .agent_error
             .clone()
             .unwrap_or_else(|| i18n::text("settings.provider_save_description"));
-        let mut protocols = div()
-            .w_full()
-            .min_w_0()
-            .flex()
-            .flex_row()
-            .gap_1()
-            .flex_wrap()
-            .justify_end();
-        for protocol in ALL_PROTOCOLS {
-            let selected = self
-                .agent_draft
-                .providers
-                .get(provider_index)
-                .and_then(|p| p.models.get(self.agent_model_index))
-                .is_some_and(|m| m.protocol == protocol);
-            protocols = protocols.child(
-                div()
-                    .id(format!("settings-agent-protocol-{protocol:?}"))
-                    .h(px(30.))
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .rounded(px(theme::RADIUS_SM))
-                    .cursor_pointer()
-                    .text_xs()
-                    .text_color(if selected {
-                        theme::canvas()
-                    } else {
-                        theme::muted_text()
-                    })
-                    .bg(if selected {
-                        theme::accent()
-                    } else {
-                        theme::raised()
-                    })
-                    .child(SharedString::from(protocol.label()))
-                    .on_click(cx.listener(move |this, _ev, _window, cx| {
-                        if let Some(model) = this
-                            .agent_draft
-                            .providers
-                            .get_mut(this.agent_provider_index)
-                            .and_then(|p| p.models.get_mut(this.agent_model_index))
-                        {
-                            model.protocol = protocol;
-                            // 若 url 为空或仍为旧协议的默认 url，同步为新协议默认 url
-                            if model.url.trim().is_empty() {
-                                model.url = match protocol {
-                                    Protocol::AnthropicMessages => {
-                                        "https://opencode.ai/zen/v1/messages".into()
-                                    }
-                                    Protocol::OpenAiChat => {
-                                        "https://opencode.ai/zen/v1/chat/completions".into()
-                                    }
-                                    Protocol::OpenAiResponses => {
-                                        "https://opencode.ai/zen/v1/responses".into()
-                                    }
-                                };
-                            }
-                        }
-                        this.agent_error = None;
-                        cx.notify();
-                    })),
-            );
-        }
-
         let save = settings_icon_button(
             "settings-provider-save",
             icons::IconName::Save,
@@ -1113,24 +1031,11 @@ impl SettingsWindow {
                     .child(
                         div()
                             .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_lg()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(theme::text())
-                                    .child(SharedString::from(selected_provider.name.clone())),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme::muted_text())
-                                    .child(SharedString::from(selected_model.protocol.label())),
-                            ),
+                            .truncate()
+                            .text_lg()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::text())
+                            .child(SharedString::from(selected_provider.name.clone())),
                     ),
             );
         let status_icon = if self.agent_error.is_some() {
@@ -1244,11 +1149,6 @@ impl SettingsWindow {
                     provider_name,
                 ))
         };
-        let connection_method = settings_form_field(
-            i18n::text("settings.agent_connection_method"),
-            protocols.into_any_element(),
-        );
-        let base_url = settings_form_field(i18n::text("settings.agent_base_url"), url);
         let api_key_visibility = settings_icon_button(
             "settings-agent-api-key-visibility",
             if self.agent_api_key_revealed {
@@ -1301,8 +1201,93 @@ impl SettingsWindow {
         let model_editor = if self.agent_model_editor_open {
             let model = self.agent_input(AgentInputField::Model, window, cx);
             let model_name = self.agent_input(AgentInputField::ModelName, window, cx);
+            let url = self.agent_input(AgentInputField::Url, window, cx);
             let context_window = self.agent_input(AgentInputField::ContextWindow, window, cx);
             let max_tokens = self.agent_input(AgentInputField::MaxTokens, window, cx);
+            let reasoning = settings_choice_button(
+                "settings-agent-reasoning".into(),
+                if selected_model.reasoning {
+                    i18n::text("settings.agent_reasoning_on")
+                } else {
+                    i18n::text("settings.agent_reasoning_off")
+                },
+                selected_model.reasoning,
+                cx.listener(|this, _ev, _window, cx| {
+                    let model = &mut this.agent_draft.providers[this.agent_provider_index].models
+                        [this.agent_model_index];
+                    model.reasoning = !model.reasoning;
+                    this.agent_error = None;
+                    cx.notify();
+                }),
+            );
+            let mut protocols = div()
+                .w_full()
+                .min_w_0()
+                .flex()
+                .flex_row()
+                .gap_1()
+                .flex_wrap()
+                .justify_end();
+            for protocol in ALL_PROTOCOLS {
+                let selected = self
+                    .agent_draft
+                    .providers
+                    .get(provider_index)
+                    .and_then(|p| p.models.get(self.agent_model_index))
+                    .is_some_and(|m| m.protocol == protocol);
+                protocols = protocols.child(
+                    div()
+                        .id(format!("settings-agent-protocol-{protocol:?}"))
+                        .h(px(30.))
+                        .px_2()
+                        .flex()
+                        .items_center()
+                        .rounded(px(theme::RADIUS_SM))
+                        .cursor_pointer()
+                        .text_xs()
+                        .text_color(if selected {
+                            theme::canvas()
+                        } else {
+                            theme::muted_text()
+                        })
+                        .bg(if selected {
+                            theme::accent()
+                        } else {
+                            theme::raised()
+                        })
+                        .child(SharedString::from(protocol.label()))
+                        .on_click(cx.listener(move |this, _ev, _window, cx| {
+                            if let Some(model) = this
+                                .agent_draft
+                                .providers
+                                .get_mut(this.agent_provider_index)
+                                .and_then(|p| p.models.get_mut(this.agent_model_index))
+                            {
+                                model.protocol = protocol;
+                                if model.url.trim().is_empty() {
+                                    model.url = match protocol {
+                                        Protocol::AnthropicMessages => {
+                                            "https://opencode.ai/zen/v1/messages".into()
+                                        }
+                                        Protocol::OpenAiChat => {
+                                            "https://opencode.ai/zen/v1/chat/completions".into()
+                                        }
+                                        Protocol::OpenAiResponses => {
+                                            "https://opencode.ai/zen/v1/responses".into()
+                                        }
+                                    };
+                                }
+                            }
+                            this.agent_error = None;
+                            cx.notify();
+                        })),
+                );
+            }
+            let connection_method = settings_form_field(
+                i18n::text("settings.agent_connection_method"),
+                protocols.into_any_element(),
+            );
+            let base_url = settings_form_field(i18n::text("settings.agent_base_url"), url);
             let close_editor = settings_icon_button(
                 "settings-agent-model-editor-close",
                 icons::IconName::X,
@@ -1344,6 +1329,8 @@ impl SettingsWindow {
                         i18n::text("settings.agent_model_name"),
                         model_name,
                     ))
+                    .child(connection_method)
+                    .child(base_url)
                     .child(if compact_layout {
                         div()
                             .w_full()
@@ -1392,10 +1379,7 @@ impl SettingsWindow {
             .gap_3()
             .child(provider_title)
             .child(provider_notice)
-            .child(settings_subheading("settings.agent_connection"))
             .child(provider_identity)
-            .child(connection_method)
-            .child(base_url)
             .child(credentials)
             .child(settings_subheading("settings.agent_models"))
             .child(model_header)
