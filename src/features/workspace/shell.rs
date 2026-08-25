@@ -1126,7 +1126,7 @@ impl AppShell {
 
     /// 解析并启动外部编辑器打开 `directory`；无可用编辑器或启动失败时弹错误 Toast。
     pub(crate) fn open_project_in_editor(&mut self, directory: &Path, cx: &mut Context<Self>) {
-        let path_env = std::env::var_os("PATH").unwrap_or_default();
+        let path_env = editor_launcher::effective_path();
         self.open_project_in_editor_with_path_env(directory, path_env, cx);
     }
 

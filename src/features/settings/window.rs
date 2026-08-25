@@ -284,7 +284,7 @@ impl SettingsWindow {
     ) -> AnyElement {
         let compact_layout = self.compact_layout;
         let configured = settings.workspace.editor_command.clone();
-        let path_env = std::env::var_os("PATH").unwrap_or_default();
+        let path_env = editor_launcher::effective_path();
         let detected =
             editor_launcher::detect_editors(&path_env, editor_launcher::executable_exists);
 

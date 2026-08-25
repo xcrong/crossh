@@ -419,11 +419,10 @@ fn render_open_in_editor_button(
 
 /// 当前解析出的编辑器显示名：配置值原样，检测结果取 basename，供 tooltip 展示。
 fn tooltip_editor_name(shell: &AppShell) -> Option<String> {
+    let path_env = editor_launcher::effective_path();
     let editor = editor_launcher::resolve_editor(
         shell.workspace_settings.editor_command.as_deref(),
-        std::env::var_os("PATH")
-            .as_deref()
-            .unwrap_or_else(|| std::ffi::OsStr::new("")),
+        &path_env,
         editor_launcher::executable_exists,
     );
     editor.map(|binary| editor_launcher::command_display_name(&binary))

@@ -4,9 +4,105 @@
 //! 「枚举本机已安装编辑器」和「构造分离进程的 Command」三部分可测逻辑，
 //! GPUI 只出现在调用点。检测候选列表是写死的代码常量，不可被设置覆盖。
 
-use std::ffi::OsStr;
-use std::path::Path;
+use std::collections::HashSet;
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
+
+/// macOS GUI 进程（dock/访达启动）继承的 PATH 仅为 `/usr/bin:/bin:/usr/sbin:/sbin`，
+/// 导致 Homebrew 安装的 `zed`/`code`（位于 `/opt/homebrew/bin`、`/usr/local/bin`）
+/// 无法被 `detect_editors` 发现。额外探查登录 shell 与固定回退目录以补全。
+#[cfg(unix)]
+const FALLBACK_PATH_DIRS: &[&str] = &[
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/sbin",
+];
+#[cfg(windows)]
+const FALLBACK_PATH_DIRS: &[&str] = &[];
+
+static CACHED_LOGIN_SHELL_PATH: OnceLock<Option<OsString>> = OnceLock::new();
+
+/// 合并 `env_path`、登录 shell 的 PATH 与固定回退目录，去重且保持顺序：
+/// env 优先，其次 shell，最后回退。纯函数便于测试注入。
+fn merge_paths(env_path: &OsStr, shell_path: Option<&OsStr>) -> OsString {
+    let mut seen = HashSet::new();
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for dir in std::env::split_paths(env_path) {
+        if seen.insert(dir.clone()) {
+            dirs.push(dir);
+        }
+    }
+    if let Some(shell) = shell_path {
+        for dir in std::env::split_paths(shell) {
+            if seen.insert(dir.clone()) {
+                dirs.push(dir);
+            }
+        }
+    }
+    for fallback in FALLBACK_PATH_DIRS {
+        let pb = PathBuf::from(fallback);
+        if seen.insert(pb.clone()) {
+            dirs.push(pb);
+        }
+    }
+    std::env::join_paths(dirs).unwrap_or_default()
+}
+
+#[cfg(unix)]
+#[allow(clippy::collapsible_if)]
+fn login_shell_path() -> Option<OsString> {
+    let mut candidates: Vec<OsString> = Vec::new();
+    if let Some(shell) = std::env::var_os("SHELL")
+        && !shell.is_empty()
+    {
+        candidates.push(shell);
+    }
+    candidates.push(OsString::from("/bin/zsh"));
+    candidates.push(OsString::from("/bin/bash"));
+    for shell in candidates {
+        let output = Command::new(&shell)
+            .arg("-l")
+            .arg("-c")
+            .arg("printf '%s' \"$PATH\"")
+            .output();
+        if let Ok(out) = output
+            && out.status.success()
+            && let Ok(s) = String::from_utf8(out.stdout)
+        {
+            let trimmed = s.trim().to_string();
+            if !trimmed.is_empty() {
+                return Some(OsString::from(trimmed));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn login_shell_path() -> Option<OsString> {
+    None
+}
+
+fn cached_login_shell_path() -> Option<OsString> {
+    CACHED_LOGIN_SHELL_PATH
+        .get_or_init(login_shell_path)
+        .clone()
+}
+
+/// 对外暴露的合并后 PATH，自动补全 shell 与回退目录。
+/// 调用方（设置下拉、tooltip、启动）应使用此函数而非直接 `var_os("PATH")`。
+pub(crate) fn effective_path() -> OsString {
+    let env_path = std::env::var_os("PATH").unwrap_or_default();
+    effective_path_with(&env_path)
+}
+
+pub(crate) fn effective_path_with(env_path: &OsStr) -> OsString {
+    let shell = cached_login_shell_path();
+    merge_paths(env_path, shell.as_deref())
+}
 
 /// 自动检测候选的默认顺序：第一项 `zed`，随后是常用编辑器命令名。
 /// 该列表是程序默认值，写死在代码中，不暴露为设置项（见
@@ -275,5 +371,84 @@ mod tests {
             [directory.as_os_str()]
         );
         assert_eq!(command.get_current_dir(), Some(directory.as_path()));
+    }
+
+    #[test]
+    fn spec_gui_minimal_path_augmented_with_homebrew_fallback() {
+        // 复现截图问题：GUI 进程 PATH 仅为 /usr/bin:/bin:/usr/sbin:/sbin
+        let gui_path = OsStr::new("/usr/bin:/bin:/usr/sbin:/sbin");
+        let merged = super::merge_paths(gui_path, None);
+        let dirs: Vec<PathBuf> = std::env::split_paths(&merged).collect();
+        assert!(
+            dirs.contains(&PathBuf::from("/opt/homebrew/bin")),
+            "回退应补全 brew 路径，实际: {dirs:?}"
+        );
+        assert!(
+            dirs.contains(&PathBuf::from("/usr/local/bin")),
+            "回退应补全 /usr/local/bin"
+        );
+        let pos_bin = dirs
+            .iter()
+            .position(|p| p == &PathBuf::from("/usr/bin"))
+            .unwrap();
+        let pos_brew = dirs
+            .iter()
+            .position(|p| p == &PathBuf::from("/opt/homebrew/bin"))
+            .unwrap();
+        assert!(
+            pos_brew > pos_bin,
+            "回退目录应追加在 env 之后，保持原有 PATH 优先"
+        );
+    }
+
+    #[test]
+    fn spec_merge_dedup_shell_path() {
+        let env = OsStr::new("/opt/homebrew/bin:/usr/bin");
+        let shell = Some(OsStr::new("/opt/homebrew/bin:/usr/local/bin:/usr/bin"));
+        let merged = super::merge_paths(env, shell);
+        let dirs: Vec<PathBuf> = std::env::split_paths(&merged).collect();
+        // 去重后应为: env 的 /opt/homebrew/bin, /usr/bin, 再 shell 的 /usr/local/bin, 最后回退 sbin
+        assert_eq!(
+            dirs[0],
+            PathBuf::from("/opt/homebrew/bin"),
+            "首位保持 env 第一项"
+        );
+        assert_eq!(dirs[1], PathBuf::from("/usr/bin"));
+        assert!(dirs.contains(&PathBuf::from("/usr/local/bin")));
+        // sbin 回退应追加在最后且不重复
+        assert!(dirs.contains(&PathBuf::from("/opt/homebrew/sbin")));
+        // 确认去重：/opt/homebrew/bin 只出现一次
+        assert_eq!(
+            dirs.iter()
+                .filter(|p| p.as_path() == Path::new("/opt/homebrew/bin"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn spec_detect_with_merged_path_finds_homebrew_editors_from_gui_minimal_path() {
+        let gui_path = OsStr::new("/usr/bin:/bin:/usr/sbin:/sbin");
+        let merged = super::merge_paths(gui_path, None);
+        // 真实环境：GUI PATH 只有 /usr/bin/xed，zed/code 仅在 brew 目录
+        let exists = |path: &Path| {
+            let s = path.to_string_lossy();
+            s == "/usr/bin/xed" || s == "/opt/homebrew/bin/zed" || s == "/opt/homebrew/bin/code"
+        };
+        let detected = detect_editors(&merged, exists);
+        assert!(
+            detected.iter().any(|p| p.ends_with("/usr/bin/xed")),
+            "应通过原始 PATH 找到 xed，实际: {detected:?}"
+        );
+        assert!(
+            detected.iter().any(|p| p == "/opt/homebrew/bin/zed"),
+            "应通过回退找到 zed，实际: {detected:?}"
+        );
+        assert!(
+            detected.iter().any(|p| p == "/opt/homebrew/bin/code"),
+            "应通过回退找到 code，实际: {detected:?}"
+        );
+        // 候选顺序：zed 优先于 code 优先于 xed
+        assert_eq!(detected[0], "/opt/homebrew/bin/zed");
     }
 }
