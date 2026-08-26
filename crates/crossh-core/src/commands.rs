@@ -1053,7 +1053,14 @@ mod tests {
         let event = events.recv_blocking().expect("background task event");
         assert_eq!(event.id, id);
         assert_eq!(event.status, BackgroundTaskStatus::Succeeded);
-        assert_eq!(event.output, "crossh-output");
+        // 本地后台命令经 `$SHELL -lc` 启动（登录 shell，保证拿到用户完整环境），
+        // 用户 rc/profile 的任何回显都会进入合并捕获；契约只要求命令自身
+        // 的 stdout 完整出现在捕获里。
+        assert!(
+            event.output.contains("crossh-output"),
+            "command stdout should be captured, got {:?}",
+            event.output
+        );
 
         manager.apply_event(event);
         assert!(manager.tasks_for_scope(&scope).is_empty());

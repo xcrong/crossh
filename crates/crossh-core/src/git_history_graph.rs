@@ -134,6 +134,7 @@ pub fn layout_history(entries: &[CommitSummary]) -> Vec<HistoryGraphRow> {
             incoming_edges,
             edges,
         });
+        lanes = next;
     }
 
     rows
