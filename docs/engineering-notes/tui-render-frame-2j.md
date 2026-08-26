@@ -5,7 +5,7 @@
 - `crossh-agent` regular 模式下，输入 `/` 弹出候选浮层后，**每敲一个字符页面整屏清空重绘**（iTerm2/Terminal 里明显闪烁），scrollback 里累积整屏重复副本。
 - PTY 逐字符注入实测（30x80）：键入 `/model m` 共 9 个字符，输出流中出现 **4 次 `\x1b[2J`**（`/` 弹出、候选 8→1、空格进入参数模式、候选过滤各一次）。
 - 候选浮层固定视口后：同输入降为 **2 次**（启动首帧 + `/` 弹出帧）。
-- 参考 pi `TuiMainScreen` 对齐后：同输入仅 **1 次**（启动首帧），浮层弹出帧也无 `2J`（见 spec 20260822-main-screen-dock-incremental）。
+- 参考 pi `TuiMainScreen` 对齐后：同输入仅 **1 次**（启动首帧），浮层弹出帧也无 `2J`（该对齐随 crossh-tui 移除落地，对应 spec 已清除）。
 
 ## 根因
 
@@ -16,7 +16,7 @@ pi 的 `TuiMainScreen` 没有 dock 概念：内容行数变化一律走差分渲
 ## 规则
 
 - **候选浮层保持固定候选视口行数**（本项目 8 行），候选不足补空行，候选数量变化只改写行内容——这是防抖优化，也是 dock 高度稳定的基础（`POPUP_CANDIDATE_ROWS`）。
-- **dock 高度变化（浮层开/关）走增量路径**（spec 20260822-main-screen-dock-incremental）：
+- **dock 高度变化（浮层开/关）走增量路径**（该对齐随 crossh-tui 移除落地，原 spec 已清除）：
   - dock 变高：dock 从新起始行覆写，原 transcript 底部行等效滚动出视口；
   - dock 变矮：先清除残行（旧 dock 多出的行逐行 `\x1b[2K`），再 transcript 增量写入、重写 dock——清除必须先于增量写入，否则新写入行会被随后的清除擦掉。
 - **`\x1b[2J` 整屏重绘只允许发生在**：首帧、终端尺寸变化、transcript 变化越过可视区（scrollback 不可原位改写）。

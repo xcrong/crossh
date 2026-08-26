@@ -23,4 +23,4 @@ Cargo package 同时产出 `crossh` 与 `crossh-agent` 两个二进制。`crossh
 ## 关联规则
 
 - `docs/architecture.md` 边界规则 7：`crossh-git` 与 `crossh-agent` 是仅有的两个允许 `#[path]` 的独立入口
-- `docs/plans/agent-binary-split.md`：迁移计划与验证清单
+- `docs/plans/agent-binary-split.md`：迁移计划与验证清单（已随 crossh-agent 整体移除而清除，5daa8ce）

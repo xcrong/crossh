@@ -34,8 +34,9 @@ Crossh 的开发循环改为 **spec 先行（SDD）+ TDD 执行**：
    追溯到规格。
 5. 收尾义务：spec 置 `done`/`superseded`；结构性决策提炼为新 ADR 并在
    `docs/architecture.md` 登记；调试根因合并进 `docs/engineering-notes/`；
-   新增可执行行为合并进 `docs/testing.md` 关键行为矩阵。`done` 的 spec 保留
-   为变更档案，不删除。
+   新增可执行行为合并进 `docs/testing.md` 关键行为矩阵。`done` 的 spec 默认
+   保留为变更档案；但当其所属子系统被整体移除、或内容已与代码漂移失去档案
+   价值时，应随之清除——代码是唯一真相，过期文档是干扰（2026-08-26 修订）。
 6. 豁免清单：纯文档、格式化、生成物、可证明行为不变的机械重构、单行级小
    修复（仍需回归测试）。拿不准时写 spec。
 

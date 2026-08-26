@@ -98,7 +98,7 @@ description: Use when the user asks to find simplification candidates in the cro
 | 需要删除/折叠行为的变更 | `docs/specs/` SDD 流程（先 spec 后 TDD），在报告中注明对应 spec 草案 |
 | 结构性决策（归属、边界、删除受保护设计） | 写 ADR 提议，报告里标注"建议 ADR" |
 
-扫描本身的产物是 `docs/audit/yyyy-mm-dd-simplification-audit.md`，沿用 `2026-08-17-code-review.md` 的结构：
+扫描本身的产物是 `docs/audit/yyyy-mm-dd-simplification-audit.md`，沿用既往审计报告的结构（历史样例见 git 提交记录）：
 
 - 头部：触发原因、扫描方式（分片清单、锚点命令）、总体结论。
 - 发现表：`编号（S-1…）/ 问题 / 严重度 / 证据（文件:行号）`，每条附消费者分类结论（生产 / 非生产 / 模糊）。
