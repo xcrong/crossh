@@ -30,13 +30,6 @@ pub fn unix_timestamp_secs() -> u64 {
         .as_secs()
 }
 
-pub fn unix_timestamp_millis() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
-}
-
 /// 将字符串截断到 `limit` 字节以内，保留 UTF-8 边界。
 ///
 /// 超限时丢弃最老的前缀，仅保留末尾 `limit` 字节对应的有效字符边界。

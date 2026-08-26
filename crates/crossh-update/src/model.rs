@@ -232,7 +232,7 @@ pub(crate) fn update_result_path_in(cache_root: &Path) -> PathBuf {
 }
 
 /// 记录这次安装的结果（updater 进程侧）。
-pub fn record_update_result(result: &UpdateResult) {
+pub(crate) fn record_update_result(result: &UpdateResult) {
     let cache = dirs::cache_dir().unwrap_or_else(std::env::temp_dir);
     record_update_result_in(&cache, result);
 }

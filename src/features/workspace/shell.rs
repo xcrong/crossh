@@ -151,7 +151,7 @@ pub struct AppShell {
     pub(crate) modal_focus: FocusHandle,
     /// 上一帧是否有活动模态（用于在弹窗出现时自动聚焦）。
     last_had_prompt: bool,
-    /// 当前语言偏好；实际 locale 由 i18n 全局状态维护。
+    /// 当前语言偏好；实际 locale 经 [`crate::shared::i18n::set_locale`] 切换。
     pub(crate) language_preference: LanguagePreference,
     /// 当前打开的右键上下文菜单（None = 未打开）。
     pub(crate) context_menu: Option<ContextMenuState<ShellMenuAction>>,

@@ -108,7 +108,7 @@ fn main() {
         zed_theme_settings::init(LoadThemes::JustBase, cx);
         infrastructure::theme::install_crossh_theme(cx);
         crossh_ui::assets::load_fonts(cx).expect("Crossh fonts should load");
-        features::settings::init(cx);
+        features::settings::init();
         features::terminal::init(cx);
         infrastructure::app_menu::install(cx);
         app::open_launch_target(launch_target, cx);

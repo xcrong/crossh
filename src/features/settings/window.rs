@@ -897,7 +897,6 @@ pub fn open_settings_section(shell: WeakEntity<AppShell>, section: SettingsSecti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shared::text_editing::clamp_char_boundary;
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -911,13 +910,6 @@ mod tests {
     fn settings_layout_switches_at_compact_width() {
         assert!(uses_compact_settings_layout(px(639.)));
         assert!(!uses_compact_settings_layout(px(640.)));
-    }
-
-    #[test]
-    fn input_cursor_is_clamped_to_a_valid_utf8_boundary() {
-        assert_eq!(clamp_char_boundary("model", 99), 5);
-        assert_eq!(clamp_char_boundary("模型", 2), 0);
-        assert_eq!(clamp_char_boundary("模型", 3), 3);
     }
 
     #[gpui::test]

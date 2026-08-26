@@ -22,15 +22,6 @@ pub(crate) fn canonical_bytes(manifest: &UpdateManifest) -> Vec<u8> {
     serde_json::to_vec(&copy).expect("manifest serialization cannot fail")
 }
 
-pub fn verify_manifest_signature(manifest: &UpdateManifest) -> Result<(), ManifestError> {
-    // 先做存在性检查：缺失签名时不应依赖公钥可用性（错误可区分）。
-    if manifest.signature.is_none() {
-        return Err(ManifestError::MissingSignature);
-    }
-    let key = pinned_verifying_key()?;
-    verify_manifest_signature_with_key(manifest, &key)
-}
-
 pub fn verify_manifest_signature_with_key(
     manifest: &UpdateManifest,
     key: &VerifyingKey,

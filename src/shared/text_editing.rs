@@ -331,16 +331,6 @@ pub fn selection_bounds(anchor: Option<usize>, cursor: usize) -> Option<(usize, 
     })
 }
 
-/// 把可能落在 UTF-8 字符内部的字节索引向下收敛到合法字符边界。
-#[allow(dead_code)]
-pub fn clamp_char_boundary(value: &str, index: usize) -> usize {
-    let mut index = index.min(value.len());
-    while index > 0 && !value.is_char_boundary(index) {
-        index -= 1;
-    }
-    index
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,10 +446,6 @@ mod tests {
             selection_bounds(Some("a中".len()), "a中😀".len()),
             Some(("a中".len(), "a中😀".len()))
         );
-
-        assert_eq!(clamp_char_boundary("model", 99), 5);
-        assert_eq!(clamp_char_boundary("模型", 2), 0);
-        assert_eq!(clamp_char_boundary("模型", 3), 3);
     }
 
     #[test]

@@ -265,14 +265,13 @@ pub(crate) async fn handle_forwarded_tcpip(
         log::warn!("forwarded-tcpip on unregistered port {connected_port}; dropping");
         return;
     };
-    let mut tcp = match TcpStream::connect((local_host.as_str(), local_port)).await {
+    let tcp = match TcpStream::connect((local_host.as_str(), local_port)).await {
         Ok(t) => t,
         Err(e) => {
             log::warn!("connect local {local_host}:{local_port}: {e}");
             return;
         }
     };
-    let _ = &mut tcp;
     if let Err(e) = relay_channel_tcp(channel, tcp).await {
         log::debug!("remote-forward relay ended: {e}");
     }

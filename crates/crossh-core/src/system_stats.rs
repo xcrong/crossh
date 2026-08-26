@@ -22,10 +22,7 @@ pub struct LoadAvg {
 pub struct DiskSnapshot {
     /// 挂载点字符串（如 `/`、`D:\`、`/Volumes/Data`），作为 `mount_point` 的可序列化形式
     pub mount_point: String,
-    /// 设备名（如 `disk3s1`、`C:`），用于消歧与展示
-    pub name: String,
     pub total_space: u64,
-    pub available_space: u64,
     pub used_space: Option<u64>,
     pub usage_percent: Option<f32>,
     /// 读速率 bytes/s，不可用/回绕/首帧时为 `None`
@@ -43,12 +40,10 @@ pub struct SystemSnapshot {
     pub load_avg: Option<LoadAvg>,
     pub memory_total: u64,
     pub memory_used: u64,
-    pub memory_available: u64,
     /// 已用占比 0..100
     pub memory_usage_percent: Option<f32>,
     /// 主磁盘总容量，不可用时为 `None`（向后兼容，取系统盘）
     pub disk_total: Option<u64>,
-    pub disk_available: Option<u64>,
     pub disk_used: Option<u64>,
     pub disk_usage_percent: Option<f32>,
     /// 多盘明细（按挂载点排序）；为空时表示本帧未采集到可用磁盘
@@ -65,18 +60,6 @@ pub fn compute_usage_percent(used: u64, total: u64) -> Option<f32> {
     } else {
         Some(used as f32 / total as f32 * 100.0)
     }
-}
-
-/// 计算磁盘读写速率；与网络速率同契约（回绕或间隔非法时返回 `None`）
-pub fn compute_disk_rates(
-    prev_read: u64,
-    prev_written: u64,
-    cur_read: u64,
-    cur_written: u64,
-    elapsed_secs: f64,
-) -> (Option<u64>, Option<u64>) {
-    // 复用网络速率的增量/回绕语义
-    compute_network_rates(prev_read, prev_written, cur_read, cur_written, elapsed_secs)
 }
 
 /// 计算网络速率；回绕或间隔非法时返回 `None`
@@ -104,17 +87,6 @@ pub fn system_mount_path() -> &'static Path {
     } else {
         Path::new("/")
     }
-}
-
-/// 在磁盘清单中选择系统盘；找不到时返回 `None`
-pub fn select_system_disk(disks: &[(PathBuf, u64, u64)]) -> Option<(u64, u64)> {
-    let mount = system_mount_path();
-    for (path, total, available) in disks {
-        if path == mount {
-            return Some((*total, *available));
-        }
-    }
-    None
 }
 
 /// 选择系统盘的通用实现（可注入挂载点，便于单测跨平台）
@@ -153,31 +125,6 @@ fn is_visible_mount(mount: &str) -> bool {
     }
 }
 
-/// 构造快照：落库所有派生占比字段
-#[allow(clippy::too_many_arguments)]
-pub fn build_snapshot(
-    cpu_usage: Option<f32>,
-    load_avg: Option<LoadAvg>,
-    mem_total: u64,
-    mem_used: u64,
-    mem_available: u64,
-    disk_total: Option<u64>,
-    disk_available: Option<u64>,
-    network_rates: (Option<u64>, Option<u64>),
-) -> SystemSnapshot {
-    build_snapshot_with_disks(
-        cpu_usage,
-        load_avg,
-        mem_total,
-        mem_used,
-        mem_available,
-        disk_total,
-        disk_available,
-        Vec::new(),
-        network_rates,
-    )
-}
-
 /// 构造快照（含多盘明细）
 #[allow(clippy::too_many_arguments)]
 pub fn build_snapshot_with_disks(
@@ -185,31 +132,23 @@ pub fn build_snapshot_with_disks(
     load_avg: Option<LoadAvg>,
     mem_total: u64,
     mem_used: u64,
-    mem_available: u64,
     disk_total: Option<u64>,
-    disk_available: Option<u64>,
+    disk_used: Option<u64>,
     disks: Vec<DiskSnapshot>,
     network_rates: (Option<u64>, Option<u64>),
 ) -> SystemSnapshot {
     let memory_usage_percent = compute_usage_percent(mem_used, mem_total);
-    let (disk_used, disk_usage_percent) = match (disk_total, disk_available) {
-        (Some(total), Some(avail)) if total >= avail => {
-            let used = total - avail;
-            (Some(used), compute_usage_percent(used, total))
-        }
-        (Some(_total), None) => (None, None),
-        (Some(_total), Some(_)) => (None, None),
-        _ => (None, None),
+    let disk_usage_percent = match (disk_used, disk_total) {
+        (Some(used), Some(total)) => compute_usage_percent(used, total),
+        _ => None,
     };
     SystemSnapshot {
         cpu_usage,
         load_avg,
         memory_total: mem_total,
         memory_used: mem_used,
-        memory_available: mem_available,
         memory_usage_percent,
         disk_total,
-        disk_available,
         disk_used,
         disk_usage_percent,
         disks,
@@ -255,10 +194,6 @@ impl SystemMonitorState {
         }
         self.snapshot = Some(snapshot);
         true
-    }
-
-    pub fn should_sample(&self) -> bool {
-        self.visible
     }
 }
 
@@ -322,20 +257,17 @@ impl SystemSampler {
 
         let mem_total = self.system.total_memory();
         let mem_used = self.system.used_memory();
-        let mem_available = self.system.available_memory();
 
         // 收集多盘 I/O 与容量数据
-        let raw_disks: Vec<(String, String, u64, u64, u64, u64)> = self
+        let raw_disks: Vec<(String, u64, u64, u64, u64)> = self
             .disks
             .list()
             .iter()
             .map(|d| {
                 let mount = d.mount_point().to_string_lossy().to_string();
-                let name = d.name().to_string_lossy().to_string();
                 let usage = d.usage();
                 (
                     mount,
-                    name,
                     d.total_space(),
                     d.available_space(),
                     usage.total_read_bytes,
@@ -344,23 +276,24 @@ impl SystemSampler {
             })
             .collect();
 
-        let disk_pair = {
+        let (disk_total, disk_used) = {
             let list: Vec<(PathBuf, u64, u64)> = raw_disks
                 .iter()
-                .map(|(mount, _, total, avail, _, _)| (PathBuf::from(mount), *total, *avail))
+                .map(|(mount, total, avail, _, _)| (PathBuf::from(mount), *total, *avail))
                 .collect();
-            select_system_disk(&list)
-        };
-        let (disk_total, disk_available) = match disk_pair {
-            Some((t, a)) => (Some(t), Some(a)),
-            None => (None, None),
+            match select_system_disk_with_mount(&list, system_mount_path()) {
+                Some((total, available)) if total >= available => {
+                    (Some(total), Some(total - available))
+                }
+                _ => (None, None),
+            }
         };
 
         let elapsed = self
             .prev_instant
             .map(|prev| now.duration_since(prev).as_secs_f64());
         let mut disks: Vec<DiskSnapshot> = Vec::new();
-        for (mount, name, total, avail, cur_read, cur_write) in &raw_disks {
+        for (mount, total, avail, cur_read, cur_write) in &raw_disks {
             if *total == 0 {
                 continue;
             }
@@ -369,7 +302,7 @@ impl SystemSampler {
             }
             let (read_rate, write_rate) = match (self.prev_disk_io.get(mount), elapsed) {
                 (Some((pr, pw)), Some(el)) => {
-                    compute_disk_rates(*pr, *pw, *cur_read, *cur_write, el)
+                    compute_network_rates(*pr, *pw, *cur_read, *cur_write, el)
                 }
                 _ => (None, None),
             };
@@ -381,9 +314,7 @@ impl SystemSampler {
             };
             disks.push(DiskSnapshot {
                 mount_point: mount.clone(),
-                name: name.clone(),
                 total_space: *total,
-                available_space: *avail,
                 used_space: used,
                 usage_percent: pct,
                 read_rate,
@@ -402,7 +333,7 @@ impl SystemSampler {
             _ => (None, None),
         };
         // 更新状态：磁盘与网络共享同一时间基准
-        for (mount, _, _, _, cur_read, cur_write) in &raw_disks {
+        for (mount, _, _, cur_read, cur_write) in &raw_disks {
             self.prev_disk_io
                 .insert(mount.clone(), (*cur_read, *cur_write));
         }
@@ -411,15 +342,7 @@ impl SystemSampler {
         self.prev_instant = Some(now);
 
         build_snapshot_with_disks(
-            cpu_usage,
-            load_avg,
-            mem_total,
-            mem_used,
-            mem_available,
-            disk_total,
-            disk_available,
-            disks,
-            rates,
+            cpu_usage, load_avg, mem_total, mem_used, disk_total, disk_used, disks, rates,
         )
     }
 }
@@ -477,7 +400,16 @@ mod tests {
 
     #[test]
     fn spec_20260824_system_monitor_card__build_snapshot_disk_unavailable_placeholder() {
-        let snap = build_snapshot(None, None, 16_000, 8_000, 8_000, None, None, (None, None));
+        let snap = build_snapshot_with_disks(
+            None,
+            None,
+            16_000,
+            8_000,
+            None,
+            None,
+            Vec::new(),
+            (None, None),
+        );
         assert_eq!(snap.disk_total, None);
         assert_eq!(snap.disk_used, None);
         assert_eq!(snap.disk_usage_percent, None);
@@ -485,7 +417,16 @@ mod tests {
 
     #[test]
     fn spec_20260824_system_monitor_card__build_snapshot_memory_percent() {
-        let snap = build_snapshot(None, None, 100, 60, 40, Some(100), Some(40), (None, None));
+        let snap = build_snapshot_with_disks(
+            None,
+            None,
+            100,
+            60,
+            Some(100),
+            Some(60),
+            Vec::new(),
+            (None, None),
+        );
         assert!((snap.memory_usage_percent.unwrap() - 60.0).abs() < 0.001);
         assert_eq!(snap.disk_used, Some(60));
         assert!((snap.disk_usage_percent.unwrap() - 60.0).abs() < 0.001);
@@ -516,7 +457,16 @@ mod tests {
         let mut state = SystemMonitorState::new();
         state.toggle(); // visible, gen 1
         let expected = state.generation;
-        let snap = build_snapshot(Some(10.0), None, 100, 50, 50, None, None, (None, None));
+        let snap = build_snapshot_with_disks(
+            Some(10.0),
+            None,
+            100,
+            50,
+            None,
+            None,
+            Vec::new(),
+            (None, None),
+        );
         assert!(state.apply_snapshot(snap.clone(), expected));
         assert!(state.snapshot.is_some());
         // 隐藏后代数递增，旧代数写入应被拒绝
@@ -534,7 +484,16 @@ mod tests {
     #[test]
     fn spec_20260824_system_monitor_card__apply_rejected_when_hidden() {
         let mut state = SystemMonitorState::new();
-        let snap = build_snapshot(Some(5.0), None, 100, 10, 90, None, None, (None, None));
+        let snap = build_snapshot_with_disks(
+            Some(5.0),
+            None,
+            100,
+            10,
+            None,
+            None,
+            Vec::new(),
+            (None, None),
+        );
         // 未 visible 时即使用匹配代数也拒绝
         assert!(!state.apply_snapshot(snap, 0));
     }
@@ -550,35 +509,10 @@ mod tests {
     }
 
     #[test]
-    fn disk_io__compute_disk_rates_increments() {
-        let (r, w) = compute_disk_rates(1000, 2000, 3000, 5000, 2.0);
-        assert_eq!(r, Some(1000));
-        assert_eq!(w, Some(1500));
-    }
-
-    #[test]
-    fn disk_io__compute_disk_rates_wraparound_none() {
-        let (r, w) = compute_disk_rates(5000, 1000, 1000, 2000, 1.0);
-        assert_eq!(r, None);
-        assert_eq!(w, None);
-        let (r2, _) = compute_disk_rates(1000, 1000, 2000, 500, 1.0);
-        assert_eq!(r2, None);
-    }
-
-    #[test]
-    fn disk_io__compute_disk_rates_zero_elapsed() {
-        let (r, w) = compute_disk_rates(1000, 1000, 2000, 2000, 0.0);
-        assert_eq!(r, None);
-        assert_eq!(w, None);
-    }
-
-    #[test]
     fn disk_io__build_snapshot_with_disks_multi() {
         let d1 = DiskSnapshot {
             mount_point: "/".to_string(),
-            name: "disk1".to_string(),
             total_space: 100,
-            available_space: 40,
             used_space: Some(60),
             usage_percent: Some(60.0),
             read_rate: Some(1024),
@@ -586,9 +520,7 @@ mod tests {
         };
         let d2 = DiskSnapshot {
             mount_point: "/Volumes/Data".to_string(),
-            name: "disk2".to_string(),
             total_space: 200,
-            available_space: 100,
             used_space: Some(100),
             usage_percent: Some(50.0),
             read_rate: None,
@@ -599,9 +531,8 @@ mod tests {
             None,
             100,
             60,
-            40,
             Some(100),
-            Some(40),
+            Some(60),
             vec![d1.clone(), d2.clone()],
             (None, None),
         );
@@ -616,7 +547,16 @@ mod tests {
 
     #[test]
     fn disk_io__build_snapshot_without_disks_empty() {
-        let snap = build_snapshot(None, None, 100, 60, 40, Some(100), Some(40), (None, None));
+        let snap = build_snapshot_with_disks(
+            None,
+            None,
+            100,
+            60,
+            Some(100),
+            Some(60),
+            Vec::new(),
+            (None, None),
+        );
         assert!(snap.disks.is_empty());
     }
 

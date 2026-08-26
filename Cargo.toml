@@ -51,7 +51,6 @@ env_logger = "0.11"
 dirs = "6"
 rust-i18n = "4"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 sys-locale = "0.3"
 toml = "0.8"
 shlex = "1"
@@ -59,7 +58,6 @@ schemars = "1"
 
 [dev-dependencies]
 assets = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930" }
-pretty_assertions = "1"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930", features = ["test-support"] }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1b04e4caf01e376624fb514ef85b0e6d8ee5d930", features = ["font-kit", "test-support", "wayland", "x11"] }
 

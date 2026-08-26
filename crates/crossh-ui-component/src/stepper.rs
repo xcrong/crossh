@@ -1,8 +1,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, ClickEvent, ElementId, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    RenderOnce, SharedString, Styled, Window, div, px,
+    App, ClickEvent, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    SharedString, Styled, Window, div, px,
 };
 
 use crossh_ui::icons::{IconName, icon};
@@ -21,7 +21,6 @@ type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 pub struct Stepper {
     id: ElementId,
     value: Option<SharedString>,
-    font_weight: FontWeight,
     decrease_tooltip: Option<SharedString>,
     increase_tooltip: Option<SharedString>,
     on_decrease: Option<ClickHandler>,
@@ -33,7 +32,6 @@ impl Stepper {
         Self {
             id: id.into(),
             value: None,
-            font_weight: FontWeight::NORMAL,
             decrease_tooltip: None,
             increase_tooltip: None,
             on_decrease: None,
@@ -43,11 +41,6 @@ impl Stepper {
 
     pub fn value(mut self, value: impl Into<SharedString>) -> Self {
         self.value = Some(value.into());
-        self
-    }
-
-    pub fn font_weight(mut self, font_weight: FontWeight) -> Self {
-        self.font_weight = font_weight;
         self
     }
 
@@ -129,7 +122,6 @@ impl RenderOnce for Stepper {
                     .bg(theme::raised())
                     .text_xs()
                     .text_color(theme::text())
-                    .font_weight(self.font_weight)
                     .child(self.value.unwrap_or_default()),
             )
             .child(increase)
@@ -138,16 +130,15 @@ impl RenderOnce for Stepper {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{ElementId, FontWeight};
+    use gpui::ElementId;
 
     use super::Stepper;
 
     #[test]
-    fn stepper_defaults_are_empty_and_normal_weight() {
+    fn stepper_defaults_are_empty() {
         let stepper = Stepper::new("settings-recent-dirs");
         assert_eq!(stepper.id, ElementId::Name("settings-recent-dirs".into()));
         assert_eq!(stepper.value, None);
-        assert_eq!(stepper.font_weight, FontWeight::NORMAL);
         assert_eq!(stepper.decrease_tooltip, None);
         assert_eq!(stepper.increase_tooltip, None);
         assert!(stepper.on_decrease.is_none());
@@ -155,15 +146,13 @@ mod tests {
     }
 
     #[test]
-    fn stepper_builder_sets_value_weight_tooltips_and_handlers() {
+    fn stepper_builder_sets_value_tooltips_and_handlers() {
         let stepper = Stepper::new("settings-recent-dirs")
             .value("5")
-            .font_weight(FontWeight::MEDIUM)
             .tooltips("decrease", "increase")
             .on_decrease(|_, _, _| {})
             .on_increase(|_, _, _| {});
         assert_eq!(stepper.value.as_deref(), Some("5"));
-        assert_eq!(stepper.font_weight, FontWeight::MEDIUM);
         assert_eq!(stepper.decrease_tooltip.as_deref(), Some("decrease"));
         assert_eq!(stepper.increase_tooltip.as_deref(), Some("increase"));
         assert!(stepper.on_decrease.is_some());

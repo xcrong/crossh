@@ -49,7 +49,7 @@ pub use count_badge::CountBadge;
 pub use hint::Hint;
 pub use layout::{h_flex, scroll_y};
 pub use list_pane::{list_pane, pane_operation_error};
-pub use list_state::{ListState, list_empty, list_state_body};
+pub use list_state::{ListState, list_state_body};
 pub use modal::ModalDialog;
 pub use modal_field::{ModalField, SharedTextState};
 pub use pane_toolbar::{PaneToolbar, pane_toolbar};

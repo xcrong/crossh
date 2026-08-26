@@ -22,7 +22,7 @@ impl AppShell {
             cx.notify();
             return;
         }
-        crate::features::settings::locale_state::set_language(cx, preference);
+        crate::shared::i18n::set_locale(preference);
         crate::infrastructure::app_menu::refresh(cx);
         self.language_preference = preference;
         for tab in &self.workspace.sessions.remote_tabs {

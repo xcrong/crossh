@@ -121,7 +121,6 @@ mod tests {
             .iter()
             .find_map(|entry| match entry {
                 MenuEntry::Item(item) if item.id == id => Some(item),
-                MenuEntry::CheckedItem { item, .. } if item.id == id => Some(item),
                 _ => None,
             })
             .expect("menu item should exist")

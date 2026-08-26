@@ -7,25 +7,13 @@ use crate::hint::Hint;
 /// 调用方传入已翻译的文案（`SharedString` 拥有所有权，避免跨臂临时借用
 /// 的生命周期问题），组件仅负责一致的 `text_xs + faint_text` 与
 /// `px(12) / px(16)` 内边距，避免各页面 `px(8)` / `px(12)` 不一致。
-/// `Ready` 表示有数据，无需渲染空态，配合 `list_empty` 的 `match` 卫语句使用。
+/// `Ready` 表示有数据，无需渲染空态。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ListState {
     Loading(SharedString),
     Error(SharedString),
     Empty(SharedString),
     Ready,
-}
-
-impl ListState {
-    pub fn loading(text: impl Into<SharedString>) -> Self {
-        Self::Loading(text.into())
-    }
-    pub fn error(text: impl Into<SharedString>) -> Self {
-        Self::Error(text.into())
-    }
-    pub fn empty(text: impl Into<SharedString>) -> Self {
-        Self::Empty(text.into())
-    }
 }
 
 /// 统一的列表内容分发，收敛 `git/` 4 页重复的 `match { Idle|Loading => Hint, Error => Hint, Empty => Hint, Ready => uniform_list }`。
@@ -42,7 +30,7 @@ pub fn list_state_body(state: ListState, rows: impl FnOnce() -> AnyElement) -> A
 /// 将 [`ListState`] 渲染为统一的 [`Hint`] 占位元素。
 ///
 /// `Ready` 分支不应调用本函数；若误传会 `panic` 以暴露调用错误。
-pub fn list_empty(state: ListState) -> AnyElement {
+fn list_empty(state: ListState) -> AnyElement {
     let text: SharedString = match state {
         ListState::Loading(message) => message,
         ListState::Error(message) => message,

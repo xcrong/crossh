@@ -43,7 +43,7 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
-    use crate::git::{ChangeStatus, list_changes};
+    use crate::git::{ChangeStatus, scan_changes};
 
     use super::*;
 
@@ -71,8 +71,9 @@ mod tests {
                 .output()
                 .unwrap();
             assert!(!merge.status.success());
-            let conflict = list_changes(&dir)
+            let conflict = scan_changes(&dir)
                 .unwrap()
+                .changes
                 .into_iter()
                 .find(|change| change.path == "conflict.txt")
                 .expect("merge conflict should be listed");
@@ -87,8 +88,9 @@ mod tests {
                 expected
             );
             assert!(
-                !list_changes(&dir)
+                !scan_changes(&dir)
                     .unwrap()
+                    .changes
                     .iter()
                     .any(|change| change.status == ChangeStatus::Conflict)
             );

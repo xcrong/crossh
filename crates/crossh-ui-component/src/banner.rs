@@ -121,11 +121,6 @@ impl Banner {
         self.actions.push(action.into_any_element());
         self
     }
-
-    pub fn actions(mut self, actions: impl IntoIterator<Item = AnyElement>) -> Self {
-        self.actions.extend(actions);
-        self
-    }
 }
 
 impl RenderOnce for Banner {

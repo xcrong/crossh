@@ -96,12 +96,8 @@ fn cached_login_shell_path() -> Option<OsString> {
 /// 调用方（设置下拉、tooltip、启动）应使用此函数而非直接 `var_os("PATH")`。
 pub(crate) fn effective_path() -> OsString {
     let env_path = std::env::var_os("PATH").unwrap_or_default();
-    effective_path_with(&env_path)
-}
-
-pub(crate) fn effective_path_with(env_path: &OsStr) -> OsString {
     let shell = cached_login_shell_path();
-    merge_paths(env_path, shell.as_deref())
+    merge_paths(&env_path, shell.as_deref())
 }
 
 /// 自动检测候选的默认顺序：第一项 `zed`，随后是常用编辑器命令名。

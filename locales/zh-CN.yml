@@ -112,6 +112,7 @@ tooltip:
   split_terminal_narrow: 窗口太窄，无法使用两栏终端
   pin_command: 固定或取消固定命令
   open_in_editor_with: 在 %{editor} 中打开当前目录
+  open_in_editor: 在外部编辑器中打开当前目录
   compose_bar: 切换批量输入条
   system_monitor: 系统监视器
 toast:
@@ -164,7 +165,6 @@ rail_add:
 
 project:
   choose_directory: 选择项目目录
-  open: 打开本地项目
   open_folder: 打开文件夹
 
 git:

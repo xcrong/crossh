@@ -1,7 +1,6 @@
 //! Application locale helpers (pure logic, zero UI dependencies).
 //!
-//! GPUI 全局态（`I18nState`/`init`/`set_language`）由 settings feature 的
-//! `locale_state` 模块拥有并注入；本模块只保留 locale 解析与翻译查询。
+//! 语言切换由调用方直接调用 [`set_locale`] 完成；本模块只保留 locale 解析与翻译查询。
 
 use serde::{Deserialize, Serialize};
 

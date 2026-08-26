@@ -118,11 +118,6 @@ pub struct ChangeScan {
     pub status: Option<GitStatus>,
 }
 
-/// 扫描目录下的全部改动（已暂存 + 未暂存），每个（路径，暂存态）一条。
-pub fn list_changes(cwd: &Path) -> Result<Vec<FileChange>, GitError> {
-    Ok(scan_changes(cwd)?.changes)
-}
-
 /// 扫描目录下的变更与分支状态。
 pub fn scan_changes(cwd: &Path) -> Result<ChangeScan, GitError> {
     let output = git_output(
@@ -720,8 +715,9 @@ mod tests {
         changed[17] = "changed eighteen".to_string();
         fs::write(dir.path().join("note.txt"), changed.join("\n") + "\n").unwrap();
 
-        let working = list_changes(dir.path())
+        let working = scan_changes(dir.path())
             .unwrap()
+            .changes
             .into_iter()
             .find(|change| !change.staged)
             .expect("working change should exist");
@@ -752,8 +748,9 @@ mod tests {
         assert_eq!(staged_text.lines().nth(1), Some("line 2"));
         assert_eq!(staged_text.lines().nth(17), Some("changed eighteen"));
 
-        let staged = list_changes(dir.path())
+        let staged = scan_changes(dir.path())
             .unwrap()
+            .changes
             .into_iter()
             .find(|change| change.staged && change.path == "note.txt")
             .expect("staged hunk should be listed");
@@ -770,8 +767,9 @@ mod tests {
             "index should be clean after unstage"
         );
         assert!(
-            list_changes(dir.path())
+            scan_changes(dir.path())
                 .unwrap()
+                .changes
                 .iter()
                 .any(|change| !change.staged && change.path == "note.txt")
         );
@@ -818,7 +816,7 @@ mod tests {
     fn invalid_git_directory_returns_an_error_instead_of_an_empty_change_list() {
         let dir = tempfile::tempdir().unwrap();
 
-        assert!(list_changes(dir.path()).is_err());
+        assert!(scan_changes(dir.path()).is_err());
     }
 
     #[test]
@@ -840,7 +838,9 @@ mod tests {
         std::fs::write(dir.path().join(path), "one\ntwo\n").unwrap();
         run(&["add", "-A"]);
 
-        let changes = list_changes(dir.path()).expect("status should load");
+        let changes = scan_changes(dir.path())
+            .expect("status should load")
+            .changes;
         let change = changes
             .iter()
             .find(|change| change.path == path)
@@ -938,7 +938,7 @@ mod tests {
         fs::create_dir_all(dir.join("untracked")).unwrap();
         fs::write(dir.join("untracked/note.txt"), "hello\nworld\n").unwrap();
 
-        let changes = list_changes(&dir).expect("status should load");
+        let changes = scan_changes(&dir).expect("status should load").changes;
         assert!(changes.iter().any(|entry| entry.path == "renamed.txt"));
         assert!(changes.iter().any(|entry| entry.path == "staged-only.txt"));
 
@@ -1023,16 +1023,18 @@ mod tests {
         fs::write(dir.path().join("note.txt"), "first\n").unwrap();
         stage(dir.path(), &["note.txt".to_string()]).unwrap();
         assert!(
-            list_changes(dir.path())
+            scan_changes(dir.path())
                 .expect("status should load")
+                .changes
                 .iter()
                 .any(|change| change.path == "note.txt" && change.staged)
         );
 
         unstage(dir.path(), &["note.txt".to_string()]).unwrap();
         assert!(
-            list_changes(dir.path())
+            scan_changes(dir.path())
                 .expect("status should load")
+                .changes
                 .iter()
                 .any(|change| change.path == "note.txt" && !change.staged)
         );
@@ -1040,8 +1042,9 @@ mod tests {
         stage(dir.path(), &["note.txt".to_string()]).unwrap();
         commit(dir.path(), "add note").unwrap();
         assert!(
-            list_changes(dir.path())
+            scan_changes(dir.path())
                 .expect("status should load")
+                .changes
                 .is_empty()
         );
 
@@ -1049,8 +1052,9 @@ mod tests {
         stage(dir.path(), &["note.txt".to_string()]).unwrap();
         unstage(dir.path(), &["note.txt".to_string()]).unwrap();
         assert!(
-            list_changes(dir.path())
+            scan_changes(dir.path())
                 .expect("status should load")
+                .changes
                 .iter()
                 .any(|change| change.path == "note.txt" && !change.staged)
         );
@@ -1058,8 +1062,9 @@ mod tests {
         fs::remove_file(dir.path().join("note.txt")).unwrap();
         stage(dir.path(), &["note.txt".to_string()]).unwrap();
         assert!(
-            list_changes(dir.path())
+            scan_changes(dir.path())
                 .expect("status should load")
+                .changes
                 .iter()
                 .any(|change| {
                     change.path == "note.txt"
@@ -1104,14 +1109,16 @@ mod tests {
             "staged\n"
         );
         assert!(
-            list_changes(dir.path())
+            scan_changes(dir.path())
                 .unwrap()
+                .changes
                 .iter()
                 .any(|change| change.path == "note.txt" && change.staged)
         );
         assert!(
-            !list_changes(dir.path())
+            !scan_changes(dir.path())
                 .unwrap()
+                .changes
                 .iter()
                 .any(|change| change.path == "note.txt" && !change.staged)
         );

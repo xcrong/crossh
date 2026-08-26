@@ -7,7 +7,7 @@
 
 use std::rc::Rc;
 
-use crossh_ui::{icons, theme};
+use crossh_ui::theme;
 use gpui::{
     AnyElement, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
     Point, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
@@ -45,11 +45,6 @@ pub enum MenuEntry<A> {
     /// 不可点击的视觉分组标题。
     SectionHeader(String),
     Item(MenuItem<A>),
-    /// A menu item with a persistent on/off check mark.
-    CheckedItem {
-        item: MenuItem<A>,
-        checked: bool,
-    },
     Separator,
 }
 
@@ -67,7 +62,7 @@ pub fn estimate_menu_height<A>(entries: &[MenuEntry<A>]) -> f32 {
         + entries
             .iter()
             .map(|entry| match entry {
-                MenuEntry::Item(_) | MenuEntry::CheckedItem { .. } => ITEM_HEIGHT,
+                MenuEntry::Item(_) => ITEM_HEIGHT,
                 MenuEntry::Separator => SEPARATOR_HEIGHT,
                 MenuEntry::SectionHeader(_) => SECTION_HEADER_HEIGHT,
             })
@@ -159,7 +154,7 @@ pub fn render_context_menu<A: Clone + 'static, T: 'static>(
         .shadow_md();
 
     for entry in &state.entries {
-        let (item, checked, checkable) = match entry {
+        let item = match entry {
             MenuEntry::SectionHeader(label) => {
                 menu = menu.child(
                     div()
@@ -185,8 +180,7 @@ pub fn render_context_menu<A: Clone + 'static, T: 'static>(
                 );
                 continue;
             }
-            MenuEntry::Item(item) => (item, false, false),
-            MenuEntry::CheckedItem { item, checked } => (item, *checked, true),
+            MenuEntry::Item(item) => item,
         };
 
         let id = item.id.clone();
@@ -223,19 +217,6 @@ pub fn render_context_menu<A: Clone + 'static, T: 'static>(
                         on_action(this, action.clone(), window, cx);
                     })
                 });
-        }
-        if checkable {
-            if checked {
-                row = row.child(
-                    icons::icon(icons::IconName::Check, 13.).text_color(if disabled {
-                        theme::faint_text()
-                    } else {
-                        theme::accent()
-                    }),
-                );
-            } else {
-                row = row.child(div().w(px(13.)).h(px(13.)));
-            }
         }
         row = row.child(
             div()

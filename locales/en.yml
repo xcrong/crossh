@@ -165,7 +165,6 @@ rail_add:
 
 project:
   choose_directory: Choose project directory
-  open: Open local project
   open_folder: Open folder
 
 git:
