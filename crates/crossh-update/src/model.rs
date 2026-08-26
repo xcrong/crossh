@@ -37,10 +37,6 @@ pub struct UpdateArtifact {
     pub format: ArtifactFormat,
     pub sha256: String,
     pub size: u64,
-    // Ed25519 更新协议签名预留（见 docs/remote-update-plan.md 安全边界）；
-    // SHA-256 不能抵抗发布源被恶意改写，后续在此字段承载签名并把公钥固定在客户端。
-    #[serde(default)]
-    pub signature: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -309,7 +305,6 @@ mod tests {
             format,
             sha256: "00".repeat(32),
             size: 1,
-            signature: None,
         }
     }
 

@@ -122,8 +122,6 @@ pub enum RemoteCommandStatus {
 pub struct RemoteCommandEvent {
     pub id: u64,
     pub status: RemoteCommandStatus,
-    pub output: String,
-    pub exit_code: Option<i32>,
 }
 
 /// Handle for issuing commands to a background SSH connection.
@@ -185,8 +183,6 @@ impl ConnectionHandle {
             let _ = event_tx.try_send(RemoteCommandEvent {
                 id,
                 status: RemoteCommandStatus::Failed,
-                output: "SSH connection is not available".into(),
-                exit_code: None,
             });
         }
         (id, event_rx)
@@ -618,8 +614,6 @@ async fn open_sftp_session(
     Ok(sftp)
 }
 
-const MAX_REMOTE_COMMAND_OUTPUT: usize = 24 * 1024;
-
 async fn run_remote_command(
     handle: &Handle<ClientHandler>,
     id: u64,
@@ -629,12 +623,10 @@ async fn run_remote_command(
 ) -> RemoteCommandEvent {
     let channel = match handle.channel_open_session().await {
         Ok(channel) => channel,
-        Err(error) => {
+        Err(_) => {
             return RemoteCommandEvent {
                 id,
                 status: RemoteCommandStatus::Failed,
-                output: error.to_string(),
-                exit_code: None,
             };
         }
     };
@@ -643,16 +635,13 @@ async fn run_remote_command(
         shell_quote_remote(&cwd),
         shell_quote_remote(&command),
     );
-    if let Err(error) = channel.exec(true, remote_command).await {
+    if channel.exec(true, remote_command).await.is_err() {
         return RemoteCommandEvent {
             id,
             status: RemoteCommandStatus::Failed,
-            output: error.to_string(),
-            exit_code: None,
         };
     }
     let (mut read_half, write_half) = channel.split();
-    let mut output = String::new();
     let mut exit_code = None;
     let mut terminated = false;
     loop {
@@ -665,9 +654,7 @@ async fn run_remote_command(
                 break;
             }
             message = read_half.wait() => match message {
-                Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
-                    append_remote_output(&mut output, &data);
-                }
+                Some(ChannelMsg::Data { .. }) | Some(ChannelMsg::ExtendedData { .. }) => {}
                 Some(ChannelMsg::ExitStatus { exit_status }) => {
                     exit_code = i32::try_from(exit_status).ok();
                 }
@@ -684,21 +671,7 @@ async fn run_remote_command(
     } else {
         RemoteCommandStatus::Failed
     };
-    RemoteCommandEvent {
-        id,
-        status,
-        output,
-        exit_code: if matches!(status, RemoteCommandStatus::Terminated) {
-            None
-        } else {
-            exit_code
-        },
-    }
-}
-
-fn append_remote_output(output: &mut String, bytes: &[u8]) {
-    output.push_str(&String::from_utf8_lossy(bytes));
-    crossh_core::format::truncate_to_limit(output, MAX_REMOTE_COMMAND_OUTPUT);
+    RemoteCommandEvent { id, status }
 }
 
 fn shell_quote_remote(value: &str) -> String {
@@ -865,19 +838,6 @@ mod tests {
         assert_eq!(shell_quote_remote("/srv/app"), "/srv/app");
         assert_eq!(shell_quote_remote("a b"), "'a b'");
         assert_eq!(shell_quote_remote(""), "''");
-    }
-
-    #[test]
-    fn remote_command_output_keeps_the_newest_complete_utf8() {
-        let mut output = "x".repeat(MAX_REMOTE_COMMAND_OUTPUT - 1);
-        append_remote_output(&mut output, "中".as_bytes());
-        assert!(output.is_char_boundary(0));
-        assert!(output.len() <= MAX_REMOTE_COMMAND_OUTPUT);
-        assert!(output.ends_with('中'));
-
-        append_remote_output(&mut output, b"tail");
-        assert!(output.len() <= MAX_REMOTE_COMMAND_OUTPUT);
-        assert!(output.ends_with("tail"));
     }
 
     #[tokio::test]

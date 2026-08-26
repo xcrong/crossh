@@ -334,8 +334,6 @@ mod tests {
         tasks.apply_event(BackgroundTaskEvent {
             id,
             status: BackgroundTaskStatus::Succeeded,
-            output: String::new(),
-            exit_code: Some(0),
         });
 
         assert!(rail_background_tasks(&tasks, "local:/work").is_empty());

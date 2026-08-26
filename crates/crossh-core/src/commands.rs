@@ -2,11 +2,11 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -16,7 +16,6 @@ use serde::{Deserialize, Serialize};
 pub const MAX_HISTORY_ENTRIES: usize = 300;
 pub const DISPLAY_LIMIT: usize = 30;
 const MAX_COMMAND_BYTES: usize = 16 * 1024;
-const MAX_OUTPUT_BYTES: usize = 24 * 1024;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct CommandRecord {
@@ -421,8 +420,6 @@ pub struct BackgroundTask {
 pub struct BackgroundTaskEvent {
     pub id: u64,
     pub status: BackgroundTaskStatus,
-    pub output: String,
-    pub exit_code: Option<i32>,
 }
 
 struct BackgroundControl {
@@ -517,15 +514,9 @@ impl BackgroundTaskManager {
     }
 
     pub fn apply_event(&mut self, event: BackgroundTaskEvent) {
-        // Completed tasks leave the panel immediately; consume the result
-        // payload without retaining it in the task list.
-        let BackgroundTaskEvent {
-            id,
-            status: _,
-            output,
-            exit_code,
-        } = event;
-        drop((output, exit_code));
+        // Completed tasks leave the panel immediately; nothing about the
+        // result is retained in the task list.
+        let id = event.id;
         self.controls.remove(&id);
         self.tasks.remove(&id);
     }
@@ -603,26 +594,15 @@ fn run_background_process(
     let mut process = shell_command(&command, &cwd);
     let mut child = match process.spawn() {
         Ok(child) => child,
-        Err(error) => {
+        Err(_) => {
             let _ = event_tx.send_blocking(BackgroundTaskEvent {
                 id,
                 status: BackgroundTaskStatus::Failed,
-                output: error.to_string(),
-                exit_code: None,
             });
             return;
         }
     };
     control.pid.store(child.id(), Ordering::Release);
-
-    let output = Arc::new(Mutex::new(String::new()));
-    let mut readers = Vec::new();
-    if let Some(stdout) = child.stdout.take() {
-        readers.push(spawn_output_reader(stdout, output.clone()));
-    }
-    if let Some(stderr) = child.stderr.take() {
-        readers.push(spawn_output_reader(stderr, output.clone()));
-    }
 
     let started = Instant::now();
     let mut stop_sent = false;
@@ -638,22 +618,11 @@ fn run_background_process(
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) => thread::sleep(Duration::from_millis(40)),
-            Err(error) => {
-                append_output(&output, &format!("\n{error}"));
-                break None;
-            }
+            Err(_) => break None,
         }
     };
-    for reader in readers {
-        let _ = reader.join();
-    }
     control.pid.store(0, Ordering::Release);
 
-    let output = output
-        .lock()
-        .map(|output| output.clone())
-        .unwrap_or_default();
-    let exit_code = status.as_ref().and_then(|status| status.code());
     let status = if control.stop_requested.load(Ordering::Acquire) {
         BackgroundTaskStatus::Terminated
     } else if status.as_ref().is_some_and(|status| status.success()) {
@@ -661,47 +630,7 @@ fn run_background_process(
     } else {
         BackgroundTaskStatus::Failed
     };
-    let final_exit_code = if matches!(
-        status,
-        BackgroundTaskStatus::Succeeded | BackgroundTaskStatus::Failed
-    ) {
-        exit_code
-    } else {
-        None
-    };
-    let _ = event_tx.send_blocking(BackgroundTaskEvent {
-        id,
-        status,
-        output,
-        exit_code: final_exit_code,
-    });
-}
-
-fn spawn_output_reader<R>(mut reader: R, output: Arc<Mutex<String>>) -> thread::JoinHandle<()>
-where
-    R: Read + Send + 'static,
-{
-    thread::spawn(move || {
-        let mut buffer = [0u8; 8 * 1024];
-        loop {
-            match reader.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(size) => {
-                    let text = String::from_utf8_lossy(&buffer[..size]);
-                    append_output(&output, &text);
-                }
-                Err(_) => break,
-            }
-        }
-    })
-}
-
-fn append_output(output: &Arc<Mutex<String>>, text: &str) {
-    let Ok(mut output) = output.lock() else {
-        return;
-    };
-    output.push_str(text);
-    crate::format::truncate_to_limit(&mut output, MAX_OUTPUT_BYTES);
+    let _ = event_tx.send_blocking(BackgroundTaskEvent { id, status });
 }
 
 fn shell_command(command: &str, cwd: &Path) -> Command {
@@ -713,8 +642,8 @@ fn shell_command(command: &str, cwd: &Path) -> Command {
         process.current_dir(cwd);
         process
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
         return process;
     }
 
@@ -726,11 +655,11 @@ fn shell_command(command: &str, cwd: &Path) -> Command {
         let mut process = Command::new(shell);
         process.args(["-lc", command]);
         process.current_dir(cwd);
-        // stdin 置空：后台任务不得与前台终端抢读输入。
+        // stdio 全部置空：后台任务不与前台终端抢输入，输出不捕获。
         process
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
         unsafe {
             process.pre_exec(|| {
                 libc::setpgid(0, 0);
@@ -949,8 +878,6 @@ mod tests {
         manager.apply_event(BackgroundTaskEvent {
             id,
             status: BackgroundTaskStatus::Terminated,
-            output: "terminated".into(),
-            exit_code: None,
         });
         assert_eq!(manager.running_count(), 0);
         assert!(
@@ -984,8 +911,6 @@ mod tests {
         manager.apply_event(BackgroundTaskEvent {
             id: first,
             status: BackgroundTaskStatus::Terminated,
-            output: String::new(),
-            exit_code: None,
         });
         assert!(manager.active_for_owner("local-session:1").is_empty());
         assert_eq!(manager.active_for_owner("local-session:2"), vec![second]);
@@ -1039,28 +964,16 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn background_manager_runs_a_command_and_reports_output() {
+    fn background_manager_runs_a_command_and_reports_status() {
         let cwd = std::env::current_dir().expect("test cwd");
         let scope = local_scope(&cwd);
         let mut manager = BackgroundTaskManager::default();
-        let (id, events) = manager.start(
-            scope.clone(),
-            cwd,
-            "printf crossh-output".into(),
-            "local-session:1".into(),
-        );
+        let (id, events) =
+            manager.start(scope.clone(), cwd, "true".into(), "local-session:1".into());
 
         let event = events.recv_blocking().expect("background task event");
         assert_eq!(event.id, id);
         assert_eq!(event.status, BackgroundTaskStatus::Succeeded);
-        // 本地后台命令经 `$SHELL -lc` 启动（登录 shell，保证拿到用户完整环境），
-        // 用户 rc/profile 的任何回显都会进入合并捕获；契约只要求命令自身
-        // 的 stdout 完整出现在捕获里。
-        assert!(
-            event.output.contains("crossh-output"),
-            "command stdout should be captured, got {:?}",
-            event.output
-        );
 
         manager.apply_event(event);
         assert!(manager.tasks_for_scope(&scope).is_empty());

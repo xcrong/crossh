@@ -776,15 +776,11 @@ impl AppShell {
                             RemoteCommandStatus::Failed => BackgroundTaskStatus::Failed,
                             RemoteCommandStatus::Terminated => BackgroundTaskStatus::Terminated,
                         },
-                        output: event.output,
-                        exit_code: event.exit_code,
                     }
                 }
                 Err(_) => BackgroundTaskEvent {
                     id: task_id,
                     status: BackgroundTaskStatus::Failed,
-                    output: "SSH connection closed".into(),
-                    exit_code: None,
                 },
             };
             let _ = weak.update(cx, |this, cx| {

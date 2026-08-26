@@ -617,8 +617,6 @@ impl SettingsWindow {
     }
 }
 
-#[path = "input.rs"]
-mod input;
 #[path = "render.rs"]
 mod render;
 
