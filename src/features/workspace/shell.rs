@@ -19,8 +19,8 @@ use std::time::Duration;
 
 use gpui::{
     App, AppContext, Context, Entity, EntityId, FocusHandle, InteractiveElement, IntoElement,
-    KeyDownEvent, ParentElement, PathPromptOptions, Pixels, Point, Render, Styled, Task,
-    TitlebarOptions, Window, WindowBounds, WindowOptions, div, px, size,
+    KeyDownEvent, ParentElement, PathPromptOptions, Pixels, Point, Render, Styled, Subscription,
+    Task, TitlebarOptions, Window, WindowBounds, WindowOptions, div, px, size,
 };
 
 use crate::features::connections::{Connection, ConnectionManager, PendingPrompt};
@@ -72,6 +72,8 @@ mod compose;
 mod notifications;
 #[path = "quit.rs"]
 mod quit;
+#[path = "scratch.rs"]
+pub(crate) mod scratch;
 #[path = "settings_actions.rs"]
 mod settings_actions;
 #[path = "shell_input.rs"]
@@ -187,6 +189,11 @@ pub struct AppShell {
     pub(crate) system_monitor: SystemMonitorState,
     system_sampler: Option<SystemSampler>,
     _system_monitor_task: Option<Task<()>>,
+    pub(crate) scratch_visible: bool,
+    pub(crate) scratch_terminal: Option<Entity<TerminalView>>,
+    pub(crate) scratch_height: Rc<Cell<f32>>,
+    pub(crate) scratch_dragging: Rc<Cell<bool>>,
+    scratch_subscription: Option<Subscription>,
     quit_confirmation_open: bool,
     shutdown_in_progress: bool,
     /// 标签页关闭确认框是否已打开，防止重复弹出。
@@ -288,6 +295,11 @@ impl AppShell {
             system_monitor: SystemMonitorState::new(),
             system_sampler: None,
             _system_monitor_task: None,
+            scratch_visible: false,
+            scratch_terminal: None,
+            scratch_height: Rc::new(Cell::new(220.)),
+            scratch_dragging: Rc::new(Cell::new(false)),
+            scratch_subscription: None,
             quit_confirmation_open: false,
             shutdown_in_progress: false,
             tab_close_confirmation_open: false,
@@ -989,6 +1001,12 @@ impl AppShell {
             || self.rename_editor.is_some()
             || self.default_command_editor.is_some()
         {
+            return;
+        }
+        // Scratch 抽屉的 Esc 隐藏：优先级高于全局快捷键，但低于模态
+        if self.scratch_visible && ev.keystroke.key == "escape" {
+            self.hide_scratch_terminal(cx);
+            cx.stop_propagation();
             return;
         }
         let ks = &ev.keystroke;

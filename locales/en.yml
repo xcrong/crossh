@@ -115,6 +115,7 @@ tooltip:
   open_in_editor_with: Open the current directory in %{editor}
   compose_bar: Toggle compose input bar
   system_monitor: System monitor
+  scratch_terminal: Scratch terminal
 toast:
   path_copied: Path copied
   editor_not_found: No editor detected. Configure one in Settings.
@@ -382,3 +383,7 @@ compose:
   placeholder: Type command locally, press Ctrl+Enter to send
   send: Send
   send_tooltip: Send (Ctrl+Enter)
+
+scratch:
+  title: Scratch Terminal
+  close: Close scratch terminal

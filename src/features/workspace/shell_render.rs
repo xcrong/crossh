@@ -110,6 +110,9 @@ impl Render for AppShell {
             .workspace
             .compose_visible_for_focused()
             .then(|| crate::features::workspace::compose_bar::render_compose_bar(self, window, cx));
+        let scratch_panel = self.scratch_visible.then(|| {
+            crate::features::workspace::scratch_bar::render_scratch_panel(self, window, cx)
+        });
         let main_column = div()
             .flex_1()
             .min_w_0()
@@ -117,6 +120,7 @@ impl Render for AppShell {
             .flex()
             .flex_col()
             .child(main)
+            .children(scratch_panel)
             .children(compose_bar);
         let workspace = div()
             .flex_1()
@@ -152,6 +156,11 @@ impl Render for AppShell {
                 .on_action(cx.listener(|this, _: &crate::ToggleQuickCommands, _, cx| {
                     this.toggle_quick_commands(cx)
                 }))
+                .on_action(
+                    cx.listener(|this, _: &crate::ToggleScratchTerminal, window, cx| {
+                        this.toggle_scratch_terminal(window, cx)
+                    }),
+                )
                 .on_action(cx.listener(|this, _: &crate::ToggleTimestamps, _, cx| {
                     this.toggle_timestamps(cx)
                 }))

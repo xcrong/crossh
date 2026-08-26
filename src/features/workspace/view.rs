@@ -546,6 +546,24 @@ pub(crate) fn render_workspace_status_bar(
         .items_center()
         .gap_1()
         .child(
+            Button::new("status-scratch")
+                .size(ButtonSize::Icon(px(22.)))
+                .variant(ButtonVariant::Ghost)
+                .selected(shell.scratch_visible)
+                .icon(icons::icon(icons::IconName::Terminal, 13.).text_color(
+                    if shell.scratch_visible {
+                        theme::accent()
+                    } else {
+                        theme::muted_text()
+                    },
+                ))
+                .tooltip(i18n::text("tooltip.scratch_terminal"))
+                .on_click(cx.listener(|this, _ev, window, cx| {
+                    this.toggle_scratch_terminal(window, cx);
+                }))
+                .into_any_element(),
+        )
+        .child(
             Button::new("status-system-monitor")
                 .size(ButtonSize::Icon(px(22.)))
                 .variant(ButtonVariant::Ghost)

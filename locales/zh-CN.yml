@@ -115,6 +115,7 @@ tooltip:
   open_in_editor: 在外部编辑器中打开当前目录
   compose_bar: 切换批量输入条
   system_monitor: 系统监视器
+  scratch_terminal: 临时终端
 toast:
   path_copied: 路径已复制
   editor_not_found: 未检测到编辑器，可在设置中配置
@@ -382,3 +383,7 @@ compose:
   placeholder: 本地输入，按 Ctrl+Enter 发送到终端
   send: 发送
   send_tooltip: 发送（Ctrl+Enter）
+
+scratch:
+  title: 临时终端
+  close: 关闭临时终端

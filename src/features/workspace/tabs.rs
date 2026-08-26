@@ -956,7 +956,7 @@ impl AppShell {
     }
 
     /// 把焦点交还给当前活动终端 tab（切换 tab / 关闭模态后调用）。
-    pub(super) fn refocus_active_terminal(&self, cx: &mut Context<Self>) {
+    pub(crate) fn refocus_active_terminal(&self, cx: &mut Context<Self>) {
         match self.workspace.focused_view() {
             Some(ActiveView::RemoteTab(idx)) => {
                 if let Some(tab) = self.workspace.sessions.remote_tabs.get(idx) {

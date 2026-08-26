@@ -12,6 +12,7 @@ pub(crate) mod pinned;
 pub(crate) mod quick_commands_rail;
 pub(crate) mod registry;
 pub(crate) mod rename_editor;
+pub(crate) mod scratch_bar;
 pub(crate) mod settings;
 pub(crate) mod shell;
 pub(crate) mod sidebar;

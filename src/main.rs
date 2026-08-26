@@ -35,6 +35,7 @@ actions!(
         ToggleFullScreen,
         ToggleHostSidebar,
         ToggleQuickCommands,
+        ToggleScratchTerminal,
         ToggleTimestamps,
         ZoomWindow
     ]
@@ -110,6 +111,11 @@ fn main() {
         crossh_ui::assets::load_fonts(cx).expect("Crossh fonts should load");
         features::settings::init();
         features::terminal::init(cx);
+        cx.bind_keys([
+            gpui::KeyBinding::new("cmd-`", ToggleScratchTerminal, Some("AppShell")),
+            gpui::KeyBinding::new("ctrl-`", ToggleScratchTerminal, Some("AppShell")),
+            gpui::KeyBinding::new("cmd-j", ToggleScratchTerminal, Some("AppShell")),
+        ]);
         infrastructure::app_menu::install(cx);
         app::open_launch_target(launch_target, cx);
     });
