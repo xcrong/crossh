@@ -46,7 +46,6 @@ use crate::features::workspace::view::{
     render_rename_editor, render_workspace_status_bar,
 };
 use crate::shared::i18n::{self, LanguagePreference};
-use crossh_agent::AgentSettings;
 use crossh_core::commands::{
     BackgroundTaskEvent, BackgroundTaskManager, BackgroundTaskStatus, CommandHistory, local_scope,
     remote_scope,
@@ -160,7 +159,6 @@ pub struct AppShell {
     pub(crate) update_settings: UpdateSettings,
     pub(crate) updates: Entity<UpdateController>,
     pub(crate) workspace_settings: WorkspaceSettings,
-    pub(crate) agent_settings: AgentSettings,
     /// 侧栏宽度与拖动状态；只影响布局，不改变导航状态。
     pub(crate) sidebar_width: Rc<Cell<f32>>,
     pub(crate) sidebar_dragging: Rc<Cell<bool>>,
@@ -233,7 +231,6 @@ impl AppShell {
         let workspace_settings = snapshot.workspace;
         // 启动不自动打开任何会话（契约 5 Rev-2）：固定记录保留在持久化
         // 列表中，待用户打开对应项目时由契约 11 恢复。
-        let agent_settings = snapshot.agent;
         let updates = cx.new(|_| UpdateController::new(update_settings.clone()));
         // 启动时把最近的本地目录记录恢复到侧栏 Local 分组（无活动会话，点击即重开）。
         let mut local_dirs = BTreeMap::new();
@@ -270,7 +267,6 @@ impl AppShell {
             update_settings,
             updates: updates.clone(),
             workspace_settings,
-            agent_settings,
             sidebar_width: Rc::new(Cell::new(theme::SIDEBAR_WIDTH)),
             sidebar_dragging: Rc::new(Cell::new(false)),
             sidebar_scroll: gpui::ScrollHandle::new(),
@@ -1505,7 +1501,6 @@ impl AppShell {
             terminal: self.terminal_settings.clone(),
             updates: self.update_settings.clone(),
             workspace: self.workspace_settings.clone(),
-            agent: self.agent_settings.clone(),
         };
         if let Err(error) = settings::save(&snapshot) {
             log::warn!("failed to save settings: {error}");

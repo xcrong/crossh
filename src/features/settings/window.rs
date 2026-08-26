@@ -5,24 +5,17 @@
 //! 这样终端重放、i18n 全局同步、最近目录同步等副作用都仍由主窗口统一处理。
 
 use gpui::{
-    AnyElement, App, AppContext, Bounds, ClickEvent, ClipboardEntry, Context, Entity, FocusHandle,
-    FontWeight, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, SharedString, Size,
+    AnyElement, App, AppContext, Bounds, ClickEvent, Context, Entity, FontWeight,
+    InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString, Size,
     StatefulInteractiveElement, Styled, Subscription, TitlebarOptions, WeakEntity, Window,
-    WindowBounds, WindowOptions, canvas, div, px,
+    WindowBounds, WindowOptions, div, px,
 };
-use std::cell::Cell;
-use std::rc::Rc;
 
 use crate::features::editor_launcher;
 use crate::features::settings::{self, SettingsSnapshot};
 use crate::features::updates::{UpdateController, UpdateStatus};
 use crate::features::workspace::AppShell;
 use crate::shared::i18n::{self, LanguagePreference};
-use crossh_agent::{
-    ALL_PROTOCOLS, AgentModel, AgentModelRef, AgentProvider, AgentSettings, Protocol, ProtocolExt,
-};
-use crossh_ui::widgets::{ime_input_canvas, printable_char, text_caret, text_span, text_width};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
     Button, ButtonSize, ButtonVariant, Select, SelectOption, Stepper, ToggleSwitch, scroll_y,
@@ -32,8 +25,6 @@ use crossh_ui_component::{
 pub enum SettingsSection {
     General,
     Terminal,
-    Providers,
-    Agent,
     Updates,
     About,
 }
@@ -60,44 +51,9 @@ pub struct SettingsWindow {
     scroll: gpui::ScrollHandle,
     updates: Entity<UpdateController>,
     _updates_subscription: Subscription,
-    agent_draft: AgentSettings,
-    agent_draft_initialized: bool,
-    agent_provider_index: usize,
-    agent_model_index: usize,
-    agent_model_editor_open: bool,
-    agent_provider_id_focus: FocusHandle,
-    agent_provider_name_focus: FocusHandle,
-    agent_url_focus: FocusHandle,
-    agent_model_focus: FocusHandle,
-    agent_model_name_focus: FocusHandle,
-    agent_api_key_focus: FocusHandle,
-    agent_key_env_focus: FocusHandle,
-    agent_context_focus: FocusHandle,
-    agent_max_tokens_focus: FocusHandle,
-    agent_edit_field: Option<AgentInputField>,
-    agent_cursor: usize,
-    agent_anchor: Option<usize>,
-    agent_ime_marked_text: String,
-    agent_ime_replacement: Option<(usize, usize)>,
-    agent_dragging: bool,
-    agent_error: Option<String>,
-    agent_api_key_revealed: bool,
     /// 外部编辑器下拉：是否展开（受控）
     editor_select_open: bool,
     compact_layout: bool,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum AgentInputField {
-    ProviderId,
-    ProviderName,
-    Url,
-    Model,
-    ModelName,
-    ApiKey,
-    KeyEnv,
-    ContextWindow,
-    MaxTokens,
 }
 
 impl SettingsWindow {
@@ -114,28 +70,6 @@ impl SettingsWindow {
             scroll: gpui::ScrollHandle::new(),
             updates,
             _updates_subscription: updates_subscription,
-            agent_draft: loaded.agent,
-            agent_draft_initialized: false,
-            agent_provider_index: 0,
-            agent_model_index: 0,
-            agent_model_editor_open: false,
-            agent_provider_id_focus: cx.focus_handle(),
-            agent_provider_name_focus: cx.focus_handle(),
-            agent_url_focus: cx.focus_handle(),
-            agent_model_focus: cx.focus_handle(),
-            agent_model_name_focus: cx.focus_handle(),
-            agent_api_key_focus: cx.focus_handle(),
-            agent_key_env_focus: cx.focus_handle(),
-            agent_context_focus: cx.focus_handle(),
-            agent_max_tokens_focus: cx.focus_handle(),
-            agent_edit_field: None,
-            agent_cursor: 0,
-            agent_anchor: None,
-            agent_ime_marked_text: String::new(),
-            agent_ime_replacement: None,
-            agent_dragging: false,
-            agent_error: None,
-            agent_api_key_revealed: false,
             editor_select_open: false,
             compact_layout: false,
         }
@@ -150,7 +84,6 @@ impl SettingsWindow {
                     terminal: shell.terminal_settings.clone(),
                     updates: shell.update_settings.clone(),
                     workspace: shell.workspace_settings.clone(),
-                    agent: shell.agent_settings.clone(),
                 }
             }
             None => settings::load(),
@@ -167,10 +100,6 @@ impl SettingsWindow {
 
     fn select_section(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
         self.section = section;
-        if section != SettingsSection::Providers {
-            self.agent_model_editor_open = false;
-            self.reset_agent_input_state();
-        }
         self.scroll.set_offset(gpui::Point::new(px(0.), px(0.)));
         cx.notify();
     }
@@ -593,836 +522,101 @@ impl SettingsWindow {
         content.into_any_element()
     }
 
-    fn prepare_agent_draft(&mut self, settings: &SettingsSnapshot) {
-        if !self.agent_draft_initialized {
-            self.agent_draft = settings.agent.clone();
-            self.agent_draft_initialized = true;
+    fn install_update(&mut self, cx: &mut Context<Self>) {
+        match self.updates.update(cx, |updates, _cx| updates.install()) {
+            Ok(()) => self.write_to_shell(cx, |shell, cx| shell.quit_for_update(cx)),
+            Err(error) => {
+                self.updates
+                    .update(cx, |updates, _cx| updates.set_failed(error));
+                cx.notify();
+            }
         }
-        if self.agent_draft.providers.is_empty() {
-            self.agent_provider_index = 0;
-            self.agent_model_index = 0;
-            return;
-        }
-        self.agent_provider_index = self
-            .agent_provider_index
-            .min(self.agent_draft.providers.len().saturating_sub(1));
-        if self.agent_draft.providers[self.agent_provider_index]
-            .models
-            .is_empty()
-        {
-            self.agent_draft.providers[self.agent_provider_index]
-                .models
-                .push(AgentModel {
-                    id: "model".into(),
-                    name: "Model".into(),
-                    protocol: Protocol::OpenAiChat,
-                    url: "https://example.test/v1/chat/completions".into(),
-                    reasoning: false,
-                    context_window: 128_000,
-                    max_tokens: 32_000,
-                });
-            self.agent_error = Some("At least one model is required".into());
-        }
-        self.agent_model_index = self.agent_model_index.min(
-            self.agent_draft.providers[self.agent_provider_index]
-                .models
-                .len()
-                .saturating_sub(1),
-        );
     }
 
-    fn render_provider_settings(
-        &mut self,
-        settings: &SettingsSnapshot,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_about_settings(&self) -> AnyElement {
         let compact_layout = self.compact_layout;
-        self.prepare_agent_draft(settings);
-        let provider_index = self.agent_provider_index;
-
-        let add_provider = settings_text_action(
-            "settings-agent-provider-add".into(),
-            icons::IconName::Plus,
-            i18n::text("settings.agent_provider_add"),
-            cx.listener(|this, _ev, _window, cx| this.add_agent_provider(cx)),
+        let version = div()
+            .text_sm()
+            .text_color(theme::text())
+            .child(SharedString::from(format!(
+                "v{}",
+                env!("CARGO_PKG_VERSION")
+            )));
+        let source = settings_link_button(
+            "settings-about-source",
+            i18n::text("settings.about_source_open"),
+            |_, _window, cx| cx.open_url("https://github.com/xcrong/crossh"),
         );
-        let mut provider_rows = div().w_full().flex().flex_col().gap_1();
-        for (index, provider) in self.agent_draft.providers.iter().enumerate() {
-            let selected = index == provider_index;
-            let protocol = if provider.models.is_empty() {
-                String::new()
-            } else {
-                // 模型级协议：展示去重后的协议列表或模型数
-                let mut protocols: Vec<String> = provider
-                    .models
-                    .iter()
-                    .map(|m| m.protocol.label().to_string())
-                    .collect();
-                protocols.sort();
-                protocols.dedup();
-                format!("{} | {} models", protocols.join("/"), provider.models.len())
-            };
-            let row = div()
-                .id(format!("settings-agent-provider-row-{index}"))
-                .w_full()
-                .min_w_0()
-                .h(px(48.))
-                .px_2()
-                .flex()
-                .items_center()
-                .gap_2()
-                .rounded(px(theme::RADIUS_SM))
-                .border_l_2()
-                .border_color(if selected {
-                    theme::accent()
-                } else {
-                    theme::sidebar()
-                })
-                .cursor_pointer()
-                .bg(if selected {
-                    theme::accent_soft()
-                } else {
-                    theme::sidebar()
-                })
-                .hover(|style| style.bg(theme::raised()))
-                .child(
-                    icons::icon(icons::IconName::Server, 14.).text_color(if selected {
-                        theme::accent()
-                    } else {
-                        theme::muted_text()
-                    }),
-                )
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_xs()
-                                .text_color(theme::text())
-                                .child(SharedString::from(provider.name.clone())),
-                        )
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_xs()
-                                .text_color(theme::muted_text())
-                                .child(SharedString::from(protocol)),
-                        ),
-                )
-                .on_click(cx.listener(move |this, _ev, _window, cx| {
-                    this.agent_provider_index = index;
-                    this.agent_model_index = 0;
-                    this.agent_error = None;
-                    this.agent_model_editor_open = false;
-                    this.reset_agent_input_state();
-                    cx.notify();
-                }));
-            provider_rows = provider_rows.child(row);
-        }
-
-        let mut provider_actions = div().flex().items_center().gap_1().child(add_provider);
-        if !self.agent_draft.providers.is_empty() {
-            provider_actions = provider_actions.child(settings_icon_button(
-                "settings-agent-provider-remove",
-                icons::IconName::Trash,
-                i18n::text("settings.agent_provider_remove"),
-                cx.listener(|this, _ev, _window, cx| this.remove_agent_provider(cx)),
-            ));
-        }
-        let provider_header = div()
-            .w_full()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .child(
-                div()
-                    .text_xs()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::text())
-                    .child(SharedString::from(i18n::text("settings.agent_provider"))),
-            )
-            .child(provider_actions);
-        let provider_list = if compact_layout {
-            div()
-                .w_full()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .pb_3()
-                .border_b_1()
-                .border_color(theme::border())
-                .child(provider_header)
-                .child(provider_rows)
-        } else {
-            div()
-                .w(px(190.))
-                .flex_shrink_0()
-                .pr_3()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .border_r_1()
-                .border_color(theme::border())
-                .child(provider_header)
-                .child(provider_rows)
-        };
-
-        if self.agent_draft.providers.is_empty() {
-            let provider_detail =
-                div()
-                    .min_w_0()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap_2()
-                    .p_6()
-                    .child(
-                        icons::icon(icons::IconName::Server, 28.).text_color(theme::muted_text()),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme::text())
-                            .child(SharedString::from(i18n::text(
-                                "settings.agent_provider_empty",
-                            ))),
-                    )
-                    .child(div().text_xs().text_color(theme::muted_text()).child(
-                        SharedString::from(i18n::text("settings.agent_provider_empty_description")),
-                    ));
-            let provider_detail = if compact_layout {
-                provider_detail.w_full().pt_3()
-            } else {
-                provider_detail.pl_4()
-            };
-            let body = if compact_layout {
-                div()
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .child(provider_list)
-                    .child(provider_detail)
-            } else {
-                div()
-                    .w_full()
-                    .flex()
-                    .items_start()
-                    .child(provider_list)
-                    .child(provider_detail)
-            };
-            return div()
-                .id("settings-providers")
-                .w_full()
-                .flex()
-                .flex_col()
-                .child(settings_heading("settings.providers"))
-                .child(body)
-                .into_any_element();
-        }
-
-        let selected_provider = &self.agent_draft.providers[provider_index];
-        let provider_id = self.agent_input(AgentInputField::ProviderId, window, cx);
-        let provider_name = self.agent_input(AgentInputField::ProviderName, window, cx);
-        let api_key = self.agent_input(AgentInputField::ApiKey, window, cx);
-        let key_env = self.agent_input(AgentInputField::KeyEnv, window, cx);
-
-        let selected_model =
-            &self.agent_draft.providers[provider_index].models[self.agent_model_index];
-        let add_model = settings_text_action(
-            "settings-agent-model-add".into(),
-            icons::IconName::Plus,
-            i18n::text("settings.agent_model_add"),
-            cx.listener(|this, _ev, _window, cx| this.add_agent_model(cx)),
+        let license = settings_link_button(
+            "settings-about-license",
+            i18n::text("settings.about_license_open"),
+            |_, _window, cx| cx.open_url("https://github.com/xcrong/crossh/blob/main/LICENSE"),
         );
-        let model_actions = div().flex().items_center().gap_1().child(add_model);
-        let model_header = div()
-            .w_full()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .child(
-                div()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme::text())
-                            .child(SharedString::from(i18n::text("settings.agent_models"))),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_xs()
-                            .text_color(theme::muted_text())
-                            .child(SharedString::from(i18n::text(
-                                "settings.agent_models_description",
-                            ))),
-                    ),
-            )
-            .child(model_actions);
-        let mut model_rows = div()
-            .id("settings-agent-model-list")
-            .w_full()
-            .max_h(px(180.))
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .border_1()
-            .border_color(theme::border())
-            .rounded(px(theme::RADIUS_SM));
-        for (index, model_entry) in selected_provider.models.iter().enumerate() {
-            let selected = index == self.agent_model_index;
-            let context_badge = div()
-                .h(px(24.))
-                .px_2()
-                .flex()
-                .items_center()
-                .rounded(px(theme::RADIUS_SM))
-                .bg(theme::raised())
-                .text_xs()
-                .text_color(theme::muted_text())
-                .child(SharedString::from(compact_token_count(
-                    model_entry.context_window,
-                )));
-            let reasoning_mark = div()
-                .w(px(16.))
-                .h(px(16.))
-                .flex()
-                .items_center()
-                .justify_center();
-            let reasoning_mark = if model_entry.reasoning {
-                reasoning_mark
-                    .child(icons::icon(icons::IconName::Check, 13.).text_color(theme::accent()))
-            } else {
-                reasoning_mark
-            };
-            let edit_model = settings_icon_button(
-                format!("settings-agent-model-edit-{index}"),
-                icons::IconName::Pencil,
-                i18n::text("settings.agent_model_edit"),
-                cx.listener(move |this, _ev, _window, cx| {
-                    cx.stop_propagation();
-                    this.agent_model_index = index;
-                    this.agent_error = None;
-                    this.agent_model_editor_open = true;
-                    this.reset_agent_input_state();
-                    cx.notify();
-                }),
-            );
-            let remove_model = settings_icon_button(
-                format!("settings-agent-model-remove-{index}"),
-                icons::IconName::Trash,
-                i18n::text("settings.agent_model_remove"),
-                cx.listener(move |this, _ev, _window, cx| {
-                    this.agent_model_index = index;
-                    this.remove_agent_model(cx);
-                    cx.stop_propagation();
-                }),
-            );
-            let row = div()
-                .id(format!("settings-agent-model-row-{index}"))
-                .w_full()
-                .min_w_0()
-                .h(px(44.))
-                .px_2()
-                .flex()
-                .items_center()
-                .gap_2()
-                .rounded(px(theme::RADIUS_SM))
-                .border_l_2()
-                .border_color(if selected {
-                    theme::accent()
-                } else {
-                    theme::sidebar()
-                })
-                .cursor_pointer()
-                .bg(if selected {
-                    theme::accent_soft()
-                } else {
-                    theme::sidebar()
-                })
-                .hover(|style| style.bg(theme::raised()))
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_xs()
-                                .text_color(theme::text())
-                                .child(SharedString::from(model_entry.name.clone())),
-                        )
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_xs()
-                                .text_color(theme::muted_text())
-                                .child(SharedString::from(model_entry.id.clone())),
-                        ),
-                )
-                .child(context_badge)
-                .child(reasoning_mark)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .child(edit_model)
-                        .child(remove_model),
-                )
-                .on_click(cx.listener(move |this, _ev, _window, cx| {
-                    this.agent_model_index = index;
-                    this.agent_error = None;
-                    this.agent_model_editor_open = false;
-                    this.reset_agent_input_state();
-                    cx.notify();
-                }));
-            model_rows = model_rows.child(row);
-        }
-        let status_description = self
-            .agent_error
-            .clone()
-            .unwrap_or_else(|| i18n::text("settings.provider_save_description"));
-        let save = settings_icon_button(
-            "settings-provider-save",
-            icons::IconName::Save,
-            i18n::text("settings.provider_save"),
-            cx.listener(|this, _ev, _window, cx| this.save_agent_settings(cx)),
-        );
-        let provider_title = div()
-            .w_full()
-            .pb_3()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_3()
-            .border_b_1()
-            .border_color(theme::border())
-            .child(
-                div()
-                    .min_w_0()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(icons::icon(icons::IconName::Server, 20.).text_color(theme::accent()))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_lg()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme::text())
-                            .child(SharedString::from(selected_provider.name.clone())),
-                    ),
-            );
-        let status_icon = if self.agent_error.is_some() {
-            icons::IconName::CircleX
-        } else {
-            icons::IconName::Check
-        };
-        let status = div()
-            .w_full()
-            .pt_3()
-            .flex()
-            .items_center()
-            .gap_2()
-            .border_t_1()
-            .border_color(theme::border())
-            .child(
-                icons::icon(status_icon, 14.).text_color(if self.agent_error.is_some() {
-                    theme::danger()
-                } else {
-                    theme::accent()
-                }),
-            )
-            .child(
-                div()
-                    .min_w_0()
-                    .text_xs()
-                    .text_color(if self.agent_error.is_some() {
-                        theme::danger()
-                    } else {
-                        theme::muted_text()
-                    })
-                    .child(SharedString::from(status_description)),
-            );
-        let provider_ready = !selected_provider.api_key.trim().is_empty()
-            || !selected_provider.api_key_env.trim().is_empty()
-            || selected_provider
-                .models
-                .iter()
-                .any(|m| m.url.contains("localhost") || m.url.contains("127.0.0.1"));
-        let provider_status = if provider_ready {
-            i18n::text("settings.agent_provider_ready")
-        } else {
-            i18n::text("settings.agent_provider_unconfigured")
-        };
-        let provider_status_chip = div()
-            .h(px(28.))
-            .px_2()
-            .flex()
-            .items_center()
-            .rounded_full()
-            .bg(if provider_ready {
-                theme::accent_soft()
-            } else {
-                theme::raised()
-            })
-            .text_xs()
-            .text_color(if provider_ready {
-                theme::accent()
-            } else {
-                theme::muted_text()
-            })
-            .child(SharedString::from(provider_status));
-        let provider_notice = div()
-            .w_full()
-            .p_3()
-            .flex()
-            .items_center()
-            .gap_2()
-            .rounded(px(theme::RADIUS_SM))
-            .border_1()
-            .border_color(theme::border())
-            .bg(theme::surface())
-            .child(icons::icon(icons::IconName::Info, 15.).text_color(theme::muted_text()))
-            .child(
-                div()
-                    .min_w_0()
-                    .text_xs()
-                    .text_color(theme::muted_text())
-                    .child(SharedString::from(if provider_ready {
-                        i18n::text("settings.agent_provider_ready_notice")
-                    } else {
-                        i18n::text("settings.agent_provider_key_notice")
-                    })),
-            );
-        let provider_title = provider_title.child(provider_status_chip).child(save);
-        let provider_identity = if compact_layout {
-            div()
-                .w_full()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .child(settings_form_field(
-                    i18n::text("settings.agent_provider_id"),
-                    provider_id,
-                ))
-                .child(settings_form_field(
-                    i18n::text("settings.agent_provider_name"),
-                    provider_name,
-                ))
-        } else {
-            div()
-                .w_full()
-                .flex()
-                .gap_3()
-                .child(settings_form_field(
-                    i18n::text("settings.agent_provider_id"),
-                    provider_id,
-                ))
-                .child(settings_form_field(
-                    i18n::text("settings.agent_provider_name"),
-                    provider_name,
-                ))
-        };
-        let api_key_visibility = settings_icon_button(
-            "settings-agent-api-key-visibility",
-            if self.agent_api_key_revealed {
-                icons::IconName::EyeOff
-            } else {
-                icons::IconName::Eye
-            },
-            if self.agent_api_key_revealed {
-                i18n::text("settings.agent_api_key_hide")
-            } else {
-                i18n::text("settings.agent_api_key_show")
-            },
-            cx.listener(|this, _ev, _window, cx| this.toggle_api_key_visibility(cx)),
-        );
-        let api_key_control = div()
-            .w_full()
-            .flex()
-            .items_center()
-            .gap_1()
-            .child(div().min_w_0().flex_1().child(api_key))
-            .child(api_key_visibility);
-        let credentials = if compact_layout {
-            div()
-                .w_full()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .child(settings_form_field(
-                    i18n::text("settings.agent_credential"),
-                    api_key_control.into_any_element(),
-                ))
-                .child(settings_form_field(
-                    i18n::text("settings.agent_credential_env"),
-                    key_env,
-                ))
-        } else {
-            div()
-                .w_full()
-                .flex()
-                .gap_3()
-                .child(settings_form_field(
-                    i18n::text("settings.agent_credential"),
-                    api_key_control.into_any_element(),
-                ))
-                .child(settings_form_field(
-                    i18n::text("settings.agent_credential_env"),
-                    key_env,
-                ))
-        };
-        let model_editor = if self.agent_model_editor_open {
-            let model = self.agent_input(AgentInputField::Model, window, cx);
-            let model_name = self.agent_input(AgentInputField::ModelName, window, cx);
-            let url = self.agent_input(AgentInputField::Url, window, cx);
-            let context_window = self.agent_input(AgentInputField::ContextWindow, window, cx);
-            let max_tokens = self.agent_input(AgentInputField::MaxTokens, window, cx);
-            let reasoning = settings_choice_button(
-                "settings-agent-reasoning".into(),
-                if selected_model.reasoning {
-                    i18n::text("settings.agent_reasoning_on")
-                } else {
-                    i18n::text("settings.agent_reasoning_off")
-                },
-                selected_model.reasoning,
-                cx.listener(|this, _ev, _window, cx| {
-                    let model = &mut this.agent_draft.providers[this.agent_provider_index].models
-                        [this.agent_model_index];
-                    model.reasoning = !model.reasoning;
-                    this.agent_error = None;
-                    cx.notify();
-                }),
-            );
-            let mut protocols = div()
-                .w_full()
-                .min_w_0()
-                .flex()
-                .flex_row()
-                .gap_1()
-                .flex_wrap()
-                .justify_end();
-            for protocol in ALL_PROTOCOLS {
-                let selected = self
-                    .agent_draft
-                    .providers
-                    .get(provider_index)
-                    .and_then(|p| p.models.get(self.agent_model_index))
-                    .is_some_and(|m| m.protocol == protocol);
-                protocols = protocols.child(
-                    div()
-                        .id(format!("settings-agent-protocol-{protocol:?}"))
-                        .h(px(30.))
-                        .px_2()
-                        .flex()
-                        .items_center()
-                        .rounded(px(theme::RADIUS_SM))
-                        .cursor_pointer()
-                        .text_xs()
-                        .text_color(if selected {
-                            theme::canvas()
-                        } else {
-                            theme::muted_text()
-                        })
-                        .bg(if selected {
-                            theme::accent()
-                        } else {
-                            theme::raised()
-                        })
-                        .child(SharedString::from(protocol.label()))
-                        .on_click(cx.listener(move |this, _ev, _window, cx| {
-                            if let Some(model) = this
-                                .agent_draft
-                                .providers
-                                .get_mut(this.agent_provider_index)
-                                .and_then(|p| p.models.get_mut(this.agent_model_index))
-                            {
-                                model.protocol = protocol;
-                                if model.url.trim().is_empty() {
-                                    model.url = match protocol {
-                                        Protocol::AnthropicMessages => {
-                                            "https://opencode.ai/zen/v1/messages".into()
-                                        }
-                                        Protocol::OpenAiChat => {
-                                            "https://opencode.ai/zen/v1/chat/completions".into()
-                                        }
-                                        Protocol::OpenAiResponses => {
-                                            "https://opencode.ai/zen/v1/responses".into()
-                                        }
-                                    };
-                                }
-                            }
-                            this.agent_error = None;
-                            cx.notify();
-                        })),
-                );
-            }
-            let connection_method = settings_form_field(
-                i18n::text("settings.agent_connection_method"),
-                protocols.into_any_element(),
-            );
-            let base_url = settings_form_field(i18n::text("settings.agent_base_url"), url);
-            let close_editor = settings_icon_button(
-                "settings-agent-model-editor-close",
-                icons::IconName::X,
-                i18n::text("settings.agent_model_editor_close"),
-                cx.listener(|this, _ev, _window, cx| {
-                    this.agent_model_editor_open = false;
-                    this.reset_agent_input_state();
-                    cx.notify();
-                }),
-            );
-            let editor_header = div()
-                .w_full()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme::text())
-                        .child(SharedString::from(i18n::text("settings.agent_model_edit"))),
-                )
-                .child(close_editor);
-            Some(
-                div()
-                    .w_full()
-                    .pt_3()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .border_t_1()
-                    .border_color(theme::border())
-                    .child(editor_header)
-                    .child(settings_form_field(
-                        i18n::text("settings.agent_model_id"),
-                        model,
-                    ))
-                    .child(settings_form_field(
-                        i18n::text("settings.agent_model_name"),
-                        model_name,
-                    ))
-                    .child(connection_method)
-                    .child(base_url)
-                    .child(if compact_layout {
-                        div()
-                            .w_full()
-                            .flex()
-                            .flex_col()
-                            .gap_3()
-                            .child(settings_form_field(
-                                i18n::text("settings.agent_reasoning"),
-                                reasoning,
-                            ))
-                            .child(settings_form_field(
-                                i18n::text("settings.agent_context_window"),
-                                context_window,
-                            ))
-                            .child(settings_form_field(
-                                i18n::text("settings.agent_max_tokens"),
-                                max_tokens,
-                            ))
-                    } else {
-                        div()
-                            .w_full()
-                            .flex()
-                            .gap_3()
-                            .child(settings_form_field(
-                                i18n::text("settings.agent_reasoning"),
-                                reasoning,
-                            ))
-                            .child(settings_form_field(
-                                i18n::text("settings.agent_context_window"),
-                                context_window,
-                            ))
-                            .child(settings_form_field(
-                                i18n::text("settings.agent_max_tokens"),
-                                max_tokens,
-                            ))
-                    }),
-            )
-        } else {
-            None
-        };
-        let mut provider_detail = div()
-            .min_w_0()
-            .flex_1()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(provider_title)
-            .child(provider_notice)
-            .child(provider_identity)
-            .child(credentials)
-            .child(settings_subheading("settings.agent_models"))
-            .child(model_header)
-            .child(model_rows);
-        if let Some(model_editor) = model_editor {
-            provider_detail = provider_detail.child(model_editor);
-        }
-        provider_detail = provider_detail.child(status);
-        if compact_layout {
-            provider_detail = provider_detail.w_full().pt_3();
-        } else {
-            provider_detail = provider_detail.pl_4();
-        }
-
-        let body = if compact_layout {
-            div()
-                .w_full()
-                .flex()
-                .flex_col()
-                .child(provider_list)
-                .child(provider_detail)
-        } else {
-            div()
-                .w_full()
-                .flex()
-                .items_start()
-                .child(provider_list)
-                .child(provider_detail)
-        };
 
         div()
-            .id("settings-providers")
+            .id("settings-about")
             .w_full()
             .flex()
             .flex_col()
-            .child(settings_heading("settings.providers"))
-            .child(body)
+            .child(settings_heading("settings.about"))
+            .child(
+                div()
+                    .w_full()
+                    .py_4()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .border_b_1()
+                    .border_color(theme::border())
+                    .child(
+                        div()
+                            .w(px(56.))
+                            .h(px(56.))
+                            .flex_shrink_0()
+                            .rounded(px(theme::RADIUS_MD))
+                            .overflow_hidden()
+                            .child(icons::logo(56.)),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_lg()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme::text())
+                                    .child(SharedString::from("Crossh")),
+                            )
+                            .child(div().text_sm().text_color(theme::muted_text()).child(
+                                SharedString::from(i18n::text("settings.about_description")),
+                            )),
+                    ),
+            )
+            .child(responsive_settings_row(
+                i18n::text("settings.about_version"),
+                i18n::text("settings.about_version_description"),
+                version.into_any_element(),
+                compact_layout,
+            ))
+            .child(responsive_settings_row(
+                i18n::text("settings.about_source"),
+                i18n::text("settings.about_source_description"),
+                source,
+                compact_layout,
+            ))
+            .child(responsive_settings_row(
+                i18n::text("settings.about_license"),
+                i18n::text("settings.about_license_description"),
+                license,
+                compact_layout,
+            ))
             .into_any_element()
     }
 }
 
-#[path = "agent.rs"]
-mod agent;
 #[path = "input.rs"]
 mod input;
 #[path = "render.rs"]
@@ -1484,58 +678,6 @@ fn settings_heading(key: &str) -> AnyElement {
         .text_color(theme::text())
         .child(SharedString::from(i18n::text(key)))
         .into_any_element()
-}
-
-fn settings_subheading(key: &str) -> AnyElement {
-    div()
-        .pt_2()
-        .pb_1()
-        .text_sm()
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(theme::text())
-        .child(SharedString::from(i18n::text(key)))
-        .into_any_element()
-}
-
-fn settings_form_field(label: String, control: AnyElement) -> AnyElement {
-    div()
-        .w_full()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .child(
-            div()
-                .text_sm()
-                .text_color(theme::muted_text())
-                .child(SharedString::from(label)),
-        )
-        .child(control)
-        .into_any_element()
-}
-
-fn settings_text_action(
-    id: String,
-    icon: icons::IconName,
-    label: String,
-    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> AnyElement {
-    Button::new(id)
-        .size(ButtonSize::Small)
-        .variant(ButtonVariant::Ghost)
-        .icon(icons::icon(icon, 14.).text_color(theme::muted_text()))
-        .label(label)
-        .on_click(on_click)
-        .into_any_element()
-}
-
-fn compact_token_count(value: u32) -> String {
-    if value >= 1_000_000 {
-        format!("{:.1}M", value as f32 / 1_000_000.0)
-    } else if value >= 1_000 {
-        format!("{}K", value / 1_000)
-    } else {
-        value.to_string()
-    }
 }
 
 fn responsive_settings_row(
@@ -1617,66 +759,6 @@ fn settings_icon_button(
         .tooltip(tooltip)
         .on_click(on_click)
         .into_any_element()
-}
-
-fn settings_choice_button(
-    id: String,
-    label: String,
-    selected: bool,
-    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> AnyElement {
-    Button::new(id)
-        .size(ButtonSize::Small)
-        .variant(if selected {
-            ButtonVariant::Primary
-        } else {
-            ButtonVariant::Secondary
-        })
-        .selected(selected)
-        .label(label)
-        .on_click(on_click)
-        .into_any_element()
-}
-
-fn input_text_part(field: AgentInputField, value: &str, mask_api_key: bool) -> AnyElement {
-    let display = if field == AgentInputField::ApiKey && mask_api_key {
-        "*".repeat(value.chars().count())
-    } else {
-        value.to_string()
-    };
-    text_span(display)
-}
-
-fn input_index_for_x(
-    window: &Window,
-    value: &str,
-    masked: bool,
-    x: Pixels,
-    bounds: Bounds<Pixels>,
-) -> usize {
-    let relative_x = (x - bounds.origin.x - px(8.)).max(px(0.));
-    let display = if masked {
-        "*".repeat(value.chars().count())
-    } else {
-        value.to_string()
-    };
-    let mut previous_width = px(0.);
-    for (character_index, (display_end, _)) in display
-        .char_indices()
-        .map(|(index, ch)| (index + ch.len_utf8(), ch))
-        .enumerate()
-    {
-        let width = text_width(window, &display[..display_end], px(12.));
-        if relative_x < previous_width + (width - previous_width) / 2. {
-            return value
-                .char_indices()
-                .nth(character_index)
-                .map(|(index, _)| index)
-                .unwrap_or(value.len());
-        }
-        previous_width = width;
-    }
-    value.len()
 }
 
 fn settings_link_button(

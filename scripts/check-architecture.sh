@@ -42,8 +42,6 @@ check_absent \
     "$repo_root/crates/crossh-ssh" \
     "$repo_root/crates/crossh-terminal" \
     "$repo_root/crates/crossh-update" \
-    "$repo_root/crates/crossh-agent" \
-    "$repo_root/crates/crossh-ai-sdk" \
     "$repo_root/crates/crossh-theme"
 
 check_absent \
@@ -54,8 +52,6 @@ check_absent \
     "$repo_root/crates/crossh-ssh" \
     "$repo_root/crates/crossh-terminal" \
     "$repo_root/crates/crossh-update" \
-    "$repo_root/crates/crossh-agent" \
-    "$repo_root/crates/crossh-ai-sdk" \
     "$repo_root/crates/crossh-theme"
 
 check_absent \

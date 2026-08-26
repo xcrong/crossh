@@ -54,7 +54,6 @@ package() {
 
     # 1. 二进制
     install -Dm755 "${srcdir}/crossh" "${pkgdir}/usr/bin/crossh"
-    install -Dm755 "${srcdir}/crossh-agent" "${pkgdir}/usr/bin/crossh-agent"
     install -Dm755 "${srcdir}/crossh-git" "${pkgdir}/usr/bin/crossh-git"
     install -Dm755 "${srcdir}/crossh-updater" "${pkgdir}/usr/bin/crossh-updater"
 

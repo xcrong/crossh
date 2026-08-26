@@ -36,51 +36,6 @@ settings:
   title: Settings
   general: General
   terminal: Terminal
-  providers: LLM Providers
-  agent: Agent
-  agent_provider: Providers
-  agent_connection: Connection
-  agent_connection_method: Connection method
-  agent_base_url: Base URL
-  agent_provider_ready: Enabled
-  agent_provider_unconfigured: Not enabled
-  agent_provider_ready_notice: This provider is ready to use.
-  agent_provider_key_notice: Set an API key or environment variable to enable this provider.
-  agent_provider_empty: No providers configured
-  agent_provider_empty_description: Add a provider to configure its connection and models.
-  agent_provider_required: Add a provider before managing models.
-  agent_provider_add: Add provider
-  agent_provider_remove: Remove selected provider
-  agent_provider_id: Provider ID
-  agent_provider_name: Provider name
-  agent_models: Provider models
-  agent_models_description: Maintain the models exposed by the selected provider.
-  agent_model_add: Add model
-  agent_model_remove: Remove selected model
-  agent_model_edit: Edit model
-  agent_model_editor_close: Close model editor
-  agent_model_id: Model API ID
-  agent_model_name: Model name
-  agent_reasoning: Reasoning support
-  agent_reasoning_on: Enabled
-  agent_reasoning_off: Disabled
-  agent_context_window: Context window
-  agent_max_tokens: Maximum output tokens
-  agent_active_model: Active model
-  agent_active_model_description: Model used for conversation, reasoning, and tool requests.
-  agent_reviewer_model: Approval model
-  agent_reviewer_model_description: Language model that automatically approves or denies write, edit, and shell requests. Local confirmation is used only when no approval model is configured or available.
-  agent_rounds: Maximum tool rounds
-  agent_rounds_description: Maximum consecutive model/tool iterations per prompt. Default is 200.
-  agent_credential: API key
-  agent_credential_env: API key environment variable
-  agent_api_key_show: Show API key
-  agent_api_key_hide: Hide API key
-  agent_status: Configuration
-  agent_save: Save agent configuration
-  agent_save_description: Save the model roles and execution policy used by the agent.
-  provider_save: Save provider configuration
-  provider_save_description: API keys and model details are stored in the local Crossh settings file.
   about: About
   about_description: A focused SSH workbench for local and remote sessions.
   about_version: Version

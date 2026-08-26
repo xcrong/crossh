@@ -6,13 +6,13 @@ incremental updates, flicker, dropped lines, dock/overlay coverage. The same
 command line must be re-run before and after a fix; compare the repaint counts.
 
 Frame splitting: the default frame separator is the synchronized-output intro
-`ESC[?2026h` emitted by crossh-tui's regular renderer. Applications that do not
+`ESC[?2026h` emitted by crossh's regular renderer. Applications that do not
 use synchronized output can pass `--framesep` (e.g. an alternate-screen enter).
 
 Example:
   python3 .agents/skills/terminal-pty-capture/scripts/capture_frames.py \
     --rows 30 --cols 80 --input "/model m" \
-    --count 'ESC[2J' --name repaint -- target/debug/crossh-agent
+    --count 'ESC[2J' --name repaint -- target/debug/crossh
 
 Escape sequences in --input: \\x1b, \\r, \\n, \\t are decoded.
 """
@@ -91,7 +91,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "command",
         nargs=argparse.REMAINDER,
-        help="Command to run (e.g. target/debug/crossh-agent)",
+        help="Command to run (e.g. target/debug/crossh)",
     )
     args = parser.parse_args()
     if args.command and args.command[0] == "--":

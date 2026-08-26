@@ -52,7 +52,7 @@ Use `scripts/capture_frames.py` when a bug is about *what the screen does over t
 ```bash
 python3 .agents/skills/terminal-pty-capture/scripts/capture_frames.py \
   --rows 30 --cols 80 --input "/model m" \
-  --count '\x1b[2J' --name repaint -- target/debug/crossh-agent
+  --count '\x1b[2J' --name repaint -- target/debug/crossh
 ```
 
 Workflow:
@@ -63,7 +63,7 @@ Workflow:
 4. Assert before/after: run the **same command line** against the old and fixed build and compare `*_total` and per-frame counts. The fix is proven only by a drop in the counted sequence, not by eyeballing the screen.
 5. Keep the raw capture (`--output`, default `/tmp/capture-frames.bin`) for hex inspection of specific lines (footer, editor, popup).
 
-Observed with crossh-agent regular mode: every render frame is wrapped in `ESC[?2026h` … `ESC[?2026l`; a full-screen repaint is `ESC[2J ESC[H`; dock lines are erased with `ESC[2K`.
+Observed with crossh regular mode: every render frame is wrapped in `ESC[?2026h` … `ESC[?2026l`; a full-screen repaint is `ESC[2J ESC[H`; dock lines are erased with `ESC[2K`.
 
 ## Crossh Diagnosis
 

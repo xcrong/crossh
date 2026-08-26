@@ -54,16 +54,6 @@ fn main() {
             println!("crossh {}", env!("CARGO_PKG_VERSION"));
             return;
         }
-        app::cli::CliCommand::Agent(arguments) => {
-            let code = match app::cli::spawn_agent_process(&arguments) {
-                Ok(code) => code,
-                Err(error) => {
-                    eprintln!("crossh agent: {error}");
-                    std::process::exit(1);
-                }
-            };
-            std::process::exit(code);
-        }
         app::cli::CliCommand::Git(result) => match result {
             Ok(features::git_launcher::GitCliCommand::Open(cwd)) => {
                 if let Err(error) = features::git_launcher::spawn_git_process(&cwd) {

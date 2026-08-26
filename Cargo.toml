@@ -15,13 +15,10 @@ x11 = ["gpui_platform/x11"]
 members = [
     ".",
     "crates/crossh-core",
-    "crates/crossh-agent",
-    "crates/crossh-ai-sdk",
     "crates/crossh-assets",
     "crates/crossh-theme",
     "crates/crossh-ssh",
     "crates/crossh-terminal",
-    "crates/crossh-tui",
     "crates/crossh-update",
     "crates/crossh-ui",
     "crates/crossh-ui-component",
@@ -30,11 +27,9 @@ resolver = "2"
 
 [dependencies]
 crossh-core = { path = "crates/crossh-core" }
-crossh-agent = { path = "crates/crossh-agent" }
 crossh-theme = { path = "crates/crossh-theme" }
 crossh-ssh = { path = "crates/crossh-ssh" }
 crossh-terminal = { path = "crates/crossh-terminal" }
-crossh-tui = { path = "crates/crossh-tui" }
 crossh-update = { path = "crates/crossh-update" }
 crossh-ui = { path = "crates/crossh-ui" }
 crossh-ui-component = { path = "crates/crossh-ui-component" }
@@ -59,8 +54,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sys-locale = "0.3"
 toml = "0.8"
-crossterm = "0.29"
-unicode-width = "0.2"
 shlex = "1"
 schemars = "1"
 

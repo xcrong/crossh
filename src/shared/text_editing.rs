@@ -332,6 +332,7 @@ pub fn selection_bounds(anchor: Option<usize>, cursor: usize) -> Option<(usize, 
 }
 
 /// 把可能落在 UTF-8 字符内部的字节索引向下收敛到合法字符边界。
+#[allow(dead_code)]
 pub fn clamp_char_boundary(value: &str, index: usize) -> usize {
     let mut index = index.min(value.len());
     while index > 0 && !value.is_char_boundary(index) {

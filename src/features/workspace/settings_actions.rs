@@ -3,13 +3,11 @@
 
 use gpui::Context;
 
+use crate::features::workspace::empty_state::EmptyStateFilter;
 use crate::shared::i18n::LanguagePreference;
-use crossh_agent::AgentSettings;
 use crossh_terminal::settings::{
     MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK, TerminalSettings,
 };
-
-use crate::features::workspace::empty_state::EmptyStateFilter;
 
 use super::AppShell;
 
@@ -74,16 +72,6 @@ impl AppShell {
             return;
         }
         self.update_settings.check_on_startup = enabled;
-        self.persist_settings();
-        cx.notify();
-    }
-
-    pub(crate) fn set_agent_settings(&mut self, settings: AgentSettings, cx: &mut Context<Self>) {
-        let settings = settings.normalized();
-        if settings.validate().is_err() || self.agent_settings == settings {
-            return;
-        }
-        self.agent_settings = settings;
         self.persist_settings();
         cx.notify();
     }

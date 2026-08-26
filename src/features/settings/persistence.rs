@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use crate::features::updates::UpdateSettings;
 use crate::features::workspace::settings::WorkspaceSettings;
 use crate::shared::i18n::LanguagePreference;
-use crossh_agent::AgentSettings;
 use crossh_terminal::settings::TerminalSettings;
 
 const SETTINGS_FILE_NAME: &str = "settings.toml";
@@ -19,7 +18,6 @@ pub(crate) struct SettingsSnapshot {
     pub(crate) terminal: TerminalSettings,
     pub(crate) updates: UpdateSettings,
     pub(crate) workspace: WorkspaceSettings,
-    pub(crate) agent: AgentSettings,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -32,8 +30,6 @@ struct SettingsFile {
     updates_check_on_startup: bool,
     #[serde(flatten)]
     workspace: WorkspaceSettings,
-    #[serde(default)]
-    agent: AgentSettings,
 }
 
 fn default_updates_check_on_startup() -> bool {
@@ -49,7 +45,6 @@ impl From<SettingsFile> for SettingsSnapshot {
                 check_on_startup: file.updates_check_on_startup,
             },
             workspace: file.workspace.normalized(),
-            agent: file.agent.migrate_legacy_provider_fields(),
         }
     }
 }
@@ -61,13 +56,12 @@ impl From<&SettingsSnapshot> for SettingsFile {
             terminal: snapshot.terminal.clone().normalized(),
             updates_check_on_startup: snapshot.updates.check_on_startup,
             workspace: snapshot.workspace.clone().normalized(),
-            agent: snapshot.agent.clone(),
         }
     }
 }
 
 pub(crate) fn load() -> SettingsSnapshot {
-    let mut snapshot: SettingsSnapshot = match settings_path() {
+    match settings_path() {
         None => SettingsFile::default().into(),
         Some(path) => match fs::read_to_string(&path) {
             Ok(contents) => match toml::from_str::<SettingsFile>(&contents) {
@@ -85,9 +79,7 @@ pub(crate) fn load() -> SettingsSnapshot {
                 SettingsFile::default().into()
             }
         },
-    };
-    snapshot.agent = snapshot.agent.with_builtin_presets();
-    snapshot
+    }
 }
 
 pub(crate) fn save(snapshot: &SettingsSnapshot) -> std::io::Result<()> {
@@ -171,7 +163,6 @@ mod tests {
                     },
                 ],
             },
-            agent: AgentSettings::default(),
         };
         let encoded =
             toml::to_string(&SettingsFile::from(&snapshot)).expect("settings should serialize");
@@ -232,7 +223,6 @@ mod tests {
         assert_eq!(snapshot.terminal, TerminalSettings::default());
         assert_eq!(snapshot.updates, UpdateSettings::default());
         assert_eq!(snapshot.workspace, WorkspaceSettings::default());
-        assert_eq!(snapshot.agent, AgentSettings::default());
     }
 
     #[test]
@@ -273,7 +263,6 @@ mod tests {
                 terminal: TerminalSettings::default(),
                 updates: UpdateSettings::default(),
                 workspace: WorkspaceSettings::default(),
-                agent: AgentSettings::default(),
             }
         };
         let encoded = toml::to_string(&SettingsFile::from(&snapshot)).expect("should serialize");
@@ -305,7 +294,6 @@ mod tests {
                 terminal: TerminalSettings::default(),
                 updates: UpdateSettings::default(),
                 workspace: WorkspaceSettings::default(),
-                agent: AgentSettings::default(),
             }
         };
         let encoded =

@@ -36,51 +36,6 @@ settings:
   title: 设置
   general: 通用
   terminal: 终端
-  providers: 模型供应商
-  agent: Agent
-  agent_provider: 供应商
-  agent_connection: 连接配置
-  agent_connection_method: 连接方式
-  agent_base_url: Base URL
-  agent_provider_ready: 已启用
-  agent_provider_unconfigured: 未启用
-  agent_provider_ready_notice: 该供应商已配置，可以使用。
-  agent_provider_key_notice: 设置 API Key 或环境变量后即可启用。
-  agent_provider_empty: 尚未配置供应商
-  agent_provider_empty_description: 添加供应商后即可配置连接和模型。
-  agent_provider_required: 请先添加供应商，再管理模型。
-  agent_provider_add: 添加供应商
-  agent_provider_remove: 删除当前供应商
-  agent_provider_id: 供应商 ID
-  agent_provider_name: 供应商名称
-  agent_models: 供应商模型
-  agent_models_description: 管理当前供应商提供的模型。
-  agent_model_add: 添加模型
-  agent_model_remove: 删除当前模型
-  agent_model_edit: 编辑模型
-  agent_model_editor_close: 关闭模型编辑
-  agent_model_id: 模型 API ID
-  agent_model_name: 模型名称
-  agent_reasoning: 推理支持
-  agent_reasoning_on: 已启用
-  agent_reasoning_off: 已停用
-  agent_context_window: 上下文窗口
-  agent_max_tokens: 最大输出 Token
-  agent_active_model: 主模型
-  agent_active_model_description: 用于对话、推理和发起工具调用的模型。
-  agent_reviewer_model: 审批模型
-  agent_reviewer_model_description: 自动审批或拒绝写入、编辑和 Shell 请求的语言模型；未配置或暂不可用时才使用本地确认。
-  agent_rounds: 最大工具轮次
-  agent_rounds_description: 每条提示允许连续执行的模型/工具迭代次数，默认为 200。
-  agent_credential: API Key
-  agent_credential_env: API Key 环境变量
-  agent_api_key_show: 显示 API Key
-  agent_api_key_hide: 隐藏 API Key
-  agent_status: 配置
-  agent_save: 保存 Agent 配置
-  agent_save_description: 保存 Agent 使用的模型角色与执行策略。
-  provider_save: 保存供应商配置
-  provider_save_description: API Key 与模型信息会保存在本机 Crossh 设置文件中。
   about: 关于
   about_description: 面向本地与远程工作的专注型 SSH 工作台。
   about_version: 版本

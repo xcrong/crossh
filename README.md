@@ -14,7 +14,6 @@
 - **本地终端**：Zed `TerminalBuilder` 创建本地 PTY；Crossh 只叠加项目目录、当前 `cwd` 和多会话标签，Git 状态由工作区单独维护。
 - **设置**：语言（zh/en）、Zed 终端字号、滚动回退行数、启动时检查更新，持久化到 `~/.config/crossh/`。
 - **远程更新**：设置页从 HTTPS release manifest 检查版本，按平台下载并校验 SHA-256 与 Ed25519 签名（缺失/无效签名一律拒绝，见 ADR 0014），再交给随应用分发的独立 updater 完成替换和重启。
-- **Crossh Agent**：`crossh agent` 提供流式多协议模型对话、`read`/`grep`/`find`/`ls`/`patch`/`edit`/`write`/`bash` 工具、项目 `AGENTS.md`/`CLAUDE.md`/`.pi/SYSTEM.md` 上下文、项目与用户级 `skills`/prompt templates、JSONL 会话恢复/分叉/树回退/压缩/导出、模型与思考级别切换、Markdown 输出、工具确认、取消和工作中排队。
 - 常驻友好：日志裁剪（`/tmp/crossh/run.log`）、panic 现场保留、空闲内存 ~70MB。
 
 ## 构建与运行
@@ -24,10 +23,6 @@
 cargo run            # 开发模式（日志同时 tee 到 stderr）
 cargo run --release  # 发布模式
 
-# 交互式 coding agent（也可直接运行独立二进制 cargo run --bin crossh-agent）
-cargo run -- agent
-cargo run -- agent --continue
-
 # 打开当前目录的 Git Viewer；也可以传入一个目录
 crossh git
 crossh git ~/Code/draw-backend
@@ -35,7 +30,7 @@ crossh git ~/Code/draw-backend
 
 Git Viewer 提供变更列表、staging/unstage、commit、push/pull 与刷新，状态栏同步显示与远端的分歧；`cmd-r` 刷新。
 
-发布包会同时包含 `crossh`、`crossh-agent`、`crossh-git`、`crossh-updater` 和共享的 `crossh-assets/` 资源目录（三平台一致，见 `scripts/package.sh` / `package-linux.sh` / `package-windows.ps1`）。`crossh git`
+发布包会同时包含 `crossh`、`crossh-git`、`crossh-updater` 和共享的 `crossh-assets/` 资源目录（三平台一致，见 `scripts/package.sh` / `package-linux.sh` / `package-windows.ps1`）。`crossh git`
 会优先启动安装目录旁边的 `crossh-git`，所有子程序共用同一份字体、图标和主题资源，
 因此 Git Viewer 不需要加载完整的 SSH、终端和工作区功能。
 
@@ -65,17 +60,11 @@ open dist/crossh.app
 
 侧栏搜索支持关键词：`local` / `project`（或中文 `本地` / `项目`）直达目录视图与目录选择器。
 
-Agent 终端内输入 `/help` 查看命令。常用命令包括 `/model`、`/thinking`、`/resume`、`/new`、`/compact`、`/export`、`/skills`、`/prompts`；`/skill NAME` 应用项目技能，`/prompt NAME [args]` 执行 prompt template。`!command` 会执行 Shell 并把输出交给模型，`!!command` 只执行不回传。写入和 Shell 工具默认由审批模型自动审核；审批模型不可用时才回退到本地确认，审批请求、结果和拒绝原因会显示在消息流中。
-
-项目资源目录支持 `.agents/skills/<name>/SKILL.md`、`.pi/skills/<name>/SKILL.md`、`.pi/prompts/<name>.md` 和 `prompts/<name>.md`；用户级资源放在 `~/.pi/agent/`、`~/.agents/` 或 `~/.config/crossh/agent/` 对应目录。当前项目目录优先于全局同名资源。
-
 ## 架构
 
 ```
 crates/
   crossh-core/                无 UI 的配置、终端契约、命令/Git 逻辑
-  crossh-agent/               无 UI 的 agent 循环、工具、会话与策略
-  crossh-ai-sdk/              无 UI 的 provider 消息、HTTP/SSE 与 wire adapter
   crossh-theme/               无 UI 的颜色 tokens
   crossh-ssh/                 russh 连接、SFTP、转发和认证引擎
   crossh-terminal/            终端 settings/events 模型边界
@@ -97,7 +86,7 @@ src/
     updates/                  更新状态机与设置页入口
 ```
 
-依赖方向保持单向：`crossh-core`、`crossh-agent`、`crossh-ai-sdk`、`crossh-theme`、`crossh-assets`、`crossh-ssh`、`crossh-terminal` 和 `crossh-update` 不依赖 GPUI；`crossh-ui` 将 `crossh-assets` 适配为 GPUI 的资源源；根 package 的 GPUI feature adapter 依赖这些 crate；`workspace` 通过 `WorkspacePane` trait 消费终端、SFTP 和转发面板。可重复执行的分层检查位于 `scripts/check-architecture.sh`。
+依赖方向保持单向：`crossh-core`、`crossh-theme`、`crossh-assets`、`crossh-ssh`、`crossh-terminal` 和 `crossh-update` 不依赖 GPUI；`crossh-ui` 将 `crossh-assets` 适配为 GPUI 的资源源；根 package 的 GPUI feature adapter 依赖这些 crate；`workspace` 通过 `WorkspacePane` trait 消费终端、SFTP 和转发面板。可重复执行的分层检查位于 `scripts/check-architecture.sh`。
 
 UI 图标统一放在 `crates/crossh-assets/assets/icons/`，由 `crossh-assets`
 自动嵌入。图标引用必须通过 `crossh_ui::icons::IconName`，不要在业务视图中

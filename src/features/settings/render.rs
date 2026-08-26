@@ -35,24 +35,6 @@ impl Render for SettingsWindow {
                 this.select_section(SettingsSection::Updates, cx);
             }),
         );
-        let providers = nav_button(
-            "settings-section-providers",
-            icons::IconName::Server,
-            i18n::text("settings.providers"),
-            section == SettingsSection::Providers,
-            cx.listener(|this, _ev, _window, cx| {
-                this.select_section(SettingsSection::Providers, cx);
-            }),
-        );
-        let agent = nav_button(
-            "settings-section-agent",
-            icons::IconName::Bot,
-            i18n::text("settings.agent"),
-            section == SettingsSection::Agent,
-            cx.listener(|this, _ev, _window, cx| {
-                this.select_section(SettingsSection::Agent, cx);
-            }),
-        );
         let about = nav_button(
             "settings-section-about",
             icons::IconName::Info,
@@ -66,8 +48,6 @@ impl Render for SettingsWindow {
         let section_content = match section {
             SettingsSection::General => self.render_general_settings(&settings, cx),
             SettingsSection::Terminal => self.render_terminal_settings(&settings, cx),
-            SettingsSection::Providers => self.render_provider_settings(&settings, window, cx),
-            SettingsSection::Agent => self.render_agent_settings(&settings, cx),
             SettingsSection::Updates => self.render_updates_settings(&settings, cx),
             SettingsSection::About => self.render_about_settings(),
         };
@@ -86,8 +66,6 @@ impl Render for SettingsWindow {
                 .border_color(theme::border_strong())
                 .child(general)
                 .child(terminal)
-                .child(providers)
-                .child(agent)
                 .child(updates)
                 .child(about)
         } else {
@@ -103,8 +81,6 @@ impl Render for SettingsWindow {
                 .border_color(theme::border_strong())
                 .child(general)
                 .child(terminal)
-                .child(providers)
-                .child(agent)
                 .child(updates)
                 .child(div().flex_1())
                 .child(about)
