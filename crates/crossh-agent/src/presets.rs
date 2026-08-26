@@ -1,6 +1,6 @@
-//! 内置供应商预设，直接复用 `pi-agent` 的 `pi-ai` 供应商资源。
+//! 内置供应商预设，以 `pi-ai` 的公开资源为底子，但落盘为 Crossh 自有副本。
 //!
-//! 数据来源：`@earendil-works/pi-ai/dist/providers/data/opencode-go.json`
+//! 数据来源（公开底子）：`@earendil-works/pi-ai/dist/providers/data/opencode-go.json`
 //! 锚定版本：`pi-coding-agent 0.84.1 / pi-ai 0.84.1`
 //! 原始地址：`https://raw.githubusercontent.com/earendil-works/pi-mono/main/packages/ai/src/providers/data/opencode-go.json`
 //!
@@ -8,18 +8,16 @@
 //! （AnthropicMessages / OpenAiChat / OpenAiResponses）。
 //! 后续新增预设只需在此追加 `AgentProvider` 并在 `builtin_presets()` 中注册。
 //!
-//! 动态更新：`builtin_presets()` 会优先尝试读取 `pi` 的本地缓存
-//! `~/.pi/agent/models-store.json`（`pi` 每 4h 从 `https://pi.dev/api/models/providers/{id}`
-//! 刷新，带 `ETag`/`lastModified` 与 `checkedAt` 窗口），并将动态模型 overlay 到
-//!  baked 基线（`pi` 的 `mergeModels` 语义：同 `id` 覆盖，否则追加）。未安装 `pi` 或
-//! 缓存缺失时回退到 baked 基线；网络刷新由 `pi` 负责，`crossh` 仅消费缓存，
-//! 后续可按需增加 `crossh` 自身的 `~/.config/crossh/agent/remote-catalog.json`
-//! 定时拉取（复用 `pi` 的 `REMOTE_CATALOG_REFRESH_INTERVAL_MS = 4h` 与 `withRemoteCatalog` 逻辑）。
+//! 动态更新（已与 `pi` 解耦）：`builtin_presets()` 优先读取 Crossh 自有缓存
+//! `~/.config/crossh/agent/models-store.json`（与 `pi` 同形的 `{opencode:{models:[...]}}`），
+//! 首次运行时若不存在会一次性从 `~/.pi/agent/models-store.json` 迁移（仅做 seeding，不再共享），
+//! 之后完全独立；`pi` 每 4h 从 `https://pi.dev/api/models/providers/{id}` 刷新的逻辑
+//! 未来由 Crossh 自身的 `remote-catalog.json` 定时拉取替代（复用 `REMOTE_CATALOG_REFRESH_INTERVAL_MS=4h`）。
+//! 未安装 `pi` 且自有缓存缺失时回退到 baked 基线（18 条，见 `baked_models()`）。
 //! 外部扩展：`~/.config/crossh/agent/providers/*.json` 可直接放置 `pi` 格式的供应商
 //! JSON（`pi-ai/dist/providers/data/*.json` 的 grouped-by-api 格式，或
 //! `~/.pi/agent/models.json` 的 `{"providers":{...}}` 格式），启动时自动加载为
 //! 额外供应商，实现零成本接入新供应商。
-
 use crate::Protocol;
 use crate::policy::{AgentModel, AgentProvider};
 use serde_json::Value as JsonValue;
@@ -279,13 +277,27 @@ fn sanitize_model(mut model: AgentModel) -> AgentModel {
     model
 }
 
+fn crossh_models_store_path() -> Option<std::path::PathBuf> {
+    Some(
+        dirs::home_dir()?
+            .join(".config")
+            .join("crossh")
+            .join("agent")
+            .join("models-store.json"),
+    )
+}
+
 fn load_pi_dynamic_models() -> Option<DynamicGroups> {
-    let path = dirs::home_dir()?
-        .join(".pi")
-        .join("agent")
-        .join("models-store.json");
+    // 仅读 Crossh 自有副本，不再依赖 `~/.pi`；两应用完全隔离。
+    // 公开资源已 baked 为底子（`baked_models()`），自有缓存 `~/.config/crossh/agent/models-store.json`
+    // 由 Crossh 自身的远程拉取填充（未来 `remote-catalog.json` 4h 刷新），当前无缓存即回退 baked。
+    let path = crossh_models_store_path()?;
     let data = std::fs::read_to_string(path).ok()?;
     let store: JsonValue = serde_json::from_str(&data).ok()?;
+    parse_models_store(&store)
+}
+
+fn parse_models_store(store: &JsonValue) -> Option<DynamicGroups> {
     // 新 pi 使用 `opencode`，旧缓存可能仍为 `opencode-go`
     let entry = store.get("opencode").or_else(|| store.get("opencode-go"))?;
     let models = entry.get("models")?.as_array()?;
@@ -323,7 +335,7 @@ fn load_pi_dynamic_models() -> Option<DynamicGroups> {
                 Protocol::OpenAiResponses,
                 format!("{}/responses", base_url.trim_end_matches('/')),
             ),
-            // google-generative-ai 等暂无对应 Protocol，按 OpenAiChat 处理或跳过
+            // google-generative-ai 等暂无对应 Protocol，跳过
             _ => continue,
         };
         let agent_model = sanitize_model(AgentModel {

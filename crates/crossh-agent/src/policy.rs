@@ -123,11 +123,67 @@ impl Default for AgentSettings {
 
 impl AgentSettings {
     /// 将内置预设（单供应商 `opencode`，协议已下沉到 model 层）合并到当前设置中。
-    /// 旧的 2 个分片 id 直接丢弃；已存在的 `opencode` 供应商做增量合并：
+    /// 旧的 3 个遗留 id（`opencode-go` 单体 + 2 个分片）直接丢弃/迁移；已存在的 `opencode` 供应商做增量合并：
     /// 预设新增的模型自动补齐，已存在的同 id 模型保留用户编辑（协议/URL 等），
     /// 用户自定义模型（id 不在预设）完整保留。仅 `api_key/api_key_env` 始终保留用户值。
     pub fn with_builtin_presets(mut self) -> Self {
         const LEGACY_SPLIT_IDS: [&str; 2] = ["opencode-go-openai", "opencode-go-responses"];
+        const LEGACY_SINGLE_ID: &str = "opencode-go";
+        // 兼容旧版单供应商 `opencode-go`：若已存在新 `opencode` 则合并后丢弃旧条目，
+        // 否则原地重命名为 `opencode` 以便后续与预设做增量合并。URL 中的旧 `/zen/go/` 前缀一并纠正。
+        if let Some(pos) = self.providers.iter().position(|p| p.id == LEGACY_SINGLE_ID) {
+            if self
+                .providers
+                .iter()
+                .any(|p| p.id == crate::presets::OPENCODE_ID)
+            {
+                if let Some(new_pos) = self
+                    .providers
+                    .iter()
+                    .position(|p| p.id == crate::presets::OPENCODE_ID)
+                {
+                    // 保留旧条目中用户自定义模型（id 不在新条目）
+                    let legacy_models = self.providers[pos].models.clone();
+                    let new_ids: std::collections::HashSet<String> = self.providers[new_pos]
+                        .models
+                        .iter()
+                        .map(|m| m.id.clone())
+                        .collect();
+                    for mut m in legacy_models {
+                        if new_ids.contains(&m.id) {
+                            continue;
+                        }
+                        if m.url.contains("/zen/go/") {
+                            m.url = m.url.replace("/zen/go/", "/zen/");
+                        }
+                        self.providers[new_pos].models.push(m);
+                    }
+                }
+                self.providers.remove(pos);
+            } else {
+                self.providers[pos].id = crate::presets::OPENCODE_ID.into();
+                self.providers[pos].name = "opencode".into();
+                for m in &mut self.providers[pos].models {
+                    if m.url.contains("/zen/go/") {
+                        m.url = m.url.replace("/zen/go/", "/zen/");
+                    }
+                }
+            }
+            if self.active_model.provider == LEGACY_SINGLE_ID {
+                self.active_model.provider = crate::presets::OPENCODE_ID.into();
+            }
+            if self.reviewer_model.provider == LEGACY_SINGLE_ID {
+                self.reviewer_model.provider = crate::presets::OPENCODE_ID.into();
+            }
+        }
+        for legacy in LEGACY_SPLIT_IDS {
+            if self.active_model.provider == legacy {
+                self.active_model.provider = crate::presets::OPENCODE_ID.into();
+            }
+            if self.reviewer_model.provider == legacy {
+                self.reviewer_model.provider = crate::presets::OPENCODE_ID.into();
+            }
+        }
         self.providers
             .retain(|p| !LEGACY_SPLIT_IDS.contains(&p.id.as_str()));
         let presets = crate::presets::builtin_presets();
