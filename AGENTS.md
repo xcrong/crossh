@@ -77,14 +77,16 @@
 - Behavior changes default to a spec-first loop: write a spec in `docs/specs/` (copy `docs/specs/template.md`), have an AI review pass over the spec plus a human approval gate (`approved`), and only then implement via the TDD loop above. See `docs/specs/README.md` and ADR 0012.
 - The spec carries intent, non-goals, behavior contracts, platform impact, and the acceptance checklist. Specs are one-shot change contracts, not long-term policy: structural decisions are distilled into ADRs, debugging findings into engineering notes, and new executable contracts into the `docs/testing.md` behavior matrix.
 - The human gate is "review the spec, not the implementation." Do not implement before the spec is approved; do not skip the spec because the implementation feels small — the exemption list (documentation, formatting, generated artifacts, provably behavior-preserving refactors, one-line fixes with a regression test) is narrow, and when in doubt write the spec.
-- A `done` spec stays in `docs/specs/` as the change archive; a `superseded` spec names its replacement. Do not delete finished specs.
+- A `done` spec stays in `docs/specs/` as the change archive by default; when its subsystem is removed outright or the content has drifted beyond archival value, it is purged with the next documentation cleanup (see ADR 0012). A `superseded` spec names its replacement.
 - Closing a spec requires finishing its acceptance checklist, including the non-local platform CI jobs that were declared — the spec stays `in-progress` until those Actions jobs pass.
 
 ## Simplification Audits (Manual)
 
 - Run `find-simplifications` audits ad hoc: when there is no active development task, right after closing a spec, or whenever the user asks to find things to simplify. One round per trigger; do not run it in the background or as a standing habit inside unrelated sessions.
-- The skill produces an evidence-backed report under `docs/audit/yyyy-mm-dd-simplification-audit.md` with per-candidate consumer evidence (`file:line`) and a disposition backlog. It does not rewrite production code.
+- Findings are delivered in-session. Persist a report under `docs/audit/yyyy-mm-dd-simplification-audit.md` only when it carries unresolved items needing product input or cross-session tracking; once those items are resolved, the report is pruned like any other expired document. It does not rewrite production code.
 - Dispositions reuse the existing pipeline: small fixes are fixed directly (exemption list), behavior-changing removals go through `docs/specs/` SDD, structural decisions go through an ADR. Never invent a new proposal-note tree for this.
+- Hard gate for direct fixes: a batch may be committed only after a fully green `cargo test --workspace`. If the environment blocks the suite, keep the changes uncommitted instead of deferring results.
+- Saturation exit: a round that yields only P3/info-level candidates counts as saturated; two consecutive saturated rounds put audits on cooldown until the affected areas see substantive commits.
 - Respect the protected surfaces listed in the skill (ADR-decided boundaries, `scripts/check-architecture.sh` whitelist, pinned Zed/GPUI and Lucide revisions, hard-won defensive patterns in `docs/engineering-notes/`). A simplification that collapses one must beat the recorded rationale, not ignore it.
 
 ## Sandbox-Aware Command Execution

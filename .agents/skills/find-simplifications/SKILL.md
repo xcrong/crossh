@@ -1,15 +1,15 @@
 ---
 name: find-simplifications
-description: Use when the user asks to find simplification candidates in the crossh repo, run a simplification audit, or asks whether something can be deleted/folded/replaced. Turn broad "find things to simplify" requests into evidence-backed audit reports under docs/audit/, covering dead or test-only code, duplicated representations, speculative generality, unused seams, defensive machinery without an owner, and hand-rolled code where a maintained crate or stdlib already exists. Do not use for correctness reviews or spec work (those are separate flows).
+description: Use when the user asks to find simplification candidates in the crossh repo, run a simplification audit, or asks whether something can be deleted/folded/replaced. Turn broad "find things to simplify" requests into an evidence-backed audit pass delivered in-session; persist a report under docs/audit/ only when unresolved decisions need recording. Covers dead or test-only code, duplicated representations, speculative generality, unused seams, defensive machinery without an owner, and hand-rolled code where a maintained crate or stdlib already exists. Do not use for correctness reviews or spec work (those are separate flows).
 ---
 
 # 简化扫描（Find Simplifications）
 
-把宽泛的"找简化"请求变成有证据的审计报告，结果落到 `docs/audit/`。这是指导不是清单：跟随代码、保持判断力，**少量经得起推敲的候选胜过一堆薄弱的猜测**。本流程产出的是"待办档案"和处置建议，不直接大改生产代码。
+把宽泛的"找简化"请求变成一轮有证据的审计：结论当场交付，仅当存在需要产品输入或跨会话跟进的未决项时才落盘到 `docs/audit/`，消化后随文档清理删除——代码是唯一真相，过期文档是干扰。这是指导不是清单：跟随代码、保持判断力，**少量经得起推敲的候选胜过一堆薄弱的猜测**。
 
 ## 触发时机
 
-纯手动触发。典型时机：没有进行中的开发任务时、关闭一个 spec 之后、用户明确要求"跑一轮简化扫描"。每次触发只做一轮，不要常驻后台。
+纯手动触发。典型时机：没有进行中的开发任务时、关闭一个 spec 之后、用户明确要求"跑一轮简化扫描"。每次触发只做一轮，不要常驻后台。饱和退出：单轮只发现 P3/信息级候选记一次饱和；连续两轮饱和即进入冷却，直到相关区域出现实质性提交后再扫。
 
 ## 第一步：先建"何为故意"的意图基线
 
@@ -62,6 +62,7 @@ description: Use when the user asks to find simplification candidates in the cro
 - **模糊语料**：`examples/`、`dist/`、CI workflow——先看用法再归类。
 
 先 `rg` 再读调用点。Rust 特有陷阱：`pub` API 可能被其它 crate 消费（跨 crate 引用）、`cfg(test)` 消费者不算生产、trait 方法可能只通过泛型调用。`cargo test` 覆盖率不能代替对公共接口的理解。
+历史报告不具权威惯性：往轮的发现、否决与裁定只是线索，每轮必须以当前文件现状重新取证；与旧结论冲突时以代码为准（先例：2026-08-23 对 `list_changes` 的否决在 08-26 被逐行翻案）。
 
 否决或降级：
 
@@ -98,16 +99,17 @@ description: Use when the user asks to find simplification candidates in the cro
 | 需要删除/折叠行为的变更 | `docs/specs/` SDD 流程（先 spec 后 TDD），在报告中注明对应 spec 草案 |
 | 结构性决策（归属、边界、删除受保护设计） | 写 ADR 提议，报告里标注"建议 ADR" |
 
-扫描本身的产物是 `docs/audit/yyyy-mm-dd-simplification-audit.md`，沿用既往审计报告的结构（历史样例见 git 提交记录）：
+扫描结论默认不落盘。确需持久化时写 `docs/audit/yyyy-mm-dd-simplification-audit.md`，沿用既往结构（历史样例见 git 提交记录）：
 
 - 头部：触发原因、扫描方式（分片清单、锚点命令）、总体结论。
-- 发现表：`编号（S-1…）/ 问题 / 严重度 / 证据（文件:行号）`，每条附消费者分类结论（生产 / 非生产 / 模糊）。
-- 处置 backlog：`优先级 / 编号 / 处置（直接修 / spec / 决策）/ 对应 spec 或说明`，标出受保护表面中"有意保留"的项。
-- "与 SDD 工作流的衔接"：哪些进 draft spec、哪些待裁定。
-- 每条候选写最强行反方论证（"为什么保留"），让未来的读者能独立复核。
+- 发现表：`编号 / 问题 / 严重度 / 证据（文件:行号）`，每条附消费者分类（生产 / 非生产 / 模糊）与最强反方论证。
+- 处置 backlog 与未决项清单。
+
+报告里的未决项清零后，该报告随下一轮文档清理一并删除，不作为常驻档案。
 
 ## 验证与收尾
 
-- 报告只涉及文档变更：`git diff --check`；若顺带直接修了小项，跑 `cargo fmt --check`、`scripts/check-architecture.sh`、`cargo clippy --workspace`、相关 `cargo test --workspace`。
-- 不顺手大改生产代码：候选入 backlog，处置按上表走对应流程。
-- 收尾时在报告中标记"本轮未决项"，并把确实要推进的项转成 draft spec 或 ADR 草案，避免只留报告无人跟进。
+- **硬门禁**：直接修批次必须在提交前跑完整 `cargo test --workspace` 且全绿。测试被环境阻塞（磁盘故障、超时、崩溃）时，改动保持在未提交状态等待重跑——禁止"结果待回填"式提交。
+- 纯文档变更轮只需 `git diff --check`。
+- 不顺手大改生产代码：候选按处置表走对应流程。
+- 未决项当场移交：转 draft spec / ADR 草案 / 产品问题清单；若已落盘且未决项随后清零，报告本身随下轮清理删除。
