@@ -120,7 +120,7 @@ async fn windows_conpty_smoke_round_trip(cx: &mut TestAppContext) {
     let builder = cx.update(|app| {
         TerminalBuilder::new(
             None,
-            None,
+            terminal::TerminalMode::interactive(),
             Shell::WithArguments {
                 program: "cmd.exe".into(),
                 args: vec!["/d".into(), "/c".into(), "echo crossh-conpty-smoke".into()],
@@ -131,10 +131,9 @@ async fn windows_conpty_smoke_round_trip(cx: &mut TestAppContext) {
             AlternateScroll::On,
             Some(64),
             Vec::new(),
-            0,
+            std::time::Duration::from_millis(0),
             false,
             0,
-            None,
             app,
             Vec::new(),
             util::paths::PathStyle::local(),
