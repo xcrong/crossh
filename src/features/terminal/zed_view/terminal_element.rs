@@ -22,6 +22,7 @@ use terminal::{
 };
 use theme::{ActiveTheme, Theme};
 use theme_settings::ThemeSettings;
+use unicode_width::UnicodeWidthChar;
 use util::ResultExt;
 
 use std::fmt::Debug;
@@ -393,8 +394,9 @@ impl BatchedTextRun {
         }
     }
 
-    fn can_append(&self, other_style: &TextRun) -> bool {
-        self.style.font == other_style.font
+    fn can_append(&self, other_style: &TextRun, other_font_size: AbsoluteLength) -> bool {
+        self.font_size == other_font_size
+            && self.style.font == other_style.font
             && self.style.color == other_style.color
             && self.style.background_color == other_style.background_color
             && self.style.underline == other_style.underline
@@ -448,6 +450,46 @@ impl BatchedTextRun {
                 cx,
             )
             .log_err();
+    }
+}
+
+/// 歧义宽度字符缩字入格的判定与缩放（spec 20260826）。
+/// `shaped_width` 为字符的自然排版步进（无 force_width），`cell_width` 为终端格宽。
+/// 与 gpui `apply_force_width_to_layout` 的 1px 容差保持一致。
+const AMBIGUOUS_SHRINK_TOLERANCE: Pixels = px(1.0);
+
+/// 若字形步进超过格宽（加容差），返回缩放因子 (<1)，否则 `None`。
+/// 因子 = cell_width / shaped_width，缩放后字形恰好 1 格宽。
+pub fn ambiguous_shrink_factor(shaped_width: Pixels, cell_width: Pixels) -> Option<f32> {
+    if shaped_width > cell_width + AMBIGUOUS_SHRINK_TOLERANCE {
+        let factor = f32::from(cell_width) / f32::from(shaped_width);
+        // 因子 (0,1) 且有限
+        if factor > 0.0 && factor < 1.0 && factor.is_finite() {
+            return Some(factor);
+        }
+    }
+    None
+}
+
+#[allow(dead_code)]
+pub fn scaled_font_size_for_shrink(
+    base: AbsoluteLength,
+    rem_size: Pixels,
+    factor: f32,
+) -> AbsoluteLength {
+    debug_assert!(factor > 0.0 && factor < 1.0);
+    // 将 AbsoluteLength 转为像素，缩放后再封回。
+    // 若原为 Rems，按相同因子缩放 Rems 值，最终 to_pixels 时等比缩小。
+    match base {
+        AbsoluteLength::Pixels(pixels) => AbsoluteLength::Pixels(pixels * factor),
+        AbsoluteLength::Rems(rems) => {
+            // Rems 缩放需保持 rem_size 语义：pixels = rems * rem_size → 缩放后 pixels = rems*factor*rem_size
+            // 等价于 Rems(rems.0 * factor)
+            let scaled_rems = gpui::Rems(rems.0 * factor);
+            // 避免未使用 rem_size 告警；Rems 路径下 rem_size 仅用于语义说明
+            let _ = rem_size;
+            AbsoluteLength::Rems(scaled_rems)
+        }
     }
 }
 
@@ -700,12 +742,15 @@ impl TerminalElement {
         .track_focus(&focus)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn layout_grid<T: TerminalLayoutCell>(
         grid: impl Iterator<Item = T>,
         start_line_offset: i32,
         text_style: &TextStyle,
         hyperlink: Option<(HighlightStyle, &Range)>,
         minimum_contrast: f32,
+        cell_width: Pixels,
+        rem_size: Pixels,
         cx: &App,
     ) -> (
         Vec<LayoutRect>,
@@ -727,6 +772,9 @@ impl TerminalElement {
         // Collect background regions for efficient merging
         let mut background_regions: Vec<BackgroundRegion> = Vec::with_capacity(estimated_regions);
         let mut current_batch: Option<BatchedTextRun> = None;
+        let base_font_pixels = text_style.font_size.to_pixels(rem_size);
+        let mut shaped_cache: std::collections::HashMap<(char, gpui::FontId), Pixels> =
+            std::collections::HashMap::new();
 
         // First pass: collect all cells and their backgrounds
         let linegroups = grid.into_iter().chunk_by(|cell| cell.point().line);
@@ -739,6 +787,7 @@ impl TerminalElement {
             }
 
             let mut previous_cell_had_extras = false;
+            let mut extra_offset: i32 = 0;
 
             for cell in line {
                 let point = cell.point();
@@ -794,7 +843,9 @@ impl TerminalElement {
                         );
                         apply_hovered_link_style(point, hyperlink, &mut cell_style);
 
-                        let cell_point = LayoutPoint::new(display_line, point.column as i32);
+                        let original_col = point.column as i32;
+                        let render_col = original_col + extra_offset;
+                        let cell_point = LayoutPoint::new(display_line, render_col);
                         if Self::collect_block_element_regions(
                             cell_point,
                             cell.character(),
@@ -807,46 +858,61 @@ impl TerminalElement {
                             continue;
                         }
 
-                        let zero_width_chars = cell.zerowidth();
+                        let ch = cell.character();
+                        let mut is_overwide = false;
+                        if !ch.is_ascii() && ch != ' ' && ch.width().unwrap_or(1) == 1 {
+                            let font_id = cx.text_system().resolve_font(&cell_style.font);
+                            let shaped = *shaped_cache.entry((ch, font_id)).or_insert_with(|| {
+                                cx.text_system().layout_width(font_id, base_font_pixels, ch)
+                            });
+                            if ambiguous_shrink_factor(shaped, cell_width).is_some() {
+                                is_overwide = true;
+                            }
+                        }
 
-                        // Try to batch with existing run
-                        if let Some(ref mut batch) = current_batch {
-                            if batch.can_append(&cell_style)
+                        let zero_width_chars = cell.zerowidth();
+                        let cell_font_size = text_style.font_size;
+
+                        // Overwide chars never batch with neighbours and occupy 2 cells
+                        let can_append = if is_overwide {
+                            false
+                        } else if let Some(batch) = &current_batch {
+                            batch.cell_count == 1
+                                && batch.can_append(&cell_style, cell_font_size)
                                 && batch.start_point.line == cell_point.line
                                 && batch.start_point.column + batch.cell_count as i32
                                     == cell_point.column
-                            {
-                                batch.append_char(cell.character());
-                                if let Some(chars) = zero_width_chars {
-                                    batch.append_zero_width_chars(chars);
-                                }
-                            } else {
-                                // Flush current batch and start new one
-                                let old_batch = current_batch.take().unwrap();
-                                batched_runs.push(old_batch);
-                                let mut new_batch = BatchedTextRun::new_from_char(
-                                    cell_point,
-                                    cell.character(),
-                                    cell_style,
-                                    text_style.font_size,
-                                );
-                                if let Some(chars) = zero_width_chars {
-                                    new_batch.append_zero_width_chars(chars);
-                                }
-                                current_batch = Some(new_batch);
+                        } else {
+                            false
+                        };
+
+                        if can_append {
+                            let batch = current_batch.as_mut().unwrap();
+                            batch.append_char(ch);
+                            if let Some(chars) = zero_width_chars {
+                                batch.append_zero_width_chars(chars);
                             }
                         } else {
-                            // Start new batch
+                            if let Some(old_batch) = current_batch.take() {
+                                batched_runs.push(old_batch);
+                            }
                             let mut new_batch = BatchedTextRun::new_from_char(
                                 cell_point,
-                                cell.character(),
+                                ch,
                                 cell_style,
-                                text_style.font_size,
+                                cell_font_size,
                             );
+                            if is_overwide {
+                                new_batch.cell_count = 2;
+                            }
                             if let Some(chars) = zero_width_chars {
                                 new_batch.append_zero_width_chars(chars);
                             }
                             current_batch = Some(new_batch);
+                        }
+
+                        if is_overwide {
+                            extra_offset += 1;
                         }
                     };
                 }
@@ -1652,6 +1718,8 @@ impl Element for TerminalElement {
                             .as_ref()
                             .map(|word| (link_style, &word.word_match)),
                         minimum_contrast,
+                        dimensions.cell_width,
+                        window.rem_size(),
                         cx,
                     )
                 } else {
@@ -1683,6 +1751,8 @@ impl Element for TerminalElement {
                             .as_ref()
                             .map(|word| (link_style, &word.word_match)),
                         minimum_contrast,
+                        dimensions.cell_width,
+                        window.rem_size(),
                         cx,
                     )
                 };

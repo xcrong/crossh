@@ -549,11 +549,11 @@ fn test_batched_text_run_can_append() {
     let font_size = AbsoluteLength::Pixels(px(12.0));
     let batch = BatchedTextRun::new_from_char(LayoutPoint::new(0, 0), 'a', style1, font_size);
 
-    // Should be able to append same style
-    assert!(batch.can_append(&style2));
+    // Should be able to append same style + same size
+    assert!(batch.can_append(&style2, font_size));
 
-    // Should not be able to append different style
-    assert!(!batch.can_append(&style3));
+    // Should not be able to append different style (size irrelevant)
+    assert!(!batch.can_append(&style3, font_size));
 }
 
 #[test]
@@ -998,4 +998,80 @@ fn test_unified_filtering_works_for_both_modes() {
     // Negative: lines -7, -6, -5, -4
     assert_eq!(negative_filtered.first().unwrap().point.line, -7);
     assert_eq!(negative_filtered.last().unwrap().point.line, -4);
+}
+
+#[allow(non_snake_case)]
+#[test]
+fn spec_20260826_terminal_ambiguous_width_shrink__overwide_char_needs_shrink() {
+    // ② 的实测：cell 8.4px，shaped 14px (> +1px) → 需要缩
+    let cell = gpui::px(8.4);
+    let shaped = gpui::px(14.0);
+    assert!(
+        super::ambiguous_shrink_factor(shaped, cell).is_some(),
+        "overwide shaped width should produce a shrink factor"
+    );
+}
+
+#[allow(non_snake_case)]
+#[test]
+fn spec_20260826_terminal_ambiguous_width_shrink__fitting_char_needs_no_shrink() {
+    let cell = gpui::px(8.4);
+    // 恰好相等
+    assert!(super::ambiguous_shrink_factor(gpui::px(8.4), cell).is_none());
+    // 1px 容差内（8.4 → 9.4）不缩
+    assert!(super::ambiguous_shrink_factor(gpui::px(9.3), cell).is_none());
+    assert!(super::ambiguous_shrink_factor(gpui::px(9.4), cell).is_none());
+}
+#[allow(non_snake_case)]
+#[test]
+fn spec_20260826_terminal_ambiguous_width_shrink__shrink_factor_is_cell_over_shaped() {
+    let cell = gpui::px(8.4);
+    let shaped = gpui::px(14.0);
+    let factor = super::ambiguous_shrink_factor(shaped, cell).expect("should shrink");
+    let expected = 8.4 / 14.0;
+    assert!(
+        (factor - expected).abs() < 0.001,
+        "factor {factor} != expected {expected}"
+    );
+    assert!(factor < 1.0 && factor > 0.0);
+}
+#[allow(non_snake_case)]
+#[test]
+fn spec_20260826_terminal_ambiguous_width_shrink__scaled_font_size_reduces_proportionally() {
+    let base = AbsoluteLength::from(gpui::px(14.0));
+    let rem = gpui::px(16.0);
+    let factor = 0.6;
+    let scaled = super::scaled_font_size_for_shrink(base, rem, factor);
+    let base_px = base.to_pixels(rem);
+    let scaled_px = scaled.to_pixels(rem);
+    assert!(
+        (f32::from(scaled_px) - f32::from(base_px) * 0.6).abs() < 0.01,
+        "scaled {scaled_px:?} should be base {base_px:?} * 0.6"
+    );
+}
+
+#[allow(non_snake_case)]
+#[test]
+fn spec_20260826_terminal_ambiguous_width_shrink__can_append_rejects_different_font_size() {
+    let style = gpui::TextRun {
+        len: 1,
+        font: font("Lilex"),
+        color: Hsla::default(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let run = BatchedTextRun {
+        start_point: LayoutPoint::new(0, 0),
+        text: "a".into(),
+        cell_count: 1,
+        style: style.clone(),
+        font_size: AbsoluteLength::from(gpui::px(14.0)),
+    };
+    let other_size = AbsoluteLength::from(gpui::px(8.0));
+    // 同一样式但字号不同，应拒绝合并（Red 阶段存根会错误地返回 true）
+    assert!(
+        !run.can_append(&style, other_size),
+        "different font_size should prevent batch merging"
+    );
 }

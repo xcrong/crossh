@@ -62,7 +62,7 @@ ADR 0012）：spec 的行为契约条目就是测试的输入，测试名带 spe
 | Compose | 终端 compose 输入条：状态栏开关展开/收起于 `status_bar` 之上、`sidebar` 与 `quick_commands` 之间，宽度受 `available_main_width` 约束；`Ctrl/Cmd+Enter` 批量投递整段文本并回车执行，`Shift+Enter` 换行；本地无延迟编辑，经 `WorkspacePane::run_command` / `send_text` 投递（见 `docs/specs/20260820-terminal-compose-bar.md`，`in-progress` 待收尾） |
 | PinnedTab | 固定标签默认命令：固定标签可配置默认命令，随项目恢复时按需执行；右键菜单提供编辑/重载/清除（见 `docs/specs/20260821-pinned-tab-default-command.md`，`in-progress` 待收尾） |
 | Monitor | 系统监视器：状态栏右侧 Activity 按钮切换本机 CPU / Memory / 主磁盘 / Network 浮动卡片，浮层定位于状态栏上方靠右（`absolute`，不挤压终端布局）；可见时每 2 秒刷新，隐藏后采样停止且过期写入被拒绝；不可用/回绕数据以 `--` 占位；默认隐藏不持久化；`crossh-core::system_stats` 零 `gpui` 依赖（见 `docs/specs/20260824-system-monitor-card.md`） |
-| Terminal | chunk 边界等价，alternate screen/mouse/keyboard mode，resize，退出和通知 |
+| Terminal | chunk 边界等价，alternate screen/mouse/keyboard mode，resize，退出和通知，歧义宽度字符（②③ 等）占两格渲染不叠印（保持原字号，后续列右移） |
 | Connection | 连接状态，host-key/credential 应答只能消费一次，断线后可重新获取连接；认证候选生成只含 Key/Agent（显式密钥 → 默认密钥 → agent 顺序），密码认证经 UI 凭据兜底 |
 | SFTP | list/read/write/upload/download，dirty editor，保存失败，关闭确认 |
 | Forwarding | start/stop，启动后立即停止，旧回执不得重新激活，关闭 pane 停止全部规则 |

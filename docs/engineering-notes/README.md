@@ -21,3 +21,4 @@
 | 编译时 rustc SIGBUS 崩溃；大编译期间整机卡死/自动重启；测试长时间无输出后失败 | `SIGBUS`, `rustc`, `RTL9210`, `NVMe`, `USB`, `I/O error`, `DART panic`, 卡死, 强制重启, 外置盘 | [rustc SIGBUS 与外置盘 I/O 故障](rustc-sigbus-usb-nvme-failure.md) |
 | agent TUI 运行中突然崩溃；`attempt to subtract with overflow` at main_screen.rs:63；界面在转 Working spinner 或候选在变 | `attempt to subtract with overflow`, `plan_rows`, `cap2`, `start_row`, 视口已满, empty append, n=0, 空追加, main_screen, Working spinner, 运行中崩溃 | [main_screen 增量路径空追加下溢](main-screen-incremental-panic.md) |
 | `git commit` 卡在 clippy 后被超时切断；提交未落库但改动还在暂存区 | `git commit`, `pre-commit`, `clippy -D warnings`, `timeout`, 超时, 钩子, 提交慢 | [pre-commit 钩子耗时与提交超时设置](pre-commit-hook-duration.md) |
+| 终端里 ②③ 等带圈数字与后续字符叠印、粘在一起 | `歧义宽度`, `②③`, `粘在一起`, `叠印`, `force_width`, `cell_width`, `Lilex`, `PingFang`, `Alacritty`, `unicode_width` | [终端歧义宽度字符叠印](terminal-ambiguous-width-overlap.md) |

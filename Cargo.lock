@@ -1943,6 +1943,7 @@ dependencies = [
  "theme_settings",
  "tokio",
  "toml 0.8.23",
+ "unicode-width",
  "util",
 ]
 
