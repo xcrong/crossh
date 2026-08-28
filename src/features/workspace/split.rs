@@ -27,7 +27,7 @@ impl AppShell {
     }
 
     pub(crate) fn toggle_terminal_split(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // 分栏绑定开启它的 Tab（ADR 0011）：只有属主 Tab 上的分栏按钮
+        // 分栏绑定开启它的 Tab：只有属主 Tab 上的分栏按钮
         // 才表示「关闭本 Tab 的分栏」，其他 Tab 的分栏独立共存、互不干扰。
         if let Some(split) = self.workspace.active_split() {
             match split.right {

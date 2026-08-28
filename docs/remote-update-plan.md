@@ -8,7 +8,7 @@ macOS 暂时没有 Developer ID，因此当前发布未签名 `.app`。更新流
 
 ## 已实施的第一阶段
 
-- 发布 workflow 生成 `dist/stable.json`，包含版本、平台、产物格式、文件名、下载 URL、大小和 SHA-256，并用发布者私钥做 Ed25519 签名后发布；客户端用内置公钥验签，缺失或无效签名一律拒绝（见 `docs/adr/0014-update-manifest-signature.md`）。
+- 发布 workflow 生成 `dist/stable.json`，包含版本、平台、产物格式、文件名、下载 URL、大小和 SHA-256，并用发布者私钥做 Ed25519 签名后发布；客户端用内置公钥验签，缺失或无效签名一律拒绝。
 - manifest 与 artifact 请求默认经加速前缀 `https://gh-proxy.com/` 转发（对国内用户更友好），加速通道不可达时自动回退 GitHub 原站；两条通道共享同一验签/校验路径，安全边界不降级（见 `docs/specs/20260818-update-gh-proxy-acceleration.md`）。
 - 客户端只接受 HTTPS 清单和 HTTPS 产物 URL。
 - 版本比较使用 semver，忽略相同版本和降级版本。
@@ -91,7 +91,7 @@ updater 在主进程退出后替换 `crossh.exe`。Windows zip 中包含 `crossh
 4. 为 updater 增加安装失败日志和明确的回滚标记。
 5. 获得 Developer ID 后再启用 macOS notarization/Sparkle，不改变当前清单字段。
 
-> 已完成（v0.16.4）：manifest Ed25519 签名（ADR 0014）与 gh-proxy 加速前缀（`https://gh-proxy.com/` 优先 + GitHub 回退，见 `docs/specs/20260818-update-manifest-ed25519-signature.md` / `20260818-update-gh-proxy-acceleration.md`）已在“已实施的第一阶段”落地；本节剩余项为后续路线图。
+> 已完成（v0.16.4）：manifest Ed25519 签名与 gh-proxy 加速前缀（`https://gh-proxy.com/` 优先 + GitHub 回退，见 `docs/specs/20260818-update-manifest-ed25519-signature.md` / `20260818-update-gh-proxy-acceleration.md`）已在“已实施的第一阶段”落地；本节剩余项为后续路线图。
 
 ## 验收清单
 

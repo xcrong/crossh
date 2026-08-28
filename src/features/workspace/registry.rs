@@ -110,12 +110,12 @@ pub(crate) struct WorkspaceState {
     /// dismiss 本就返回 false）；保留句柄使任务随 AppShell 销毁自动
     /// 取消——若改 detach，窗口关闭后任务仍会空转完 2 秒计时。
     pub(crate) _toast_task: Option<Task<()>>,
-    /// 每个属主 Tab/会话至多一个分栏、相互独立共存（ADR 0011）。
+    /// 每个属主 Tab/会话至多一个分栏、相互独立共存。
     /// key 即分栏属主（创建时的活动视图，等于 `split.left`）。
     pub(crate) terminal_splits: BTreeMap<ActiveView, TerminalSplitState>,
     /// 每个终端独立的批量输入条状态（终端级，可见性+草稿），与分栏同为终端级设置。
     pub(crate) compose: BTreeMap<ActiveView, ComposeEntry>,
-    /// 每个分栏属主独立的左窗格宽度（ADR 0011 语义的自然延伸）。key 与
+    /// 每个分栏属主独立的左窗格宽度。key 与
     /// `terminal_splits` 一致；`0.0` 是哨兵值，渲染层读到它就走均分默认。
     /// 槽位生命周期严格跟随 `terminal_splits` 的增删/重映射路径。
     pub(crate) split_widths: BTreeMap<ActiveView, Rc<Cell<f32>>>,
@@ -150,7 +150,7 @@ impl WorkspaceState {
         true
     }
 
-    /// 活动视图属主的分栏（分栏与其属主 Tab 绑定，见 ADR 0011）。
+    /// 活动视图属主的分栏（分栏与其属主 Tab 绑定）。
     pub(crate) fn active_split(&self) -> Option<TerminalSplitState> {
         self.active_view
             .and_then(|owner| self.terminal_splits.get(&owner).copied())

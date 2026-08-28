@@ -89,17 +89,4 @@ and quick verification command for focused validation.
 
 ## 决策记录
 
-- [0001: Zed revision and terminal fork](adr/0001-zed-revision-and-terminal-fork.md)
-- [0002: Logic/UI layering](adr/0002-logic-ui-layering.md)
-- [0003: Agent logic and view split](adr/0003-agent-logic-and-view-split.md)
-- [0004: Feature-owned settings](adr/0004-feature-owned-settings.md)
-- [0005: Standalone updater](adr/0005-standalone-updater.md)
-- [0007: Workspace panel composition](adr/0007-workspace-panel-composition.md)
-- [0008: Standalone Git Viewer binary](adr/0008-standalone-git-viewer.md)
-- [0009: Standalone agent binary (removed)](adr/0009-standalone-agent-binary.md)
-- [0010: Git workbench layering](adr/0010-git-workbench-layering.md)
-- [0011: Terminal split ownership](adr/0011-terminal-split-ownership.md)
-- [0013: Application Toaster ownership](adr/0013-application-toaster-ownership.md)
-- [0014: Update manifest signature](adr/0014-update-manifest-signature.md)
-- [0015: Agent Runtime and session tree (partially superseded)](adr/0015-agent-runtime-and-session-tree.md)
-- [0016: Standalone Note Viewer binary](adr/0016-standalone-note-viewer.md)
+已移除独立  目录。架构以代码（crate 依赖图 + `scripts/check-architecture.sh`）为准。

@@ -24,7 +24,7 @@
 ## Engineering Notes
 
 - Reusable debugging findings live under `docs/engineering-notes/`. Start with `docs/engineering-notes/README.md`, then load only the topic note whose keywords match the current symptom; do not load the whole collection by default.
-- After resolving a non-obvious, reproducible failure, add or update a concise note with the symptom, root cause, durable rule, verification method, and search keywords. Keep decisions and normative architecture in ADRs; engineering notes are operational memory, not policy.
+- After resolving a non-obvious, reproducible failure, add or update a concise note with the symptom, root cause, durable rule, verification method, and search keywords.
 
 ## Engineering Rules (derived from Zed's architecture)
 
@@ -36,11 +36,11 @@
 - **Depend on abstractions, not concrete panes.** A workspace/container should consume traits or common interfaces (mirrors Zed's `item.rs` / `pane.rs`), not `match` over an enum of concrete view types.
 - **No backward-compatibility bloat.** This project evolves fast and has no historical baggage — do not write redundant shims, deprecated paths, or compatibility code "just in case" older APIs are still used. Keep every layer behind the current, intended contract only.
 
-## Size, Language, and ADR Discipline
+## Size and Language Discipline
 
 - **Keep source files under 2000 lines.** `scripts/check-architecture.sh` rejects Rust files above this limit under `src/` and `crates/*/src/`. Keep any exception explicit in that script's whitelist and document why it is maintained.
 - **Match the surrounding language.** Preserve the existing language of comments and documentation when editing a file. New documentation defaults to Chinese; `AGENTS.md` and `docs/architecture.md` remain in English.
-- **Record structural decisions.** Review the relevant files under `docs/adr/` before significant architecture changes, and add or update an ADR plus the index in `docs/architecture.md` when the decision changes a boundary or ownership rule.
+- **Code is the spec.** Structural decisions are enforced by crate graph + `scripts/check-architecture.sh`, not separate docs.
 
 ## Responsive UI
 

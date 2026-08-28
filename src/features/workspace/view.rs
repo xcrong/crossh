@@ -342,7 +342,7 @@ fn render_workspace_terminal_toggle(
     }
 
     // 分栏按钮的亮灭与当前 Tab（活动视图属主）绑定：显示「当前 Tab 是否
-    // 有分栏」，其他 Tab 的分栏不影响本 Tab 的按钮状态（ADR 0011）。
+    // 有分栏」，其他 Tab 的分栏不影响本 Tab 的按钮状态。。
     let split_active = shell.workspace.active_split().is_some();
     let can_toggle = split_active || terminal_split_available(available_width);
     let tooltip = if split_active {

@@ -211,7 +211,7 @@ jobs:
 
       # Ed25519 签名：私钥只存在于 GitHub Secrets，经环境变量注入；
       # 自验使用与客户端完全相同的固定公钥，签名或自验失败即中止发布，
-      # 绝不产出未签名 manifest（fail-closed，见 docs/adr/0014-update-manifest-signature.md）。
+      # 绝不产出未签名 manifest（fail-closed，见 docs/remote-update-plan.md）。
       - name: Sign update manifest
         env:
           CROSSH_UPDATE_SIGNING_KEY: ${{ secrets.CROSSH_UPDATE_SIGNING_KEY }}

@@ -17,7 +17,7 @@
   - **反应式认证**：未知主机密钥弹指纹确认（可写 `known_hosts`）；加密私钥口令、密码按需弹出，凭据不回写日志。
   - **SFTP**：远程浏览、上传/下载、目录递归、进度条、覆盖确认。
   - **端口转发**：`-L` / `-R` / `-D`(SOCKS5)，config 驱动，UI 启停。
-- **远程更新**：设置页从 HTTPS release manifest 检查版本，按平台下载并校验 SHA-256 与 Ed25519 签名（缺失/无效签名一律拒绝，见 ADR 0014），再交给随应用分发的独立 updater 完成替换和重启。
+- **远程更新**：设置页从 HTTPS release manifest 检查版本，按平台下载并校验 SHA-256 与 Ed25519 签名（缺失/无效签名一律拒绝，），再交给随应用分发的独立 updater 完成替换和重启。
 
 ## 构建与运行
 
@@ -45,7 +45,7 @@ scripts/package.sh x86_64-apple-darwin   # 指定架构（交叉编译）
 open dist/crossh.app
 ```
 
-三平台发布产物由 [.github/workflows/release.yml](.github/workflows/release.yml) 构建：macOS `.app` zip（aarch64/x86_64）、Linux `tar.gz` + AppImage（x86_64/aarch64）、Windows zip（x86_64，aarch64 为 optional experimental）。每个 release 同时生成 `stable.json`，由 [scripts/generate-update-manifest.sh](scripts/generate-update-manifest.sh) 根据实际产物的大小、SHA-256 与 Ed25519 签名自动生成。更新设计、平台替换策略与签名校验（v0.16.4 已落地）见 [docs/remote-update-plan.md](docs/remote-update-plan.md) 与 [docs/adr/0014-update-manifest-signature.md](docs/adr/0014-update-manifest-signature.md)。
+三平台发布产物由 [.github/workflows/release.yml](.github/workflows/release.yml) 构建：macOS `.app` zip（aarch64/x86_64）、Linux `tar.gz` + AppImage（x86_64/aarch64）、Windows zip（x86_64，aarch64 为 optional experimental）。每个 release 同时生成 `stable.json`，由 [scripts/generate-update-manifest.sh](scripts/generate-update-manifest.sh) 根据实际产物的大小、SHA-256 与 Ed25519 签名自动生成。更新设计、平台替换策略与签名校验（v0.16.4 已落地）见 [docs/remote-update-plan.md](docs/remote-update-plan.md)。
 
 版本发布使用 `scripts/release.sh <version> --push`：统一 workspace 版本、同步 lockfile、提交、打 tag 并推送。格式、架构、Clippy 和测试检查由 tag 触发的 GitHub Actions 在构建发布产物前执行。
 

@@ -2,14 +2,14 @@ use std::time::Duration;
 
 pub(crate) const TOAST_DURATION: Duration = Duration::from_secs(2);
 
-/// Toast 语气。四语气是 ADR 0013 的 toaster 契约；`Info`（`Default` 构造）
+/// Toast 语气。四语气为 toaster 契约；`Info`（`Default` 构造）
 /// 与 `Warning` 目前为预留语气，生产仅构造 `Success`/`Error`，测试覆盖全语气。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ToastTone {
     #[default]
     Info,
     Success,
-    /// ADR 0013 契约预留语气；构造点只在 cfg(test) 测试中，故需豁免。
+    /// 契约预留语气；构造点只在 cfg(test) 测试中，故需豁免。
     #[allow(dead_code)]
     Warning,
     Error,
