@@ -176,16 +176,31 @@ jobs:
       - name: Generate release notes
         id: notes
         run: |
-          PREV="$(git tag --sort=-v:refname | sed -n '2p' || true)"
-          if [ -n "$PREV" ]; then
-            {
-              echo "## What's Changed"
-              git log --oneline --no-merges "$PREV"..HEAD | sed 's/^/- /'
-              echo ""
-              echo "**Full Changelog**: https://github.com/$GITHUB_REPOSITORY/compare/$PREV...${GITHUB_REF_NAME}"
-            } > RELEASE_NOTES.md
+          VERSION="${GITHUB_REF_NAME#v}"
+          HAND="docs/release-notes/v${VERSION}.md"
+          if [ -f "$HAND" ]; then
+            echo "Using hand-written release notes from $HAND"
+            cp "$HAND" RELEASE_NOTES.md
+            if ! grep -q "Full Changelog" RELEASE_NOTES.md; then
+              PREV="$(git tag --sort=-v:refname | sed -n '2p' || true)"
+              if [ -n "$PREV" ]; then
+                echo "" >> RELEASE_NOTES.md
+                echo "**Full Changelog**: https://github.com/$GITHUB_REPOSITORY/compare/$PREV...${GITHUB_REF_NAME}" >> RELEASE_NOTES.md
+              fi
+            fi
           else
-            git log --oneline --no-merges | sed 's/^/- /' > RELEASE_NOTES.md
+            echo "No hand-written notes at $HAND, falling back to auto-generated log"
+            PREV="$(git tag --sort=-v:refname | sed -n '2p' || true)"
+            if [ -n "$PREV" ]; then
+              {
+                echo "## What's Changed"
+                git log --oneline --no-merges "$PREV"..HEAD | sed 's/^/- /'
+                echo ""
+                echo "**Full Changelog**: https://github.com/$GITHUB_REPOSITORY/compare/$PREV...${GITHUB_REF_NAME}"
+              } > RELEASE_NOTES.md
+            else
+              git log --oneline --no-merges | sed 's/^/- /' > RELEASE_NOTES.md
+            fi
           fi
 
       - name: Generate checksums

@@ -79,7 +79,7 @@ ensure_versions_match() {
 
 is_allowed_path() {
     case "$1" in
-        Cargo.lock|Cargo.toml|README.md|scripts/package-version.sh|scripts/release.sh|crates/*/Cargo.toml)
+        Cargo.lock|Cargo.toml|README.md|scripts/package-version.sh|scripts/release.sh|crates/*/Cargo.toml|docs/release-notes/v*.md|.github/workflows/release.yml)
             return 0
             ;;
         *)
@@ -134,14 +134,33 @@ fi
 [[ -z "$remote_tag" ]] || die "remote tag already exists: $tag"
 
 echo "==> stage release files"
-git add -- Cargo.lock README.md scripts/package-version.sh scripts/release.sh "${manifest_paths[@]}"
+notes_file="docs/release-notes/v${version}.md"
+workflow_file=".github/workflows/release.yml"
+stage_files=(Cargo.lock README.md scripts/package-version.sh scripts/release.sh "${manifest_paths[@]}")
+[[ -f "$notes_file" ]] && stage_files+=("$notes_file")
+# workflow 改动随版本一起提交（无改动时 git add 为 no-op）
+if [[ -f "$workflow_file" ]]; then
+    stage_files+=("$workflow_file")
+fi
+git add -- "${stage_files[@]}"
 git diff --cached --check
 
 echo "==> commit release"
 git commit --no-verify -m "chore: release $tag"
 
 echo "==> tag $tag"
-git tag -a "$tag" -m "Release $tag"
+if [[ -f "$notes_file" ]]; then
+    # 手写发布日志：用仓库内维护的文件作为 tag annotation 正文（首行为 Release 标题，正文为手写日志）
+    tmp_tag_msg="$(mktemp)"
+    {
+        printf 'Release %s\n\n' "$tag"
+        cat "$notes_file"
+    } > "$tmp_tag_msg"
+    git tag -a "$tag" -F "$tmp_tag_msg" --cleanup=verbatim
+    rm -f "$tmp_tag_msg"
+else
+    git tag -a "$tag" -m "Release $tag"
+fi
 
 if [[ "$push_release" -eq 1 ]]; then
     echo "==> push $branch"
