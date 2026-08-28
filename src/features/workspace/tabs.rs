@@ -468,9 +468,9 @@ impl AppShell {
             }
             None => {}
         }
-        self.host_query.clear();
-        self.host_ime_marked_text.clear();
-        self.host_focus.focus(window, cx);
+        self.search_query.clear();
+        self.search_ime_marked_text.clear();
+        self.search_focus.focus(window, cx);
         cx.notify();
     }
 

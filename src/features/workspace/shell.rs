@@ -133,16 +133,13 @@ pub struct AppShell {
     pub(crate) connections: ConnectionManager,
     pub(crate) workspace: WorkspaceState,
     pub(crate) status: Option<String>,
-    /// 侧栏搜索文本；未命中配置别名时也作为 QuickConnect 目标。
-    pub(crate) host_query: String,
-    pub(crate) host_ime_marked_text: String,
-    pub(crate) host_focus: FocusHandle,
+    /// 侧栏搜索文本；用于项目搜索/过滤。
+    pub(crate) search_query: String,
+    pub(crate) search_ime_marked_text: String,
+    pub(crate) search_focus: FocusHandle,
     /// 应用外壳根焦点；无任何终端/输入框聚焦时持有，保证窗口级动作
     /// （如 Cmd+Q → Quit）始终有合法的 dispatch 目标。
     pub(crate) shell_focus: FocusHandle,
-    /// 主机分组折叠状态；Bank 默认收起，Active 默认展开。
-    pub(crate) bank_collapsed: bool,
-    pub(crate) active_collapsed: bool,
     pub(crate) empty_state_filter: EmptyStateFilter,
     /// 原生项目目录选择器任务，持有到选择结果返回。
     _project_picker: Option<Task<()>>,
@@ -256,12 +253,10 @@ impl AppShell {
             connections: ConnectionManager::new(config),
             workspace: WorkspaceState::new(local_dirs),
             status: None,
-            host_query: String::new(),
-            host_ime_marked_text: String::new(),
-            host_focus: cx.focus_handle(),
+            search_query: String::new(),
+            search_ime_marked_text: String::new(),
+            search_focus: cx.focus_handle(),
             shell_focus: cx.focus_handle(),
-            bank_collapsed: true,
-            active_collapsed: false,
             empty_state_filter: EmptyStateFilter::default(),
             _project_picker: None,
             prompt_input: String::new(),
@@ -884,7 +879,7 @@ impl AppShell {
     }
 
     fn open_query(&mut self, cx: &mut Context<Self>) {
-        let query = self.host_query.trim().to_string();
+        let query = self.search_query.trim().to_string();
         if query.is_empty() {
             return;
         }
@@ -905,23 +900,13 @@ impl AppShell {
             return;
         }
 
-        let matching_idx = self
-            .connections
-            .entries()
-            .iter()
-            .position(|entry| entry.alias.eq_ignore_ascii_case(&query))
-            .or_else(|| {
-                self.connections
-                    .entries()
-                    .iter()
-                    .position(|entry| entry.matches_query(&query_lower))
-            });
-
-        if let Some(idx) = matching_idx {
-            self.open_host(idx, cx);
-        } else {
-            self.open_terminal_target(query, cx);
-        }
+        // 已移除主机别名匹配及 SSH 直连 fallback：未命中项目时仅清空搜索并提示。
+        self.search_query.clear();
+        self.search_ime_marked_text.clear();
+        self.show_toast(
+            ToastNotice::new(i18n::text("toast.search_no_match"), ToastTone::Info),
+            cx,
+        );
     }
 
     /// 通过原生目录选择器创建或打开一个本地项目。
@@ -940,18 +925,18 @@ impl AppShell {
                 return;
             };
             let _ = weak.update(cx, |this, cx| {
-                this.host_query.clear();
-                this.host_ime_marked_text.clear();
+                this.search_query.clear();
+                this.search_ime_marked_text.clear();
                 this.activate_local_dir(path, cx);
             });
         });
         self._project_picker = Some(task);
     }
 
-    /// 主机搜索框保持 `String` 型编辑：该输入为单行过滤/直连入口，
+    /// 搜索框保持 `String` 型编辑：该输入为单行过滤入口，
     /// 无需选区/多光标等 `TextEditingState` 能力；`compose.rs`/`modal_editor.rs`
     /// 的 `TextEditingState` 通用分发见 `shared::text_editing::handle_text_editing_key`。
-    pub(crate) fn handle_host_search_key(
+    pub(crate) fn handle_search_key(
         &mut self,
         ev: &KeyDownEvent,
         window: &mut Window,
@@ -960,22 +945,22 @@ impl AppShell {
         match ev.keystroke.key.as_str() {
             "enter" | "return" => self.open_query(cx),
             "escape" => {
-                self.host_query.clear();
-                self.host_ime_marked_text.clear();
+                self.search_query.clear();
+                self.search_ime_marked_text.clear();
                 cx.notify();
             }
             "backspace" => {
-                self.host_query.pop();
-                self.host_ime_marked_text.clear();
+                self.search_query.pop();
+                self.search_ime_marked_text.clear();
                 cx.notify();
             }
             _ => {
                 if let Some(ch) = printable_char(&ev.keystroke) {
-                    self.host_query.push(ch);
-                    self.host_ime_marked_text.clear();
+                    self.search_query.push(ch);
+                    self.search_ime_marked_text.clear();
                     cx.notify();
                 } else if ev.keystroke.key == "tab" {
-                    self.host_focus.focus(window, cx);
+                    self.search_focus.focus(window, cx);
                 }
             }
         }
@@ -1024,16 +1009,6 @@ impl AppShell {
             }
             _ => {}
         }
-    }
-
-    pub(crate) fn toggle_bank_group(&mut self, cx: &mut Context<Self>) {
-        self.bank_collapsed = !self.bank_collapsed;
-        cx.notify();
-    }
-
-    pub(crate) fn toggle_active_group(&mut self, cx: &mut Context<Self>) {
-        self.active_collapsed = !self.active_collapsed;
-        cx.notify();
     }
 
     /// 打开右键上下文菜单（替换已有菜单）。

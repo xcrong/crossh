@@ -91,7 +91,7 @@ sidebar:
   no_active_connections: 暂无活动连接
   no_hosts_in_bank: 暂无主机
   no_projects: 暂无项目
-  search_placeholder: 筛选项目、主机或输入 user@host:port
+  search_placeholder: 筛选项目
   no_ssh_hosts: 未找到 ~/.ssh/config 中的主机
 
 tooltip:
@@ -121,6 +121,7 @@ toast:
   path_copied: 路径已复制
   editor_not_found: 未检测到编辑器，可在设置中配置
   editor_spawn_failed: 编辑器启动失败
+  search_no_match: 未找到匹配的项目
 
 context_menu:
   open_terminal: 打开终端
@@ -251,7 +252,7 @@ tab:
 
 empty_state:
   title: 准备开始
-  description: 选择一个主机，或打开一个本地项目
+  description: 打开一个本地项目开始工作
   local_projects: 本地项目
   remote_hosts: 远程主机
   recent_projects: 最近项目

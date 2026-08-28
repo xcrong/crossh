@@ -91,7 +91,7 @@ sidebar:
   no_active_connections: No active connections
   no_hosts_in_bank: No hosts in bank
   no_projects: No projects
-  search_placeholder: Filter projects/hosts or enter user@host:port
+  search_placeholder: Filter projects
   no_ssh_hosts: No hosts found in ~/.ssh/config
 
 tooltip:
@@ -121,6 +121,7 @@ toast:
   path_copied: Path copied
   editor_not_found: No editor detected. Configure one in Settings.
   editor_spawn_failed: Failed to launch editor
+  search_no_match: No matching project
 
 context_menu:
   open_terminal: Open Terminal
@@ -251,7 +252,7 @@ tab:
 
 empty_state:
   title: Ready when you are
-  description: Select a host or open a local project
+  description: Open a local project to get started
   local_projects: Local projects
   remote_hosts: Remote hosts
   recent_projects: Recent projects

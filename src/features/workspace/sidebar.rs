@@ -1,4 +1,4 @@
-//! 侧栏：主机搜索框、Local/Active/Bank 分组列表、宽度拖拽。
+//! 侧栏：项目搜索、本地目录列表、宽度拖拽。
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -9,10 +9,8 @@ use gpui::{
     px,
 };
 
-use crate::features::connections::HostEntry;
 use crate::features::terminal::ConnState;
 use crate::features::workspace::shell::AppShell;
-use crate::features::workspace::status::conn_state_dot_color;
 use crate::features::workspace::view::{ActiveView, LocalDir};
 use crate::shared::i18n::{self};
 use crossh_core::terminal::path_display_name;
@@ -20,8 +18,8 @@ use crossh_ui::context_menu::ShellMenuAction;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::context_menu::{MenuEntry, MenuItem};
 use crossh_ui_component::{
-    Avatar, AvatarKind, Button, ButtonSize, ButtonVariant, CountBadge, Hint, Rail, SidePanel,
-    StatusDot, TextInput, Tooltip, rail_avatar, scroll_y,
+    Avatar, AvatarKind, Button, ButtonSize, ButtonVariant, Hint, Rail, SidePanel, TextInput,
+    Tooltip, rail_avatar, scroll_y,
 };
 
 /// 侧栏整体布局：标题栏（含设置）+ 搜索框 + 分组列表 + 宽度拖拽。
@@ -30,18 +28,9 @@ pub fn render_sidebar(
     _window: &Window,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
-    let query = shell.host_query.trim().to_ascii_lowercase();
-    let search_focus = shell.host_focus.clone();
-    let search_ime = shell.host_ime_marked_text.clone();
-    let active_remote_key = match shell.workspace.active_view {
-        Some(ActiveView::RemoteTab(idx)) => shell
-            .workspace
-            .sessions
-            .remote_tabs
-            .get(idx)
-            .map(|tab| tab.host_key.clone()),
-        _ => None,
-    };
+    let query = shell.search_query.trim().to_ascii_lowercase();
+    let search_focus = shell.search_focus.clone();
+    let search_ime = shell.search_ime_marked_text.clone();
     let mut project_dirs: Vec<&LocalDir> = shell
         .workspace
         .sessions
@@ -70,54 +59,6 @@ pub fn render_sidebar(
     );
     let show_projects = query.is_empty() || project_query || !project_dirs.is_empty();
 
-    let mut active_entries = Vec::new();
-    let mut bank_entries = Vec::new();
-    for (idx, entry) in shell.connections.entries().iter().enumerate() {
-        if !query.is_empty() && !entry.matches_query(&query) {
-            continue;
-        }
-        let state = shell.connections.state_for_key(&entry.key, cx);
-        let row = (idx, entry.clone(), state);
-        if is_active_connection(&row.2) {
-            active_entries.push(row);
-        } else {
-            bank_entries.push(row);
-        }
-    }
-
-    let active_count = active_entries.len();
-    let bank_count = bank_entries.len();
-    let project_count = if show_projects { project_dirs.len() } else { 0 };
-    let mut active_list = div().id("active-host-list").flex().flex_col().gap_1();
-    if active_entries.is_empty() {
-        active_list = active_list.child(
-            Hint::new(i18n::text("sidebar.no_active_connections"))
-                .padding_x(px(8.))
-                .padding_y(px(8.))
-                .radius(px(theme::RADIUS_SM)),
-        );
-    } else {
-        for (idx, entry, state) in active_entries {
-            let selected = active_remote_key.as_deref() == Some(entry.key.as_str());
-            active_list = active_list.child(render_host_entry(idx, &entry, state, selected, cx));
-        }
-    }
-
-    let mut bank_list = div().id("bank-host-list").flex().flex_col().gap_1();
-    if bank_entries.is_empty() {
-        bank_list = bank_list.child(
-            Hint::new(i18n::text("sidebar.no_hosts_in_bank"))
-                .padding_x(px(8.))
-                .padding_y(px(8.))
-                .radius(px(theme::RADIUS_SM)),
-        );
-    } else {
-        for (idx, entry, state) in bank_entries {
-            let selected = active_remote_key.as_deref() == Some(entry.key.as_str());
-            bank_list = bank_list.child(render_host_entry(idx, &entry, state, selected, cx));
-        }
-    }
-
     let mut project_list = div().id("project-list").flex().flex_col().gap_1();
     if project_dirs.is_empty() {
         project_list = project_list.child(
@@ -143,35 +84,6 @@ pub fn render_sidebar(
         }
     }
 
-    // Searching should reveal matching hosts even when their group is collapsed.
-    let active_collapsed = shell.active_collapsed && query.is_empty();
-    let bank_collapsed = shell.bank_collapsed && query.is_empty();
-    let active_group = render_host_group(
-        HostGroupSpec {
-            id: "active",
-            icon: icons::IconName::Server,
-            title: i18n::text("sidebar.active"),
-            count: active_count,
-            collapsed: active_collapsed,
-            children: active_list.into_any_element(),
-            toggle: AppShell::toggle_active_group,
-            action: None,
-        },
-        cx,
-    );
-    let bank_group = render_host_group(
-        HostGroupSpec {
-            id: "bank",
-            icon: icons::IconName::Server,
-            title: i18n::text("sidebar.bank"),
-            count: bank_count,
-            collapsed: bank_collapsed,
-            children: bank_list.into_any_element(),
-            toggle: AppShell::toggle_bank_group,
-            action: None,
-        },
-        cx,
-    );
     let mut list = scroll_y(&shell.sidebar_scroll)
         .id("host-list")
         .flex_1()
@@ -184,9 +96,6 @@ pub fn render_sidebar(
     if show_projects {
         list = list.child(project_list);
     }
-    // 活跃/主机分组已隐藏（按需求注释）
-    // list = list.child(active_group).child(bank_group);
-    let _ = (&active_group, &bank_group, &project_count);
 
     let search = div()
         .id("host-search-wrap")
@@ -203,10 +112,10 @@ pub fn render_sidebar(
         .child(icons::icon(icons::IconName::Search, 14.).text_color(theme::muted_text()))
         .child(
             TextInput::new("host-search", search_focus.clone())
-                .value(shell.host_query.clone())
+                .value(shell.search_query.clone())
                 .placeholder(i18n::text("sidebar.search_placeholder"))
                 .ime_marked_text(search_ime)
-                .text_color(if shell.host_query.is_empty() {
+                .text_color(if shell.search_query.is_empty() {
                     theme::faint_text()
                 } else {
                     theme::text()
@@ -214,7 +123,7 @@ pub fn render_sidebar(
                 .bg(theme::surface())
                 .flex_1()
                 .entity(cx.entity())
-                .on_key_down(cx.listener(AppShell::handle_host_search_key)),
+                .on_key_down(cx.listener(AppShell::handle_search_key)),
         );
 
     let titlebar = div()
@@ -329,12 +238,6 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
             .iter()
             .filter(|path| shell.workspace.sessions.local_dirs.contains_key(*path))
             .map(std::path::PathBuf::as_path),
-        shell
-            .connections
-            .entries()
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| (index, entry.alias.as_str())),
     );
 
     Rail::left("sidebar-rail", theme::SIDEBAR_RAIL_WIDTH)
@@ -393,10 +296,8 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
 
 fn rail_add_menu_entries<'a>(
     recent_dirs: impl IntoIterator<Item = &'a Path>,
-    hosts: impl IntoIterator<Item = (usize, &'a str)>,
 ) -> Vec<MenuEntry<ShellMenuAction>> {
     let recent_dirs = recent_dirs.into_iter().collect::<Vec<_>>();
-    let hosts = hosts.into_iter().collect::<Vec<_>>();
     let mut entries = vec![MenuEntry::SectionHeader(i18n::text(
         "rail_add.open_project",
     ))];
@@ -424,22 +325,6 @@ fn rail_add_menu_entries<'a>(
             action: ShellMenuAction::ActivateLocalProject(path.to_path_buf()),
         })
     }));
-    if !hosts.is_empty() {
-        entries.extend([
-            MenuEntry::Separator,
-            MenuEntry::SectionHeader(i18n::text("empty_state.saved_hosts")),
-        ]);
-    }
-    entries.extend(hosts.into_iter().map(|(index, alias)| {
-        MenuEntry::Item(MenuItem {
-            id: format!("rail-open-host-{index}"),
-            label: alias.to_owned(),
-            shortcut_hint: None,
-            disabled: false,
-            danger: false,
-            action: ShellMenuAction::OpenHost(index),
-        })
-    }));
     entries
 }
 
@@ -461,7 +346,7 @@ mod rail_add_menu_tests {
     #[test]
     fn add_menu_matches_empty_state_resource_groups() {
         let projects = [Path::new("/workspace/alpha"), Path::new("/workspace/beta")];
-        let entries = rail_add_menu_entries(projects, [(3, "staging"), (7, "production")]);
+        let entries = rail_add_menu_entries(projects);
 
         assert!(matches!(
             &entries[4],
@@ -478,35 +363,7 @@ mod rail_add_menu_tests {
         ));
         assert!(matches!(entries[2], MenuEntry::Separator));
         assert!(matches!(entries[3], MenuEntry::SectionHeader(_)));
-        assert!(matches!(entries[6], MenuEntry::Separator));
-        assert!(matches!(entries[7], MenuEntry::SectionHeader(_)));
-        assert!(matches!(
-            &entries[8],
-            MenuEntry::Item(item) if item.label == "staging" && matches!(item.action, ShellMenuAction::OpenHost(3))
-        ));
-        assert!(matches!(
-            &entries[9],
-            MenuEntry::Item(item) if item.label == "production" && matches!(item.action, ShellMenuAction::OpenHost(7))
-        ));
-    }
-
-    #[test]
-    fn add_menu_keeps_all_hosts_for_the_scrollable_popover() {
-        let hosts = (0..12)
-            .map(|index| (index, format!("host-{index}")))
-            .collect::<Vec<_>>();
-        let entries = rail_add_menu_entries(
-            std::iter::empty(),
-            hosts.iter().map(|(index, alias)| (*index, alias.as_str())),
-        );
-
-        let host_actions = entries
-            .iter()
-            .filter(|entry| {
-                matches!(entry, MenuEntry::Item(item) if matches!(item.action, ShellMenuAction::OpenHost(_)))
-            })
-            .count();
-        assert_eq!(host_actions, 12);
+        assert_eq!(entries.len(), 6);
     }
 
     #[test]
@@ -514,10 +371,7 @@ mod rail_add_menu_tests {
         let projects = (0..12)
             .map(|index| std::path::PathBuf::from(format!("/workspace/project-{index}")))
             .collect::<Vec<_>>();
-        let entries = rail_add_menu_entries(
-            projects.iter().map(std::path::PathBuf::as_path),
-            std::iter::empty(),
-        );
+        let entries = rail_add_menu_entries(projects.iter().map(std::path::PathBuf::as_path));
 
         let project_actions = entries
             .iter()
@@ -530,7 +384,7 @@ mod rail_add_menu_tests {
 
     #[test]
     fn add_menu_has_no_trailing_separator_without_saved_hosts() {
-        let entries = rail_add_menu_entries([Path::new("/workspace/alpha")], std::iter::empty());
+        let entries = rail_add_menu_entries([Path::new("/workspace/alpha")]);
 
         assert!(matches!(
             entries.last(),
@@ -749,261 +603,11 @@ fn render_local_dir(
     .into_any_element()
 }
 
-fn render_host_entry(
-    idx: usize,
-    entry: &HostEntry,
-    state: Option<ConnState>,
-    selected: bool,
-    cx: &mut Context<AppShell>,
-) -> AnyElement {
-    let alias = entry.alias.clone();
-    let detail = entry.detail.clone();
-    let badge = state_badge(&state);
-
-    let mut entry_div = div()
-        .id(("host-entry", idx))
-        .flex_shrink_0()
-        .min_h(px(theme::ROW_HEIGHT))
-        .px_2()
-        .py_1()
-        .rounded(px(theme::RADIUS_SM))
-        .text_sm()
-        .cursor_pointer();
-    if selected {
-        entry_div = entry_div
-            .bg(theme::accent_soft())
-            .border_l_2()
-            .border_color(theme::accent());
-    }
-    entry_div = entry_div
-        .hover(|s| s.bg(theme::surface()))
-        .on_click(cx.listener(move |this, _ev, _window, cx| {
-            this.open_host(idx, cx);
-        }))
-        .on_mouse_down(MouseButton::Right, {
-            let detail_menu = detail.clone();
-            let alias_menu = alias.clone();
-            cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
-                let entries = vec![
-                    MenuEntry::Item(MenuItem {
-                        id: "open-terminal".into(),
-                        label: i18n::text("context_menu.open_terminal"),
-                        shortcut_hint: None,
-                        disabled: false,
-                        danger: false,
-                        action: ShellMenuAction::OpenHost(idx),
-                    }),
-                    MenuEntry::Item(MenuItem {
-                        id: "open-sftp".into(),
-                        label: i18n::text("context_menu.open_sftp"),
-                        shortcut_hint: None,
-                        disabled: false,
-                        danger: false,
-                        action: ShellMenuAction::OpenSftp(idx),
-                    }),
-                    MenuEntry::Item(MenuItem {
-                        id: "open-forward".into(),
-                        label: i18n::text("context_menu.open_forward"),
-                        shortcut_hint: None,
-                        disabled: false,
-                        danger: false,
-                        action: ShellMenuAction::OpenForward(idx),
-                    }),
-                    MenuEntry::Separator,
-                    MenuEntry::Item(MenuItem {
-                        id: "copy-target".into(),
-                        label: i18n::text("context_menu.copy_target"),
-                        shortcut_hint: None,
-                        disabled: false,
-                        danger: false,
-                        action: ShellMenuAction::CopyText(detail_menu.clone()),
-                    }),
-                    MenuEntry::Item(MenuItem {
-                        id: "copy-alias".into(),
-                        label: i18n::text("context_menu.copy_alias"),
-                        shortcut_hint: None,
-                        disabled: false,
-                        danger: false,
-                        action: ShellMenuAction::CopyText(alias_menu.clone()),
-                    }),
-                ];
-                this.open_context_menu(ev.position, entries, cx);
-            })
-        })
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .child(
-                    icons::icon(icons::IconName::Server, 15.).text_color(if selected {
-                        theme::accent()
-                    } else {
-                        theme::muted_text()
-                    }),
-                )
-                .child(StatusDot::new(conn_state_dot_color(&state)))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_color(theme::text())
-                        .child(SharedString::from(alias)),
-                )
-                .child(
-                    Button::new(("sftp-btn", idx))
-                        .size(ButtonSize::Icon(px(24.)))
-                        .variant(ButtonVariant::Ghost)
-                        .icon(
-                            icons::icon(icons::IconName::Folder, 14.)
-                                .text_color(theme::muted_text()),
-                        )
-                        .tooltip(i18n::text("tooltip.open_sftp"))
-                        .on_click(cx.listener(move |this, _ev, _w, cx| {
-                            cx.stop_propagation();
-                            this.open_sftp(idx, cx);
-                        })),
-                )
-                .child(
-                    Button::new(("fwd-btn", idx))
-                        .size(ButtonSize::Icon(px(24.)))
-                        .variant(ButtonVariant::Ghost)
-                        .icon(
-                            icons::icon(icons::IconName::ArrowLeftRight, 14.)
-                                .text_color(theme::muted_text()),
-                        )
-                        .tooltip(i18n::text("tooltip.port_forwarding"))
-                        .on_click(cx.listener(move |this, _ev, _w, cx| {
-                            cx.stop_propagation();
-                            this.open_forward(idx, cx);
-                        })),
-                ),
-        )
-        .child(
-            div()
-                .ml(px(23.))
-                .text_xs()
-                .text_color(match state {
-                    Some(ConnState::Connected) => theme::accent(),
-                    Some(ConnState::Connecting) => theme::warning(),
-                    Some(ConnState::Error(_)) => theme::danger(),
-                    _ => theme::faint_text(),
-                })
-                .child(SharedString::from(format!("{badge}{detail}"))),
-        );
-    entry_div.into_any_element()
-}
-
-/// 侧栏分组的渲染参数。
-struct HostGroupSpec {
-    id: &'static str,
-    icon: icons::IconName,
-    title: String,
-    count: usize,
-    collapsed: bool,
-    children: AnyElement,
-    toggle: fn(&mut AppShell, &mut Context<AppShell>),
-    action: Option<fn(&mut AppShell, &mut Context<AppShell>)>,
-}
-
-fn render_host_group(spec: HostGroupSpec, cx: &mut Context<AppShell>) -> AnyElement {
-    let HostGroupSpec {
-        id,
-        icon,
-        title,
-        count,
-        collapsed,
-        children,
-        toggle,
-        action,
-    } = spec;
-    let caret = if collapsed {
-        icons::IconName::ChevronRight
-    } else {
-        icons::IconName::ChevronDown
-    };
-    let mut header = div()
-        .id(format!("host-group-header-{id}"))
-        .h(px(30.))
-        .px_2()
-        .flex()
-        .items_center()
-        .gap_2()
-        .rounded(px(theme::RADIUS_SM))
-        .cursor_pointer()
-        .text_xs()
-        .text_color(theme::muted_text())
-        .hover(|s| s.bg(theme::surface()).text_color(theme::text()))
-        .on_click(cx.listener(move |this, _ev, _window, cx| toggle(this, cx)))
-        .child(icons::icon(caret, 13.).text_color(theme::faint_text()))
-        .child(icons::icon(icon, 13.).text_color(theme::faint_text()))
-        .child(
-            div()
-                .flex_1()
-                .font_weight(FontWeight::MEDIUM)
-                .child(SharedString::from(title)),
-        )
-        .child(CountBadge::new(count.to_string()).min_width(px(20.)));
-
-    if let Some(action) = action {
-        header = header.child(
-            Button::new(format!("host-group-action-{id}"))
-                .size(ButtonSize::Icon(px(24.)))
-                .variant(ButtonVariant::Ghost)
-                .icon(icons::icon(icons::IconName::Plus, 14.).text_color(theme::muted_text()))
-                .tooltip(i18n::text("tooltip.new_project"))
-                .on_click(cx.listener(move |this, _ev, _window, cx| {
-                    cx.stop_propagation();
-                    action(this, cx);
-                })),
-        );
-    }
-
-    let mut group = div()
-        .id(format!("host-group-{id}"))
-        .flex()
-        .flex_col()
-        .flex_shrink_0()
-        .child(header);
-    if !collapsed {
-        group = group.child(children);
-    }
-    group.into_any_element()
-}
-
-fn is_active_connection(state: &Option<ConnState>) -> bool {
-    matches!(state, Some(ConnState::Connected))
-}
-
-/// 连接状态徽标文字。
-fn state_badge(state: &Option<ConnState>) -> String {
-    match state {
-        None => String::new(),
-        Some(ConnState::Connecting) => i18n::text("connection.connecting_with_separator"),
-        Some(ConnState::Connected) => i18n::text("connection.connected_with_separator"),
-        Some(ConnState::Error(_)) => i18n::text("connection.error_with_separator"),
-        Some(ConnState::Closed) => i18n::text("connection.closed_with_separator"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
     use super::*;
-
-    #[test]
-    fn only_connected_hosts_are_active() {
-        assert!(is_active_connection(&Some(ConnState::Connected)));
-        assert!(!is_active_connection(&Some(ConnState::Connecting)));
-        assert!(!is_active_connection(&Some(ConnState::Closed)));
-        assert!(!is_active_connection(&Some(ConnState::Error(
-            "failed".to_string()
-        ))));
-        assert!(!is_active_connection(&None));
-    }
 
     #[test]
     fn project_search_matches_directory_view() {

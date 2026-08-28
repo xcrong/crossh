@@ -54,7 +54,7 @@ impl AppShell {
             && self.compose_focus.is_focused(window)
         {
             Some(AppShellInputField::Compose)
-        } else if self.host_focus.is_focused(window) {
+        } else if self.search_focus.is_focused(window) {
             Some(AppShellInputField::HostSearch)
         } else {
             None
@@ -63,7 +63,7 @@ impl AppShell {
 
     fn plain_value(&self, field: AppShellInputField) -> Option<&String> {
         match field {
-            AppShellInputField::HostSearch => Some(&self.host_query),
+            AppShellInputField::HostSearch => Some(&self.search_query),
             AppShellInputField::Credential => Some(&self.prompt_input),
             _ => None,
         }
@@ -71,7 +71,7 @@ impl AppShell {
 
     fn plain_marked(&self, field: AppShellInputField) -> Option<&String> {
         match field {
-            AppShellInputField::HostSearch => Some(&self.host_ime_marked_text),
+            AppShellInputField::HostSearch => Some(&self.search_ime_marked_text),
             AppShellInputField::Credential => Some(&self.prompt_ime_marked_text),
             _ => None,
         }
@@ -83,7 +83,7 @@ impl AppShell {
     ) -> Option<(&mut String, &mut String)> {
         match field {
             AppShellInputField::HostSearch => {
-                Some((&mut self.host_query, &mut self.host_ime_marked_text))
+                Some((&mut self.search_query, &mut self.search_ime_marked_text))
             }
             AppShellInputField::Credential => {
                 Some((&mut self.prompt_input, &mut self.prompt_ime_marked_text))
@@ -282,11 +282,11 @@ impl EntityInputHandler for AppShell {
         let field = self.active_input_field(window)?;
         match field {
             AppShellInputField::HostSearch => {
-                let cursor = byte_index_for_utf16(&self.host_query, range.start);
+                let cursor = byte_index_for_utf16(&self.search_query, range.start);
                 Some(ime_caret_bounds(
                     window,
                     element_bounds,
-                    &self.host_query[..cursor],
+                    &self.search_query[..cursor],
                     px(12.),
                     px(30.),
                     px(0.),

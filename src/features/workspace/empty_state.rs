@@ -7,7 +7,6 @@ use gpui::{
     StatefulInteractiveElement, Styled, div, px,
 };
 
-use crate::features::connections::HostEntry;
 use crate::features::workspace::shell::AppShell;
 use crate::shared::i18n;
 use crossh_ui::{icons, theme};
@@ -19,43 +18,21 @@ const COMPACT_LAYOUT_BREAKPOINT: f32 = 520.;
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ContinueEntry {
     Local(PathBuf),
-    Host {
-        index: usize,
-        alias: String,
-        detail: String,
-    },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum EmptyStateFilter {
     #[default]
     Local,
-    Hosts,
 }
 
-fn filtered_continue_entries(
-    filter: EmptyStateFilter,
-    recent_dirs: &[PathBuf],
-    hosts: &[HostEntry],
-) -> Vec<ContinueEntry> {
-    match filter {
-        EmptyStateFilter::Local => recent_dirs
-            .iter()
-            .take(CONTINUE_ENTRY_LIMIT)
-            .cloned()
-            .map(ContinueEntry::Local)
-            .collect(),
-        EmptyStateFilter::Hosts => hosts
-            .iter()
-            .take(CONTINUE_ENTRY_LIMIT)
-            .enumerate()
-            .map(|(index, host)| ContinueEntry::Host {
-                index,
-                alias: host.alias.clone(),
-                detail: host.detail.clone(),
-            })
-            .collect(),
-    }
+fn filtered_continue_entries(recent_dirs: &[PathBuf]) -> Vec<ContinueEntry> {
+    recent_dirs
+        .iter()
+        .take(CONTINUE_ENTRY_LIMIT)
+        .cloned()
+        .map(ContinueEntry::Local)
+        .collect()
 }
 
 fn uses_compact_layout(available_width: gpui::Pixels) -> bool {
@@ -71,6 +48,7 @@ pub(crate) fn render(
     available_width: gpui::Pixels,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
+    let _ = shell.empty_state_filter;
     let compact = uses_compact_layout(available_width);
     let recent_dirs = shell
         .workspace_settings
@@ -79,41 +57,8 @@ pub(crate) fn render(
         .filter(|path| shell.workspace.sessions.local_dirs.contains_key(*path))
         .cloned()
         .collect::<Vec<_>>();
-    let entries = filtered_continue_entries(
-        shell.empty_state_filter,
-        &recent_dirs,
-        shell.connections.entries(),
-    );
+    let entries = filtered_continue_entries(&recent_dirs);
 
-    let mut filters = div()
-        .id("empty-resource-filters")
-        .h(px(40.))
-        .p_1()
-        .flex()
-        .gap_1()
-        .rounded(px(theme::RADIUS_SM))
-        .border_1()
-        .border_color(theme::border_strong())
-        .bg(theme::surface())
-        .child(render_filter_button(
-            EmptyStateFilter::Local,
-            icons::IconName::FolderOpen,
-            "empty_state.local_projects",
-            shell.empty_state_filter == EmptyStateFilter::Local,
-            cx,
-        ))
-        .child(render_filter_button(
-            EmptyStateFilter::Hosts,
-            icons::IconName::Server,
-            "empty_state.remote_hosts",
-            shell.empty_state_filter == EmptyStateFilter::Hosts,
-            cx,
-        ));
-    filters = if compact {
-        filters.w_full().flex_none()
-    } else {
-        filters.flex_1()
-    };
     let mut open_project = Button::new("empty-open-folder")
         .size(ButtonSize::Large)
         .variant(ButtonVariant::Primary)
@@ -125,23 +70,7 @@ pub(crate) fn render(
     if compact {
         open_project = open_project.full_width();
     }
-    let actions = if compact {
-        div()
-            .w_full()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(filters)
-            .child(open_project)
-    } else {
-        div()
-            .w_full()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(filters)
-            .child(open_project)
-    };
+    let actions = div().w_full().flex().child(open_project);
 
     let mut panel = div()
         .w_full()
@@ -168,14 +97,8 @@ pub(crate) fn render(
         )
         .child(actions);
 
-    let list_title = match shell.empty_state_filter {
-        EmptyStateFilter::Local => "empty_state.recent_projects",
-        EmptyStateFilter::Hosts => "empty_state.saved_hosts",
-    };
-    let empty_text = match shell.empty_state_filter {
-        EmptyStateFilter::Local => "sidebar.no_projects",
-        EmptyStateFilter::Hosts => "sidebar.no_ssh_hosts",
-    };
+    let list_title = "empty_state.recent_projects";
+    let empty_text = "sidebar.no_projects";
     let entries_empty = entries.is_empty();
     let mut list = div().w_full().flex().flex_col().gap_1().child(
         div()
@@ -217,71 +140,20 @@ pub(crate) fn render(
     root.child(panel).into_any_element()
 }
 
-fn render_filter_button(
-    filter: EmptyStateFilter,
-    icon: icons::IconName,
-    label_key: &'static str,
-    selected: bool,
-    cx: &mut Context<AppShell>,
-) -> AnyElement {
-    let id = match filter {
-        EmptyStateFilter::Local => "empty-filter-local",
-        EmptyStateFilter::Hosts => "empty-filter-hosts",
-    };
-    let mut button = div()
-        .id(id)
-        .h_full()
-        .flex_1()
-        .px_2()
-        .flex()
-        .items_center()
-        .justify_center()
-        .gap_2()
-        .rounded(px(theme::RADIUS_SM))
-        .cursor_pointer()
-        .text_sm()
-        .child(icons::icon(icon, 14.).text_color(if selected {
-            theme::accent()
-        } else {
-            theme::muted_text()
-        }))
-        .child(SharedString::from(i18n::text(label_key)));
-    button = if selected {
-        button
-            .bg(theme::raised())
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(theme::text())
-    } else {
-        button
-            .text_color(theme::muted_text())
-            .hover(|style| style.bg(theme::raised()).text_color(theme::text()))
-    };
-    button
-        .on_click(cx.listener(move |this, _ev, _window, cx| {
-            this.set_empty_state_filter(filter, cx);
-        }))
-        .into_any_element()
-}
-
 fn render_continue_entry(
     row_index: usize,
     entry: ContinueEntry,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
-    let (icon, label, detail) = match &entry {
-        ContinueEntry::Local(path) => (
-            icons::IconName::FolderOpen,
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .filter(|name| !name.is_empty())
-                .map(str::to_owned)
-                .unwrap_or_else(|| path.to_string_lossy().into_owned()),
-            path.to_string_lossy().to_string(),
-        ),
-        ContinueEntry::Host { alias, detail, .. } => {
-            (icons::IconName::Server, alias.clone(), detail.clone())
-        }
-    };
+    let ContinueEntry::Local(path) = &entry;
+    let label = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| path.to_string_lossy().into_owned());
+    let detail = path.to_string_lossy().to_string();
+    let icon = icons::IconName::FolderOpen;
 
     div()
         .id(("empty-continue-entry", row_index))
@@ -328,9 +200,9 @@ fn render_continue_entry(
                 ),
         )
         .child(icons::icon(icons::IconName::ChevronRight, 14.).text_color(theme::faint_text()))
-        .on_click(cx.listener(move |this, _ev, _window, cx| match &entry {
-            ContinueEntry::Local(path) => this.activate_local_dir(path.clone(), cx),
-            ContinueEntry::Host { index, .. } => this.open_host(*index, cx),
+        .on_click(cx.listener(move |this, _ev, _window, cx| {
+            let ContinueEntry::Local(path) = &entry;
+            this.activate_local_dir(path.clone(), cx);
         }))
         .into_any_element()
 }
@@ -339,24 +211,13 @@ fn render_continue_entry(
 mod tests {
     use super::*;
 
-    fn host(alias: &str) -> HostEntry {
-        HostEntry {
-            alias: alias.into(),
-            detail: format!("user@{alias}:22"),
-            key: alias.into(),
-        }
-    }
-
     #[test]
     fn local_filter_keeps_recency_and_applies_the_limit() {
         let recent_dirs = (0..10)
             .map(|index| PathBuf::from(format!("/project-{index}")))
             .collect::<Vec<_>>();
-        let hosts = (0..10)
-            .map(|index| host(&format!("host-{index}")))
-            .collect::<Vec<_>>();
 
-        let entries = filtered_continue_entries(EmptyStateFilter::Local, &recent_dirs, &hosts);
+        let entries = filtered_continue_entries(&recent_dirs);
 
         assert_eq!(entries.len(), CONTINUE_ENTRY_LIMIT);
         assert_eq!(
@@ -370,49 +231,10 @@ mod tests {
     }
 
     #[test]
-    fn host_filter_keeps_configuration_order_and_applies_the_limit() {
-        let recent_dirs = vec![PathBuf::from("/project")];
-        let hosts = (0..10)
-            .map(|index| host(&format!("host-{index}")))
-            .collect::<Vec<_>>();
-
-        let entries = filtered_continue_entries(EmptyStateFilter::Hosts, &recent_dirs, &hosts);
-
-        assert_eq!(entries.len(), CONTINUE_ENTRY_LIMIT);
-        assert_eq!(
-            entries.last(),
-            Some(&ContinueEntry::Host {
-                index: 7,
-                alias: "host-7".into(),
-                detail: "user@host-7:22".into(),
-            })
-        );
-    }
-
-    #[test]
     fn empty_state_layout_switches_at_available_width() {
         assert!(uses_compact_layout(px(COMPACT_LAYOUT_BREAKPOINT - 1.)));
         assert!(!uses_compact_layout(px(COMPACT_LAYOUT_BREAKPOINT)));
         assert_eq!(top_padding(true), px(16.));
         assert_eq!(top_padding(false), px(32.));
-    }
-
-    #[test]
-    fn filters_select_exactly_one_resource_kind() {
-        let recent_dirs = vec![PathBuf::from("/project")];
-        let hosts = vec![host("server")];
-
-        assert_eq!(
-            filtered_continue_entries(EmptyStateFilter::Local, &recent_dirs, &hosts),
-            vec![ContinueEntry::Local(PathBuf::from("/project"))]
-        );
-        assert_eq!(
-            filtered_continue_entries(EmptyStateFilter::Hosts, &recent_dirs, &hosts),
-            vec![ContinueEntry::Host {
-                index: 0,
-                alias: "server".into(),
-                detail: "user@server:22".into(),
-            }]
-        );
     }
 }

@@ -44,6 +44,7 @@ impl AppShell {
         cx.notify();
     }
 
+    #[allow(dead_code)]
     pub(crate) fn set_empty_state_filter(
         &mut self,
         filter: EmptyStateFilter,

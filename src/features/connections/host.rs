@@ -5,13 +5,16 @@ use crossh_ssh::connection_key;
 
 /// Host alias, resolved display details, and connection-pool key.
 #[derive(Clone)]
+#[allow(dead_code)]
 pub(crate) struct HostEntry {
     pub(crate) alias: String,
+    #[allow(dead_code)]
     pub(crate) detail: String,
     pub(crate) key: String,
 }
 
 impl HostEntry {
+    #[allow(dead_code)]
     pub(crate) fn matches_query(&self, query: &str) -> bool {
         self.alias.to_ascii_lowercase().contains(query)
             || self.detail.to_ascii_lowercase().contains(query)
