@@ -1037,21 +1037,6 @@ fn spec_20260826_terminal_ambiguous_width_shrink__shrink_factor_is_cell_over_sha
 }
 #[allow(non_snake_case)]
 #[test]
-fn spec_20260826_terminal_ambiguous_width_shrink__scaled_font_size_reduces_proportionally() {
-    let base = AbsoluteLength::from(gpui::px(14.0));
-    let rem = gpui::px(16.0);
-    let factor = 0.6;
-    let scaled = super::scaled_font_size_for_shrink(base, rem, factor);
-    let base_px = base.to_pixels(rem);
-    let scaled_px = scaled.to_pixels(rem);
-    assert!(
-        (f32::from(scaled_px) - f32::from(base_px) * 0.6).abs() < 0.01,
-        "scaled {scaled_px:?} should be base {base_px:?} * 0.6"
-    );
-}
-
-#[allow(non_snake_case)]
-#[test]
 fn spec_20260826_terminal_ambiguous_width_shrink__can_append_rejects_different_font_size() {
     let style = gpui::TextRun {
         len: 1,

@@ -423,17 +423,6 @@ fn vertical_target(text: &str, cursor: usize, direction: i8) -> Option<usize> {
     Some(new_cursor)
 }
 
-/// 上下移动光标（按列对齐）；与 `TextEditingState::move_vertical` 同算法，面向非 `State` 的调用方。
-/// 到达首行/末行返回 `false`，目标行更短时收缩到行尾。
-#[allow(dead_code)]
-pub fn move_cursor_vertical(content: &str, cursor: &mut usize, direction: i8) -> bool {
-    if let Some(new) = vertical_target(content, *cursor, direction) {
-        *cursor = new;
-        return true;
-    }
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -838,14 +827,15 @@ mod tests {
     }
 
     #[test]
-    fn line_bounds_and_move_cursor_vertical_helpers() {
+    fn line_bounds_and_vertical_movement_helpers() {
         let text = "ab\ncde\nf";
         assert_eq!(line_bounds(text, 1), (0, 2));
         assert_eq!(line_bounds(text, 3), (3, 6));
-        let mut cursor = 4; // 'd' in second line column 1
-        assert!(move_cursor_vertical(text, &mut cursor, -1));
-        assert_eq!(cursor, 1);
-        assert!(move_cursor_vertical(text, &mut cursor, 1));
-        assert_eq!(cursor, 4);
+        let mut state = TextEditingState::new(text);
+        state.cursor = 4; // 'd' in second line column 1
+        assert!(state.move_vertical(-1, false));
+        assert_eq!(state.cursor, 1);
+        assert!(state.move_vertical(1, false));
+        assert_eq!(state.cursor, 4);
     }
 }

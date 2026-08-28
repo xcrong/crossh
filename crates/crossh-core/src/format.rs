@@ -22,7 +22,12 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
-pub fn unix_timestamp_secs() -> u64 {
+pub fn format_gb(bytes: u64) -> String {
+    const GB: u64 = 1024 * 1024 * 1024;
+    format!("{:.1} GB", bytes as f64 / GB as f64)
+}
+
+pub(crate) fn unix_timestamp_secs() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

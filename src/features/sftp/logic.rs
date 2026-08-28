@@ -111,26 +111,28 @@ pub(crate) fn try_send_command(tx: &Sender<SftpCmd>, command: SftpCmd) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shared::text_editing::move_cursor_vertical;
+    use crate::shared::text_editing::TextEditingState;
 
     #[test]
     fn vertical_movement_aligns_column_and_stops_at_edges() {
-        let content = "abc\ndefg".to_string();
-        let mut cursor = 1;
-        assert!(move_cursor_vertical(&content, &mut cursor, 1));
-        assert_eq!(cursor, 5);
-        assert!(!move_cursor_vertical(&content, &mut cursor, 1));
-        assert!(move_cursor_vertical(&content, &mut cursor, -1));
-        assert_eq!(cursor, 1);
-        assert!(!move_cursor_vertical(&content, &mut cursor, -1));
+        let content = "abc\ndefg";
+        let mut state = TextEditingState::new(content);
+        state.cursor = 1;
+        assert!(state.move_vertical(1, false));
+        assert_eq!(state.cursor, 5);
+        assert!(!state.move_vertical(1, false));
+        assert!(state.move_vertical(-1, false));
+        assert_eq!(state.cursor, 1);
+        assert!(!state.move_vertical(-1, false));
     }
 
     #[test]
     fn vertical_movement_shrinks_to_short_line_end() {
-        let content = "abc\nd".to_string();
-        let mut cursor = 2;
-        assert!(move_cursor_vertical(&content, &mut cursor, 1));
-        assert_eq!(cursor, 5);
+        let content = "abc\nd";
+        let mut state = TextEditingState::new(content);
+        state.cursor = 2;
+        assert!(state.move_vertical(1, false));
+        assert_eq!(state.cursor, 5);
     }
 
     #[test]

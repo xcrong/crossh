@@ -2,6 +2,7 @@ use gpui::{
     AnyElement, Context, IntoElement, ParentElement, SharedString, Styled, Window, div, px,
 };
 
+use crossh_core::format::{format_bytes, format_gb};
 use crossh_core::system_stats::SystemSnapshot;
 use crossh_ui::theme;
 
@@ -107,27 +108,6 @@ fn format_percent(v: Option<f32>) -> String {
     v.map(|p| format!("{:.1}%", p)).unwrap_or_else(placeholder)
 }
 
-fn format_gb(bytes: u64) -> String {
-    let gb = bytes as f64 / 1024.0 / 1024.0 / 1024.0;
-    format!("{:.1} GB", gb)
-}
-
-fn format_bytes(bytes: u64) -> String {
-    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
-    const MB: f64 = 1024.0 * 1024.0;
-    const KB: f64 = 1024.0;
-    let b = bytes as f64;
-    if b >= GB {
-        format!("{:.1} GB", b / GB)
-    } else if b >= MB {
-        format!("{:.0} MB", b / MB)
-    } else if b >= KB {
-        format!("{:.0} KB", b / KB)
-    } else {
-        format!("{} B", bytes)
-    }
-}
-
 fn format_rate(rate: Option<u64>) -> String {
     match rate {
         None => placeholder(),
@@ -210,8 +190,8 @@ fn render_memory(snapshot: &Option<SystemSnapshot>) -> AnyElement {
 fn render_disk(snapshot: &Option<SystemSnapshot>) -> AnyElement {
     match snapshot {
         None => render_disk_placeholder(),
-        Some(s) if !s.disks.is_empty() => render_disks_list(s),
-        Some(s) => render_disk_legacy(s),
+        Some(s) if s.disks.is_empty() => render_disk_placeholder(),
+        Some(s) => render_disks_list(s),
     }
 }
 
@@ -277,43 +257,6 @@ fn render_single_disk_entry(
                 .justify_between()
                 .child(value_text(format!("R {}", read_str)))
                 .child(value_text(format!("W {}", write_str))),
-        )
-        .into_any_element()
-}
-
-fn render_disk_legacy(s: &SystemSnapshot) -> AnyElement {
-    let (used_str, pct) = match (s.disk_used, s.disk_total) {
-        (Some(used), Some(total)) => {
-            let txt = format!(
-                "{} used, {} free",
-                format_bytes(used),
-                format_bytes(total - used)
-            );
-            (txt, s.disk_usage_percent)
-        }
-        _ => (placeholder(), None),
-    };
-    div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(section_label("Disk"))
-                .child(value_text(format_percent(pct))),
-        )
-        .child(bar(pct))
-        .child(value_text(used_str))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(value_text(format!("R {}", placeholder())))
-                .child(value_text(format!("W {}", placeholder()))),
         )
         .into_any_element()
 }

@@ -15,23 +15,11 @@ use crossh_ui_component::{Button, ButtonSize, ButtonVariant};
 const CONTINUE_ENTRY_LIMIT: usize = 8;
 const COMPACT_LAYOUT_BREAKPOINT: f32 = 520.;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum ContinueEntry {
-    Local(PathBuf),
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum EmptyStateFilter {
-    #[default]
-    Local,
-}
-
-fn filtered_continue_entries(recent_dirs: &[PathBuf]) -> Vec<ContinueEntry> {
+fn filtered_continue_entries(recent_dirs: &[PathBuf]) -> Vec<PathBuf> {
     recent_dirs
         .iter()
         .take(CONTINUE_ENTRY_LIMIT)
         .cloned()
-        .map(ContinueEntry::Local)
         .collect()
 }
 
@@ -48,7 +36,6 @@ pub(crate) fn render(
     available_width: gpui::Pixels,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
-    let _ = shell.empty_state_filter;
     let compact = uses_compact_layout(available_width);
     let recent_dirs = shell
         .workspace_settings
@@ -142,10 +129,9 @@ pub(crate) fn render(
 
 fn render_continue_entry(
     row_index: usize,
-    entry: ContinueEntry,
+    path: PathBuf,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
-    let ContinueEntry::Local(path) = &entry;
     let label = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -201,7 +187,6 @@ fn render_continue_entry(
         )
         .child(icons::icon(icons::IconName::ChevronRight, 14.).text_color(theme::faint_text()))
         .on_click(cx.listener(move |this, _ev, _window, cx| {
-            let ContinueEntry::Local(path) = &entry;
             this.activate_local_dir(path.clone(), cx);
         }))
         .into_any_element()
@@ -220,14 +205,8 @@ mod tests {
         let entries = filtered_continue_entries(&recent_dirs);
 
         assert_eq!(entries.len(), CONTINUE_ENTRY_LIMIT);
-        assert_eq!(
-            entries[0],
-            ContinueEntry::Local(PathBuf::from("/project-0"))
-        );
-        assert_eq!(
-            entries[7],
-            ContinueEntry::Local(PathBuf::from("/project-7"))
-        );
+        assert_eq!(entries[0], PathBuf::from("/project-0"));
+        assert_eq!(entries[7], PathBuf::from("/project-7"));
     }
 
     #[test]

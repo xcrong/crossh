@@ -3,22 +3,11 @@
 use crossh_core::config::SshConfig;
 use crossh_ssh::connection_key;
 
-/// Host alias, resolved display details, and connection-pool key.
+/// Host alias and connection-pool key.
 #[derive(Clone)]
-#[allow(dead_code)]
 pub(crate) struct HostEntry {
     pub(crate) alias: String,
-    #[allow(dead_code)]
-    pub(crate) detail: String,
     pub(crate) key: String,
-}
-
-impl HostEntry {
-    #[allow(dead_code)]
-    pub(crate) fn matches_query(&self, query: &str) -> bool {
-        self.alias.to_ascii_lowercase().contains(query)
-            || self.detail.to_ascii_lowercase().contains(query)
-    }
 }
 
 /// Build navigable host entries from the parsed SSH config.
@@ -30,14 +19,8 @@ pub(crate) fn build_entries(config: &SshConfig) -> Vec<HostEntry> {
             continue;
         }
         let resolved = config.resolve(&alias);
-        let detail = format!(
-            "{}@{}:{}",
-            resolved.user.as_deref().unwrap_or(""),
-            resolved.effective_host(),
-            resolved.effective_port()
-        );
         let key = connection_key(&resolved);
-        out.push(HostEntry { alias, detail, key });
+        out.push(HostEntry { alias, key });
     }
     out
 }

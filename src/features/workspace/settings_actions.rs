@@ -3,7 +3,6 @@
 
 use gpui::Context;
 
-use crate::features::workspace::empty_state::EmptyStateFilter;
 use crate::shared::i18n::LanguagePreference;
 use crossh_terminal::settings::{
     MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK, TerminalSettings,
@@ -42,18 +41,6 @@ impl AppShell {
         self.workspace_settings.show_host_sidebar = !self.workspace_settings.show_host_sidebar;
         self.persist_settings();
         cx.notify();
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn set_empty_state_filter(
-        &mut self,
-        filter: EmptyStateFilter,
-        cx: &mut Context<Self>,
-    ) {
-        if self.empty_state_filter != filter {
-            self.empty_state_filter = filter;
-            cx.notify();
-        }
     }
 
     pub(crate) fn toggle_quick_commands(&mut self, cx: &mut Context<Self>) {

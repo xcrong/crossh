@@ -32,7 +32,6 @@ use crate::features::sftp::SftpPane;
 use crate::features::terminal::{TerminalEvent, TerminalView, TerminalViewEvent};
 use crate::features::updates::{UpdateController, UpdateSettings};
 use crate::features::workspace::default_command_editor::DefaultCommandEditor;
-use crate::features::workspace::empty_state::EmptyStateFilter;
 use crate::features::workspace::pinned::{pinned_tabs_for_project, prune_missing_pinned_tabs};
 use crate::features::workspace::quick_commands_rail::render_quick_commands_rail;
 use crate::features::workspace::registry::WorkspaceState;
@@ -140,7 +139,6 @@ pub struct AppShell {
     /// 应用外壳根焦点；无任何终端/输入框聚焦时持有，保证窗口级动作
     /// （如 Cmd+Q → Quit）始终有合法的 dispatch 目标。
     pub(crate) shell_focus: FocusHandle,
-    pub(crate) empty_state_filter: EmptyStateFilter,
     /// 原生项目目录选择器任务，持有到选择结果返回。
     _project_picker: Option<Task<()>>,
     /// 模态文本输入缓冲（密码/口令）。
@@ -257,7 +255,6 @@ impl AppShell {
             search_ime_marked_text: String::new(),
             search_focus: cx.focus_handle(),
             shell_focus: cx.focus_handle(),
-            empty_state_filter: EmptyStateFilter::default(),
             _project_picker: None,
             prompt_input: String::new(),
             prompt_ime_marked_text: String::new(),

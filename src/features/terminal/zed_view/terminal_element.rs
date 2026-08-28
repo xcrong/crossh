@@ -471,28 +471,6 @@ pub fn ambiguous_shrink_factor(shaped_width: Pixels, cell_width: Pixels) -> Opti
     None
 }
 
-#[allow(dead_code)]
-pub fn scaled_font_size_for_shrink(
-    base: AbsoluteLength,
-    rem_size: Pixels,
-    factor: f32,
-) -> AbsoluteLength {
-    debug_assert!(factor > 0.0 && factor < 1.0);
-    // 将 AbsoluteLength 转为像素，缩放后再封回。
-    // 若原为 Rems，按相同因子缩放 Rems 值，最终 to_pixels 时等比缩小。
-    match base {
-        AbsoluteLength::Pixels(pixels) => AbsoluteLength::Pixels(pixels * factor),
-        AbsoluteLength::Rems(rems) => {
-            // Rems 缩放需保持 rem_size 语义：pixels = rems * rem_size → 缩放后 pixels = rems*factor*rem_size
-            // 等价于 Rems(rems.0 * factor)
-            let scaled_rems = gpui::Rems(rems.0 * factor);
-            // 避免未使用 rem_size 告警；Rems 路径下 rem_size 仅用于语义说明
-            let _ = rem_size;
-            AbsoluteLength::Rems(scaled_rems)
-        }
-    }
-}
-
 /// Block element glyphs are painted on a subcell grid: each terminal cell is
 /// divided into 8 columns (for eighth blocks) and 24 lines (LCM of the 8-way
 /// splits of eighth blocks and the 3-way splits of sextants).
