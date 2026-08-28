@@ -7,9 +7,9 @@ use crossh_ui_component::{Button, ButtonSize, ButtonVariant};
 use gpui::{
     AnyElement, App, AppContext, Bounds, ClipboardItem, Context, EntityInputHandler, FocusHandle,
     Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    ParentElement, Pixels, Point, Rgba, ScrollHandle, SharedString, Size,
-    StatefulInteractiveElement, Styled, TitlebarOptions, UTF16Selection, Window, WindowBounds,
-    WindowOptions, div, point, px, size,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Rgba, ScrollHandle, SharedString,
+    Size, StatefulInteractiveElement, Styled, TitlebarOptions, UTF16Selection, Window,
+    WindowBounds, WindowOptions, div, point, px, size,
 };
 
 use super::markdown::render_markdown;
@@ -51,6 +51,7 @@ pub struct NoteWindow {
     search_bounds: Option<Bounds<Pixels>>,
     tags_bounds: Option<Bounds<Pixels>>,
     content_bounds: Option<Bounds<Pixels>>,
+    content_dragging: bool,
 }
 
 impl NoteWindow {
@@ -73,11 +74,18 @@ impl NoteWindow {
             search_bounds: None,
             tags_bounds: None,
             content_bounds: None,
+            content_dragging: false,
         };
         if let Some(s) = store {
             this.store = Some(s);
             this.reload_notes(cx);
         }
+        // 初始聚焦内容区，确保历史笔记加载后即进入编辑态（可复制/IME）。
+        // 直接 focus 可能在首帧 track_focus 之前丢失，额外 defer 一次保证。
+        cx.defer_in(window, |this, window, cx| {
+            window.focus(&this.content_focus, cx);
+            cx.notify();
+        });
         window.focus(&this.content_focus, cx);
         this
     }
@@ -145,11 +153,19 @@ impl NoteWindow {
             self.tags_state = TextEditingState::new(note.tags.clone());
             self.content_state = TextEditingState::new(note.content.clone());
             self.preview = false;
+            self.content_dragging = false;
         }
         cx.notify();
     }
 
-    fn save_current(&mut self, cx: &mut Context<Self>) {
+    fn select_note_focused(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_note(id, cx);
+        window.focus(&self.content_focus, cx);
+        // 确保选区/IME 坐标失效后重算
+        window.invalidate_character_coordinates();
+    }
+
+    fn save_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(store) = &self.store else { return };
         let content = self.content_state.value.trim().to_string();
         if content.is_empty() {
@@ -164,7 +180,11 @@ impl NoteWindow {
                 return;
             }
             match store.update(id, &content, &tags) {
-                Ok(_) => self.reload_notes(cx),
+                Ok(_) => {
+                    self.reload_notes(cx);
+                    // 保存后保持编辑态，便于继续复制/编辑
+                    window.focus(&self.content_focus, cx);
+                }
                 Err(e) => log::warn!("note update failed: {}", e),
             }
         } else {
@@ -172,6 +192,7 @@ impl NoteWindow {
                 Ok(note) => {
                     self.selected_id = Some(note.id);
                     self.reload_notes(cx);
+                    window.focus(&self.content_focus, cx);
                 }
                 Err(e) => log::warn!("note create failed: {}", e),
             }
@@ -183,30 +204,42 @@ impl NoteWindow {
         self.tags_state = TextEditingState::new(String::new());
         self.content_state = TextEditingState::new(String::new());
         self.preview = false;
+        self.content_dragging = false;
         window.focus(&self.content_focus, cx);
         cx.notify();
     }
 
-    fn delete_current(&mut self, cx: &mut Context<Self>) {
+    fn delete_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.selected_id else { return };
         if let Some(store) = &self.store {
             let _ = store.delete(id);
         }
         self.selected_id = None;
         self.reload_notes(cx);
+        // 删除后若仍有笔记，自动聚焦内容区
+        if !self.notes.is_empty() {
+            window.focus(&self.content_focus, cx);
+        }
     }
 
-    fn toggle_preview(&mut self, cx: &mut Context<Self>) {
+    fn toggle_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.preview = !self.preview;
+        if !self.preview {
+            window.focus(&self.content_focus, cx);
+        }
         cx.notify();
     }
 
-    fn toggle_pin(&mut self, id: i64, cx: &mut Context<Self>) {
+    fn toggle_pin(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(store) = &self.store
             && let Some(note) = self.notes.iter().find(|n| n.id == id)
         {
             let _ = store.set_pinned(id, !note.pinned);
             self.reload_notes(cx);
+            // 置顶切换后保持内容可编辑
+            if self.selected_id.is_some() {
+                window.focus(&self.content_focus, cx);
+            }
         }
     }
 
@@ -678,7 +711,7 @@ impl gpui::Render for NoteWindow {
                     .size(ButtonSize::Small)
                     .variant(ButtonVariant::Secondary)
                     .label("保存")
-                    .on_click(cx.listener(|this, _, _, cx| this.save_current(cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.save_current(window, cx))),
             )
             .child(
                 Button::new("note-delete")
@@ -686,14 +719,14 @@ impl gpui::Render for NoteWindow {
                     .variant(ButtonVariant::Danger)
                     .label("删除")
                     .disabled(selected.is_none())
-                    .on_click(cx.listener(|this, _, _, cx| this.delete_current(cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.delete_current(window, cx))),
             )
             .child(
                 Button::new("note-preview")
                     .size(ButtonSize::Small)
                     .variant(ButtonVariant::Ghost)
                     .label(if preview { "编辑" } else { "预览" })
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_preview(cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_preview(window, cx))),
             );
 
         let list = div()
@@ -759,7 +792,9 @@ impl gpui::Render for NoteWindow {
                                 }
                             })
                             .cursor_pointer()
-                            .on_click(cx.listener(move |this, _, _, cx| this.select_note(id, cx)))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.select_note_focused(id, window, cx)
+                            }))
                             .child(
                                 div()
                                     .flex()
@@ -785,8 +820,8 @@ impl gpui::Render for NoteWindow {
                                                     },
                                                 ),
                                             )
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.toggle_pin(id, cx)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.toggle_pin(id, window, cx)
                                             })),
                                     ),
                             )
@@ -889,9 +924,13 @@ impl gpui::Render for NoteWindow {
                 window.remove_window();
             }))
             .on_action(cx.listener(|this, _: &NewNote, window, cx| this.new_note(window, cx)))
-            .on_action(cx.listener(|this, _: &SaveNote, _, cx| this.save_current(cx)))
-            .on_action(cx.listener(|this, _: &TogglePreview, _, cx| this.toggle_preview(cx)))
-            .on_action(cx.listener(|this, _: &DeleteNote, _, cx| this.delete_current(cx)))
+            .on_action(cx.listener(|this, _: &SaveNote, window, cx| this.save_current(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &TogglePreview, window, cx| this.toggle_preview(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &DeleteNote, window, cx| this.delete_current(window, cx)),
+            )
             .key_context(NOTE_WINDOW_CONTEXT)
             .child(header)
             .child(body)
@@ -1167,6 +1206,9 @@ fn render_content_editor(
             cx.listener(|this, event: &MouseDownEvent, window, cx| {
                 window.focus(&this.content_focus, cx);
                 let Some(bounds) = this.content_bounds else {
+                    // 首次点击仅聚焦，待 IME bounds 就绪后下次点击可定位
+                    cx.notify();
+                    window.invalidate_character_coordinates();
                     return;
                 };
                 let scroll = this.content_scroll.offset();
@@ -1184,23 +1226,70 @@ fn render_content_editor(
                 let line = &this.content_state.value[line_start_byte..line_end];
                 let relative_x = event.position.x - bounds.origin.x - NOTE_INPUT_PADDING + scroll.x;
                 let col_byte = closest_byte_for_x(window, line, relative_x);
-                let best_byte = line_start_byte + col_byte;
+                let best_byte = (line_start_byte + col_byte).min(this.content_state.value.len());
                 let extend = event.modifiers.shift;
+                this.content_dragging = true;
                 if extend {
                     if this.content_state.anchor.is_none() {
                         this.content_state.anchor = Some(this.content_state.cursor);
                     }
+                    this.content_state.cursor = best_byte;
                 } else {
-                    this.content_state.anchor = None;
-                }
-                this.content_state.cursor = best_byte.min(this.content_state.value.len());
-                if !extend {
-                    this.content_state.anchor = None;
+                    // 非 shift：以点击处为锚点，支持拖选；单点时 anchor==cursor 无选区
+                    this.content_state.cursor = best_byte;
+                    this.content_state.anchor = Some(best_byte);
                 }
                 this.content_state.clear_composition();
                 cx.notify();
                 window.invalidate_character_coordinates();
                 cx.stop_propagation();
+            }),
+        )
+        .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+            if !this.content_dragging || !event.dragging() {
+                return;
+            }
+            let Some(bounds) = this.content_bounds else {
+                return;
+            };
+            let scroll = this.content_scroll.offset();
+            let relative_y = event.position.y - bounds.origin.y - NOTE_INPUT_PADDING + scroll.y;
+            let line_idx = (relative_y.as_f32() / NOTE_LINE_HEIGHT_F32)
+                .floor()
+                .max(0.0) as usize;
+            let starts = line_starts(&this.content_state.value);
+            let line_idx = line_idx.min(starts.len().saturating_sub(1));
+            let line_start_byte = starts[line_idx];
+            let line_end = starts
+                .get(line_idx + 1)
+                .map(|v| v - 1)
+                .unwrap_or(this.content_state.value.len());
+            let line = &this.content_state.value[line_start_byte..line_end];
+            let relative_x = event.position.x - bounds.origin.x - NOTE_INPUT_PADDING + scroll.x;
+            let col_byte = closest_byte_for_x(window, line, relative_x);
+            let best_byte = (line_start_byte + col_byte).min(this.content_state.value.len());
+            // 拖选时保持 anchor，更新 cursor
+            if this.content_state.anchor.is_none() {
+                this.content_state.anchor = Some(this.content_state.cursor);
+            }
+            this.content_state.cursor = best_byte;
+            this.content_state.clear_composition();
+            cx.notify();
+            window.invalidate_character_coordinates();
+        }))
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|this, _: &MouseUpEvent, window, cx| {
+                if !this.content_dragging {
+                    return;
+                }
+                this.content_dragging = false;
+                // 单点点击（未拖动）时 anchor==cursor，清除幽灵选区
+                if this.content_state.anchor == Some(this.content_state.cursor) {
+                    this.content_state.anchor = None;
+                }
+                cx.notify();
+                window.invalidate_character_coordinates();
             }),
         )
         .on_key_down(cx.listener(|this, e, window, cx| this.handle_content_key(e, window, cx)));
@@ -1427,8 +1516,10 @@ fn render_content_editor(
 
 pub fn open_note_window(cx: &mut App) {
     if let Some(window) = cx.windows().iter().find_map(|h| h.downcast::<NoteWindow>()) {
-        let _ = window.update(cx, |_, window, _| {
+        let _ = window.update(cx, |note, window, cx| {
             window.activate_window();
+            // 重新聚焦内容区，确保从主窗口唤起时即可编辑/复制
+            window.focus(&note.content_focus, cx);
         });
         return;
     }
@@ -1448,21 +1539,150 @@ fn create_note_window(cx: &mut App) {
         },
         cx,
     );
-    cx.open_window(
-        WindowOptions {
-            titlebar: Some(TitlebarOptions {
-                title: Some("Note".into()),
+    let handle = cx
+        .open_window(
+            WindowOptions {
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Note".into()),
+                    ..Default::default()
+                }),
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_min_size: Some(Size {
+                    width: px(640.),
+                    height: px(400.),
+                }),
                 ..Default::default()
-            }),
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_min_size: Some(Size {
-                width: px(640.),
-                height: px(400.),
-            }),
-            ..Default::default()
-        },
-        |window, cx| cx.new(|cx| NoteWindow::new(window, cx)),
-    )
-    .expect("Note window should open");
+            },
+            |window, cx| cx.new(|cx| NoteWindow::new(window, cx)),
+        )
+        .expect("Note window should open");
+    // 确保新建窗口后内容区获得焦点（defer 兜底 + 直接聚焦）
+    let _ = handle.update(cx, |note, window, cx| {
+        window.focus(&note.content_focus, cx);
+    });
     cx.activate(true);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shared::text_editing::{EditingKeystroke, handle_text_editing_key};
+    use crossh_note::Note;
+    use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn note_window_historic_note_loads_in_edit_state(cx: &mut TestAppContext) {
+        // 不依赖真实 DB，直接注入历史笔记模拟 reload 后的状态
+        let window = cx.add_window(NoteWindow::new);
+        cx.run_until_parked();
+
+        window
+            .update(cx, |note_window, window, cx| {
+                let historic = Note {
+                    id: 1,
+                    content: "hello 历史笔记".to_string(),
+                    tags: "tag1".to_string(),
+                    pinned: false,
+                    created_at: 0,
+                    updated_at: 0,
+                };
+                note_window.notes = vec![historic.clone()];
+                // 模拟 reload 自动选中的路径
+                note_window.select_note_focused(historic.id, window, cx);
+                assert_eq!(note_window.notes.len(), 1);
+                assert_eq!(note_window.selected_id, Some(historic.id));
+                assert_eq!(note_window.content_state.value, "hello 历史笔记");
+                assert!(!note_window.preview);
+                // 初始应聚焦内容区，允许 cmd+a / 复制
+                assert!(
+                    note_window.content_focus.is_focused(window),
+                    "content should be focused after historic load"
+                );
+                // 模拟全选与复制的纯逻辑路径
+                let mut state = note_window.content_state.clone();
+                let select_all = EditingKeystroke {
+                    key: "a".to_string(),
+                    key_char: None,
+                    control: false,
+                    platform: true,
+                    shift: false,
+                };
+                let r = handle_text_editing_key(&mut state, &select_all, None);
+                assert!(r.handled);
+                assert_eq!(state.selection(), Some((0, state.value.len())));
+                let copy = EditingKeystroke {
+                    key: "c".to_string(),
+                    key_char: None,
+                    control: false,
+                    platform: true,
+                    shift: false,
+                };
+                let r2 = handle_text_editing_key(&mut state, &copy, None);
+                assert!(r2.handled);
+                assert_eq!(r2.copy_text.as_deref(), Some("hello 历史笔记"));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn note_window_select_via_list_focuses_content(cx: &mut TestAppContext) {
+        let window = cx.add_window(NoteWindow::new);
+        cx.run_until_parked();
+
+        window
+            .update(cx, |note_window, window, cx| {
+                let n1 = Note {
+                    id: 1,
+                    content: "first".to_string(),
+                    tags: "".to_string(),
+                    pinned: false,
+                    created_at: 0,
+                    updated_at: 0,
+                };
+                let n2 = Note {
+                    id: 2,
+                    content: "second".to_string(),
+                    tags: "".to_string(),
+                    pinned: false,
+                    created_at: 0,
+                    updated_at: 1,
+                };
+                note_window.notes = vec![n2.clone(), n1.clone()];
+                note_window.selected_id = Some(n2.id);
+                note_window.content_state = TextEditingState::new(n2.content.clone());
+                // 模拟用户点击列表第二条，期望进入编辑态
+                note_window.select_note_focused(n1.id, window, cx);
+                assert_eq!(note_window.selected_id, Some(n1.id));
+                assert_eq!(note_window.content_state.value, "first");
+                assert!(note_window.content_focus.is_focused(window));
+                assert!(!note_window.preview);
+                // 拖选逻辑：首次点击 anchor==cursor，随后 mouse_move 应扩展选区
+                note_window.content_state.cursor = 0;
+                note_window.content_state.anchor = Some(0);
+                note_window.content_dragging = true;
+                note_window.content_state.cursor = note_window.content_state.value.len();
+                assert_eq!(
+                    note_window.content_state.selection(),
+                    Some((0, "first".len()))
+                );
+                note_window.content_dragging = false;
+                if note_window.content_state.anchor == Some(note_window.content_state.cursor) {
+                    note_window.content_state.anchor = None;
+                }
+                // 验证 copy 仍可用
+                let mut st = note_window.content_state.clone();
+                st.select_all();
+                let copy = EditingKeystroke {
+                    key: "c".to_string(),
+                    key_char: None,
+                    control: false,
+                    platform: true,
+                    shift: false,
+                };
+                let r = handle_text_editing_key(&mut st, &copy, None);
+                assert_eq!(r.copy_text.as_deref(), Some("first"));
+                assert_ne!(n1.id, n2.id);
+            })
+            .unwrap();
+    }
 }
