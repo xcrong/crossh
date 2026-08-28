@@ -33,7 +33,7 @@ if [ -n "$TARGET" ]; then
 fi
 
 echo "==> cargo build --release${TARGET:+ --target $TARGET}"
-cargo build "${CARGO_ARGS[@]}" --bin crossh --bin crossh-git --bin crossh-updater
+cargo build "${CARGO_ARGS[@]}" --bin crossh --bin crossh-git --bin crossh-note --bin crossh-updater
 
 echo "==> assembling $APP_DIR"
 rm -rf "$APP_DIR"
@@ -42,6 +42,7 @@ bash scripts/copy-shared-assets.sh "$RESOURCES/crossh-assets"
 
 cp "$BIN_DIR/$APP_NAME" "$MACOS/$APP_NAME"
 cp "$BIN_DIR/crossh-git" "$MACOS/crossh-git"
+cp "$BIN_DIR/crossh-note" "$MACOS/crossh-note"
 cp "$BIN_DIR/crossh-updater" "$MACOS/crossh-updater"
 cp assets/appicon/AppIcon.icns "$RESOURCES/AppIcon.icns"
 
@@ -85,6 +86,7 @@ echo "==> signing nested executable"
 # Without it, macOS can treat every rebuilt development bundle as a different
 # notification client even though Info.plist still declares io.crossh.app.
 codesign --force --sign - --identifier "$BUNDLE_ID.git" "$MACOS/crossh-git"
+codesign --force --sign - --identifier "$BUNDLE_ID.note" "$MACOS/crossh-note"
 codesign --force --sign - --identifier "$BUNDLE_ID.updater" "$MACOS/crossh-updater"
 
 echo "==> signing app bundle"

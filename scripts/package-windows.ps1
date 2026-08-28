@@ -1,4 +1,4 @@
-# 打包 Windows 产物：crossh.exe、crossh-git.exe + README + LICENSE 的 zip。
+# 打包 Windows 产物：crossh.exe、crossh-git.exe、crossh-note.exe、crossh-updater.exe + README + LICENSE 的 zip。
 #
 # 用法:  powershell -File scripts/package-windows.ps1 [-Target <triple>] [-Version <ver>]
 # 输出:  dist\crossh-<version>-windows-<arch>.zip
@@ -23,7 +23,7 @@ Write-Host "==> rustup target add $Target"
 rustup target add $Target | Out-Null
 
 Write-Host "==> cargo build --release --target $Target"
-cargo build --release --target $Target --bin crossh --bin crossh-git --bin crossh-updater
+cargo build --release --target $Target --bin crossh --bin crossh-git --bin crossh-note --bin crossh-updater
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $BinDir = Join-Path "target" (Join-Path $Target "release")
@@ -62,6 +62,7 @@ Copy-Item (Join-Path $ZedRoot "assets/fonts/lilex/Lilex-Bold.ttf") (Join-Path $A
 Set-Content -Path (Join-Path $AssetDestination "manifest.json") -Value (ConvertTo-Json @{ schema = 1; zed_revision = $ZedRevision } -Compress)
 Copy-Item (Join-Path $BinDir "crossh.exe") $Stage
 Copy-Item (Join-Path $BinDir "crossh-git.exe") $Stage
+Copy-Item (Join-Path $BinDir "crossh-note.exe") $Stage
 Copy-Item (Join-Path $BinDir "crossh-updater.exe") $Stage
 Copy-Item "README.md" $Stage
 Copy-Item "LICENSE" $Stage
