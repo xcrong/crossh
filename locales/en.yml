@@ -37,7 +37,7 @@ settings:
   general: General
   terminal: Terminal
   about: About
-  about_description: A focused SSH workbench for local and remote sessions.
+  about_description: Local-first terminal workspace — project-oriented sessions; SSH/SFTP/port-forwarding, Git and Notes as pluggable panes.
   about_version: Version
   about_version_description: The version currently installed on this device.
   about_source: Source code
@@ -91,7 +91,7 @@ sidebar:
   no_active_connections: No active connections
   no_hosts_in_bank: No hosts in bank
   no_projects: No projects
-  search_placeholder: Filter hosts or enter user@host:port
+  search_placeholder: Filter projects/hosts or enter user@host:port
   no_ssh_hosts: No hosts found in ~/.ssh/config
 
 tooltip:

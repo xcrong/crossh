@@ -61,13 +61,15 @@ cp README.md LICENSE "$APPDIR/"
 cat > "$APPDIR/usr/share/applications/io.crossh.app.desktop" <<EOF
 [Desktop Entry]
 Name=crossh
-Comment=Lightweight SSH client
+GenericName=Terminal Workspace
+Comment=Local-first terminal workspace (GPUI)
 Exec=crossh
 Icon=io.crossh.app
 Terminal=false
 Type=Application
 Categories=Development;Network;
 StartupWMClass=io.crossh.app
+Keywords=terminal;workspace;project;ssh;sftp;git;notes;
 EOF
 ln -s "usr/share/applications/io.crossh.app.desktop" "$APPDIR/crossh.desktop"
 # 兼容旧路径：部分桌面环境仍通过 crossh.desktop 查找

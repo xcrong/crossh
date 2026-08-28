@@ -9,7 +9,7 @@ pub(crate) use crate::features::workspace::open_main_window;
 /// Launch targets are the product of CLI argument parsing and are reused by
 /// the `on_reopen` callback to restore the same entry point on window reopen.
 /// Only the main window exists today; future CLI entries (e.g. opening a
-/// project or SSH session directly) extend this enum instead of threading
+/// local project directly) extend this enum instead of threading
 /// new arguments through `main`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum LaunchTarget {

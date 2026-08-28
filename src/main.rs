@@ -1,8 +1,8 @@
-//! crossh —— 基于 gpui 的轻量 SSH 客户端。
+//! crossh —— 基于 gpui 的本地优先终端工作环境（macOS / Linux / Windows）。
 //!
-//! 常驻开发工具：复用 `~/.ssh/config`（只读），提供基于 Zed 官方 PTY
-//! 和 Crossh 本地 renderer 的交互式终端。
-//! SFTP 与端口转发已经作为独立 feature 接入工作区。
+//! 以项目目录组织多会话本地终端为核心，SSH/SFTP/端口转发、Git Viewer、
+//! Note 均为可插拔 WorkspacePane / 独立二进制（`crossh-git` / `crossh-note` / `crossh-updater`），
+//! 通过 WorkspacePane 组合进同一工作区。
 
 mod app;
 mod features;
@@ -70,6 +70,24 @@ fn main() {
             Err(error) => {
                 eprintln!("crossh git: {error}\n");
                 features::git_launcher::print_cli_help();
+                std::process::exit(2);
+            }
+        },
+        app::cli::CliCommand::Note(result) => match result {
+            Ok(features::note_launcher::NoteCliCommand::Open) => {
+                if let Err(error) = features::note_launcher::spawn_note_process() {
+                    eprintln!("crossh note: failed to start crossh-note: {error}");
+                    std::process::exit(1);
+                }
+                return;
+            }
+            Ok(features::note_launcher::NoteCliCommand::Help) => {
+                features::note_launcher::print_cli_help();
+                return;
+            }
+            Err(error) => {
+                eprintln!("crossh note: {error}\n");
+                features::note_launcher::print_cli_help();
                 std::process::exit(2);
             }
         },

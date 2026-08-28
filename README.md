@@ -1,20 +1,23 @@
 # crossh
 
-基于 [gpui](https://github.com/zed-industries/zed/tree/main/crates/gpui) 的轻量 SSH 客户端（macOS / Linux / Windows），
-以 `~/.ssh/config` 为唯一真源，常驻开发工具定位：低内存、多标签、开箱即用。
+基于 [gpui](https://github.com/zed-industries/zed/tree/main/crates/gpui) 的本地优先终端工作环境（macOS / Linux / Windows），
+以项目目录组织多会话本地终端为核心，SSH/SFTP/端口转发、Git Viewer、Note 均为可插拔 WorkspacePane / 独立二进制。
 
 ## 特性
 
-- **读取 `~/.ssh/config`（只读）**：别名列表、`Include`/通配/`ProxyJump`、`Local/Remote/DynamicForward`、`IdentityFile`/`IdentitiesOnly` 均可解析（`Match exec` / `ProxyCommand` 为计划明确不支持，见 `crates/crossh-core/src/config/ssh_config.rs:5`）。
-- **会话池复用**：SFTP、端口转发和后台远程命令按主机共享已认证的 russh 连接；交互式终端由 Zed 的 PTY/事件循环独立管理。
-- **交互式终端**：Zed `terminal` 负责 PTY、终端模拟和滚动核心；Crossh 按固定 Zed revision 本地裁剪并维护 `terminal_view` 的 `TerminalElement`，继续复用 Zed 的绘制、输入、文本选择、鼠标协议、IME 和滚动行为。本地 shell 与交互式 SSH 都走同一套视图。
-- **反应式认证**：未知主机密钥弹指纹确认（可写 `known_hosts`）；加密私钥口令、密码按需弹出，凭据不回写日志。
-- **SFTP**：远程浏览、上传/下载、目录递归、进度条、覆盖确认。
-- **端口转发**：`-L` / `-R` / `-D`(SOCKS5)，config 驱动，UI 启停。
-- **本地终端**：Zed `TerminalBuilder` 创建本地 PTY；Crossh 只叠加项目目录、当前 `cwd` 和多会话标签，Git 状态由工作区单独维护。
-- **设置**：语言（zh/en）、Zed 终端字号、滚动回退行数、启动时检查更新，持久化到 `~/.config/crossh/`。
+- **本地终端 / 项目管理**：以项目目录组织多会话本地终端（`LocalSession` / `LocalDir` 一等公民，见 `src/features/workspace/view.rs`），Zed `TerminalBuilder` 创建本地 PTY，Crossh 叠加项目目录、当前 `cwd`、多会话标签与 Git 状态联动；侧栏以项目为核心，隐藏主机分组（见 `src/features/workspace/sidebar.rs:188`）。
+- **Git Viewer**：独立二进制 `crossh-git`，提供变更列表、staging/unstage、commit、push/pull 与远端分歧同步，状态栏实时展示 Git 状态，`cmd-r` 刷新。
+- **Note**：独立二进制 `crossh-note`，本地 SQLite（WAL + FTS5 + 触发器同步，见 `crates/crossh-note/src/lib.rs`）存储，支持全文检索、标签、置顶，零 `gpui` 依赖的纯逻辑层。
+- **系统监视 / Scratch 终端**：系统指标常驻面板与随手 Scratch 终端，均为可插拔 `WorkspacePane`，不阻塞主工作区。
+- **设置与常驻友好**：语言（zh/en）、Zed 终端字号、滚动回退行数、启动时检查更新，持久化到 `~/.config/crossh/`；日志裁剪（`/tmp/crossh/run.log`）、panic 现场保留、空闲内存 ~70MB。
+- **远程能力**
+  - **SSH 子系统复用 `~/.ssh/config`（只读）**：别名列表、`Include`/通配/`ProxyJump`、`Local/Remote/DynamicForward`、`IdentityFile`/`IdentitiesOnly` 均可解析（`Match exec` / `ProxyCommand` 为计划明确不支持，见 `crates/crossh-core/src/config/ssh_config.rs:5`）。
+  - **会话池复用**：SFTP、端口转发和后台远程命令按主机共享已认证的 russh 连接；交互式终端由 Zed 的 PTY/事件循环独立管理。
+  - **交互式终端**：Zed `terminal` 负责 PTY、终端模拟和滚动核心；Crossh 按固定 Zed revision 本地裁剪并维护 `terminal_view` 的 `TerminalElement`，继续复用 Zed 的绘制、输入、文本选择、鼠标协议、IME 和滚动行为。本地 shell 与交互式 SSH 都走同一套视图。
+  - **反应式认证**：未知主机密钥弹指纹确认（可写 `known_hosts`）；加密私钥口令、密码按需弹出，凭据不回写日志。
+  - **SFTP**：远程浏览、上传/下载、目录递归、进度条、覆盖确认。
+  - **端口转发**：`-L` / `-R` / `-D`(SOCKS5)，config 驱动，UI 启停。
 - **远程更新**：设置页从 HTTPS release manifest 检查版本，按平台下载并校验 SHA-256 与 Ed25519 签名（缺失/无效签名一律拒绝，见 ADR 0014），再交给随应用分发的独立 updater 完成替换和重启。
-- 常驻友好：日志裁剪（`/tmp/crossh/run.log`）、panic 现场保留、空闲内存 ~70MB。
 
 ## 构建与运行
 
@@ -92,7 +95,7 @@ UI 图标统一放在 `crates/crossh-assets/assets/icons/`，由 `crossh-assets`
 自动嵌入。图标引用必须通过 `crossh_ui::icons::IconName`，不要在业务视图中
 直接写 `icons/<name>.svg`；资源包的单个测试会校验所有声明图标和嵌入文件。
 
-技术栈：Zed `gpui`、`terminal`、`task`（UI、PTY、终端模拟和 shell 进程）；Crossh 本地裁剪的 `terminal_view` 基础（渲染和交互）以及薄宿主（生命周期、焦点和工作区边界）；`russh`（SFTP、端口转发和后台 SSH 命令）；`tokio`（2 worker 常驻）。`alacritty_terminal` / `vte` 由 Zed `terminal` 间接使用，Crossh 不再直接维护另一套生产终端实现。
+技术栈：Zed `gpui`、`terminal`、`task`（UI、PTY、终端模拟和 shell 进程）；Crossh 本地裁剪的 `terminal_view` 基础（渲染和交互）以及薄宿主（生命周期、焦点和工作区边界）；`russh`（SFTP、端口转发和后台 SSH 命令）；`tokio`（2 worker 常驻）；`crossh-note`（`rusqlite` bundled + SQLite WAL + FTS5 + 触发器同步，见 `crates/crossh-note/src/lib.rs`）提供本地笔记持久化与全文检索，`crossh-git` / `crossh-note` / `crossh-updater` 均为独立二进制，通过 `WorkspacePane` 组合进同一工作区。`alacritty_terminal` / `vte` 由 Zed `terminal` 间接使用，Crossh 不再直接维护另一套生产终端实现。
 
 ## 路线图
 

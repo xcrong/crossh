@@ -1,5 +1,5 @@
 pkgbase = crossh-bin
-	pkgdesc = Lightweight SSH client based on GPUI (prebuilt binary from GitHub Release)
+	pkgdesc = Local-first terminal workspace (GPUI) — project-oriented local sessions; SSH/SFTP/port-forward as workspace panes
 	pkgver = 0.20.0
 	pkgrel = 1
 	url = https://github.com/xcrong/crossh

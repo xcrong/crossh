@@ -6,7 +6,7 @@
 pkgname=crossh-bin
 pkgver=0.20.0
 pkgrel=1
-pkgdesc="Lightweight SSH client based on GPUI (prebuilt binary from GitHub Release)"
+pkgdesc="Local-first terminal workspace (GPUI) — project-oriented local sessions; SSH/SFTP/port-forward as workspace panes"
 arch=('x86_64' 'aarch64')
 url="https://github.com/xcrong/crossh"
 license=('GPL3')
@@ -71,8 +71,8 @@ package() {
     install -Dm644 /dev/stdin "${pkgdir}/usr/share/applications/io.crossh.app.desktop" <<'DESKTOP'
 [Desktop Entry]
 Name=crossh
-GenericName=SSH Client
-Comment=Lightweight SSH client
+GenericName=Terminal Workspace
+Comment=Local-first terminal workspace (GPUI)
 Exec=crossh %u
 Icon=io.crossh.app
 Terminal=false
@@ -80,7 +80,7 @@ Type=Application
 Categories=Development;Network;
 StartupWMClass=io.crossh.app
 MimeType=x-scheme-handler/ssh;
-Keywords=ssh;terminal;remote;
+Keywords=terminal;workspace;project;ssh;sftp;git;notes;
 DESKTOP
     # 兼容旧名
     ln -s "io.crossh.app.desktop" "${pkgdir}/usr/share/applications/crossh.desktop"

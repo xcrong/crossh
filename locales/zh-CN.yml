@@ -37,7 +37,7 @@ settings:
   general: 通用
   terminal: 终端
   about: 关于
-  about_description: 面向本地与远程工作的专注型 SSH 工作台。
+  about_description: 本地优先的终端工作环境，以项目组织多会话终端，SSH/SFTP/端口转发、Git 与笔记为可插拔面板。
   about_version: 版本
   about_version_description: 当前设备上安装的应用版本。
   about_source: 源代码
@@ -91,7 +91,7 @@ sidebar:
   no_active_connections: 暂无活动连接
   no_hosts_in_bank: 暂无主机
   no_projects: 暂无项目
-  search_placeholder: 筛选主机或输入 user@host:port
+  search_placeholder: 筛选项目、主机或输入 user@host:port
   no_ssh_hosts: 未找到 ~/.ssh/config 中的主机
 
 tooltip:

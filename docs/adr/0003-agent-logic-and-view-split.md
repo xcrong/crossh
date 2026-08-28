@@ -1,5 +1,7 @@
 # 0003-agent-logic-and-view-split
 
+> Note: crossh-agent 已移除，本 ADR 的 GPUI/CLI 双形态约束仅保留设计思路，当前仅 git/note 保留独立二进制
+
 ## 状态
 
 已接受

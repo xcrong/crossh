@@ -5,7 +5,10 @@
 
 use std::path::PathBuf;
 
-use crate::features::git_launcher::{self, GitCliCommand};
+use crate::features::{
+    git_launcher::{self, GitCliCommand},
+    note_launcher::{self, NoteCliCommand},
+};
 
 use super::LaunchTarget;
 
@@ -15,6 +18,7 @@ pub(crate) enum CliCommand {
     Help,
     Version,
     Git(Result<GitCliCommand, String>),
+    Note(Result<NoteCliCommand, String>),
     Unknown(String),
     Main(LaunchTarget),
 }
@@ -36,6 +40,10 @@ pub(crate) fn parse_cli(
             let result = git_launcher::parse_cli(args, current_dir);
             CliCommand::Git(result)
         }
+        Some("note") => {
+            let result = note_launcher::parse_cli(args);
+            CliCommand::Note(result)
+        }
         Some(argument) => CliCommand::Unknown(argument.to_string()),
     }
 }
@@ -43,7 +51,7 @@ pub(crate) fn parse_cli(
 /// 返回与 `print_help` 打印内容一致的帮助文本，便于测试与复用。
 pub(crate) fn help_text() -> String {
     format!(
-        "Crossh {}\n\nUsage: crossh [COMMAND]\n\nCommands:\n  git         Open the Git Viewer for a directory\n  help        Print help\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version",
+        "Crossh {} — Local-first terminal workspace (GPUI)\n\nUsage: crossh [COMMAND]\n\nLocal-first terminal workspace — manage projects, terminals and notes locally.\n\nCommands:\n  git         Open the Git Viewer for a directory\n  note        Open the Note Viewer\n  help        Print help\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -120,6 +128,26 @@ mod tests {
     }
 
     #[test]
+    fn note_delegates_to_note_launcher() {
+        use crate::features::note_launcher::NoteCliCommand;
+
+        let command = parse_cli(["note"].into_iter().map(str::to_string), cwd_ok("/repo"));
+        assert_eq!(command, CliCommand::Note(Ok(NoteCliCommand::Open)));
+
+        let command = parse_cli(
+            ["note", "--help"].into_iter().map(str::to_string),
+            cwd_ok("/repo"),
+        );
+        assert_eq!(command, CliCommand::Note(Ok(NoteCliCommand::Help)));
+
+        let command = parse_cli(
+            ["note", "extra"].into_iter().map(str::to_string),
+            cwd_ok("/repo"),
+        );
+        assert!(matches!(command, CliCommand::Note(Err(_))));
+    }
+
+    #[test]
     fn unknown_argument_is_preserved() {
         let command = parse_cli(["unknown"].into_iter().map(str::to_string), cwd_ok("/repo"));
         assert_eq!(command, CliCommand::Unknown("unknown".to_string()));
@@ -129,8 +157,10 @@ mod tests {
     fn help_text_contains_version_and_commands() {
         let text = help_text();
         assert!(text.contains(env!("CARGO_PKG_VERSION")));
+        assert!(text.contains("Local-first terminal workspace"));
         assert!(text.contains("Usage: crossh [COMMAND]"));
         assert!(text.contains("git"));
+        assert!(text.contains("note"));
         assert!(text.contains("--help"));
         assert!(text.contains("--version"));
     }

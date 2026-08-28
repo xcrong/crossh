@@ -1,3 +1,6 @@
+> **Status: Removed — superseded**
+> crossh-agent 子系统已在 2026-08-23 简化审计中移除 (commit 5daa8ce)，crates/crossh-agent 已删除，发布产物不再包含 crossh-agent。保留此 ADR 仅作历史归档。替代：直调形态，Workspace 侧按需直调，见 docs/adr/0015 修订。
+
 # 0009-Standalone agent binary
 
 ## 状态
@@ -24,3 +27,7 @@ Cargo package 同时产出 `crossh` 与 `crossh-agent` 两个二进制。`crossh
 
 - `docs/architecture.md` 边界规则 7：`crossh-git` 与 `crossh-agent` 是仅有的两个允许 `#[path]` 的独立入口
 - `docs/plans/agent-binary-split.md`：迁移计划与验证清单（已随 crossh-agent 整体移除而清除，5daa8ce）
+
+## Removal note
+
+crossh-agent 子系统已在 2026-08-23 简化审计中移除（commit 5daa8ce）：`crates/crossh-agent` 已删除，发布产物不再包含 `crossh-agent`，`docs/plans/agent-binary-split.md` 已清除。保留此 ADR 仅作历史归档。替代：直调形态，Workspace 侧按需直调，见 `docs/adr/0015-agent-runtime-and-session-tree.md` 修订（2026-08-23）。

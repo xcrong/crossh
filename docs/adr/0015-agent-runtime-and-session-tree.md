@@ -1,6 +1,8 @@
-# 0015: Agent Runtime 与 Session 树边界
+# 0015: Agent Runtime and session tree [partially superseded — Runtime/EventBus removed]
 
-- 状态：`approved`
+- Status: Partially superseded
+- 原状态：`approved`
+- 修订：2026-08-23 移除 Runtime/EventBus 抽象（runtime.rs/manager.rs/EventBus 已删除），会话树/标签契约保留，见下方「修订」节
 - 日期：2026-08-21
 - 前置：0002-logic-ui-layering, 0003-agent-logic-and-view-split, 0012-spec-driven
 
