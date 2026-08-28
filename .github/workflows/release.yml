@@ -19,10 +19,6 @@ jobs:
   validate:
     name: Validate release
     runs-on: macos-latest
-    # 仅保留发布专属校验（tag 版本与 Cargo.toml 一致性）。fmt /
-    # check-architecture / clippy / 全量测试 / Cargo.lock 同步等通用门禁由
-    # ci.yml 的 check job 在 main push 与 PR 上执行，tag 均从已验证的 main
-    # 提交打出，这里刻意不重复执行，避免发布时重复消耗 macOS runner 时间。
     steps:
       - uses: actions/checkout@v6
 
