@@ -14,8 +14,14 @@ pub fn render_markdown(md: &str) -> AnyElement {
             .into_any_element();
     }
 
+    // 不使用 `Options::all()`：会启用 footnotes、inline HTML 变体等未渲染特性，
+    // 可能让原始 HTML/脚注标记透传到预览中；仅开启预览实际支持的最小扩展集。
     let mut opts = Options::empty();
-    opts.insert(Options::all());
+    opts.insert(Options::ENABLE_STRIKETHROUGH);
+    opts.insert(Options::ENABLE_TABLES);
+    opts.insert(Options::ENABLE_TASKLISTS);
+    opts.insert(Options::ENABLE_SMART_PUNCTUATION);
+    opts.insert(Options::ENABLE_HEADING_ATTRIBUTES);
     let parser = Parser::new_ext(md, opts);
 
     let mut blocks: Vec<AnyElement> = Vec::new();

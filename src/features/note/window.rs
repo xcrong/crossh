@@ -22,6 +22,10 @@ use crate::shared::text_editing::{EditingKeystroke, TextEditingState, handle_tex
 use crate::shared::utf16::{byte_index_for_utf16, utf16_len, utf16_offset_for_byte, utf16_slice};
 
 const NOTE_WINDOW_CONTEXT: &str = "NoteWindow";
+const NOTE_INPUT_PADDING: Pixels = px(12.);
+const NOTE_FONT_SIZE: Pixels = px(14.);
+const NOTE_LINE_HEIGHT: Pixels = px(18.);
+const NOTE_LINE_HEIGHT_F32: f32 = 18.;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ActiveField {
@@ -42,7 +46,6 @@ pub struct NoteWindow {
     content_state: TextEditingState,
     content_focus: FocusHandle,
     content_scroll: ScrollHandle,
-    #[allow(dead_code)]
     list_scroll: ScrollHandle,
     window_focus: FocusHandle,
     search_bounds: Option<Bounds<Pixels>>,
@@ -91,6 +94,10 @@ impl NoteWindow {
         }
     }
 
+    fn is_draft_dirty(&self) -> bool {
+        !self.content_state.value.trim().is_empty() || !self.tags_state.value.trim().is_empty()
+    }
+
     fn reload_notes(&mut self, cx: &mut Context<Self>) {
         let Some(store) = &self.store else { return };
         let query = self.search_state.value.trim().to_string();
@@ -99,11 +106,28 @@ impl NoteWindow {
         } else {
             store.search(&query).unwrap_or_default()
         };
+        let prev_selected = self.selected_id;
         self.notes = notes;
-        if let Some(id) = self.selected_id
-            && !self.notes.iter().any(|n| n.id == id)
-        {
+        let still_exists = self
+            .selected_id
+            .is_some_and(|id| self.notes.iter().any(|n| n.id == id));
+        if !still_exists {
+            // 保留未保存草稿：若当前编辑器有内容，则不自动切换到首条，避免丢弃用户输入
+            let should_preserve_draft = self.is_draft_dirty();
             self.selected_id = None;
+            if should_preserve_draft && prev_selected.is_none() {
+                // 新建草稿被过滤，保留现状
+                cx.notify();
+                return;
+            }
+            if should_preserve_draft && prev_selected.is_some() {
+                // 已选笔记被过滤但编辑器为脏，保持草稿不自动选中，待用户显式选择
+                // 若后续由保存触发的 reload，则会重新选中
+                if !query.is_empty() {
+                    cx.notify();
+                    return;
+                }
+            }
         }
         if self.selected_id.is_none() && !self.notes.is_empty() {
             let first = self.notes[0].clone();
@@ -355,6 +379,36 @@ fn normalize_tags(raw: &str) -> String {
     out.join(",")
 }
 
+fn line_starts(text: &str) -> Vec<usize> {
+    let mut starts = vec![0];
+    for (i, ch) in text.char_indices() {
+        if ch == '\n' {
+            starts.push(i + 1);
+        }
+    }
+    starts
+}
+
+fn closest_byte_for_x(window: &Window, text: &str, relative_x: Pixels) -> usize {
+    if relative_x <= px(0.) {
+        return 0;
+    }
+    let mut best_byte = text.len();
+    let mut best_dist = f32::MAX;
+    for (byte_idx, _) in text
+        .char_indices()
+        .chain(std::iter::once((text.len(), '\0')))
+    {
+        let w = text_width(window, &text[..byte_idx], NOTE_FONT_SIZE);
+        let dist = (w - relative_x).abs().as_f32();
+        if dist < best_dist {
+            best_dist = dist;
+            best_byte = byte_idx;
+        }
+    }
+    best_byte
+}
+
 impl Focusable for NoteWindow {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.window_focus.clone()
@@ -485,8 +539,8 @@ impl EntityInputHandler for NoteWindow {
                     window,
                     element_bounds,
                     &state.value[..cursor],
-                    px(14.),
-                    px(12.),
+                    NOTE_FONT_SIZE,
+                    NOTE_INPUT_PADDING,
                     px(0.),
                 ))
             }
@@ -498,8 +552,8 @@ impl EntityInputHandler for NoteWindow {
                     window,
                     element_bounds,
                     &state.value[..cursor],
-                    px(14.),
-                    px(12.),
+                    NOTE_FONT_SIZE,
+                    NOTE_INPUT_PADDING,
                     px(0.),
                 ))
             }
@@ -511,14 +565,14 @@ impl EntityInputHandler for NoteWindow {
                 let text_before = &state.value[..cursor.min(state.value.len())];
                 let line = text_before.chars().filter(|&c| c == '\n').count();
                 let line_before = text_before.rsplit('\n').next().unwrap_or("");
-                let x = text_width(window, line_before, px(14.));
-                let y = px(line as f32 * 18.);
+                let x = text_width(window, line_before, NOTE_FONT_SIZE);
+                let y = NOTE_LINE_HEIGHT * (line as f32);
                 Some(Bounds {
                     origin: point(
-                        element_bounds.origin.x + px(12.) + x - scroll.offset().x,
-                        element_bounds.origin.y + px(12.) + y - scroll.offset().y,
+                        element_bounds.origin.x + NOTE_INPUT_PADDING + x - scroll.offset().x,
+                        element_bounds.origin.y + NOTE_INPUT_PADDING + y - scroll.offset().y,
                     ),
-                    size: size(px(2.), px(18.)),
+                    size: size(px(2.), NOTE_LINE_HEIGHT),
                 })
             }
         }
@@ -535,49 +589,15 @@ impl EntityInputHandler for NoteWindow {
             ActiveField::Search => {
                 let bounds = self.search_bounds?;
                 let state = &self.search_state;
-                // 单行：根据 x 偏移找最近字符
-                let relative_x = point.x - bounds.origin.x - px(12.);
-                if relative_x <= px(0.) {
-                    return Some(0);
-                }
-                let mut best_byte = state.value.len();
-                let mut best_dist = f32::MAX;
-                // 遍历每个字符边界，找最接近点击 x 的位置
-                for (byte_idx, _) in state
-                    .value
-                    .char_indices()
-                    .chain(std::iter::once((state.value.len(), '\0')))
-                {
-                    let w = text_width(window, &state.value[..byte_idx], px(14.));
-                    let dist = (w - relative_x).abs().as_f32();
-                    if dist < best_dist {
-                        best_dist = dist;
-                        best_byte = byte_idx;
-                    }
-                }
+                let relative_x = point.x - bounds.origin.x - NOTE_INPUT_PADDING;
+                let best_byte = closest_byte_for_x(window, &state.value, relative_x);
                 Some(utf16_offset_for_byte(&state.value, best_byte))
             }
             ActiveField::Tags => {
                 let bounds = self.tags_bounds?;
                 let state = &self.tags_state;
-                let relative_x = point.x - bounds.origin.x - px(12.);
-                if relative_x <= px(0.) {
-                    return Some(0);
-                }
-                let mut best_byte = state.value.len();
-                let mut best_dist = f32::MAX;
-                for (byte_idx, _) in state
-                    .value
-                    .char_indices()
-                    .chain(std::iter::once((state.value.len(), '\0')))
-                {
-                    let w = text_width(window, &state.value[..byte_idx], px(14.));
-                    let dist = (w - relative_x).abs().as_f32();
-                    if dist < best_dist {
-                        best_dist = dist;
-                        best_byte = byte_idx;
-                    }
-                }
+                let relative_x = point.x - bounds.origin.x - NOTE_INPUT_PADDING;
+                let best_byte = closest_byte_for_x(window, &state.value, relative_x);
                 Some(utf16_offset_for_byte(&state.value, best_byte))
             }
             ActiveField::Content => {
@@ -585,38 +605,27 @@ impl EntityInputHandler for NoteWindow {
                 let state = &self.content_state;
                 let scroll = self.content_scroll.offset();
                 // y -> 行
-                let relative_y = point.y - bounds.origin.y - px(12.) + scroll.y;
-                let line_idx = (relative_y.as_f32() / 18.).floor() as usize;
-                let lines: Vec<&str> = state.value.split('\n').collect();
-                let line_idx = line_idx.min(lines.len().saturating_sub(1));
-                let line_start_byte = state
-                    .value
-                    .split('\n')
-                    .take(line_idx)
-                    .map(|l| l.len() + 1)
-                    .sum::<usize>();
-                let line = lines.get(line_idx).copied().unwrap_or("");
-                let relative_x = point.x - bounds.origin.x - px(12.) + scroll.x;
-                if relative_x <= px(0.) {
-                    return Some(utf16_offset_for_byte(&state.value, line_start_byte));
-                }
+                let relative_y = point.y - bounds.origin.y - NOTE_INPUT_PADDING + scroll.y;
+                let line_idx = (relative_y.as_f32() / NOTE_LINE_HEIGHT_F32)
+                    .floor()
+                    .max(0.0) as usize;
+                let starts = line_starts(&state.value);
+                let line_idx = line_idx.min(starts.len().saturating_sub(1));
+                let line_start_byte = starts[line_idx];
+                let line_end = starts
+                    .get(line_idx + 1)
+                    .map(|v| v - 1)
+                    .unwrap_or(state.value.len());
+                let line = &state.value[line_start_byte..line_end];
+                let relative_x = point.x - bounds.origin.x - NOTE_INPUT_PADDING + scroll.x;
                 if line.is_empty() {
                     return Some(utf16_offset_for_byte(&state.value, line_start_byte));
                 }
-                let mut best_byte = line_start_byte + line.len();
-                let mut best_dist = f32::MAX;
-                for (col_byte, _) in line
-                    .char_indices()
-                    .chain(std::iter::once((line.len(), '\0')))
-                {
-                    let w = text_width(window, &line[..col_byte], px(14.));
-                    let dist = (w - relative_x).abs().as_f32();
-                    if dist < best_dist {
-                        best_dist = dist;
-                        best_byte = line_start_byte + col_byte;
-                    }
-                }
-                Some(utf16_offset_for_byte(&state.value, best_byte))
+                let col_byte = closest_byte_for_x(window, line, relative_x);
+                Some(utf16_offset_for_byte(
+                    &state.value,
+                    line_start_byte + col_byte,
+                ))
             }
         }
     }
@@ -700,12 +709,14 @@ impl gpui::Render for NoteWindow {
             .bg(theme::surface())
             .child(
                 div()
+                    .id("note-list")
                     .flex_1()
                     .flex()
                     .flex_col()
                     .gap_1()
                     .p_2()
-                    .overflow_hidden()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.list_scroll)
                     .children(notes.iter().map(|note| {
                         let is_selected = Some(note.id) == selected;
                         let id = note.id;
@@ -932,26 +943,8 @@ fn render_search_field(
                     } else if !extend {
                         state.anchor = None;
                     }
-                    let new_cursor = if event.position.x - bounds.origin.x - px(12.) <= px(0.) {
-                        0
-                    } else {
-                        let relative_x = event.position.x - bounds.origin.x - px(12.);
-                        let mut best_byte = state.value.len();
-                        let mut best_dist = f32::MAX;
-                        for (byte_idx, _) in state
-                            .value
-                            .char_indices()
-                            .chain(std::iter::once((state.value.len(), '\0')))
-                        {
-                            let w = text_width(window, &state.value[..byte_idx], px(14.));
-                            let dist = (w - relative_x).abs().as_f32();
-                            if dist < best_dist {
-                                best_dist = dist;
-                                best_byte = byte_idx;
-                            }
-                        }
-                        best_byte
-                    };
+                    let relative_x = event.position.x - bounds.origin.x - NOTE_INPUT_PADDING;
+                    let new_cursor = closest_byte_for_x(window, &state.value, relative_x);
                     state.cursor = new_cursor;
                     if !extend {
                         state.anchor = None;
@@ -971,7 +964,7 @@ fn render_search_field(
             .flex_row()
             .items_center()
             .child(if focused {
-                text_caret(px(14.)).into_any_element()
+                text_caret(NOTE_FONT_SIZE).into_any_element()
             } else {
                 div().into_any_element()
             })
@@ -1002,7 +995,7 @@ fn render_search_field(
                 marked_text_span(ime_marked.clone()).into_any_element()
             })
             .child(if focused {
-                text_caret(px(14.)).into_any_element()
+                text_caret(NOTE_FONT_SIZE).into_any_element()
             } else {
                 div().into_any_element()
             })
@@ -1060,26 +1053,8 @@ fn render_tags_field(
                     } else if !extend {
                         state.anchor = None;
                     }
-                    let relative_x = event.position.x - bounds.origin.x - px(12.);
-                    let new_cursor = if relative_x <= px(0.) {
-                        0
-                    } else {
-                        let mut best_byte = state.value.len();
-                        let mut best_dist = f32::MAX;
-                        for (byte_idx, _) in state
-                            .value
-                            .char_indices()
-                            .chain(std::iter::once((state.value.len(), '\0')))
-                        {
-                            let w = text_width(window, &state.value[..byte_idx], px(14.));
-                            let dist = (w - relative_x).abs().as_f32();
-                            if dist < best_dist {
-                                best_dist = dist;
-                                best_byte = byte_idx;
-                            }
-                        }
-                        best_byte
-                    };
+                    let relative_x = event.position.x - bounds.origin.x - NOTE_INPUT_PADDING;
+                    let new_cursor = closest_byte_for_x(window, &state.value, relative_x);
                     state.cursor = new_cursor;
                     if !extend {
                         state.anchor = None;
@@ -1098,7 +1073,7 @@ fn render_tags_field(
             .flex_row()
             .items_center()
             .child(if focused {
-                text_caret(px(14.)).into_any_element()
+                text_caret(NOTE_FONT_SIZE).into_any_element()
             } else {
                 div().into_any_element()
             })
@@ -1133,7 +1108,7 @@ fn render_tags_field(
                 marked_text_span(ime_marked.clone()).into_any_element()
             })
             .child(if focused {
-                text_caret(px(14.)).into_any_element()
+                text_caret(NOTE_FONT_SIZE).into_any_element()
             } else {
                 div().into_any_element()
             })
@@ -1195,35 +1170,21 @@ fn render_content_editor(
                     return;
                 };
                 let scroll = this.content_scroll.offset();
-                let relative_y = event.position.y - bounds.origin.y - px(12.) + scroll.y;
-                let line_idx = (relative_y.as_f32() / 18.).floor().max(0.) as usize;
-                let lines: Vec<&str> = this.content_state.value.split('\n').collect();
-                let line_idx = line_idx.min(lines.len().saturating_sub(1));
-                let line_start_byte = this
-                    .content_state
-                    .value
-                    .split('\n')
-                    .take(line_idx)
-                    .map(|l| l.len() + 1)
-                    .sum::<usize>();
-                let line = lines.get(line_idx).copied().unwrap_or("");
-                let relative_x = event.position.x - bounds.origin.x - px(12.) + scroll.x;
-                let mut best_byte = line_start_byte + line.len();
-                let mut best_dist = f32::MAX;
-                for (col_byte, _) in line
-                    .char_indices()
-                    .chain(std::iter::once((line.len(), '\0')))
-                {
-                    let w = text_width(window, &line[..col_byte], px(14.));
-                    let dist = (w - relative_x).abs().as_f32();
-                    if dist < best_dist {
-                        best_dist = dist;
-                        best_byte = line_start_byte + col_byte;
-                    }
-                }
-                if relative_x <= px(0.) {
-                    best_byte = line_start_byte;
-                }
+                let relative_y = event.position.y - bounds.origin.y - NOTE_INPUT_PADDING + scroll.y;
+                let line_idx = (relative_y.as_f32() / NOTE_LINE_HEIGHT_F32)
+                    .floor()
+                    .max(0.0) as usize;
+                let starts = line_starts(&this.content_state.value);
+                let line_idx = line_idx.min(starts.len().saturating_sub(1));
+                let line_start_byte = starts[line_idx];
+                let line_end = starts
+                    .get(line_idx + 1)
+                    .map(|v| v - 1)
+                    .unwrap_or(this.content_state.value.len());
+                let line = &this.content_state.value[line_start_byte..line_end];
+                let relative_x = event.position.x - bounds.origin.x - NOTE_INPUT_PADDING + scroll.x;
+                let col_byte = closest_byte_for_x(window, line, relative_x);
+                let best_byte = line_start_byte + col_byte;
                 let extend = event.modifiers.shift;
                 if extend {
                     if this.content_state.anchor.is_none() {
@@ -1258,7 +1219,7 @@ fn render_content_editor(
                 div()
                     .flex()
                     .flex_row()
-                    .child(text_caret(px(14.)).into_any_element())
+                    .child(text_caret(NOTE_FONT_SIZE).into_any_element())
                     .child(placeholder),
             );
         } else {
@@ -1282,13 +1243,10 @@ fn render_content_editor(
     };
     let has_selection = selection.is_some();
 
+    let starts = line_starts(&value);
     let mut line_elements: Vec<AnyElement> = Vec::new();
     for (idx, line) in lines.iter().enumerate() {
-        let line_start_byte = value
-            .split('\n')
-            .take(idx)
-            .map(|l| l.len() + 1)
-            .sum::<usize>();
+        let line_start_byte = starts[idx];
         let line_end_byte = line_start_byte + line.len();
         let is_cursor_line = idx == cursor_line;
         let overlap_start = sel_start.max(line_start_byte);
@@ -1307,7 +1265,11 @@ fn render_content_editor(
             } else {
                 None
             };
-            let mut row = div().flex().flex_row().items_center().min_h(px(18.));
+            let mut row = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .min_h(NOTE_LINE_HEIGHT);
             if let Some(cur_off) = cursor_in_line {
                 let cur_off = cur_off.min(line.len());
                 let cur_off = if line.is_char_boundary(cur_off) {
@@ -1326,7 +1288,7 @@ fn render_content_editor(
                         row = row.child(marked_text_span(ime_marked.clone()));
                     }
                     if focused {
-                        row = row.child(text_caret(px(14.)).into_any_element());
+                        row = row.child(text_caret(NOTE_FONT_SIZE).into_any_element());
                     }
                     row = row.child(text_span(b2.to_string()));
                     row = row.child(
@@ -1362,7 +1324,7 @@ fn render_content_editor(
                         row = row.child(marked_text_span(ime_marked.clone()));
                     }
                     if focused {
-                        row = row.child(text_caret(px(14.)).into_any_element());
+                        row = row.child(text_caret(NOTE_FONT_SIZE).into_any_element());
                     }
                     if !s2.is_empty() {
                         row = row.child(
@@ -1398,7 +1360,7 @@ fn render_content_editor(
                         row = row.child(marked_text_span(ime_marked.clone()));
                     }
                     if focused {
-                        row = row.child(text_caret(px(14.)).into_any_element());
+                        row = row.child(text_caret(NOTE_FONT_SIZE).into_any_element());
                     }
                     row = row.child(text_span(a2.to_string()));
                 }
@@ -1415,11 +1377,6 @@ fn render_content_editor(
             row.into_any_element()
         } else if is_cursor_line {
             // 无选区重叠但为光标行：原逻辑
-            let line_start_byte = value
-                .split('\n')
-                .take(idx)
-                .map(|l| l.len() + 1)
-                .sum::<usize>();
             let col_byte = cursor.saturating_sub(line_start_byte).min(line.len());
             let col_byte = if line.is_char_boundary(col_byte) {
                 col_byte
@@ -1432,13 +1389,17 @@ fn render_content_editor(
             };
             let before = &line[..col_byte];
             let after = &line[col_byte..];
-            let mut row = div().flex().flex_row().items_center().min_h(px(18.));
+            let mut row = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .min_h(NOTE_LINE_HEIGHT);
             row = row.child(text_span(before.to_string()));
             if !ime_marked.is_empty() {
                 row = row.child(marked_text_span(ime_marked.clone()));
             }
             if focused {
-                row = row.child(text_caret(px(14.)).into_any_element());
+                row = row.child(text_caret(NOTE_FONT_SIZE).into_any_element());
             }
             row = row.child(text_span(after.to_string()));
             row.into_any_element()
@@ -1446,12 +1407,12 @@ fn render_content_editor(
             // 有选区但该行无重叠且非光标行：整行未选中，按普通文本渲染
             // 实际上整行被选中时 has_overlap 为 true，已在上分支处理；此处为未选中行
             div()
-                .min_h(px(18.))
+                .min_h(NOTE_LINE_HEIGHT)
                 .child(text_span(line.to_string()))
                 .into_any_element()
         } else {
             div()
-                .min_h(px(18.))
+                .min_h(NOTE_LINE_HEIGHT)
                 .child(text_span(line.to_string()))
                 .into_any_element()
         };

@@ -17,7 +17,7 @@ use gpui::{
 
 use crate::features::workspace::pane::{PaneRisk, WorkspacePane};
 use crate::shared::i18n;
-use crate::shared::text_editing::TextEditingState;
+use crate::shared::text_editing::{TextEditingState, line_bounds};
 use crate::shared::utf16::{
     byte_index_for_utf16, replace_utf16_range, utf16_len, utf16_offset_for_byte, utf16_slice,
 };
@@ -97,10 +97,12 @@ impl RemoteEditor {
     }
 
     fn move_horizontal(&mut self, direction: i8, extend: bool) {
+        self.state.clear_composition();
         self.state.move_horizontal(direction, extend);
     }
 
     fn move_vertical(&mut self, direction: i8, extend: bool) {
+        self.state.clear_composition();
         self.state.move_vertical(direction, extend);
     }
 }

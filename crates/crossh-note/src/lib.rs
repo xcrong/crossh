@@ -37,6 +37,15 @@ fn truncate_bytes(s: &str, max: usize) -> String {
     s[..end].to_string()
 }
 
+fn corrupt_backup_path(path: &Path) -> PathBuf {
+    let ts = now_ts();
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "note.db".to_string());
+    path.with_file_name(format!("{}.corrupt.{}", file_name, ts))
+}
+
 pub fn note_db_path() -> PathBuf {
     if let Some(path) = test_path_override() {
         return path;
@@ -81,9 +90,8 @@ impl NoteStore {
         let conn = match Connection::open(&path) {
             Ok(c) => c,
             Err(e) => {
-                // 损坏：备份
-                let ts = now_ts();
-                let corrupt = path.with_extension(format!("corrupt.{}", ts));
+                // 损坏：备份（保留原后缀 note.db -> note.db.corrupt.<ts>）
+                let corrupt = corrupt_backup_path(&path);
                 let _ = std::fs::rename(&path, &corrupt);
                 log::warn!("note.db corrupt, backup to {:?}: {}", corrupt, e);
                 Connection::open(&path).map_err(|e| e.to_string())?
@@ -102,23 +110,33 @@ impl NoteStore {
     }
 
     fn ensure_schema(&self) -> Result<(), String> {
-        let conn = self.conn.lock();
-        // 检测是否损坏（尝试查询）
-        let schema_check = conn
-            .prepare("SELECT count(*) FROM sqlite_master")
-            .map(|_| ())
-            .map_err(|e| e.to_string());
-        if let Err(e) = schema_check {
-            drop(conn);
-            // 备份
-            let ts = now_ts();
-            let corrupt = self.path.with_extension(format!("corrupt.{}", ts));
-            let _ = std::fs::rename(&self.path, &corrupt);
-            log::warn!("note.db schema check failed, backup {:?}: {}", corrupt, e);
-            let new_conn = Connection::open(&self.path).map_err(|e| e.to_string())?;
-            *self.conn.lock() = new_conn;
-            return self.ensure_schema();
+        // 有界重试：最多备份重建一次，避免无界递归
+        for attempt in 0..2 {
+            let conn = self.conn.lock();
+            let schema_check = conn
+                .prepare("SELECT count(*) FROM sqlite_master")
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+            if let Err(e) = schema_check {
+                drop(conn);
+                if attempt >= 1 {
+                    return Err(format!("note.db corrupt after retry: {}", e));
+                }
+                let corrupt = corrupt_backup_path(&self.path);
+                let _ = std::fs::rename(&self.path, &corrupt);
+                log::warn!("note.db schema check failed, backup {:?}: {}", corrupt, e);
+                let new_conn = Connection::open(&self.path).map_err(|e| e.to_string())?;
+                *self.conn.lock() = new_conn;
+                continue;
+            }
+            // PRAGMA 与建表在成功分支中执行，执行后直接返回
+            return self.ensure_schema_inner(conn);
         }
+        Err("note.db ensure_schema failed after retry".to_string())
+    }
+
+    fn ensure_schema_inner(&self, conn: parking_lot::MutexGuard<Connection>) -> Result<(), String> {
+        // 传入已加锁的 conn，避免重复加锁
         // PRAGMA
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
             .map_err(|e| e.to_string())?;
@@ -150,17 +168,35 @@ impl NoteStore {
         )
         .map_err(|e| e.to_string())?;
 
-        // 兼容旧库：若旧表无 tags 列，补列
-        let has_tags: bool = conn.prepare("SELECT tags FROM notes LIMIT 0").is_ok();
-        if !has_tags {
-            let _ = conn.execute(
+        // 兼容旧库：分别探测 tags / pinned 列，缺失则补列
+        let cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('notes')")
+            .and_then(|mut stmt| {
+                let iter = stmt.query_map([], |row| row.get::<_, String>(0))?;
+                let mut out = Vec::new();
+                for c in iter {
+                    out.push(c?);
+                }
+                Ok(out)
+            })
+            .unwrap_or_default();
+        let has_tags = cols.iter().any(|c| c == "tags");
+        let has_pinned = cols.iter().any(|c| c == "pinned");
+        if !has_tags
+            && let Err(e) = conn.execute(
                 "ALTER TABLE notes ADD COLUMN tags TEXT NOT NULL DEFAULT ''",
                 [],
-            );
-            let _ = conn.execute(
+            )
+        {
+            log::warn!("migrate tags column failed: {}", e);
+        }
+        if !has_pinned
+            && let Err(e) = conn.execute(
                 "ALTER TABLE notes ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
                 [],
-            );
+            )
+        {
+            log::warn!("migrate pinned column failed: {}", e);
         }
         Ok(())
     }
@@ -379,10 +415,17 @@ impl NoteStore {
     }
 
     pub fn all_tags(&self) -> Result<Vec<String>, String> {
-        let notes = self.list()?;
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare("SELECT tags FROM notes")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
         let mut set = std::collections::BTreeSet::new();
-        for n in notes {
-            for t in n.tags.split(',') {
+        for r in rows {
+            let tags = r.map_err(|e| e.to_string())?;
+            for t in tags.split(',') {
                 let t = t.trim();
                 if !t.is_empty() {
                     set.insert(t.to_string());

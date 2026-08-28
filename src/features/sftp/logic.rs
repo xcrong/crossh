@@ -6,16 +6,6 @@ use async_channel::Sender;
 
 use crossh_ssh::SftpCmd;
 
-#[allow(dead_code)]
-pub(crate) fn line_bounds(text: &str, cursor: usize) -> (usize, usize) {
-    crate::shared::text_editing::line_bounds(text, cursor)
-}
-
-#[allow(dead_code)]
-pub(crate) fn move_cursor_vertical(content: &str, cursor: &mut usize, direction: i8) -> bool {
-    crate::shared::text_editing::move_cursor_vertical(content, cursor, direction)
-}
-
 const SUPPORTED_TEXT_EXTENSIONS: &[&str] = &[
     "bash", "c", "cc", "conf", "config", "cpp", "css", "csv", "fish", "go", "h", "hh", "hpp",
     "htm", "html", "ini", "java", "js", "json", "jsonl", "jsx", "kts", "kt", "log", "lua",
@@ -121,6 +111,7 @@ pub(crate) fn try_send_command(tx: &Sender<SftpCmd>, command: SftpCmd) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::text_editing::move_cursor_vertical;
 
     #[test]
     fn vertical_movement_aligns_column_and_stops_at_edges() {
