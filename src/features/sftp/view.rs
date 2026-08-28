@@ -96,12 +96,12 @@ impl RemoteEditor {
         }
     }
 
-    fn move_horizontal(&mut self, direction: i8) {
-        self.state.move_horizontal(direction, false);
+    fn move_horizontal(&mut self, direction: i8, extend: bool) {
+        self.state.move_horizontal(direction, extend);
     }
 
-    fn move_vertical(&mut self, direction: i8) {
-        move_cursor_vertical(&self.state.value, &mut self.state.cursor, direction);
+    fn move_vertical(&mut self, direction: i8, extend: bool) {
+        self.state.move_vertical(direction, extend);
     }
 }
 
@@ -559,15 +559,36 @@ impl SftpPane {
             return;
         }
 
-        match ks.key.as_str() {
+        let extend = ks.modifiers.shift;
+        let key_lower = ks.key.to_lowercase();
+        match key_lower.as_str() {
             "backspace" => editor.backspace(),
             "delete" => editor.delete(),
-            "left" => editor.move_horizontal(-1),
-            "right" => editor.move_horizontal(1),
-            "up" => editor.move_vertical(-1),
-            "down" => editor.move_vertical(1),
-            "home" => editor.state.cursor = line_bounds(&editor.state.value, editor.state.cursor).0,
-            "end" => editor.state.cursor = line_bounds(&editor.state.value, editor.state.cursor).1,
+            "left" | "arrowleft" => editor.move_horizontal(-1, extend),
+            "right" | "arrowright" => editor.move_horizontal(1, extend),
+            "up" | "arrowup" => editor.move_vertical(-1, extend),
+            "down" | "arrowdown" => editor.move_vertical(1, extend),
+            "home" => {
+                // 保持行首语义（多行编辑器），并支持 shift 扩展选区
+                let (start, _) = line_bounds(&editor.state.value, editor.state.cursor);
+                if extend && editor.state.anchor.is_none() {
+                    editor.state.anchor = Some(editor.state.cursor);
+                }
+                editor.state.cursor = start;
+                if !extend {
+                    editor.state.anchor = None;
+                }
+            }
+            "end" => {
+                let (_, end) = line_bounds(&editor.state.value, editor.state.cursor);
+                if extend && editor.state.anchor.is_none() {
+                    editor.state.anchor = Some(editor.state.cursor);
+                }
+                editor.state.cursor = end;
+                if !extend {
+                    editor.state.anchor = None;
+                }
+            }
             "enter" | "return" => editor.insert("\n"),
             "tab" => editor.insert("\t"),
             "escape" => editor.read_only = true,
@@ -1262,13 +1283,13 @@ mod tests {
         let mut editor = make();
         editor.insert("ab你好\nxyz");
         assert_eq!(editor.state.cursor, "ab你好\nxyz".len());
-        editor.move_horizontal(-1);
+        editor.move_horizontal(-1, false);
         assert_eq!(editor.state.cursor, "ab你好\nxy".len());
-        editor.move_horizontal(1);
+        editor.move_horizontal(1, false);
         assert_eq!(editor.state.cursor, "ab你好\nxyz".len());
-        editor.move_vertical(-1);
+        editor.move_vertical(-1, false);
         assert_eq!(editor.state.cursor, "ab你".len());
-        editor.move_vertical(1);
+        editor.move_vertical(1, false);
         assert_eq!(editor.state.cursor, "ab你好\nxyz".len());
     }
 

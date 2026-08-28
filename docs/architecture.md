@@ -21,6 +21,12 @@ crossh-git (standalone Git Viewer)
   -> crossh-theme
   -> crossh-core
 
+crossh-note (standalone Note Viewer)
+  -> crossh-ui-component -> crossh-ui
+  -> crossh-ui -> crossh-assets
+  -> crossh-theme
+  -> crossh-note
+
 crossh-core       -> no GPUI, no application crate; Git command, status, branch,
                       history, stash, conflict, and commit-detail contracts
 crossh-ssh        -> no GPUI, transport implementation only
@@ -30,6 +36,7 @@ crossh-theme      -> no GPUI, renderer-independent color tokens
 crossh-assets     -> no GPUI, embedded Crossh icon assets and icon identifiers
 crossh-ui         -> GPUI primitives and the asset-source adapter
 crossh-ui-component -> GPUI widgets on top of crossh-ui
+crossh-note       -> no GPUI, SQLite note store (WAL, FTS5, tags, pinned) and tag normalization
 shared resources  -> external `crossh-assets` directory loaded by every binary
 ```
 
@@ -43,10 +50,9 @@ shared resources  -> external `crossh-assets` directory loaded by every binary
 - `crossh-assets`: UI-neutral Lucide SVG storage, shared external-resource discovery, debug embedded fallback, shared icon identifiers, and asset integrity tests. Its files live under `crates/crossh-assets/assets/icons/`.
 - `crossh-ui`: reusable GPUI widgets, context menus, the GPUI adapter for `crossh-theme`, icon rendering, and the `AssetSource` adapter backed by the shared external resource directory.
 - `crossh-ui-component`: reusable stateless GPUI control kit (buttons, badges, status metrics, avatars, tooltips, toasts, layout helpers, shared tabs, and status-bar shells) layered on `crossh-ui`.
-- `crossh`: process startup plus user-facing feature views and GPUI adapters. `crossh git` and the workspace status-bar Git entry delegate to the sibling `crossh-git` binary; `features/terminal/view.rs` is the `terminal_view`-style host around Zed's terminal foundation; `features/connections/entity.rs` is the adapter around `crossh-ssh::ConnectionHandle`.
+- `crossh`: process startup plus user-facing feature views and GPUI adapters. `crossh git` and the workspace status-bar Git entry delegate to the sibling `crossh-git` binary; `crossh note` and the workspace status-bar Note entry delegate to the sibling `crossh-note` binary; `features/terminal/view.rs` is the `terminal_view`-style host around Zed's terminal foundation; `features/connections/entity.rs` is the adapter around `crossh-ssh::ConnectionHandle`.
 - `crossh-git`: standalone Git Viewer entry point. It owns the Git window source and reuses the same GPUI and UI dependencies, but does not initialize SSH, terminal, agent, workspace, or settings features.
-
-Within the application crate:
+- `crossh-note`: standalone Note Viewer entry point. It owns the Note window source (list/search/tags, `editor::Editor` + `Buffer::local`, Markdown preview) and reuses the same GPUI/UI dependencies, but does not initialize SSH, terminal, agent, workspace, or settings features. Its pure logic lives in `crossh-note`.
 
 - `features/workspace`: navigation, tabs, active view, local projects, pane composition, status-bar Git status, and pull/push sync actions.
 - `features/connections`: connection-facing UI, host navigation data, and the GPUI connection entity.
@@ -54,9 +60,10 @@ Within the application crate:
 - `features/forwarding`: local, remote, and dynamic forwarding UI.
 - `features/settings`: application settings persistence and settings window.
 - `features/git_launcher`: Git CLI parsing and fire-and-forget startup of the sibling `crossh-git` process.
+- `features/note_launcher`: Note CLI parsing and fire-and-forget startup of the sibling `crossh-note` process.
 - `src/features/git`: Git Viewer session state, GPUI adapter, window, input, and rendering for Changes, History, Branches, Stashes, and conflict resolution; `session.rs` is UI-independent and `window.rs` owns GPUI task adaptation. This source is not mounted by the `crossh` application binary and is owned by the standalone `crossh-git` entry point.
+- `src/features/note`: Note Viewer window, Markdown preview, and editor adapter; `window.rs` owns state and GPUI, `markdown.rs` is UI-independent. This source is not mounted by the `crossh` application binary and is owned by the standalone `crossh-note` entry point.
 - `features/updates`: update controller and update presentation only.
-
 `AppShell` is the GPUI composition root for the workspace feature. Session
 collections live in `WorkspaceState` and `SessionRegistry`; connection
 configuration and handles live in `ConnectionManager`, while the transport
@@ -70,7 +77,7 @@ engine remains in `crossh-ssh`.
 4. Feature settings stay next to the feature that owns their behavior; the persistence layer composes snapshots without becoming the settings owner.
 5. `main.rs` is assembly only: logging, runtime warm-up, platform setup, Zed global initialization, key bindings, and window boot.
 6. The updater binary depends on `crossh-update` directly. It must not include application source with `#[path]`.
-7. `crossh-git` is the only standalone entry point allowed to include application modules with `#[path]`; it must keep its boot path limited to the Git feature. Release packaging places all binaries beside one shared `crossh-assets` directory; non-arm64-macOS packaging is built and verified only by GitHub Actions.
+7. `crossh-git` and `crossh-note` are the only standalone entry points allowed to include application modules with `#[path]`; they must keep their boot paths limited to the Git/Note features respectively. Release packaging places all binaries beside one shared `crossh-assets` directory; non-arm64-macOS packaging is built and verified only by GitHub Actions.
 8. Git protocol parsing and repository operations, including branch switching, stash lifecycle, and conflict resolution, belong in `crossh-core`; Git Viewer state transitions belong in the UI-independent session layer; GPUI views must not become the owner of Git semantics.
 9. Shared GPUI chrome such as `TabStrip`, `TabItem`, `StatusBar`, `StatusMetric`, and Toast/Toaster visuals belongs in `crossh-ui-component`; the component layer owns layout and visual tokens, while feature views own state, content, and callbacks.
 
@@ -97,3 +104,4 @@ and quick verification command for focused validation.
 - [0013: Application Toaster ownership](adr/0013-application-toaster-ownership.md)
 - [0014: Update manifest signature](adr/0014-update-manifest-signature.md)
 - [0015: Agent Runtime and session tree](adr/0015-agent-runtime-and-session-tree.md)
+- [0016: Standalone Note Viewer binary](adr/0016-standalone-note-viewer.md)

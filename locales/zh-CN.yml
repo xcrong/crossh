@@ -116,6 +116,7 @@ tooltip:
   compose_bar: 切换批量输入条
   system_monitor: 系统监视器
   scratch_terminal: 临时终端
+  note: 笔记
 toast:
   path_copied: 路径已复制
   editor_not_found: 未检测到编辑器，可在设置中配置

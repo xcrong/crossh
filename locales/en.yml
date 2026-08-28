@@ -116,6 +116,7 @@ tooltip:
   compose_bar: Toggle compose input bar
   system_monitor: System monitor
   scratch_terminal: Scratch terminal
+  note: Note
 toast:
   path_copied: Path copied
   editor_not_found: No editor detected. Configure one in Settings.

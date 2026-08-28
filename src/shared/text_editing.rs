@@ -26,7 +26,7 @@ pub struct EditingKeystroke {
     pub shift: bool,
 }
 
-/// 将 `TextEditingState` 的通用编辑键（`backspace/delete/left/right/home/end`、
+/// 将 `TextEditingState` 的通用编辑键（`backspace/delete/left/right/up/down/home/end`、
 /// `ctrl/cmd+a/c/x/v` 与可打印字符）收敛到单一分发器。
 ///
 /// 调用方负责剪贴板 I/O：`clipboard_text` 传入粘贴内容（`ctrl/cmd+v` 时从 `cx` 读取），
@@ -40,7 +40,10 @@ pub fn handle_text_editing_key(
 ) -> TextEditingKeyResult {
     let primary = ks.control || ks.platform;
     let extend = ks.shift;
-    if primary && ks.key == "a" {
+    // 统一小写，兼容 GPUI 可能的 "ArrowUp"/"Up" 与选择组件的 lowercasing 处理
+    let key_lower = ks.key.to_lowercase();
+    let key = key_lower.as_str();
+    if primary && key == "a" {
         state.clear_composition();
         state.select_all();
         return TextEditingKeyResult {
@@ -48,10 +51,10 @@ pub fn handle_text_editing_key(
             copy_text: None,
         };
     }
-    if primary && matches!(ks.key.as_str(), "c" | "x") {
+    if primary && matches!(key, "c" | "x") {
         if let Some(text) = state.selected_text() {
             let copy = text.clone();
-            if ks.key == "x" {
+            if key == "x" {
                 state.clear_composition();
                 state.replace_selection("");
             }
@@ -65,7 +68,7 @@ pub fn handle_text_editing_key(
             copy_text: None,
         };
     }
-    if primary && ks.key == "v" {
+    if primary && key == "v" {
         if let Some(pasted) = clipboard_text {
             state.clear_composition();
             state.replace_selection(pasted);
@@ -75,7 +78,7 @@ pub fn handle_text_editing_key(
             copy_text: None,
         };
     }
-    match ks.key.as_str() {
+    match key {
         "backspace" => {
             state.clear_composition();
             state.backspace();
@@ -92,7 +95,7 @@ pub fn handle_text_editing_key(
                 copy_text: None,
             }
         }
-        "left" => {
+        "left" | "arrowleft" => {
             state.clear_composition();
             state.move_horizontal(-1, extend);
             TextEditingKeyResult {
@@ -100,9 +103,25 @@ pub fn handle_text_editing_key(
                 copy_text: None,
             }
         }
-        "right" => {
+        "right" | "arrowright" => {
             state.clear_composition();
             state.move_horizontal(1, extend);
+            TextEditingKeyResult {
+                handled: true,
+                copy_text: None,
+            }
+        }
+        "up" | "arrowup" => {
+            state.clear_composition();
+            state.move_vertical(-1, extend);
+            TextEditingKeyResult {
+                handled: true,
+                copy_text: None,
+            }
+        }
+        "down" | "arrowdown" => {
+            state.clear_composition();
+            state.move_vertical(1, extend);
             TextEditingKeyResult {
                 handled: true,
                 copy_text: None,
@@ -290,6 +309,35 @@ impl TextEditingState {
         }
     }
 
+    /// 上下移动光标（按列对齐）；`extend` 时扩展选区，否则清除选区。
+    /// 到达首行/末行时不移动，目标行更短时收缩到行尾。返回是否实际移动（选区坍缩视为已移动）。
+    /// 有选区时先坍缩到选区起点（up）或终点（down），再尝试垂直移动；坍缩本身视为已处理。
+    pub fn move_vertical(&mut self, direction: i8, extend: bool) -> bool {
+        debug_assert!(self.value.is_char_boundary(self.cursor));
+        let had_selection = !extend && self.selection().is_some();
+        if !extend && let Some((start, end)) = self.selection() {
+            self.cursor = if direction < 0 { start } else { end };
+            self.anchor = None;
+        }
+        if extend && self.anchor.is_none() {
+            self.anchor = Some(self.cursor);
+        }
+        if let Some(new_cursor) = vertical_target(&self.value, self.cursor, direction)
+            && new_cursor != self.cursor
+        {
+            self.cursor = new_cursor;
+            if !extend {
+                self.anchor = None;
+            }
+            return true;
+        }
+        // 垂直未移动，但若刚刚坍缩过选区则视为已处理（与 move_horizontal 一致）
+        if had_selection {
+            return true;
+        }
+        false
+    }
+
     /// 全选。
     pub fn select_all(&mut self) {
         self.anchor = Some(0);
@@ -329,6 +377,61 @@ pub fn selection_bounds(anchor: Option<usize>, cursor: usize) -> Option<(usize, 
     } else {
         (cursor, anchor)
     })
+}
+
+/// 当前光标所在行的字节边界 `[start, end)`（不含换行符）。
+pub fn line_bounds(text: &str, cursor: usize) -> (usize, usize) {
+    let start = text[..cursor].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
+    let end = text[cursor..]
+        .find('\n')
+        .map(|idx| cursor + idx)
+        .unwrap_or(text.len());
+    (start, end)
+}
+
+/// 计算垂直移动的目标光标；到达首/末行或列相同则返回 `None`，供 `State` 与自由函数复用。
+fn vertical_target(text: &str, cursor: usize, direction: i8) -> Option<usize> {
+    debug_assert!(text.is_char_boundary(cursor));
+    let (line_start, line_end) = line_bounds(text, cursor);
+    let column = text[line_start..cursor].chars().count();
+    let target_start = if direction < 0 {
+        if line_start == 0 {
+            return None;
+        }
+        text[..line_start - 1]
+            .rfind('\n')
+            .map(|idx| idx + 1)
+            .unwrap_or(0)
+    } else {
+        if line_end == text.len() {
+            return None;
+        }
+        line_end + 1
+    };
+    let target_end = text[target_start..]
+        .find('\n')
+        .map(|idx| target_start + idx)
+        .unwrap_or(text.len());
+    let new_cursor = text[target_start..target_end]
+        .char_indices()
+        .nth(column)
+        .map(|(idx, _)| target_start + idx)
+        .unwrap_or(target_end);
+    if new_cursor == cursor {
+        return None;
+    }
+    Some(new_cursor)
+}
+
+/// 上下移动光标（按列对齐）；与 `TextEditingState::move_vertical` 同算法，面向非 `State` 的调用方。
+/// 到达首行/末行返回 `false`，目标行更短时收缩到行尾。
+#[allow(dead_code)]
+pub fn move_cursor_vertical(content: &str, cursor: &mut usize, direction: i8) -> bool {
+    if let Some(new) = vertical_target(content, *cursor, direction) {
+        *cursor = new;
+        return true;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -658,5 +761,91 @@ mod tests {
             handle_text_editing_key(&mut state, &keystroke("v", true, false, false, None), None);
         assert!(result.handled);
         assert_eq!(state, before);
+    }
+
+    #[test]
+    fn vertical_movement_via_state_aligns_column_and_shrinks() {
+        let mut editor = TextEditingState::new("abc\nde");
+        // cursor at end of second line (after "de")
+        editor.cursor = editor.value.len();
+        // column 2 on second line, move up should land at same column on first line (index 2)
+        assert!(editor.move_vertical(-1, false));
+        assert_eq!(editor.cursor, 2);
+        // moving up again should fail at top
+        assert!(!editor.move_vertical(-1, false));
+        assert_eq!(editor.cursor, 2);
+        // down to second line, short line shrinks to end
+        let mut editor2 = TextEditingState::new("abc\nd");
+        editor2.cursor = 2; // column 2 on first line
+        assert!(editor2.move_vertical(1, false));
+        assert_eq!(editor2.cursor, 5); // end of "d"
+    }
+
+    #[test]
+    fn vertical_movement_extends_selection_and_collapse() {
+        let mut editor = TextEditingState::new("abc\ndef\nghi");
+        editor.cursor = 1; // 'b' first line
+        // extend selection downwards
+        assert!(editor.move_vertical(1, true));
+        assert_eq!(editor.anchor, Some(1));
+        // moving down with shift keeps anchor
+        let anchor = editor.anchor;
+        // collapse without extend should jump to selection end and clear anchor
+        assert!(editor.move_vertical(1, false));
+        assert_eq!(editor.anchor, None);
+        // anchor was at 1, cursor now at end of selection after collapse+move
+        assert_ne!(editor.cursor, anchor.unwrap());
+    }
+
+    #[test]
+    fn vertical_movement_unicode_column() {
+        let mut editor = TextEditingState::new("a中\nb😀c");
+        // cursor after "a中" (chars count 2, bytes len 4)
+        editor.cursor = "a中".len();
+        // move down: second line "b😀c" -> column 2 should land after "b😀" (char 2)
+        assert!(editor.move_vertical(1, false));
+        assert_eq!(editor.cursor, "a中\nb😀".len());
+    }
+
+    #[test]
+    fn handle_text_editing_key_handles_arrow_variants_case_insensitive() {
+        let mut state = TextEditingState::new("a\nb\nc");
+        state.cursor = 2; // start of second line "b"
+        let result = handle_text_editing_key(
+            &mut state,
+            &keystroke("ArrowUp", false, false, false, None),
+            None,
+        );
+        assert!(result.handled);
+        assert_eq!(state.cursor, 0);
+        let result = handle_text_editing_key(
+            &mut state,
+            &keystroke("arrowdown", false, false, false, None),
+            None,
+        );
+        assert!(result.handled);
+        assert_eq!(state.cursor, 2);
+        // single line up should be handled but not move
+        let mut single = TextEditingState::new("hi");
+        single.cursor = 1;
+        let result = handle_text_editing_key(
+            &mut single,
+            &keystroke("Up", false, false, false, None),
+            None,
+        );
+        assert!(result.handled);
+        assert_eq!(single.cursor, 1);
+    }
+
+    #[test]
+    fn line_bounds_and_move_cursor_vertical_helpers() {
+        let text = "ab\ncde\nf";
+        assert_eq!(line_bounds(text, 1), (0, 2));
+        assert_eq!(line_bounds(text, 3), (3, 6));
+        let mut cursor = 4; // 'd' in second line column 1
+        assert!(move_cursor_vertical(text, &mut cursor, -1));
+        assert_eq!(cursor, 1);
+        assert!(move_cursor_vertical(text, &mut cursor, 1));
+        assert_eq!(cursor, 4);
     }
 }

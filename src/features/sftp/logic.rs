@@ -6,6 +6,16 @@ use async_channel::Sender;
 
 use crossh_ssh::SftpCmd;
 
+#[allow(dead_code)]
+pub(crate) fn line_bounds(text: &str, cursor: usize) -> (usize, usize) {
+    crate::shared::text_editing::line_bounds(text, cursor)
+}
+
+#[allow(dead_code)]
+pub(crate) fn move_cursor_vertical(content: &str, cursor: &mut usize, direction: i8) -> bool {
+    crate::shared::text_editing::move_cursor_vertical(content, cursor, direction)
+}
+
 const SUPPORTED_TEXT_EXTENSIONS: &[&str] = &[
     "bash", "c", "cc", "conf", "config", "cpp", "css", "csv", "fish", "go", "h", "hh", "hpp",
     "htm", "html", "ini", "java", "js", "json", "jsonl", "jsx", "kts", "kt", "log", "lua",
@@ -50,39 +60,6 @@ pub(crate) fn is_supported_text_file(name: &str) -> bool {
         .is_some_and(|extension| SUPPORTED_TEXT_EXTENSIONS.contains(&extension))
 }
 
-/// 上下移动光标（按列对齐）；到达首行/末行时返回 false，目标行更短时收缩到行尾。
-///
-/// 前置条件：`cursor` 必须是 `content` 的字符边界。
-pub(crate) fn move_cursor_vertical(content: &str, cursor: &mut usize, direction: i8) -> bool {
-    debug_assert!(content.is_char_boundary(*cursor));
-    let (line_start, line_end) = line_bounds(content, *cursor);
-    let column = content[line_start..*cursor].chars().count();
-    let target_start = if direction < 0 {
-        if line_start == 0 {
-            return false;
-        }
-        content[..line_start - 1]
-            .rfind('\n')
-            .map(|idx| idx + 1)
-            .unwrap_or(0)
-    } else {
-        if line_end == content.len() {
-            return false;
-        }
-        line_end + 1
-    };
-    let target_end = content[target_start..]
-        .find('\n')
-        .map(|idx| target_start + idx)
-        .unwrap_or(content.len());
-    *cursor = content[target_start..target_end]
-        .char_indices()
-        .nth(column)
-        .map(|(idx, _)| target_start + idx)
-        .unwrap_or(target_end);
-    true
-}
-
 /// 远端路径的父目录："a/b" -> "a"，根目录自身返回 "/"。
 pub(crate) fn parent_of(path: &str) -> String {
     let p = path.trim_end_matches('/');
@@ -103,15 +80,6 @@ pub(crate) fn join(base: &str, name: &str) -> String {
     } else {
         format!("{base}/{name}")
     }
-}
-
-pub(crate) fn line_bounds(text: &str, cursor: usize) -> (usize, usize) {
-    let start = text[..cursor].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
-    let end = text[cursor..]
-        .find('\n')
-        .map(|idx| cursor + idx)
-        .unwrap_or(text.len());
-    (start, end)
 }
 
 /// Resolve the local download directory, falling back to the current directory.

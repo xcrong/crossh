@@ -581,6 +581,19 @@ pub(crate) fn render_workspace_status_bar(
                 }))
                 .into_any_element(),
         )
+        .child(
+            Button::new("status-note")
+                .size(ButtonSize::Icon(px(22.)))
+                .variant(ButtonVariant::Ghost)
+                .icon(icons::icon(icons::IconName::FileText, 13.).text_color(theme::muted_text()))
+                .tooltip(i18n::text("tooltip.note"))
+                .on_click(cx.listener(|_, _ev, _window, _cx| {
+                    if let Err(error) = crate::features::note_launcher::spawn_note_process() {
+                        log::warn!("spawn note failed: {error}");
+                    }
+                }))
+                .into_any_element(),
+        )
         .child(render_status_bar_toggle(
             "status-quick-commands",
             icons::IconName::PanelRight,
