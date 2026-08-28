@@ -54,6 +54,13 @@
 - Use the project's default `target/` directory for Cargo builds, tests, checks, and releases. Do not set `CARGO_TARGET_DIR` or create an independent compiler cache unless the user explicitly requests it.
 - If the default target is locked by another Cargo process, wait for it or report the condition; do not switch to a separate target as a workaround.
 
+## Test Execution Discipline (Local Resource Saving)
+
+- Avoid `cargo test --workspace` full-suite runs on the local machine by default. Full workspace tests are expensive and should be reserved for pre-release or when explicitly requested.
+- For routine changes, run targeted tests only: the crate or module directly affected (`cargo test -p <crate>`, `cargo test --lib <filter>`, or a single test binary). Choose the smallest scope that covers the changed behavior.
+- Documentation-only, formatting, or single-file mechanical refactors do not require a test run; rely on `cargo fmt --check` / `cargo clippy` / `scripts/check-architecture.sh` instead.
+- When a full green suite is required as a hard gate (e.g. simplification-audit direct fixes: `Hard gate for direct fixes: a batch may be committed only after a fully green cargo test --workspace`), treat that as an explicit exception and state the reason when running it.
+
 ## Local Workspace and Platform Responsibility
 
 - Work directly in the current checkout. Do not create Git worktrees, duplicate the repository, or copy the build cache unless the user explicitly requests that isolation strategy.
