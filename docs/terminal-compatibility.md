@@ -12,7 +12,7 @@ both paths when investigating a rendering or input issue.
 ## Automated checks
 
 CI runs the following checks in the `terminal replay / platform smoke` job on
-Ubuntu and Windows（权威门禁见 `docs/testing.md#CI 规则`）：
+Ubuntu and Windows：
 
 ```bash
 cargo test --workspace

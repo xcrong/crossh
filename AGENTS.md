@@ -68,33 +68,10 @@
 - macOS x86_64-, Linux-, and Windows-specific behavior is verified by GitHub Actions. Changes that affect those platforms must add or update the corresponding CI coverage, and must not be reported as platform-verified until the relevant Actions jobs pass.
 - Local verification should still run all cached, platform-independent tests that are available on macOS. A platform-specific test skipped locally must be named explicitly in the handoff together with the CI job that owns it.
 
-## Test-Driven Development
-
-- TDD is the default workflow for behavior changes and bug fixes: first add or change a test that describes the intended observable behavior and fails for the expected reason, then implement the minimum production change that makes it pass, then refactor while keeping the suite green.
-- A confirmed regression must be reproduced by a failing test before its fix is implemented. Keep the test after the fix as the regression contract.
-- Behavior-change work starts one step earlier, with a spec (see「Spec-Driven Development」below). The spec's behavior contracts are the source of the tests: name tests with the spec number prefix (e.g. `spec_20260817_sftp_batch__...`) so failures trace back to the approved specification.
-- Tests are executable behavior documentation. Prefer public outcomes, state transitions, protocol bytes, persisted data, and user-visible effects over private fields, call counts, render-tree shape, or other implementation details.
-- Test the smallest deterministic layer that proves the contract. Use pure tests by default, GPUI tests for framework behavior, and hermetic integration tests only for real boundary interactions.
-- Do not weaken, delete, or broadly rewrite an existing assertion merely to make a new implementation pass. If a contract intentionally changes, update the test and the relevant documentation or ADR together and explain the behavior change.
-- Documentation-only edits, formatting, generated artifacts, and provably behavior-preserving mechanical refactors do not require a new test. They still require the existing relevant checks.
-- When a platform-specific test cannot run locally, add it in the same change and let the owning GitHub Actions runner perform the red/green verification. State that limitation explicitly; do not claim to have observed the local failing phase.
-
-## Spec-Driven Development
-
-- Behavior changes default to a spec-first loop: write a spec in `docs/specs/` (copy `docs/specs/template.md`), have an AI review pass over the spec plus a human approval gate (`approved`), and only then implement via the TDD loop above. See `docs/specs/README.md` and ADR 0012.
-- The spec carries intent, non-goals, behavior contracts, platform impact, and the acceptance checklist. Specs are one-shot change contracts, not long-term policy: structural decisions are distilled into ADRs, debugging findings into engineering notes, and new executable contracts into the `docs/testing.md` behavior matrix.
-- The human gate is "review the spec, not the implementation." Do not implement before the spec is approved; do not skip the spec because the implementation feels small — the exemption list (documentation, formatting, generated artifacts, provably behavior-preserving refactors, one-line fixes with a regression test) is narrow, and when in doubt write the spec.
-- A `done` spec stays in `docs/specs/` as the change archive by default; when its subsystem is removed outright or the content has drifted beyond archival value, it is purged with the next documentation cleanup (see ADR 0012). A `superseded` spec names its replacement.
-- Closing a spec requires finishing its acceptance checklist, including the non-local platform CI jobs that were declared — the spec stays `in-progress` until those Actions jobs pass.
-
 ## Simplification Audits (Manual)
 
-- Run `find-simplifications` audits ad hoc: when there is no active development task, right after closing a spec, or whenever the user asks to find things to simplify. One round per trigger; do not run it in the background or as a standing habit inside unrelated sessions.
-- Findings are delivered in-session. Persist a report under `docs/audit/yyyy-mm-dd-simplification-audit.md` only when it carries unresolved items needing product input or cross-session tracking; once those items are resolved, the report is pruned like any other expired document. It does not rewrite production code.
-- Dispositions reuse the existing pipeline: small fixes are fixed directly (exemption list), behavior-changing removals go through `docs/specs/` SDD, structural decisions go through an ADR. Never invent a new proposal-note tree for this.
-- Hard gate for direct fixes: a batch may be committed only after a fully green `cargo test --workspace`. If the environment blocks the suite, keep the changes uncommitted instead of deferring results.
-- Saturation exit: a round that yields only P3/info-level candidates counts as saturated; two consecutive saturated rounds put audits on cooldown until the affected areas see substantive commits.
-- Respect the protected surfaces listed in the skill (ADR-decided boundaries, `scripts/check-architecture.sh` whitelist, pinned Zed/GPUI and Lucide revisions, hard-won defensive patterns in `docs/engineering-notes/`). A simplification that collapses one must beat the recorded rationale, not ignore it.
+- Run `find-simplifications` audits ad hoc when there is no active development task or whenever the user asks to find things to simplify. One round per trigger; do not run it in the background or as a standing habit inside unrelated sessions.
+- Findings are delivered in-session. Persist a report under `docs/audit/yyyy-mm-dd-simplification-audit.md` only when it carries unresolved items needing product input or cross-session tracking; once those items are resolved, the report is pruned like any other expired document.
 
 ## Sandbox-Aware Command Execution
 

@@ -76,7 +76,7 @@ cargo test --workspace
 cargo test --test terminal_replay -- --test-threads=1
 ```
 
-> 权威门禁见 `docs/testing.md#本地验证` 与 `docs/testing.md#CI 规则`；此处为最小证据集，不替代全量 `cargo test --workspace`。
+> 此处为最小证据集，不替代全量 `cargo test --workspace`。
 
 Real PTY captures are stored as minimized, redacted fixtures under
 `tests/fixtures/terminal/`. A fixture records bytes only; host names, paths,
