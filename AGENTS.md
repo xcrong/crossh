@@ -59,7 +59,7 @@
 - Avoid `cargo test --workspace` full-suite runs on the local machine by default. Full workspace tests are expensive and should be reserved for pre-release or when explicitly requested.
 - For routine changes, run targeted tests only: the crate or module directly affected (`cargo test -p <crate>`, `cargo test --lib <filter>`, or a single test binary). Choose the smallest scope that covers the changed behavior.
 - Documentation-only, formatting, or single-file mechanical refactors do not require a test run; rely on `cargo fmt --check` / `cargo clippy` / `scripts/check-architecture.sh` instead.
-- When a full green suite is required as a hard gate (e.g. simplification-audit direct fixes: `Hard gate for direct fixes: a batch may be committed only after a fully green cargo test --workspace`), treat that as an explicit exception and state the reason when running it.
+- When a full green suite is required as a hard gate, treat that as an explicit exception and state the reason when running it.
 
 ## Local Workspace and Platform Responsibility
 
@@ -67,11 +67,6 @@
 - The local development machine is responsible only for macOS arm64 behavior and platform-independent logic. Never run local Cargo builds, checks, tests, or clippy commands for `x86_64-apple-darwin`, Linux, or Windows targets. Do not install emulators, cross-compile toolchains, local compatibility layers, or target-specific dependencies merely to investigate or claim non-arm64-macOS verification; these consume local disk and compute without providing authoritative platform validation.
 - macOS x86_64-, Linux-, and Windows-specific behavior is verified by GitHub Actions. Changes that affect those platforms must add or update the corresponding CI coverage, and must not be reported as platform-verified until the relevant Actions jobs pass.
 - Local verification should still run all cached, platform-independent tests that are available on macOS. A platform-specific test skipped locally must be named explicitly in the handoff together with the CI job that owns it.
-
-## Simplification Audits (Manual)
-
-- Run `find-simplifications` audits ad hoc when there is no active development task or whenever the user asks to find things to simplify. One round per trigger; do not run it in the background or as a standing habit inside unrelated sessions.
-- Findings are delivered in-session. Persist a report under `docs/audit/yyyy-mm-dd-simplification-audit.md` only when it carries unresolved items needing product input or cross-session tracking; once those items are resolved, the report is pruned like any other expired document.
 
 ## Sandbox-Aware Command Execution
 
