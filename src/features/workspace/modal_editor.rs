@@ -6,7 +6,7 @@ use gpui::{ClipboardEntry, ClipboardItem, Context, KeyDownEvent, Window};
 
 use crate::shared::text_editing::{EditingKeystroke, TextEditingState, handle_text_editing_key};
 
-use super::command_editor::QuickCommandEditor;
+use super::editors::QuickCommandEditor;
 use super::*;
 
 impl AppShell {

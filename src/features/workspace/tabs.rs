@@ -12,9 +12,9 @@ use task::Shell;
 use crossh_core::terminal::remote_shell_bootstrap_command;
 
 use super::*;
+use crate::features::workspace::editors::{DefaultCommandEditor, RenameEditor};
 use crate::features::workspace::local_paths::{current_local_cwd, normalize_local_cwd};
 use crate::features::workspace::pinned::{next_pin_id, pinned_tabs_for_project};
-use crate::features::workspace::rename_editor::RenameEditor;
 use crate::features::workspace::settings::PinnedLocalTab;
 
 /// 单个标签页关闭时可能被打断的活动；任何一项存在都需要确认。
@@ -719,13 +719,11 @@ impl AppShell {
         let focus = cx.focus_handle();
         self.quick_command_editor = None;
         self.rename_editor = None;
-        self.default_command_editor = Some(
-            crate::features::workspace::default_command_editor::DefaultCommandEditor::new(
-                session_id,
-                session.default_command.clone().unwrap_or_default(),
-                focus.clone(),
-            ),
-        );
+        self.default_command_editor = Some(DefaultCommandEditor::new(
+            session_id,
+            session.default_command.clone().unwrap_or_default(),
+            focus.clone(),
+        ));
         window.focus(&focus, cx);
         cx.notify();
     }

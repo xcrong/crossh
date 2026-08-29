@@ -2,7 +2,7 @@
 //!
 //! 该模块保持轻量，使主工作区只需携带启动入口，不必编译完整 Note UI。
 
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum NoteCliCommand {
@@ -39,29 +39,7 @@ pub(crate) fn spawn_note_process() -> std::io::Result<()> {
 }
 
 fn note_process_command() -> std::io::Result<Command> {
-    let executable = crossh_core::process::sibling_executable("crossh-note");
-    let mut command = Command::new(executable);
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        command.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
-    }
-
-    Ok(command)
+    Ok(crossh_core::process::sibling_command("crossh-note"))
 }
 
 #[cfg(test)]

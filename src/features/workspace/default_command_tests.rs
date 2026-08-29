@@ -7,7 +7,7 @@ use gpui::Entity;
 
 use crate::features::settings::persistence::set_test_settings_path;
 use crate::features::terminal::view::TerminalView;
-use crate::features::workspace::default_command_editor::DefaultCommandEditor;
+use crate::features::workspace::editors::DefaultCommandEditor;
 use crate::features::workspace::settings::PinnedLocalTab;
 use crate::features::workspace::view::{LocalSession, LocalSessionId};
 

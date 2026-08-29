@@ -31,11 +31,10 @@ use crate::features::settings::{self, SettingsSnapshot};
 use crate::features::sftp::SftpPane;
 use crate::features::terminal::{TerminalEvent, TerminalView, TerminalViewEvent};
 use crate::features::updates::{UpdateController, UpdateSettings};
-use crate::features::workspace::default_command_editor::DefaultCommandEditor;
+use crate::features::workspace::editors::{DefaultCommandEditor, RenameEditor};
 use crate::features::workspace::pinned::{pinned_tabs_for_project, prune_missing_pinned_tabs};
 use crate::features::workspace::quick_commands_rail::render_quick_commands_rail;
 use crate::features::workspace::registry::WorkspaceState;
-use crate::features::workspace::rename_editor::RenameEditor;
 use crate::features::workspace::settings::WorkspaceSettings;
 use crate::features::workspace::sidebar::{render_sidebar, render_sidebar_rail};
 use crate::features::workspace::toaster::{ToastNotice, ToastTone};
@@ -60,7 +59,7 @@ use crossh_ui::theme;
 use crossh_ui::widgets::printable_char;
 use crossh_ui_component::context_menu::{ContextMenuState, MenuEntry, render_context_menu};
 
-use super::command_editor::QuickCommandEditor;
+use super::editors::QuickCommandEditor;
 use super::local_paths::{current_local_cwd, normalize_local_cwd, normalize_recent_dirs};
 #[cfg(test)]
 use crate::shared::text_editing::{next_char_boundary, previous_char_boundary, selection_bounds};

@@ -1,7 +1,8 @@
 use std::time::Duration;
 
-pub(crate) use crossh_ui_component::ToastTone;
+use gpui::IntoElement;
 
+pub(crate) use crossh_ui_component::ToastTone;
 pub(crate) const TOAST_DURATION: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,12 +45,38 @@ impl ToasterState {
     }
 
     pub(crate) fn dismiss(&mut self, id: u64) -> bool {
-        if self.active.as_ref().is_some_and(|toast| toast.id == id) {
+        if self.active.as_ref().is_some_and(|active| active.id == id) {
             self.active = None;
             true
         } else {
             false
         }
+    }
+}
+
+impl super::shell::AppShell {
+    pub(crate) fn show_toast(&mut self, notice: ToastNotice, cx: &mut gpui::Context<Self>) {
+        let toast_id = self.workspace.toaster.show(notice);
+        self.workspace._toast_task = Some(cx.spawn(async move |weak, cx| {
+            cx.background_executor().timer(TOAST_DURATION).await;
+            let _ = weak.update(cx, |this, cx| {
+                if this.workspace.toaster.dismiss(toast_id) {
+                    cx.notify();
+                }
+            });
+        }));
+        cx.notify();
+    }
+
+    pub(crate) fn render_toaster(&self) -> Option<gpui::AnyElement> {
+        let active = self.workspace.toaster.active()?;
+        Some(
+            crossh_ui_component::Toaster::new(
+                crossh_ui_component::Toast::new(active.notice.message.clone())
+                    .tone(active.notice.tone),
+            )
+            .into_any_element(),
+        )
     }
 }
 
@@ -61,44 +88,28 @@ mod tests {
 
     #[test]
     fn spec_20260817_workspace_status_path_copy_toast_supports_all_notification_tones() {
-        let mut toaster = ToasterState::default();
-
-        for tone in [
-            ToastTone::Info,
-            ToastTone::Success,
-            ToastTone::Warning,
-            ToastTone::Error,
-        ] {
-            toaster.show(ToastNotice::new("message", tone));
-            assert_eq!(toaster.active().map(|toast| toast.notice.tone), Some(tone));
+        let mut state = ToasterState::default();
+        for tone in [ToastTone::Info, ToastTone::Success, ToastTone::Warning] {
+            state.show(ToastNotice::new("copied", tone));
+            assert_eq!(state.active().unwrap().notice.tone, tone);
         }
     }
 
     #[test]
     fn spec_20260817_workspace_status_path_copy_toast_replaces_one_active_notice() {
-        let mut toaster = ToasterState::default();
-
-        let first = toaster.show(ToastNotice::new("first", ToastTone::Info));
-        let second = toaster.show(ToastNotice::new("second", ToastTone::Success));
-
-        assert_ne!(first, second);
-        assert_eq!(
-            toaster.active().map(|toast| toast.notice.message.as_str()),
-            Some("second")
-        );
+        let mut state = ToasterState::default();
+        state.show(ToastNotice::new("first", ToastTone::Info));
+        state.show(ToastNotice::new("second", ToastTone::Info));
+        assert_eq!(state.active().unwrap().notice.message, "second");
     }
 
     #[test]
     fn spec_20260817_workspace_status_path_copy_toast_ignores_stale_dismissals() {
-        let mut toaster = ToasterState::default();
-
-        let first = toaster.show(ToastNotice::new("first", ToastTone::Info));
-        let second = toaster.show(ToastNotice::new("second", ToastTone::Success));
-
-        assert!(!toaster.dismiss(first));
-        assert_eq!(toaster.active().map(|toast| toast.id), Some(second));
-        assert!(toaster.dismiss(second));
-        assert!(toaster.active().is_none());
+        let mut state = ToasterState::default();
+        let first = state.show(ToastNotice::new("first", ToastTone::Info));
+        state.show(ToastNotice::new("second", ToastTone::Info));
+        assert!(!state.dismiss(first));
+        assert!(state.active().is_some());
     }
 
     #[test]

@@ -20,6 +20,27 @@ pub fn sibling_executable(name: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(name))
 }
 
+/// 构造一个分离的同伴进程命令：stdin/stdout/stderr 均重定向到 null，
+/// Unix 上脱离前台进程组，Windows 上以独立进程组/DETACHED 方式创建。
+pub fn sibling_command(name: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new(sibling_executable(name));
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+    }
+    cmd
+}
 /// 在系统文件管理器中展示给定路径：macOS `open`、Linux `xdg-open`、
 /// Windows `explorer`，其他平台无等价动作。
 ///

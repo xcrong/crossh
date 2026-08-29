@@ -13,7 +13,7 @@ use gpui::Entity;
 
 use crate::features::settings::persistence::set_test_settings_path;
 use crate::features::terminal::view::TerminalView;
-use crate::features::workspace::rename_editor::RenameEditor;
+use crate::features::workspace::editors::RenameEditor;
 use crate::features::workspace::settings::PinnedLocalTab;
 use crate::features::workspace::view::{LocalSession, LocalSessionId};
 

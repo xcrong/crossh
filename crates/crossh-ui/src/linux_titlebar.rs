@@ -8,8 +8,8 @@
 mod imp {
     use gpui::prelude::FluentBuilder as _;
     use gpui::{
-        App, Decorations, IntoElement, ParentElement, SharedString, Styled, Window,
-        WindowButton, WindowButtonLayout, WindowControlArea, div, px,
+        App, Decorations, IntoElement, ParentElement, SharedString, Styled, Window, WindowButton,
+        WindowButtonLayout, WindowControlArea, div, px,
     };
     use gpui::{InteractiveElement as _, StatefulInteractiveElement as _};
 
@@ -67,12 +67,9 @@ mod imp {
                     .when(!tiling.top && !tiling.left, |e| e.rounded_tl(px(8.))),
                 _ => el,
             })
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                move |_, window: &mut Window, _| {
-                    window.start_window_move();
-                },
-            )
+            .on_mouse_down(gpui::MouseButton::Left, move |_, window: &mut Window, _| {
+                window.start_window_move();
+            })
             .on_click({
                 let is_resizable = window.is_resizable();
                 let maximize_supported = window_controls.maximize;
@@ -150,19 +147,12 @@ mod imp {
 
     fn render_single_button(
         button: WindowButton,
-        is_maximized: bool,
+        _is_maximized: bool,
         _cx: &App,
     ) -> impl IntoElement {
         let (icon_name, id, action) = match button {
             WindowButton::Minimize => (icons::IconName::Minus, "minimize", ButtonAction::Minimize),
-            WindowButton::Maximize => {
-                let icon = if is_maximized {
-                    icons::IconName::Square
-                } else {
-                    icons::IconName::Square
-                };
-                (icon, "maximize", ButtonAction::Maximize)
-            }
+            WindowButton::Maximize => (icons::IconName::Square, "maximize", ButtonAction::Maximize),
             WindowButton::Close => (icons::IconName::X, "close", ButtonAction::Close),
         };
 

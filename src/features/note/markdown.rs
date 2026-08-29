@@ -71,25 +71,17 @@ pub fn render_markdown(md: &str) -> AnyElement {
                 }
                 blocks.push(render_line(std::mem::take(&mut inline), true, list_depth));
             }
-            Event::Start(Tag::Strong) => {
-                if !in_code_block {
-                    inline.push("**".to_string());
-                }
+            Event::Start(Tag::Strong) if !in_code_block => {
+                inline.push("**".to_string());
             }
-            Event::End(TagEnd::Strong) => {
-                if !in_code_block {
-                    inline.push("**".to_string());
-                }
+            Event::End(TagEnd::Strong) if !in_code_block => {
+                inline.push("**".to_string());
             }
-            Event::Start(Tag::Emphasis) => {
-                if !in_code_block {
-                    inline.push("*".to_string());
-                }
+            Event::Start(Tag::Emphasis) if !in_code_block => {
+                inline.push("*".to_string());
             }
-            Event::End(TagEnd::Emphasis) => {
-                if !in_code_block {
-                    inline.push("*".to_string());
-                }
+            Event::End(TagEnd::Emphasis) if !in_code_block => {
+                inline.push("*".to_string());
             }
             Event::Start(Tag::CodeBlock(_)) => {
                 if !inline.is_empty() {
@@ -182,15 +174,11 @@ pub fn render_markdown(md: &str) -> AnyElement {
                     inline.push(" ".to_string());
                 }
             }
-            Event::Start(Tag::HtmlBlock) => {
-                if !in_code_block && !inline.is_empty() {
-                    blocks.push(render_line(std::mem::take(&mut inline), false, list_depth));
-                }
+            Event::Start(Tag::HtmlBlock) if !in_code_block && !inline.is_empty() => {
+                blocks.push(render_line(std::mem::take(&mut inline), false, list_depth));
             }
-            Event::End(TagEnd::HtmlBlock) => {
-                if !in_code_block && !inline.is_empty() {
-                    blocks.push(render_line(std::mem::take(&mut inline), false, list_depth));
-                }
+            Event::End(TagEnd::HtmlBlock) if !in_code_block && !inline.is_empty() => {
+                blocks.push(render_line(std::mem::take(&mut inline), false, list_depth));
             }
             Event::FootnoteReference(_) => {}
             Event::TaskListMarker(_) => {}

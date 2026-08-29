@@ -3,8 +3,7 @@
 //! 该模块保持轻量，使主工作区只需携带启动入口，不必编译完整 Git UI。
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-
+use std::process::Command;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum GitCliCommand {
     Open(PathBuf),
@@ -53,31 +52,9 @@ pub(crate) fn spawn_git_process(cwd: &Path) -> std::io::Result<()> {
 }
 
 fn git_process_command(cwd: &Path) -> std::io::Result<Command> {
-    let executable = crossh_core::process::sibling_executable("crossh-git");
-    let mut command = Command::new(executable);
-    command
-        .arg(cwd)
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        command.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
-    }
-
-    Ok(command)
+    let mut cmd = crossh_core::process::sibling_command("crossh-git");
+    cmd.arg(cwd).current_dir(cwd);
+    Ok(cmd)
 }
 
 #[cfg(test)]
