@@ -49,7 +49,7 @@ shared resources  -> external `crossh-assets` directory loaded by every binary
 - `crossh-ui-component`: reusable stateless GPUI control kit (buttons, badges, status metrics, avatars, tooltips, toasts, layout helpers, shared tabs, and status-bar shells) layered on `crossh-ui`.
 - `crossh`: process startup plus user-facing feature views and GPUI adapters. `crossh git` and the workspace status-bar Git entry delegate to the sibling `crossh-git` binary; `crossh note` and the workspace status-bar Note entry delegate to the sibling `crossh-note` binary; `features/terminal/view.rs` is the `terminal_view`-style host around Zed's terminal foundation.
 - `crossh-git`: standalone Git Viewer entry point. It owns the Git window source and reuses the same GPUI and UI dependencies, but does not initialize terminal, workspace, or settings features.
-- `crossh-note`: standalone Note Viewer entry point. It owns the Note window source (list/search/tags, `editor::Editor` + `Buffer::local`, Markdown preview) and reuses the same GPUI/UI dependencies, but does not initialize terminal, workspace, or settings features. Its pure logic lives in `crossh-note`.
+- `crossh-note`: standalone Note Viewer entry point. It owns the Note window source (list/search/tags, `TextEditingState` + Markdown preview) and reuses the same GPUI/UI dependencies, but does not initialize terminal, workspace, or settings features. Its pure logic lives in `crossh-note`.
 
 - `features/workspace`: navigation, tabs, active view, local projects, pane composition, status-bar Git status, and pull/push sync actions.
 - `features/settings`: application settings persistence and settings window.

@@ -69,7 +69,6 @@ fn main() {
         zed_theme_settings::init(LoadThemes::JustBase, cx);
         infrastructure_theme::install_crossh_theme(cx);
         crossh_ui::assets::load_fonts(cx).expect("Crossh fonts should load");
-        editor::init(cx);
         note::init(cx);
         note::open_note_window(cx);
     });
