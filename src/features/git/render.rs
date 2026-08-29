@@ -117,6 +117,12 @@ impl Render for GitWindow {
             self.render_standard_body(window, cx)
         };
 
+        let linux_titlebar = crossh_ui::linux_titlebar::render_linux_titlebar(
+            window,
+            cx,
+            SharedString::from(crossh_core::terminal::path_display_name(&self.session.cwd)),
+        );
+
         let mut root = div()
             .id("git-window")
             .key_context(GIT_WINDOW_CONTEXT)
@@ -134,6 +140,7 @@ impl Render for GitWindow {
             .on_action(cx.listener(|this, _: &BackToChanges, _window, cx| {
                 this.back_to_changes(cx);
             }))
+            .children(linux_titlebar)
             .child(self.render_page_tabs(cx))
             .child(div().flex_1().min_h_0().flex().flex_col().child(body))
             .child(self.render_status_bar(cx));
