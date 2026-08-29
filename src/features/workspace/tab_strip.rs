@@ -15,8 +15,8 @@ use gpui::{
 
 use crate::features::workspace::pinned::pinned_tabs_for_project;
 use crate::features::workspace::shell::AppShell;
-use crate::features::workspace::status::{conn_state_dot_color, local_tab_dot_color};
-use crate::features::workspace::view::{ActiveView, LocalSessionId, Tab};
+use crate::features::workspace::status::local_tab_dot_color;
+use crate::features::workspace::view::{ActiveView, LocalSessionId};
 use crate::shared::i18n;
 use crossh_ui::context_menu::ShellMenuAction;
 use crossh_ui::{icons, theme};
@@ -184,84 +184,6 @@ pub(super) fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> 
     let mut strip = TabStrip::new("tab-strip").track_scroll(&shell.tab_scroll);
 
     match shell.workspace.active_view {
-        Some(ActiveView::RemoteTab(active_idx)) => {
-            for idx in 0..shell.workspace.sessions.remote_tabs.len() {
-                if shell
-                    .workspace
-                    .is_split_secondary(ActiveView::RemoteTab(idx))
-                {
-                    continue;
-                }
-                let tab = &shell.workspace.sessions.remote_tabs[idx];
-                let is_active = active_idx == idx;
-                let state = shell.connections.state_for_key(&tab.host_key, cx);
-                let alias = tab_label(tab, cx);
-                let single = shell.workspace.sessions.remote_tabs.len() == 1;
-                let target = tab.target.clone();
-                strip = strip.child(render_tab_chip(
-                    cx,
-                    ("remote-tab-container", idx),
-                    conn_state_dot_color(&state),
-                    alias,
-                    is_active,
-                    None,
-                    ("remote-tab", idx),
-                    move |ev: &MouseDownEvent, this, _window, cx| {
-                        let mut entries = vec![MenuEntry::Item(MenuItem {
-                            id: "switch".into(),
-                            label: i18n::text("context_menu.switch"),
-                            shortcut_hint: None,
-                            disabled: is_active,
-                            danger: false,
-                            action: ShellMenuAction::SelectRemoteTab(idx),
-                        })];
-                        entries.extend([
-                            MenuEntry::Item(MenuItem {
-                                id: "close".into(),
-                                label: i18n::text("context_menu.close"),
-                                shortcut_hint: None,
-                                disabled: false,
-                                danger: false,
-                                action: ShellMenuAction::CloseRemoteTab(idx),
-                            }),
-                            MenuEntry::Item(MenuItem {
-                                id: "close-others".into(),
-                                label: i18n::text("context_menu.close_others"),
-                                shortcut_hint: None,
-                                disabled: single,
-                                danger: false,
-                                action: ShellMenuAction::CloseOtherRemoteTabs(idx),
-                            }),
-                            MenuEntry::Item(MenuItem {
-                                id: "close-all".into(),
-                                label: i18n::text("context_menu.close_all"),
-                                shortcut_hint: None,
-                                disabled: false,
-                                danger: false,
-                                action: ShellMenuAction::CloseAllRemoteTabs,
-                            }),
-                            MenuEntry::Separator,
-                            MenuEntry::Item(MenuItem {
-                                id: "copy-target".into(),
-                                label: i18n::text("context_menu.copy_target"),
-                                shortcut_hint: None,
-                                disabled: false,
-                                danger: false,
-                                action: ShellMenuAction::CopyText(target.clone()),
-                            }),
-                        ]);
-                        this.open_context_menu(ev.position, entries, cx);
-                    },
-                    move |_ev: &ClickEvent, this, _window, cx| {
-                        this.switch_remote_tab(idx, cx);
-                    },
-                    ("remote-tab-close", idx),
-                    move |_ev: &ClickEvent, this, w, cx| {
-                        this.request_close_remote_tab(idx, w, cx);
-                    },
-                ));
-            }
-        }
         Some(ActiveView::LocalSession(active_session_id)) => {
             // 固定会话只在所属项目视图内置顶（契约 1 Rev-1）：按当前
             // 活动项目过滤持久化记录再映射到会话；当前目录的普通会话
@@ -461,8 +383,4 @@ pub(super) fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> 
                 this.new_tab(window, cx);
             })),
     )
-}
-
-fn tab_label(tab: &Tab, cx: &mut Context<AppShell>) -> String {
-    tab.pane.title(cx)
 }

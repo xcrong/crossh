@@ -8,8 +8,7 @@ later (`GPL-3.0-or-later`). Interactive terminals use Zed's `assets`,
 maintains a local, application-free fork of the required Zed `terminal_view`
 `TerminalElement` and APCA helper sources. The fork is derived from the Zed
 revision pinned in `Cargo.toml`; editor, LSP, workspace, search, and other Zed
-application integrations are intentionally omitted. Crossh adds its workspace,
-SSH configuration, SFTP, forwarding, and command-management layers around
+Crossh adds its workspace, command-management, and Git/Note layers around
 that foundation.
 
 ## Lucide
@@ -65,11 +64,9 @@ Feather MIT notice documented in Lucide's official `LICENSE` file.
   infrastructure used to initialize the terminal core, apply terminal settings,
   create shell processes, and integrate its theme.
   Licensing follows the Zed source at the pinned revision in `Cargo.toml`.
-- **russh / russh-sftp** — SSH client and SFTP protocol. MIT.
 - **alacritty_terminal / vte** — transitive dependencies of Zed's `terminal`
   emulator. Crossh no longer owns a second production renderer or direct
   protocol implementation using these crates. Apache-2.0 / MIT.
-
 ## Application icon
 
 `assets/appicon/AppIcon.icns` is hand-drawn for Crossh (a mint crosshair on the

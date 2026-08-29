@@ -24,9 +24,6 @@ impl AppShell {
         crate::shared::i18n::set_locale(preference);
         crate::infrastructure::app_menu::refresh(cx);
         self.language_preference = preference;
-        for tab in &self.workspace.sessions.remote_tabs {
-            tab.pane.notify_language(cx);
-        }
         self.persist_settings();
         cx.notify();
     }
@@ -108,9 +105,6 @@ impl AppShell {
 
         crate::features::terminal::TerminalView::apply_zed_settings(&settings, cx);
 
-        for tab in &self.workspace.sessions.remote_tabs {
-            tab.pane.apply_terminal_settings(settings.clone(), cx);
-        }
         for session in self.workspace.sessions.local_sessions.values() {
             session.terminal.update(cx, |terminal, cx| {
                 terminal.apply_settings(settings.clone(), cx)

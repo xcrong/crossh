@@ -1,7 +1,4 @@
-//! 人类可读字节格式化（供 SFTP、下载、状态栏等共享）。
-//!
-//! 统一 `src/features/sftp/logic.rs:format_size` 与 `crates/crossh-ssh/src/sftp.rs:format_bytes`
-//! 的两份实现，补齐 GB 分支后下沉到 `crossh-core`，避免 UI 与传输层各自手写。
+//! 人类可读字节格式化。
 
 /// 将字节数格式化为人类可读字符串（B / KB / MB / GB）。
 ///

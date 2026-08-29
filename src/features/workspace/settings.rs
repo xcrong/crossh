@@ -183,7 +183,8 @@ mod tests {
                 project_dir: PathBuf::from("/d"),
                 cwd: PathBuf::from("/d"),
                 custom_name: Some("  dev  ".into()),
-                default_command: Some("ssh host".into()),
+                // 本地优先：默认不预设远程命令
+                default_command: None,
             },
         ];
         let normalized = WorkspaceSettings {
@@ -211,9 +212,7 @@ mod tests {
             normalized.pinned_local_tabs[2].custom_name,
             Some("dev".to_string())
         );
-        assert_eq!(
-            normalized.pinned_local_tabs[2].default_command,
-            Some("ssh host".to_string())
-        );
+        // 本地优先：不再默认填充远程命令，应为 None
+        assert_eq!(normalized.pinned_local_tabs[2].default_command, None);
     }
 }

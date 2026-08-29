@@ -18,7 +18,6 @@ use super::*;
 #[derive(Clone, Copy)]
 enum AppShellInputField {
     HostSearch,
-    Credential,
     QuickCommand,
     Rename,
     DefaultCommand,
@@ -27,9 +26,7 @@ enum AppShellInputField {
 
 impl AppShell {
     fn active_input_field(&self, window: &Window) -> Option<AppShellInputField> {
-        if self.modal_focus.is_focused(window) {
-            Some(AppShellInputField::Credential)
-        } else if self
+        if self
             .default_command_editor
             .as_ref()
             .is_some_and(|editor| editor.focus.is_focused(window))
@@ -64,7 +61,6 @@ impl AppShell {
     fn plain_value(&self, field: AppShellInputField) -> Option<&String> {
         match field {
             AppShellInputField::HostSearch => Some(&self.search_query),
-            AppShellInputField::Credential => Some(&self.prompt_input),
             _ => None,
         }
     }
@@ -72,7 +68,6 @@ impl AppShell {
     fn plain_marked(&self, field: AppShellInputField) -> Option<&String> {
         match field {
             AppShellInputField::HostSearch => Some(&self.search_ime_marked_text),
-            AppShellInputField::Credential => Some(&self.prompt_ime_marked_text),
             _ => None,
         }
     }
@@ -85,16 +80,13 @@ impl AppShell {
             AppShellInputField::HostSearch => {
                 Some((&mut self.search_query, &mut self.search_ime_marked_text))
             }
-            AppShellInputField::Credential => {
-                Some((&mut self.prompt_input, &mut self.prompt_ime_marked_text))
-            }
             _ => None,
         }
     }
 
     fn editing_state(&self, field: AppShellInputField) -> Option<&TextEditingState> {
         match field {
-            AppShellInputField::HostSearch | AppShellInputField::Credential => None,
+            AppShellInputField::HostSearch => None,
             AppShellInputField::QuickCommand => self
                 .quick_command_editor
                 .as_ref()
@@ -113,7 +105,7 @@ impl AppShell {
 
     fn editing_state_mut(&mut self, field: AppShellInputField) -> Option<&mut TextEditingState> {
         match field {
-            AppShellInputField::HostSearch | AppShellInputField::Credential => None,
+            AppShellInputField::HostSearch => None,
             AppShellInputField::QuickCommand => self
                 .quick_command_editor
                 .as_mut()
@@ -140,7 +132,7 @@ impl AppShell {
         field: AppShellInputField,
     ) -> Option<&mut TextEditingState> {
         match field {
-            AppShellInputField::HostSearch | AppShellInputField::Credential => None,
+            AppShellInputField::HostSearch => None,
             AppShellInputField::Compose => {
                 let view = self.workspace.focused_view()?;
                 Some(&mut self.workspace.compose_entry_mut(view).state)
@@ -289,19 +281,6 @@ impl EntityInputHandler for AppShell {
                     &self.search_query[..cursor],
                     px(12.),
                     px(30.),
-                    px(0.),
-                ))
-            }
-            AppShellInputField::Credential => {
-                let cursor = byte_index_for_utf16(&self.prompt_input, range.start);
-                let bullet_count = self.prompt_input[..cursor].chars().count();
-                let text_before = "•".repeat(bullet_count);
-                Some(ime_caret_bounds(
-                    window,
-                    element_bounds,
-                    &text_before,
-                    px(14.),
-                    px(12.),
                     px(0.),
                 ))
             }

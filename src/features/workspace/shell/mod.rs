@@ -12,7 +12,6 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
@@ -21,12 +20,8 @@ use gpui::{
     Task, TitlebarOptions, Window, WindowBounds, WindowOptions, div, px, size,
 };
 
-use crate::features::connections::{Connection, ConnectionManager, PendingPrompt};
-use crate::features::connections::{PromptDisplay, render_prompt_modal};
 use crate::features::editor_launcher;
-use crate::features::forwarding::ForwardPane;
 use crate::features::settings::{self, SettingsSnapshot};
-use crate::features::sftp::SftpPane;
 use crate::features::terminal::{TerminalEvent, TerminalView, TerminalViewEvent};
 use crate::features::updates::{UpdateController, UpdateSettings};
 use crate::features::workspace::modal_editor::{DefaultCommandEditor, RenameEditor};
@@ -38,20 +33,17 @@ use crate::features::workspace::sidebar::{render_sidebar, render_sidebar_rail};
 use crate::features::workspace::state::rebuild_local_dirs;
 use crate::features::workspace::toaster::{ToastNotice, ToastTone};
 use crate::features::workspace::view::{
-    ActiveView, LocalDir, LocalSession, LocalSessionId, Tab, render_default_command_editor,
+    ActiveView, LocalDir, LocalSession, LocalSessionId, render_default_command_editor,
     render_main, render_quick_command_editor, render_quick_commands, render_rename_editor,
     render_workspace_status_bar,
 };
 use crate::shared::i18n::{self, LanguagePreference};
 use crossh_core::commands::{
     BackgroundTaskEvent, BackgroundTaskManager, BackgroundTaskStatus, CommandHistory, local_scope,
-    remote_scope,
 };
-use crossh_core::config::{HostConfig, SshConfig};
 use crossh_core::git::{pull, push};
 use crossh_core::git_status::inspect;
 use crossh_core::system_stats::{SystemMonitorState, SystemSampler};
-use crossh_ssh::{HostKeyDecision, RemoteCommandStatus};
 use crossh_terminal::TerminalSettings;
 use crossh_ui::context_menu::ShellMenuAction;
 use crossh_ui::theme;
@@ -92,31 +84,18 @@ struct ActiveCommandContext {
     scope: String,
     cwd: String,
     owner: String,
-    connection: Option<Entity<Connection>>,
-    remote_target: Option<String>,
-    remote_tab: Option<usize>,
     local_session: Option<LocalSessionId>,
 }
 
 struct PendingBackgroundRestart {
     task: crossh_core::commands::BackgroundTask,
-    connection: Option<Entity<Connection>>,
 }
 
 fn local_background_owner(session_id: LocalSessionId) -> String {
     format!("local-session:{session_id}")
 }
 
-fn remote_background_owner(terminal_id: EntityId) -> String {
-    format!("remote-terminal:{terminal_id}")
-}
-
-fn remote_tab_background_owner(tab: &Tab) -> Option<String> {
-    tab.pane.terminal_entity_id().map(remote_background_owner)
-}
-
 pub struct AppShell {
-    pub(crate) connections: ConnectionManager,
     pub(crate) workspace: WorkspaceState,
     pub(crate) status: Option<String>,
     /// 侧栏搜索文本；用于项目搜索/过滤。
@@ -129,12 +108,8 @@ pub struct AppShell {
     /// 原生项目目录选择器任务，持有到选择结果返回。
     _project_picker: Option<Task<()>>,
     /// 模态文本输入缓冲（密码/口令）。
-    pub(crate) prompt_input: String,
-    pub(crate) prompt_ime_marked_text: String,
     /// 模态输入框焦点。
-    pub(crate) modal_focus: FocusHandle,
     /// 上一帧是否有活动模态（用于在弹窗出现时自动聚焦）。
-    last_had_prompt: bool,
     /// 当前语言偏好；实际 locale 经 [`crate::shared::i18n::set_locale`] 切换。
     pub(crate) language_preference: LanguagePreference,
     /// 当前打开的右键上下文菜单（None = 未打开）。
@@ -156,7 +131,6 @@ pub struct AppShell {
     pub(crate) terminal_split_dragging: Rc<Cell<bool>>,
     pub(crate) command_history: CommandHistory,
     pub(crate) background_tasks: BackgroundTaskManager,
-    remote_background_controls: BTreeMap<u64, (Entity<Connection>, u64)>,
     pending_background_restarts: BTreeMap<u64, PendingBackgroundRestart>,
     pub(crate) quick_command_editor: Option<QuickCommandEditor>,
     /// 固定标签重命名弹窗状态；与 quick command/default command 编辑器互斥（都是模态弹窗）。
@@ -183,16 +157,8 @@ pub struct AppShell {
 }
 
 impl AppShell {
-    /// 从 ~/.ssh/config 加载并构造外壳。
+    /// 构造外壳（本地会话）。
     pub fn new(cx: &mut App) -> Entity<Self> {
-        let config = match SshConfig::from_default_location() {
-            Ok(c) => c,
-            Err(e) => {
-                log::warn!("failed to read ~/.ssh/config: {e}");
-                SshConfig::default()
-            }
-        };
-        let config = Arc::new(config);
         let mut snapshot = settings::load();
         let recent_dirs = normalize_recent_dirs(snapshot.workspace.recent_dirs.clone());
         if recent_dirs != snapshot.workspace.recent_dirs {
@@ -233,7 +199,6 @@ impl AppShell {
         }
 
         let shell = cx.new(|cx| Self {
-            connections: ConnectionManager::new(config),
             workspace: WorkspaceState::new(local_dirs),
             status: None,
             search_query: String::new(),
@@ -241,10 +206,6 @@ impl AppShell {
             search_focus: cx.focus_handle(),
             shell_focus: cx.focus_handle(),
             _project_picker: None,
-            prompt_input: String::new(),
-            prompt_ime_marked_text: String::new(),
-            modal_focus: cx.focus_handle(),
-            last_had_prompt: false,
             language_preference,
             context_menu: None,
             terminal_settings,
@@ -260,7 +221,6 @@ impl AppShell {
             terminal_split_dragging: Rc::new(Cell::new(false)),
             command_history: CommandHistory::load(),
             background_tasks: BackgroundTaskManager::default(),
-            remote_background_controls: BTreeMap::new(),
             pending_background_restarts: BTreeMap::new(),
             quick_command_editor: None,
             rename_editor: None,
@@ -284,86 +244,247 @@ impl AppShell {
         updates.update(cx, |updates, cx| updates.start_startup_check(cx));
         shell
     }
+    fn active_command_context(&self, cx: &App) -> Option<ActiveCommandContext> {
+        let view = self.workspace.focused_view()?;
+        match view {
+            ActiveView::LocalSession(session_id) => {
+                let session = self.workspace.sessions.local_sessions.get(&session_id)?;
+                let cwd = session
+                    .terminal
+                    .read(cx)
+                    .cwd
+                    .clone()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| session.cwd.clone());
+                let cwd = normalize_local_cwd(cwd)?;
+                Some(ActiveCommandContext {
+                    scope: local_scope(&cwd),
+                    cwd: cwd.to_string_lossy().to_string(),
+                    owner: local_background_owner(session_id),
+                    local_session: Some(session_id),
+                })
+            }
+        }
+    }
 
-    pub(crate) fn open_host(&mut self, idx: usize, cx: &mut Context<Self>) {
-        let entry = match self.connections.entries().get(idx) {
-            Some(e) => e.clone(),
-            None => return,
+    fn start_background_restart(
+        &mut self,
+        restart: PendingBackgroundRestart,
+        cx: &mut Context<Self>,
+    ) {
+        let task = restart.task;
+        let (id, event_rx) =
+            self.background_tasks
+                .start(task.scope, task.cwd, task.command, task.owner);
+        cx.spawn(async move |weak, cx| {
+            let Ok(event) = event_rx.recv().await else {
+                return;
+            };
+            let _ = weak.update(cx, |this, cx| {
+                this.apply_background_event(event, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+        log::info!("restarted background command {id}");
+    }
+
+    pub(crate) fn restart_background_task(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(task) = self.background_tasks.tasks.get(&id).cloned() else {
+            return;
         };
+        if task.status != BackgroundTaskStatus::Running {
+            return;
+        }
+        self.pending_background_restarts
+            .insert(id, PendingBackgroundRestart { task });
+        self.stop_background_task(id, cx);
+    }
 
-        // The sidebar is navigation. Reuse the existing terminal for a live
-        // connection instead of opening another channel when returning from a
-        // local session.
-        if let Some(tab_idx) = self.remote_terminal_to_switch(&entry.key) {
-            self.switch_remote_tab(tab_idx, cx);
+    pub(crate) fn run_quick_command(
+        &mut self,
+        scope: String,
+        command: String,
+        background: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(context) = self.active_command_context(cx) else {
+            return;
+        };
+        if context.scope != scope {
+            return;
+        }
+        if background {
+            let owner = context.owner.clone();
+            let Some(cwd) = normalize_local_cwd(PathBuf::from(context.cwd)) else {
+                return;
+            };
+            let (id, event_rx) = self.background_tasks.start(scope, cwd, command, owner);
+            cx.spawn(async move |weak, cx| {
+                let Ok(event) = event_rx.recv().await else {
+                    return;
+                };
+                let _ = weak.update(cx, |this, cx| {
+                    this.apply_background_event(event, cx);
+                    cx.notify();
+                });
+            })
+            .detach();
+            log::info!("started background command {id}");
+        } else if let Some(session_id) = context.local_session
+            && let Some(session) = self.workspace.sessions.local_sessions.get(&session_id)
+        {
+            session.terminal.update(cx, |terminal, terminal_cx| {
+                terminal.run_command(&command, terminal_cx)
+            });
+        }
+        cx.notify();
+    }
+
+
+    fn apply_background_event(&mut self, event: BackgroundTaskEvent, cx: &mut Context<Self>) {
+        let event_id = event.id;
+        log::info!(
+            "background command {} finished as {:?}",
+            event.id,
+            event.status
+        );
+        self.background_tasks.apply_event(event);
+        if let Some(restart) = self.pending_background_restarts.remove(&event_id) {
+            self.start_background_restart(restart, cx);
+        }
+    }
+
+
+    pub(crate) fn stop_background_task(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.background_tasks.mark_stopping(id);
+        cx.notify();
+    }
+
+    fn dispatch_shell_menu_action(
+        &mut self,
+        action: ShellMenuAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            ShellMenuAction::ChooseLocalProject => self.choose_project_directory(cx),
+            ShellMenuAction::ActivateLocalProject(path) => self.activate_local_dir(path, cx),
+            ShellMenuAction::CopyText(text) => {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+            }
+            ShellMenuAction::RevealInFinder(path) => {
+                crossh_core::process::reveal_in_finder(&path);
+            }
+            ShellMenuAction::ForgetLocalDir(cwd) => self.forget_local_dir(cwd, cx),
+            ShellMenuAction::StopLocalProject(cwd) => self.stop_local_project(cwd, window, cx),
+            ShellMenuAction::OpenLocalTerminal(cwd) => {
+                let _ = self.open_local_session(cwd.clone(), cwd.clone(), cx);
+                // 「打开本地终端」即打开项目：同步恢复该项目尚无会话的
+                // 固定记录（契约 11 Rev-1）。不能放进 open_local_session
+                // 自身，否则恢复路径会递归（恢复内部也调用 open）。
+                self.restore_pinned_tabs_for_project(&cwd, cx);
+            }
+            ShellMenuAction::SelectLocalSession(session_id) => {
+                self.select_local_session(session_id, cx);
+            }
+            ShellMenuAction::PinLocalSession(session_id) => self.pin_local_session(session_id, cx),
+            ShellMenuAction::UnpinLocalSession(session_id) => {
+                self.unpin_local_session(session_id, cx)
+            }
+            ShellMenuAction::RenameLocalSession(session_id) => {
+                self.open_rename_local_session(session_id, window, cx)
+            }
+            ShellMenuAction::EditDefaultCommand(session_id) => {
+                self.open_default_command_editor(session_id, window, cx)
+            }
+            ShellMenuAction::ReloadDefaultCommand(session_id) => {
+                self.reload_default_command(session_id, cx)
+            }
+            ShellMenuAction::ClearDefaultCommand(session_id) => {
+                self.clear_default_command(session_id, cx)
+            }
+            ShellMenuAction::CloseLocalSession(session_id) => {
+                self.request_close_local_session(session_id, window, cx);
+            }
+            ShellMenuAction::CloseOtherLocalSessions(session_id) => {
+                self.close_other_local_sessions(session_id, cx);
+            }
+            ShellMenuAction::RunQuickCommand {
+                scope,
+                command,
+                background,
+            } => self.run_quick_command(scope, command, background, cx),
+            ShellMenuAction::EditQuickCommand { scope, command } => {
+                self.open_quick_command_editor(scope, command, window, cx)
+            }
+            ShellMenuAction::ToggleQuickCommandPin { scope, command } => {
+                self.toggle_quick_command_pin(scope, command, cx)
+            }
+            ShellMenuAction::DeleteQuickCommand { scope, command } => {
+                self.command_history.remove(&scope, &command);
+                cx.notify();
+            }
+            ShellMenuAction::IgnoreQuickCommand { scope, command } => {
+                self.command_history.ignore(&scope, &command);
+                cx.notify();
+            }
+            ShellMenuAction::StopBackgroundTask(id) => self.stop_background_task(id, cx),
+            ShellMenuAction::RestartBackgroundTask(id) => self.restart_background_task(id, cx),
+        }
+        self.close_context_menu(cx);
+    }
+
+    fn handle_shell_key_down(
+        &mut self,
+        ev: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // 菜单打开时只响应 Escape（其余键被菜单模态拦截）。
+        if self.context_menu.is_some() {
+            if ev.keystroke.key == "escape" {
+                self.close_context_menu(cx);
+            }
+            return;
+        }
+        if self.quick_command_editor.is_some()
+            || self.rename_editor.is_some()
+            || self.default_command_editor.is_some()
+        {
+            return;
+        }
+        // Scratch 抽屉的 Esc 隐藏：优先级高于全局快捷键，但低于模态
+        if self.scratch_visible && ev.keystroke.key == "escape" {
+            self.hide_scratch_terminal(cx);
+            cx.stop_propagation();
+            return;
+        }
+        let ks = &ev.keystroke;
+        let primary = ks.modifiers.platform || ks.modifiers.control;
+        if !primary {
             return;
         }
 
-        self.open_terminal_target(entry.alias, cx);
+        match ks.key.as_str() {
+            "tab" => self.cycle_tab(if ks.modifiers.shift { -1 } else { 1 }, cx),
+            "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" => {
+                if let Ok(n) = ks.key.parse::<usize>() {
+                    self.switch_tab(n - 1, cx);
+                }
+            }
+            _ => {}
+        }
     }
 
-    fn remote_terminal_to_switch(&self, host_key: &str) -> Option<usize> {
-        find_remote_terminal_index(
-            self.workspace
-                .sessions
-                .remote_tabs
-                .iter()
-                .enumerate()
-                .map(|(idx, tab)| {
-                    (
-                        idx,
-                        tab.host_key.as_str(),
-                        tab.pane.terminal_entity_id().is_some(),
-                    )
-                }),
-            host_key,
-        )
-    }
 
-    pub(crate) fn open_sftp(&mut self, idx: usize, cx: &mut Context<Self>) {
-        let entry = match self.connections.entries().get(idx) {
-            Some(e) => e.clone(),
-            None => return,
-        };
-        let resolved = self.connections.resolve(&entry.alias);
-        let methods = self.connections.auth_methods(&resolved);
-        let host_key = ConnectionManager::pool_key(&resolved);
-        let conn = self.connections.acquire(resolved.clone(), methods, cx);
-        let (cmd_tx, event_rx) = conn.read(cx).open_sftp();
-        let pane = SftpPane::from_bridge(cmd_tx, event_rx, cx);
-        self.workspace.sessions.remote_tabs.push(Tab {
-            target: entry.alias.clone(),
-            host_key,
-            connection: Some(conn.clone()),
-            pane: crate::features::sftp::view::workspace_pane(pane),
-        });
-        self.workspace.active_view = Some(ActiveView::RemoteTab(
-            self.workspace.sessions.remote_tabs.len() - 1,
-        ));
-        cx.notify();
-    }
 
-    pub(crate) fn open_forward(&mut self, idx: usize, cx: &mut Context<Self>) {
-        let entry = match self.connections.entries().get(idx) {
-            Some(e) => e.clone(),
-            None => return,
-        };
-        let resolved = self.connections.resolve(&entry.alias);
-        let methods = self.connections.auth_methods(&resolved);
-        let host_key = ConnectionManager::pool_key(&resolved);
-        let conn = self.connections.acquire(resolved.clone(), methods, cx);
-        let pane = ForwardPane::new(conn.clone(), cx, &resolved);
-        self.workspace.sessions.remote_tabs.push(Tab {
-            target: entry.alias.clone(),
-            host_key,
-            connection: Some(conn),
-            pane: crate::features::forwarding::view::workspace_pane(pane),
-        });
-        self.workspace.active_view = Some(ActiveView::RemoteTab(
-            self.workspace.sessions.remote_tabs.len() - 1,
-        ));
-        cx.notify();
-    }
+
+
+
+
+
+
 
     /// 在项目目录 view 中打开一个独立的 Zed terminal session。
     /// `project_dir` 决定侧栏归属，`cwd` 只决定 shell 的初始工作目录。
@@ -382,14 +503,12 @@ impl AppShell {
             cx.notify();
             return None;
         };
-        if let ActiveView::LocalSession(session_id) = view {
-            self.select_local_session(session_id, cx);
-            self.refresh_git_status(session_id, false, cx);
-            self.status = None;
-            cx.notify();
-            return Some(session_id);
-        }
-        None
+        let ActiveView::LocalSession(session_id) = view;
+        self.select_local_session(session_id, cx);
+        self.refresh_git_status(session_id, false, cx);
+        self.status = None;
+        cx.notify();
+        Some(session_id)
     }
 
     fn create_local_session(
@@ -557,6 +676,7 @@ impl AppShell {
         self.close_local_session_internal(session_id, false, cx);
     }
 
+
     pub(crate) fn close_local_session_internal(
         &mut self,
         session_id: LocalSessionId,
@@ -619,12 +739,7 @@ impl AppShell {
         if was_active {
             self.workspace.active_view = next_session
                 .map(ActiveView::LocalSession)
-                .or_else(|| self.first_local_view())
-                .or_else(|| {
-                    self.workspace.sessions.remote_tabs.last().map(|_| {
-                        ActiveView::RemoteTab(self.workspace.sessions.remote_tabs.len() - 1)
-                    })
-                });
+                .or_else(|| self.first_local_view());
             self.refocus_active_terminal(cx);
         }
         if split_affected && !was_active {
@@ -632,6 +747,8 @@ impl AppShell {
         }
         cx.notify();
     }
+
+
 
     fn record_command(&mut self, scope: String, command: String, cx: &mut Context<Self>) {
         if self.command_history.record(&scope, &command) {
@@ -650,216 +767,19 @@ impl AppShell {
         }
     }
 
-    fn active_command_context(&self, cx: &Context<Self>) -> Option<ActiveCommandContext> {
-        match self.workspace.focused_view()? {
-            ActiveView::LocalSession(session_id) => {
-                let session = self.workspace.sessions.local_sessions.get(&session_id)?;
-                let cwd = session
-                    .terminal
-                    .read(cx)
-                    .cwd
-                    .clone()
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| session.cwd.clone());
-                let cwd = normalize_local_cwd(cwd)?;
-                Some(ActiveCommandContext {
-                    scope: local_scope(&cwd),
-                    cwd: cwd.to_string_lossy().to_string(),
-                    owner: local_background_owner(session_id),
-                    connection: None,
-                    remote_target: None,
-                    remote_tab: None,
-                    local_session: Some(session_id),
-                })
-            }
-            ActiveView::RemoteTab(index) => {
-                let tab = self.workspace.sessions.remote_tabs.get(index)?;
-                let entity_id = tab.pane.terminal_entity_id()?;
-                let owner = remote_background_owner(entity_id);
-                let cwd = tab.pane.cwd(cx)?;
-                Some(ActiveCommandContext {
-                    scope: remote_scope(&tab.host_key, &cwd),
-                    cwd,
-                    owner,
-                    connection: tab.connection.clone(),
-                    remote_target: Some(tab.target.clone()),
-                    remote_tab: Some(index),
-                    local_session: None,
-                })
-            }
-        }
-    }
 
-    pub(crate) fn run_quick_command(
-        &mut self,
-        scope: String,
-        command: String,
-        background: bool,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(context) = self.active_command_context(cx) else {
-            return;
-        };
-        if context.scope != scope {
-            return;
-        }
-        if background {
-            let owner = context.owner.clone();
-            if let Some(connection) = context.connection {
-                self.start_remote_background(connection, owner, scope, context.cwd, command, cx);
-            } else if let Some(target) = context.remote_target {
-                let resolved = self.connections.resolve(&target);
-                let methods = self.connections.auth_methods(&resolved);
-                let connection = self.connections.acquire(resolved, methods, cx);
-                self.start_remote_background(connection, owner, scope, context.cwd, command, cx);
-            } else {
-                let Some(cwd) = normalize_local_cwd(PathBuf::from(context.cwd)) else {
-                    return;
-                };
-                let (id, event_rx) = self.background_tasks.start(scope, cwd, command, owner);
-                cx.spawn(async move |weak, cx| {
-                    let Ok(event) = event_rx.recv().await else {
-                        return;
-                    };
-                    let _ = weak.update(cx, |this, cx| {
-                        this.apply_background_event(event, cx);
-                        cx.notify();
-                    });
-                })
-                .detach();
-                log::info!("started background command {id}");
-            }
-        } else {
-            if let Some(index) = context.remote_tab {
-                if let Some(tab) = self.workspace.sessions.remote_tabs.get(index) {
-                    tab.pane.run_command(&command, cx);
-                }
-            } else if let Some(session_id) = context.local_session
-                && let Some(session) = self.workspace.sessions.local_sessions.get(&session_id)
-            {
-                session.terminal.update(cx, |terminal, terminal_cx| {
-                    terminal.run_command(&command, terminal_cx)
-                });
-            }
-        }
-        cx.notify();
-    }
 
-    fn start_remote_background(
-        &mut self,
-        connection: Entity<Connection>,
-        owner: String,
-        scope: String,
-        cwd: String,
-        command: String,
-        cx: &mut Context<Self>,
-    ) {
-        let (remote_id, event_rx) = connection.update(cx, |connection, _cx| {
-            connection.open_command(command.clone(), cwd.clone())
-        });
-        let task_id = self
-            .background_tasks
-            .start_remote(scope, PathBuf::from(cwd), command, owner);
-        self.remote_background_controls
-            .insert(task_id, (connection, remote_id));
-        let expected_remote_id = remote_id;
-        cx.spawn(async move |weak, cx| {
-            let event = match event_rx.recv().await {
-                Ok(event) => {
-                    debug_assert_eq!(event.id, expected_remote_id);
-                    BackgroundTaskEvent {
-                        id: task_id,
-                        status: match event.status {
-                            RemoteCommandStatus::Succeeded => BackgroundTaskStatus::Succeeded,
-                            RemoteCommandStatus::Failed => BackgroundTaskStatus::Failed,
-                            RemoteCommandStatus::Terminated => BackgroundTaskStatus::Terminated,
-                        },
-                    }
-                }
-                Err(_) => BackgroundTaskEvent {
-                    id: task_id,
-                    status: BackgroundTaskStatus::Failed,
-                },
-            };
-            let _ = weak.update(cx, |this, cx| {
-                this.apply_background_event(event, cx);
-                cx.notify();
-            });
-        })
-        .detach();
-        log::info!("started remote background command {task_id}");
-    }
 
-    fn apply_background_event(&mut self, event: BackgroundTaskEvent, cx: &mut Context<Self>) {
-        let event_id = event.id;
-        log::info!(
-            "background command {} finished as {:?}",
-            event.id,
-            event.status
-        );
-        self.remote_background_controls.remove(&event_id);
-        self.background_tasks.apply_event(event);
-        if let Some(restart) = self.pending_background_restarts.remove(&event_id) {
-            self.start_background_restart(restart, cx);
-        }
-    }
 
-    pub(crate) fn stop_background_task(&mut self, id: u64, cx: &mut Context<Self>) {
-        if let Some((connection, remote_id)) = self.remote_background_controls.get(&id).cloned() {
-            connection.read(cx).stop_command(remote_id);
-        }
-        self.background_tasks.mark_stopping(id);
-        cx.notify();
-    }
 
-    pub(crate) fn restart_background_task(&mut self, id: u64, cx: &mut Context<Self>) {
-        let Some(task) = self.background_tasks.tasks.get(&id).cloned() else {
-            return;
-        };
-        if task.status != BackgroundTaskStatus::Running {
-            return;
-        }
-        let connection = self
-            .remote_background_controls
-            .get(&id)
-            .map(|(connection, _)| connection.clone());
-        self.pending_background_restarts
-            .insert(id, PendingBackgroundRestart { task, connection });
-        self.stop_background_task(id, cx);
-    }
 
-    fn start_background_restart(
-        &mut self,
-        restart: PendingBackgroundRestart,
-        cx: &mut Context<Self>,
-    ) {
-        let task = restart.task;
-        if let Some(connection) = restart.connection {
-            self.start_remote_background(
-                connection,
-                task.owner,
-                task.scope,
-                task.cwd.to_string_lossy().into_owned(),
-                task.command,
-                cx,
-            );
-        } else {
-            let (id, event_rx) =
-                self.background_tasks
-                    .start(task.scope, task.cwd, task.command, task.owner);
-            cx.spawn(async move |weak, cx| {
-                let Ok(event) = event_rx.recv().await else {
-                    return;
-                };
-                let _ = weak.update(cx, |this, cx| {
-                    this.apply_background_event(event, cx);
-                    cx.notify();
-                });
-            })
-            .detach();
-            log::info!("restarted background command {id}");
-        }
-    }
+
+
+
+
+
+
+
 
     fn stop_background_tasks_for_owner(&mut self, owner: &str, cx: &mut Context<Self>) {
         let ids = self.background_tasks.active_for_owner(owner);
@@ -891,7 +811,7 @@ impl AppShell {
             return;
         }
 
-        // 已移除主机别名匹配及 SSH 直连 fallback：未命中项目时仅清空搜索并提示。
+        // 历史主机别名匹配已移除
         self.search_query.clear();
         self.search_ime_marked_text.clear();
         self.show_toast(
@@ -957,50 +877,7 @@ impl AppShell {
         }
     }
 
-    fn handle_shell_key_down(
-        &mut self,
-        ev: &KeyDownEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        // 菜单打开时只响应 Escape（其余键被菜单模态拦截）。
-        if self.context_menu.is_some() {
-            if ev.keystroke.key == "escape" {
-                self.close_context_menu(cx);
-            }
-            return;
-        }
-        if !matches!(self.current_prompt(cx), PromptDisplay::None) {
-            return;
-        }
-        if self.quick_command_editor.is_some()
-            || self.rename_editor.is_some()
-            || self.default_command_editor.is_some()
-        {
-            return;
-        }
-        // Scratch 抽屉的 Esc 隐藏：优先级高于全局快捷键，但低于模态
-        if self.scratch_visible && ev.keystroke.key == "escape" {
-            self.hide_scratch_terminal(cx);
-            cx.stop_propagation();
-            return;
-        }
-        let ks = &ev.keystroke;
-        let primary = ks.modifiers.platform || ks.modifiers.control;
-        if !primary {
-            return;
-        }
 
-        match ks.key.as_str() {
-            "tab" => self.cycle_tab(if ks.modifiers.shift { -1 } else { 1 }, cx),
-            "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" => {
-                if let Ok(n) = ks.key.parse::<usize>() {
-                    self.switch_tab(n - 1, cx);
-                }
-            }
-            _ => {}
-        }
-    }
 
     /// 打开右键上下文菜单（替换已有菜单）。
     pub(crate) fn open_context_menu(
@@ -1020,87 +897,6 @@ impl AppShell {
     }
 
     /// 执行外壳级菜单动作并关闭菜单。
-    fn dispatch_shell_menu_action(
-        &mut self,
-        action: ShellMenuAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match action {
-            ShellMenuAction::ChooseLocalProject => self.choose_project_directory(cx),
-            ShellMenuAction::ActivateLocalProject(path) => self.activate_local_dir(path, cx),
-            ShellMenuAction::OpenHost(idx) => self.open_host(idx, cx),
-            ShellMenuAction::OpenSftp(idx) => self.open_sftp(idx, cx),
-            ShellMenuAction::OpenForward(idx) => self.open_forward(idx, cx),
-            ShellMenuAction::CopyText(text) => {
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-            }
-            ShellMenuAction::RevealInFinder(path) => {
-                crossh_core::process::reveal_in_finder(&path);
-            }
-            ShellMenuAction::ForgetLocalDir(cwd) => self.forget_local_dir(cwd, cx),
-            ShellMenuAction::StopLocalProject(cwd) => self.stop_local_project(cwd, window, cx),
-            ShellMenuAction::OpenLocalTerminal(cwd) => {
-                let _ = self.open_local_session(cwd.clone(), cwd.clone(), cx);
-                // 「打开本地终端」即打开项目：同步恢复该项目尚无会话的
-                // 固定记录（契约 11 Rev-1）。不能放进 open_local_session
-                // 自身，否则恢复路径会递归（恢复内部也调用 open）。
-                self.restore_pinned_tabs_for_project(&cwd, cx);
-            }
-            ShellMenuAction::SelectRemoteTab(idx) => self.switch_remote_tab(idx, cx),
-            ShellMenuAction::CloseRemoteTab(idx) => self.request_close_remote_tab(idx, window, cx),
-            ShellMenuAction::CloseOtherRemoteTabs(idx) => self.close_other_remote_tabs(idx, cx),
-            ShellMenuAction::CloseAllRemoteTabs => self.close_all_remote_tabs(cx),
-            ShellMenuAction::SelectLocalSession(session_id) => {
-                self.select_local_session(session_id, cx);
-            }
-            ShellMenuAction::PinLocalSession(session_id) => self.pin_local_session(session_id, cx),
-            ShellMenuAction::UnpinLocalSession(session_id) => {
-                self.unpin_local_session(session_id, cx)
-            }
-            ShellMenuAction::RenameLocalSession(session_id) => {
-                self.open_rename_local_session(session_id, window, cx)
-            }
-            ShellMenuAction::EditDefaultCommand(session_id) => {
-                self.open_default_command_editor(session_id, window, cx)
-            }
-            ShellMenuAction::ReloadDefaultCommand(session_id) => {
-                self.reload_default_command(session_id, cx)
-            }
-            ShellMenuAction::ClearDefaultCommand(session_id) => {
-                self.clear_default_command(session_id, cx)
-            }
-            ShellMenuAction::CloseLocalSession(session_id) => {
-                self.request_close_local_session(session_id, window, cx);
-            }
-            ShellMenuAction::CloseOtherLocalSessions(session_id) => {
-                self.close_other_local_sessions(session_id, cx);
-            }
-            ShellMenuAction::RunQuickCommand {
-                scope,
-                command,
-                background,
-            } => self.run_quick_command(scope, command, background, cx),
-            ShellMenuAction::EditQuickCommand { scope, command } => {
-                self.open_quick_command_editor(scope, command, window, cx)
-            }
-            ShellMenuAction::ToggleQuickCommandPin { scope, command } => {
-                self.toggle_quick_command_pin(scope, command, cx)
-            }
-            ShellMenuAction::DeleteQuickCommand { scope, command } => {
-                self.command_history.remove(&scope, &command);
-                cx.notify();
-            }
-            ShellMenuAction::IgnoreQuickCommand { scope, command } => {
-                self.command_history.ignore(&scope, &command);
-                cx.notify();
-            }
-            ShellMenuAction::StopBackgroundTask(id) => self.stop_background_task(id, cx),
-            ShellMenuAction::RestartBackgroundTask(id) => self.restart_background_task(id, cx),
-        }
-        self.close_context_menu(cx);
-    }
-
     /// 解析并启动外部编辑器打开 `directory`；无可用编辑器或启动失败时弹错误 Toast。
     pub(crate) fn open_project_in_editor(&mut self, directory: &Path, cx: &mut Context<Self>) {
         let path_env = editor_launcher::effective_path();
@@ -1514,58 +1310,17 @@ impl AppShell {
             .cloned()
     }
 
-    /// 当前有待处理弹窗的连接（若有）。
-    fn pending_connection(&self, cx: &Context<Self>) -> Option<Entity<Connection>> {
-        self.connections.pending_prompt_connection(cx)
-    }
+    
 
-    /// 回填凭据（None = 取消）。
-    pub(crate) fn resolve_credential(&mut self, value: Option<String>, cx: &mut Context<Self>) {
-        if let Some(c) = self.pending_connection(cx) {
-            c.update(cx, |conn, _| conn.resolve_credential(value));
-        }
-        self.prompt_input.clear();
-        self.prompt_ime_marked_text.clear();
-        self.refocus_active_terminal(cx);
-        cx.notify();
-    }
 
-    /// 回填主机密钥决定。
-    pub(crate) fn resolve_host_key(&mut self, decision: HostKeyDecision, cx: &mut Context<Self>) {
-        if let Some(c) = self.pending_connection(cx) {
-            c.update(cx, |conn, _| conn.resolve_host_key(decision));
-        }
-        self.refocus_active_terminal(cx);
-        cx.notify();
-    }
+    
 
-    /// 当前活动模态的显示快照。
-    fn current_prompt(&self, cx: &Context<Self>) -> PromptDisplay {
-        let Some(conn) = self.pending_connection(cx) else {
-            return PromptDisplay::None;
-        };
-        match conn.read(cx).pending_prompt.as_ref() {
-            None => PromptDisplay::None,
-            Some(PendingPrompt::HostKey {
-                host,
-                port,
-                key_type,
-                fingerprint,
-                changed,
-                ..
-            }) => PromptDisplay::HostKey {
-                host: host.clone(),
-                port: *port,
-                key_type: key_type.clone(),
-                fingerprint: fingerprint.clone(),
-                changed: *changed,
-            },
-            Some(PendingPrompt::Credential { kind, prompt, .. }) => PromptDisplay::Credential {
-                kind: *kind,
-                prompt: prompt.clone(),
-            },
-        }
-    }
+
+    
+
+
+    
+
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1582,15 +1337,6 @@ fn quick_commands_panel_mode(
         QuickCommandsPanelMode::Expanded
     } else {
         QuickCommandsPanelMode::Rail
-    })
-}
-
-fn find_remote_terminal_index<'a>(
-    tabs: impl DoubleEndedIterator<Item = (usize, &'a str, bool)>,
-    host_key: &str,
-) -> Option<usize> {
-    tabs.rev().find_map(|(idx, tab_host_key, is_terminal)| {
-        (tab_host_key == host_key && is_terminal).then_some(idx)
     })
 }
 
@@ -1641,50 +1387,4 @@ pub fn open_main_window(cx: &mut App) {
     )
     .expect("Failed to open window");
     cx.activate(true);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{QuickCommandsPanelMode, find_remote_terminal_index, quick_commands_panel_mode};
-    use crate::shared::text_editing::{
-        next_char_boundary, previous_char_boundary, selection_bounds,
-    };
-
-    #[test]
-    fn sidebar_host_reuse_selects_latest_matching_terminal() {
-        let tabs = vec![
-            (0, "vps", true),
-            (1, "vps", false),
-            (2, "other", true),
-            (3, "vps", true),
-        ];
-
-        assert_eq!(find_remote_terminal_index(tabs.into_iter(), "vps"), Some(3));
-    }
-
-    #[test]
-    fn quick_command_editing_respects_utf8_boundaries_and_selection_direction() {
-        let text = "run 你好";
-        assert_eq!(previous_char_boundary(text, text.len()), "run 你".len());
-        assert_eq!(next_char_boundary(text, "run ".len()), "run 你".len());
-        assert_eq!(
-            selection_bounds(Some(text.len()), "run ".len()),
-            Some((4, text.len()))
-        );
-        assert_eq!(selection_bounds(Some(4), 4), None);
-    }
-
-    #[test]
-    fn quick_commands_panel_requires_an_active_command_context() {
-        assert_eq!(
-            quick_commands_panel_mode(true, true),
-            Some(QuickCommandsPanelMode::Expanded)
-        );
-        assert_eq!(
-            quick_commands_panel_mode(true, false),
-            Some(QuickCommandsPanelMode::Rail)
-        );
-        assert_eq!(quick_commands_panel_mode(false, true), None);
-        assert_eq!(quick_commands_panel_mode(false, false), None);
-    }
 }

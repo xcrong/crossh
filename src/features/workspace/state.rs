@@ -1,4 +1,4 @@
-//! 工作区纯状态类型：Tab / LocalSession / 目录聚合 / 状态优先级。
+//! 工作区纯状态类型：LocalSession / 目录聚合 / 状态优先级。
 //!
 //! 与 `view.rs` 的渲染分离：本模块零 `AppShell` 依赖，可被 `registry` 与 `view`
 //! 同时引用而不形成循环。`rebuild_local_dirs` / `preferred_state` 等纯函数
@@ -9,29 +9,15 @@ use std::path::PathBuf;
 
 use gpui::Entity;
 
-use crate::features::connections::Connection;
 use crate::features::terminal::TerminalView;
-use crate::features::workspace::pane::WorkspacePane;
 use crossh_core::git_status::GitStatus;
 use crossh_terminal::ConnState;
-
-/// 一个远程终端/SFTP 标签。
-pub struct Tab {
-    /// 重新打开终端时使用的原始目标（别名或 user@host:port）。
-    pub target: String,
-    pub host_key: String,
-    /// SFTP/forward tabs keep the russh connection. Zed-backed terminal tabs
-    /// use Zed's PTY/SSH process directly and leave this empty.
-    pub connection: Option<Entity<Connection>>,
-    pub pane: Box<dyn WorkspacePane>,
-}
 
 pub type LocalSessionId = u64;
 
 /// 当前主区正在展示的工作区。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ActiveView {
-    RemoteTab(usize),
     LocalSession(LocalSessionId),
 }
 

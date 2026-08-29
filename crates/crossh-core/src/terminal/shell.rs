@@ -339,14 +339,13 @@ pub fn remote_shell_bootstrap_command() -> String {
         "{MKTEMP_BOOTSTRAP}; trap 'rm -rf \"$d\"' 0; printf %s {encoded} | base64 -d > \"$d/boot.sh\" || exit 1; . \"$d/boot.sh\""
     )
 }
-///
-/// SSH servers pass the remote command through the user's login shell. Do
+/// Remote hosts pass the remote command through the user's login shell. Do
 /// not embed the multi-line selector in another layer of shell quoting:
-/// OpenSSH joins command arguments before the server parses them, and the
+/// Remote shells join command arguments before the server parses them, and the
 /// nested quotes can be interpreted differently by `/bin/sh` variants.
 /// The payload is shell-safe base64, so only a small, portable decoder is
 /// parsed remotely. Decode into a temporary script before sourcing it;
-/// piping directly into `sh` would steal the SSH PTY's stdin and make an
+/// piping directly into `sh` would steal the remote shell PTY's stdin and make an
 /// interactive shell exit immediately on EOF.
 fn remote_shell_bootstrap_selector() -> String {
     let bash_rc_encoded = BASE64.encode(remote_bash_startup_script().as_bytes());

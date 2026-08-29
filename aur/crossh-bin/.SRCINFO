@@ -1,5 +1,5 @@
 pkgbase = crossh-bin
-	pkgdesc = Local-first terminal workspace (GPUI) — project-oriented local sessions; SSH/SFTP/port-forward as workspace panes
+	pkgdesc = Local-first terminal workspace (GPUI) — project-oriented local sessions with Git and Notes as pluggable panes
 	pkgver = 0.20.0
 	pkgrel = 1
 	url = https://github.com/xcrong/crossh

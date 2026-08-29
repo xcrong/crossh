@@ -37,7 +37,7 @@ settings:
   general: General
   terminal: Terminal
   about: About
-  about_description: Local-first terminal workspace — project-oriented sessions; SSH/SFTP/port-forwarding, Git and Notes as pluggable panes.
+  about_description: Local-first terminal workspace — project-oriented local sessions; Git and Notes as pluggable panes.
   about_version: Version
   about_version_description: The version currently installed on this device.
   about_source: Source code
@@ -88,23 +88,17 @@ settings:
 sidebar:
   active: ACTIVE
   bank: BANK
-  no_active_connections: No active connections
-  no_hosts_in_bank: No hosts in bank
   no_projects: No projects
   search_placeholder: Filter projects
-  no_ssh_hosts: No hosts found in ~/.ssh/config
-
 tooltip:
   new_terminal: New terminal
   forget_dir: Remove from recent
   stop_project: Stop project
   settings: Settings
-  open_sftp: Open SFTP
-  port_forwarding: Port forwarding
   new_project: New project
-  open_target: Open project or host
+  open_target: Open project
   close_tab: Close tab
-  host_sidebar: Show or hide the host sidebar
+  host_sidebar: Show or hide the project sidebar
   timestamps: Show or hide line timestamps
   quick_commands: Show or hide the quick commands panel
   split_terminal: Split the terminal into two columns
@@ -124,11 +118,6 @@ toast:
   search_no_match: No matching project
 
 context_menu:
-  open_terminal: Open Terminal
-  open_sftp: Open SFTP
-  open_forward: Port Forwarding
-  copy_target: Copy Target
-  copy_alias: Copy Alias
   copy_path: Copy Path
   open_local_terminal: Open Terminal Here
   reveal_in_finder: Reveal in Finder
@@ -240,43 +229,15 @@ git:
   conflict_use_theirs: Use incoming
   conflict_mark_resolved: Mark resolved
 
-connection:
-  connecting_with_separator: "Connecting · "
-  connected_with_separator: "Connected · "
-  error_with_separator: "Error · "
-  closed_with_separator: "Disconnected · "
-
-tab:
-  sftp: SFTP
-  forward: Forward
-
 empty_state:
   title: Ready when you are
   description: Open a local project to get started
   local_projects: Local projects
-  remote_hosts: Remote hosts
   recent_projects: Recent projects
-  saved_hosts: Configured hosts
-
-prompt:
-  changed_host_key_warning: "The host key has changed, which may indicate a man-in-the-middle attack. Only accept the connection once if you really expect this change; accepting once does not update known_hosts."
-  unknown_host_warning: Verify this unknown host's fingerprint before continuing.
-  host_key_title: Confirm host key
-  host_key_body: "%{warning}\nHost: %{host}:%{port}\nKey type: %{key_type}\nFingerprint:\n%{fingerprint}"
-  passphrase_title: Enter private key passphrase
-  password_title: Enter password
-  accept_once: Accept once
-  accept_always: Always accept
-  reject: Reject
-  confirm: Confirm
-  cancel: Cancel
 
 tab_close:
   title: Close Tab?
   running: A command is still running in this terminal.
-  transfers: "SFTP transfers or saves in progress: %{count}"
-  unsaved_editors: "Remote files with unsaved changes: %{count}"
-  forwards: "Active port forwards: %{count}"
   consequence: Closing this tab will terminate the running session and its processes.
   confirm: Close Anyway
   cancel: Cancel
@@ -286,70 +247,14 @@ quit:
   title: Quit Crossh?
   warning: "Closing Crossh can interrupt active work:"
   commands: "Terminal commands still running: %{count}"
-  transfers: "SFTP transfers or saves in progress: %{count}"
-  unsaved_editors: "Remote files with unsaved changes: %{count}"
-  forwards: "Active port forwards: %{count}"
-  cleanup: Crossh will ask sessions and forwards to close before quitting.
+  cleanup: Crossh will ask sessions to close before quitting.
   confirm: Quit Anyway
   cancel: Cancel
   closing: Closing active sessions…
 
-sftp:
-  channel_unavailable: SFTP channel unavailable
-  not_utf8: This file is not a UTF-8 text file
-  operation_failed: "%{label} failed: %{message}"
-  save_succeeded: "Saved: %{message}"
-  save_failed: "Save failed: %{message}"
-  closed: SFTP closed
-  no_local_name: "Could not find an available local filename for %{name}"
-  prepare_download: "Preparing download: %{name}"
-  choose_upload_file: Choose a file to upload
-  enter_local_path: Enter a local file path
-  local_file_missing: "Local file does not exist: %{path}"
-  prepare_upload: "Preparing upload: %{name}"
-  unsaved_changes: Save or discard unsaved changes before closing
-  editor_file_too_large: The file is too large for the editor
-  saving: Saving…
-  file_list: File list
-  read_only: Read only
-  editing: Editing
-  enter_editing: Edit
-  saving_short: Saving…
-  save: Save
-  discard: Discard
-  reading_short: Reading…
-  reading_remote: Reading remote file…
-  saving_remote: Saving remote file…
-  unsaved_changes_short: Unsaved changes
-  cannot_edit: This file cannot be edited
-  saved: Saved
-  parent: Parent
-  local_path_placeholder: Local file path (press Enter to upload)
-  upload: Upload
-  choose_file: Choose file
-  loading: Loading…
-  name_placeholder: Name
-
-forward:
-  stopping: "Stopping %{kind} %{listen}"
-  started: "Started %{kind} %{listen}"
-  start_failed: "Failed to start %{kind} %{listen}: %{error}"
-  connection_closed: Connection closed
-  title: Port forwarding
-  source: From ~/.ssh/config
-  no_config: This host has no LocalForward, RemoteForward, or DynamicForward entries.
-  local: Local (-L)
-  remote: Remote (-R)
-  dynamic: Dynamic (-D SOCKS5)
-  kind_local: local
-  kind_remote: remote
-  kind_dynamic: dynamic
-
 terminal:
-  connecting: Connecting…
   closed: Session closed.
   bell: Terminal bell.
-
 quick_commands:
   title: Quick commands
   empty: Commands from this directory will appear here.

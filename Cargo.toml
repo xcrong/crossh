@@ -17,7 +17,6 @@ members = [
     "crates/crossh-core",
     "crates/crossh-assets",
     "crates/crossh-theme",
-    "crates/crossh-ssh",
     "crates/crossh-terminal",
     "crates/crossh-update",
     "crates/crossh-ui",
@@ -30,7 +29,6 @@ resolver = "2"
 crossh-core = { path = "crates/crossh-core" }
 crossh-note = { path = "crates/crossh-note" }
 crossh-theme = { path = "crates/crossh-theme" }
-crossh-ssh = { path = "crates/crossh-ssh" }
 crossh-terminal = { path = "crates/crossh-terminal" }
 crossh-update = { path = "crates/crossh-update" }
 crossh-ui = { path = "crates/crossh-ui" }

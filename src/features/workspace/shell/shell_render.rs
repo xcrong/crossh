@@ -2,18 +2,6 @@ use super::*;
 
 impl Render for AppShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let prompt = self.current_prompt(cx);
-        let has_prompt = !matches!(prompt, PromptDisplay::None);
-
-        if has_prompt && !self.last_had_prompt {
-            self.modal_focus.focus(window, cx);
-        }
-        if !has_prompt {
-            self.prompt_input.clear();
-            self.prompt_ime_marked_text.clear();
-        }
-        self.last_had_prompt = has_prompt;
-
         // compose 展开时自动聚焦输入框（终端级，仅在对应终端可见性翻转时触发）
         if let Some(view) = self.workspace.focused_view() {
             let entry = self.workspace.compose_entry_mut(view);
@@ -45,16 +33,6 @@ impl Render for AppShell {
                         .unwrap_or_else(|| session.cwd.to_string_lossy().to_string());
                     let cwd = PathBuf::from(cwd);
                     (local_scope(&cwd), cwd.to_string_lossy().to_string())
-                }),
-            Some(ActiveView::RemoteTab(index)) => self
-                .workspace
-                .sessions
-                .remote_tabs
-                .get(index)
-                .and_then(|tab| {
-                    tab.pane
-                        .cwd(cx)
-                        .map(|cwd| (remote_scope(&tab.host_key, &cwd), cwd))
                 }),
             None => None,
         };
@@ -176,12 +154,6 @@ impl Render for AppShell {
             );
         root = root.children(system_monitor_card);
         root = root.children(self.render_toaster());
-        if matches!(
-            prompt,
-            PromptDisplay::HostKey { .. } | PromptDisplay::Credential { .. }
-        ) {
-            root = root.child(render_prompt_modal(self, prompt, window, cx));
-        }
         if self.quick_command_editor.is_some() {
             root = root.child(render_quick_command_editor(self, window, cx));
         }

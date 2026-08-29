@@ -1,4 +1,4 @@
-//! 工作区渲染：标签条 + 终端/SFTP/转发主区、状态栏与模态弹窗。
+//! 工作区渲染：标签条 + 终端主区、状态栏与模态弹窗。
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -30,7 +30,7 @@ use crossh_ui_component::{
 };
 
 pub use crate::features::workspace::state::{
-    ActiveView, LocalDir, LocalSession, LocalSessionId, Tab,
+    ActiveView, LocalDir, LocalSession, LocalSessionId,
 };
 
 const TERMINAL_SPLIT_MIN_PANE_WIDTH: f32 = 160.0;
@@ -56,7 +56,7 @@ pub fn render_main(
         pane = pane.child(tab_strip::render_tab_strip(shell, cx));
     }
 
-    // 终端/SFTP 区。
+    // 终端主区。
     let mut content = div().flex_1().min_h_0().flex().relative();
     let mut terminal_area = div().flex_1().min_w_0().min_h_0().relative();
     // 分栏跟随其属主 Tab：只有属主 Tab 正被展示时才渲染分栏；否则
@@ -98,12 +98,6 @@ pub fn render_main(
 
 fn render_workspace_view(shell: &AppShell, view: ActiveView) -> Option<AnyElement> {
     match view {
-        ActiveView::RemoteTab(index) => shell
-            .workspace
-            .sessions
-            .remote_tabs
-            .get(index)
-            .map(|tab| tab.pane.render()),
         ActiveView::LocalSession(session_id) => shell
             .workspace
             .sessions
@@ -311,13 +305,6 @@ fn workspace_view_has_terminal(shell: &AppShell, view: ActiveView) -> bool {
             .sessions
             .local_sessions
             .contains_key(&session_id),
-        ActiveView::RemoteTab(index) => shell
-            .workspace
-            .sessions
-            .remote_tabs
-            .get(index)
-            .and_then(|tab| tab.pane.terminal_entity_id())
-            .is_some(),
     }
 }
 

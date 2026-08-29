@@ -6,12 +6,11 @@ use gpui::{Context, Task};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-use crossh_ssh::ssh_runtime;
+use crate::infrastructure::runtime::runtime;
 use crossh_update::{
     DEFAULT_MANIFEST_URL, UpdateCandidate, UpdateError, UpdateTarget, download_artifact,
     fetch_manifest, spawn_updater, take_update_result,
 };
-
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct UpdateSettings {
     #[serde(default = "default_check_on_startup")]
@@ -121,7 +120,7 @@ impl UpdateController {
         self.status = UpdateStatus::Checking;
         cx.notify();
         let task = cx.spawn(async move |weak, cx| {
-            let result = ssh_runtime()
+            let result = runtime()
                 .spawn(async move {
                     let manifest = fetch_manifest(&manifest_url).await?;
                     manifest
@@ -158,7 +157,7 @@ impl UpdateController {
         self.status = UpdateStatus::Downloading(candidate.clone());
         cx.notify();
         let task = cx.spawn(async move |weak, cx| {
-            let result = ssh_runtime()
+            let result = runtime()
                 .spawn(async move { download_artifact(&artifact, &version, &target).await })
                 .await;
             let result = match result {

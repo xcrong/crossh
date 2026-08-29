@@ -1,9 +1,8 @@
 //! crossh —— 基于 gpui 的本地优先终端工作环境（macOS / Linux / Windows）。
 //!
-//! 以项目目录组织多会话本地终端为核心，SSH/SFTP/端口转发、Git Viewer、
-//! Note 均为可插拔 WorkspacePane / 独立二进制（`crossh-git` / `crossh-note` / `crossh-updater`），
+//! 以项目目录组织多会话本地终端为核心，Git Viewer、Note 均为可插拔
+//! WorkspacePane / 独立二进制（`crossh-git` / `crossh-note` / `crossh-updater`），
 //! 通过 WorkspacePane 组合进同一工作区。
-
 mod app;
 mod features;
 mod infrastructure;
@@ -101,7 +100,7 @@ fn main() {
     infrastructure::logging::init();
 
     // 预热 tokio 运行时（单例，限 2 worker 线程，控内存）。
-    let _rt = crossh_ssh::ssh_runtime();
+    let _rt = infrastructure::runtime::runtime();
 
     let app = gpui_platform::application().with_assets(crossh_ui::assets::UiAssetSource::default());
     let reopen_target = launch_target.clone();

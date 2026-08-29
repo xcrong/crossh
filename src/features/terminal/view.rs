@@ -32,7 +32,7 @@ use crate::shared::i18n;
 use crossh_core::terminal::{
     LocalShellEnvironment, ShellCommandMarker, ShellPromptMarker, command_marker_from_title,
     local_terminal_tab_title, local_terminal_title, prompt_marker_from_title,
-    remote_terminal_title, strip_shell_host_prefix, truncate_path_title,
+    strip_shell_host_prefix,
 };
 use crossh_terminal::timestamps::{TerminalRow, TerminalTimestampState, timestamp_now};
 use crossh_terminal::{ConnState, TerminalEvent, TerminalSettings};
@@ -176,7 +176,6 @@ pub struct TerminalView {
     pub state: ConnState,
     pub cwd: Option<String>,
     title: Option<String>,
-    is_local: bool,
     ime_marked_text: String,
     /// Set when the terminal emitted a bell since the last frame; consumed by
     /// the renderer so the system bell fires exactly once per event.
@@ -232,42 +231,17 @@ impl TerminalView {
             Some(cwd),
             Some(initial_cwd),
             shell,
-            false,
             settings,
             shell_environment,
             cx,
         )
     }
 
-    /// Create a local or remote interactive shell through Zed's TerminalBuilder.
-    ///
-    /// Crossh deliberately does not add a second PTY/event loop here. Remote
-    /// sessions are represented by an interactive ssh shell, which gives them
-    /// the same terminal behavior as local sessions.
-    pub fn from_zed_shell(
-        working_directory: Option<PathBuf>,
-        initial_cwd: Option<String>,
-        shell: Shell,
-        is_remote_terminal: bool,
-        settings: TerminalSettings,
-        cx: &mut App,
-    ) -> Entity<Self> {
-        Self::from_zed_shell_with_environment(
-            working_directory,
-            initial_cwd,
-            shell,
-            is_remote_terminal,
-            settings,
-            None,
-            cx,
-        )
-    }
 
     fn from_zed_shell_with_environment(
         working_directory: Option<PathBuf>,
         initial_cwd: Option<String>,
         shell: Shell,
-        is_remote_terminal: bool,
         settings: TerminalSettings,
         shell_environment: Option<LocalShellEnvironment>,
         cx: &mut App,
@@ -305,7 +279,7 @@ impl TerminalView {
             Some(settings.scrollback),
             Vec::new(),
             Duration::from_millis(0),
-            is_remote_terminal,
+            false,
             0,
             cx,
             Vec::new(),
@@ -334,7 +308,6 @@ impl TerminalView {
                 state: ConnState::Connecting,
                 cwd: initial_cwd,
                 title: None,
-                is_local: !is_remote_terminal,
                 ime_marked_text: String::new(),
                 bell_pending: false,
                 context_menu: None,
@@ -970,34 +943,21 @@ impl TerminalView {
     pub fn tab_title(&self, fallback: &str) -> String {
         if let Some(title) = self.title().filter(|title| !title.trim().is_empty()) {
             let title = strip_shell_host_prefix(title);
-            return if self.is_local {
-                local_terminal_tab_title(title, self.cwd.as_deref())
-            } else {
-                truncate_path_title(title)
-            };
+            return local_terminal_tab_title(title, self.cwd.as_deref());
         }
 
-        if self.is_local {
-            let title = local_terminal_title(
-                self.cwd.as_deref(),
-                None,
-                Some(util::shell::get_system_shell().as_str()),
-            );
-            if title != "Terminal" {
-                return title;
-            }
+        let title = local_terminal_title(
+            self.cwd.as_deref(),
+            None,
+            Some(util::shell::get_system_shell().as_str()),
+        );
+        if title != "Terminal" {
+            return title;
         }
 
-        if self.is_local {
-            fallback.to_owned()
-        } else {
-            remote_terminal_title(None)
-        }
+        fallback.to_owned()
     }
 
-    pub fn is_local(&self) -> bool {
-        self.is_local
-    }
 
     pub(crate) fn handle_system_notification_response(
         &mut self,
@@ -1012,8 +972,12 @@ impl TerminalView {
     }
 }
 
+// 保留：本地优先下仅单 pane，但抽象为未来 pane 类型保留
+#[allow(dead_code)]
 pub(crate) struct TerminalWorkspacePane(pub(crate) Entity<TerminalView>);
 
+// 保留：本地优先下仅单 pane，但抽象为未来 pane 类型保留
+#[allow(dead_code)]
 pub(crate) fn workspace_pane(entity: Entity<TerminalView>) -> Box<dyn WorkspacePane> {
     Box::new(TerminalWorkspacePane(entity))
 }

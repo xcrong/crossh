@@ -4,13 +4,15 @@ use gpui::{AnyElement, App, EntityId, SystemNotificationResponse};
 
 use crossh_terminal::TerminalSettings;
 
+// 保留：本地优先下仅单 pane，但抽象为未来 pane 类型保留
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PaneRisk {
-    pub(crate) sftp_writes: usize,
     pub(crate) unsaved_editors: usize,
-    pub(crate) active_forwards: usize,
 }
 
+// 保留：本地优先下仅单 pane，但抽象为未来 pane 类型保留
+#[allow(dead_code)]
 /// The workspace knows only these capabilities; pane implementations own the
 /// concrete GPUI entities and feature-specific behavior.
 pub(crate) trait WorkspacePane {
@@ -33,7 +35,7 @@ pub(crate) trait WorkspacePane {
     ) -> Option<bool>;
     fn request_focus(&self, cx: &mut App);
     fn request_close(&self, _cx: &mut App) {}
-    /// Release feature-owned resources when a remote tab is removed.
+    /// Release feature-owned resources when a pane is removed.
     fn cleanup(&self, _cx: &mut App) {}
     fn apply_terminal_settings(&self, _settings: TerminalSettings, _cx: &mut App) {}
     fn notify_language(&self, _cx: &mut App) {}

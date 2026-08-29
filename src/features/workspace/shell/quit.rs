@@ -13,17 +13,12 @@ enum ExitIntent {
 #[derive(Default)]
 struct QuitRiskSummary {
     running_commands: usize,
-    sftp_writes: usize,
     unsaved_editors: usize,
-    active_forwards: usize,
 }
 
 impl QuitRiskSummary {
     fn needs_confirmation(&self) -> bool {
-        self.running_commands > 0
-            || self.sftp_writes > 0
-            || self.unsaved_editors > 0
-            || self.active_forwards > 0
+        self.running_commands > 0 || self.unsaved_editors > 0
     }
 
     fn detail(&self) -> String {
@@ -31,23 +26,16 @@ impl QuitRiskSummary {
         if self.running_commands > 0 {
             lines.push(rust_i18n::t!("quit.commands", count = self.running_commands).to_string());
         }
-        if self.sftp_writes > 0 {
-            lines.push(rust_i18n::t!("quit.transfers", count = self.sftp_writes).to_string());
-        }
         if self.unsaved_editors > 0 {
             lines.push(
                 rust_i18n::t!("quit.unsaved_editors", count = self.unsaved_editors).to_string(),
             );
-        }
-        if self.active_forwards > 0 {
-            lines.push(rust_i18n::t!("quit.forwards", count = self.active_forwards).to_string());
         }
         lines.push(String::new());
         lines.push(i18n::text("quit.cleanup"));
         lines.join("\n")
     }
 }
-
 impl AppShell {
     pub(super) fn handle_quit(
         &mut self,
@@ -144,15 +132,6 @@ impl AppShell {
                 risks.running_commands += 1;
             }
         }
-        for tab in &self.workspace.sessions.remote_tabs {
-            if tab.pane.is_command_running(cx) {
-                risks.running_commands += 1;
-            }
-            let pane_risk = tab.pane.risk(cx);
-            risks.sftp_writes += pane_risk.sftp_writes;
-            risks.unsaved_editors += pane_risk.unsaved_editors;
-            risks.active_forwards += pane_risk.active_forwards;
-        }
         risks
     }
 
@@ -187,9 +166,6 @@ impl AppShell {
             .map(|session| session.terminal.clone())
             .collect::<Vec<_>>();
 
-        for tab in &self.workspace.sessions.remote_tabs {
-            tab.pane.request_close(cx);
-        }
         for terminal in terminals {
             terminal.update(cx, |terminal, terminal_cx| {
                 terminal.request_close(terminal_cx)
@@ -213,15 +189,7 @@ mod tests {
                 ..Default::default()
             },
             QuitRiskSummary {
-                sftp_writes: 1,
-                ..Default::default()
-            },
-            QuitRiskSummary {
                 unsaved_editors: 1,
-                ..Default::default()
-            },
-            QuitRiskSummary {
-                active_forwards: 1,
                 ..Default::default()
             },
         ] {

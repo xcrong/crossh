@@ -93,6 +93,6 @@ pub enum TerminalEvent {
     TitleChanged,
     /// The terminal produced a user-facing notification or bell.
     Notification,
-    /// The shell or SSH channel ended.
+    /// The shell or remote channel ended.
     Closed,
 }

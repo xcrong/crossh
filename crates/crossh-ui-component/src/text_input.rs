@@ -23,7 +23,7 @@ type KeyHandler = Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App)>;
 /// 非空时显示 `display`(默认取 `value`)+ caret(聚焦时)+ IME 标记。
 /// 若传入 `selection`（`Some((start,end))` 字节区间）且 `display` 为空，则按
 /// `ModalField` 同款高亮渲染「before + 选中块(accent_soft) + after」，不再显示 caret/IME；
-/// 该扩展使 `compose_bar`/`git`/`sftp` 等单行输入可复用同一选中渲染路径。
+/// 该扩展使 `compose_bar`/`git` 等单行输入可复用同一选中渲染路径。
 pub struct TextInput<V> {
     id: ElementId,
     focus: FocusHandle,
@@ -151,7 +151,7 @@ impl<V> TextInput<V> {
         self
     }
 
-    /// 键盘聚焦时用 accent 描边替代 focus_ring(对应 sftp 上传框)。
+    /// 键盘聚焦时用 accent 描边替代 focus_ring(对应 compose/git 输入框)。
     pub fn focus_visible_accent(mut self) -> Self {
         self.focus_visible_accent = true;
         self
@@ -457,7 +457,7 @@ mod tests {
 
     #[gpui::test]
     fn layout_flags_and_focus_visible_are_sticky(cx: &mut TestAppContext) {
-        let input: TextInput<()> = TextInput::new("sftp", focus(cx)).flex_1().full_width();
+        let input: TextInput<()> = TextInput::new("test_input", focus(cx)).flex_1().full_width();
         assert!(input.flex_1);
         assert!(input.full_width);
     }

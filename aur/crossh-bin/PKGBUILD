@@ -6,7 +6,7 @@
 pkgname=crossh-bin
 pkgver=0.20.0
 pkgrel=1
-pkgdesc="Local-first terminal workspace (GPUI) — project-oriented local sessions; SSH/SFTP/port-forward as workspace panes"
+pkgdesc="Local-first terminal workspace (GPUI) — project-oriented local sessions with Git and Notes as pluggable panes"
 arch=('x86_64' 'aarch64')
 url="https://github.com/xcrong/crossh"
 license=('GPL3')
@@ -30,7 +30,6 @@ depends=(
     'glibc'
 )
 optdepends=(
-    'openssh: for ssh config parsing compatibility'
 )
 # Release 产物由 scripts/package-linux.sh 生成：
 #   crossh-<ver>-linux-x86_64.tar.gz  (x86_64)
@@ -77,10 +76,9 @@ Exec=crossh %u
 Icon=io.crossh.app
 Terminal=false
 Type=Application
-Categories=Development;Network;
+Categories=Development;
 StartupWMClass=io.crossh.app
-MimeType=x-scheme-handler/ssh;
-Keywords=terminal;workspace;project;ssh;sftp;git;notes;
+Keywords=terminal;workspace;project;git;notes;
 DESKTOP
     # 兼容旧名
     ln -s "io.crossh.app.desktop" "${pkgdir}/usr/share/applications/crossh.desktop"

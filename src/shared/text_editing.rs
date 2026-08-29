@@ -4,7 +4,7 @@
 //! **逻辑不依赖 UI**——除标准库文本处理外，这里不允许出现任何 UI 框架
 //! 依赖（`scripts/check-architecture.sh` 亦会拦截）。焦点、滚动、重绘
 //! （`cx.notify()`）等 UI 职责由各 feature 的视图层（`QuickCommandEditor`、
-//! `CommitEditor`、设置输入框、SFTP 编辑器）自行承担，本模块只负责状态与编辑运算。
+//! `CommitEditor`、设置输入框）自行承担，本模块只负责状态与编辑运算。
 //!
 //! `TextEditingState` 统一了各编辑器共享的字段集合（value/cursor/anchor/IME
 //! 标记），配合本模块的四个字符边界函数，消除各 feature 之间重复的边界实现。

@@ -1,7 +1,7 @@
 //! 轻量右键上下文菜单：类型 + 定位 + 渲染。
 //!
 //! 自 `crossh-ui` 抽取的通用实现，归属组件库后由 `GitView` / `AppShell` /
-//! `Terminal` / `Sftp` 等宿主共享。`crossh-ui` 的 `Menu`/`MenuItem` 仅用于
+//! `Terminal` 等宿主共享。`crossh-ui` 的 `Menu`/`MenuItem` 仅用于
 //! macOS 菜单栏，这里按既有样式自建：全屏 scrim（点击即关闭）+ 定位菜单。
 //! 菜单状态由各拥有者持有，渲染时作为根 div 的最后一个 child 挂载，保证 z 序最高。
 

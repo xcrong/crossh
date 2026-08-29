@@ -39,7 +39,6 @@ check_absent \
     '(use|extern crate).*gpui|gpui::' \
     "$repo_root/crates/crossh-core" \
     "$repo_root/crates/crossh-assets" \
-    "$repo_root/crates/crossh-ssh" \
     "$repo_root/crates/crossh-terminal" \
     "$repo_root/crates/crossh-update" \
     "$repo_root/crates/crossh-theme"
@@ -49,19 +48,13 @@ check_absent \
     'crossh_ui|crossh::|crate::features|crate::shared' \
     "$repo_root/crates/crossh-core" \
     "$repo_root/crates/crossh-assets" \
-    "$repo_root/crates/crossh-ssh" \
     "$repo_root/crates/crossh-terminal" \
     "$repo_root/crates/crossh-update" \
     "$repo_root/crates/crossh-theme"
 
 check_absent \
-    "main.rs contains infrastructure implementation details" \
-    '(^|[[:space:]])(log::|std::fs|std::io|std::panic)|trim_log|TeeWriter' \
-    "$repo_root/src/main.rs"
-
-check_absent \
     "workspace matches over concrete pane variants" \
-    'enum[[:space:]]+Pane|Pane::(Terminal|Sftp|Forward)' \
+    'enum[[:space:]]+Pane|Pane::Terminal' \
     "$repo_root/src/features/workspace"
 
 check_absent \

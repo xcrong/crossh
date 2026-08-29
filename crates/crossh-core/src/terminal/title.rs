@@ -285,8 +285,6 @@ mod tests {
             "very-long-remote-termina…"
         );
         assert_eq!(remote_terminal_title(None), "Terminal");
-        assert_eq!(remote_pane_title("SFTP"), "SFTP");
-        assert_eq!(remote_pane_title("Forward"), "Forward");
     }
 
     #[test]

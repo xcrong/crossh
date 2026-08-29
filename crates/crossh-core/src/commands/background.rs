@@ -84,7 +84,7 @@ impl BackgroundTaskManager {
     }
 
     /// Reserve a task id and display entry for a command executed by another
-    /// process, such as an SSH channel. Its completion event is applied by the
+    /// process, such as a remote channel. Its completion event is applied by the
     /// owner of that process.
     pub fn start_remote(
         &mut self,

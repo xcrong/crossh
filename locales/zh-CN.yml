@@ -37,7 +37,7 @@ settings:
   general: 通用
   terminal: 终端
   about: 关于
-  about_description: 本地优先的终端工作环境，以项目组织多会话终端，SSH/SFTP/端口转发、Git 与笔记为可插拔面板。
+  about_description: 本地优先的终端工作环境，以项目组织多会话本地终端，Git 与笔记为可插拔面板。
   about_version: 版本
   about_version_description: 当前设备上安装的应用版本。
   about_source: 源代码
@@ -88,23 +88,17 @@ settings:
 sidebar:
   active: 活跃
   bank: 主机
-  no_active_connections: 暂无活动连接
-  no_hosts_in_bank: 暂无主机
   no_projects: 暂无项目
   search_placeholder: 筛选项目
-  no_ssh_hosts: 未找到 ~/.ssh/config 中的主机
-
 tooltip:
   new_terminal: 新建终端
   forget_dir: 从最近记录移除
   stop_project: 停止项目
   settings: 设置
-  open_sftp: 打开 SFTP
-  port_forwarding: 端口转发
   new_project: 新建项目
-  open_target: 打开项目或主机
+  open_target: 打开项目
   close_tab: 关闭标签
-  host_sidebar: 显示或隐藏主机栏
+  host_sidebar: 显示或隐藏项目侧栏
   timestamps: 显示或隐藏行时间戳
   quick_commands: 显示或隐藏快捷命令栏
   split_terminal: 将终端分为左右两栏
@@ -124,11 +118,6 @@ toast:
   search_no_match: 未找到匹配的项目
 
 context_menu:
-  open_terminal: 打开终端
-  open_sftp: 打开 SFTP
-  open_forward: 端口转发
-  copy_target: 复制连接目标
-  copy_alias: 复制主机别名
   copy_path: 复制路径
   open_local_terminal: 在此打开终端
   reveal_in_finder: 在 Finder 中显示
@@ -240,43 +229,15 @@ git:
   conflict_use_theirs: 使用目标版本
   conflict_mark_resolved: 标记已解决
 
-connection:
-  connecting_with_separator: "连接中 · "
-  connected_with_separator: "已连接 · "
-  error_with_separator: "出错 · "
-  closed_with_separator: "已断开 · "
-
-tab:
-  sftp: SFTP
-  forward: 转发
-
 empty_state:
   title: 准备开始
   description: 打开一个本地项目开始工作
   local_projects: 本地项目
-  remote_hosts: 远程主机
   recent_projects: 最近项目
-  saved_hosts: 已配置主机
-
-prompt:
-  changed_host_key_warning: "主机密钥已变更，可能存在中间人攻击。仅在你确认服务器确实重装时接受本次连接；本次接受不会写入 known_hosts。"
-  unknown_host_warning: 未知主机，请核对此指纹后决定。
-  host_key_title: 主机密钥确认
-  host_key_body: "%{warning}\n主机：%{host}:%{port}\n密钥类型：%{key_type}\n指纹：\n%{fingerprint}"
-  passphrase_title: 请输入私钥口令
-  password_title: 请输入密码
-  accept_once: 接受一次
-  accept_always: 总是接受
-  reject: 拒绝
-  confirm: 确定
-  cancel: 取消
 
 tab_close:
   title: 关闭标签页？
   running: 此终端中仍有命令在运行。
-  transfers: "正在进行的 SFTP 传输或保存：%{count}"
-  unsaved_editors: "有未保存修改的远程文件：%{count}"
-  forwards: "活动端口转发：%{count}"
   consequence: 关闭标签页将终止正在运行的会话及其进程。
   confirm: 仍然关闭
   cancel: 取消
@@ -286,70 +247,14 @@ quit:
   title: 要退出 Crossh 吗？
   warning: "关闭 Crossh 可能会中断以下活动："
   commands: "正在运行的终端命令：%{count}"
-  transfers: "正在进行的 SFTP 传输或保存：%{count}"
-  unsaved_editors: "有未保存修改的远程文件：%{count}"
-  forwards: "活动端口转发：%{count}"
-  cleanup: 退出前会先请求会话和端口转发正常关闭。
+  cleanup: 退出前会先请求会话正常关闭。
   confirm: 仍然退出
   cancel: 取消
   closing: 正在关闭活动会话…
 
-sftp:
-  channel_unavailable: SFTP 通道不可用
-  not_utf8: 该文件不是 UTF-8 文本文件
-  operation_failed: "%{label} 失败：%{message}"
-  save_succeeded: "保存成功：%{message}"
-  save_failed: "保存失败：%{message}"
-  closed: SFTP 已关闭
-  no_local_name: "无法为 %{name} 找到可用的本地文件名"
-  prepare_download: "准备下载：%{name}"
-  choose_upload_file: 选择要上传的文件
-  enter_local_path: 请输入本地文件路径
-  local_file_missing: "本地文件不存在：%{path}"
-  prepare_upload: "准备上传：%{name}"
-  unsaved_changes: 有未保存修改，请先保存或放弃
-  editor_file_too_large: 文件内容超过编辑器大小上限
-  saving: 正在保存…
-  file_list: 文件列表
-  read_only: 只读
-  editing: 编辑中
-  enter_editing: 进入编辑
-  saving_short: 保存中…
-  save: 保存
-  discard: 放弃
-  reading_short: 读取中…
-  reading_remote: 正在读取远端文件…
-  saving_remote: 正在保存远端文件…
-  unsaved_changes_short: 有未保存修改
-  cannot_edit: 无法编辑此文件
-  saved: 已保存
-  parent: 上级
-  local_path_placeholder: 本地文件路径（回车上传）
-  upload: 上传
-  choose_file: 选择文件
-  loading: 加载中…
-  name_placeholder: 输入名称
-
-forward:
-  stopping: "正在停止 %{kind} %{listen}"
-  started: "已启动 %{kind} %{listen}"
-  start_failed: "启动 %{kind} %{listen} 失败：%{error}"
-  connection_closed: 连接已关闭
-  title: 端口转发
-  source: 来自 ~/.ssh/config
-  no_config: 该主机未配置 LocalForward、RemoteForward 或 DynamicForward。
-  local: 本地 (-L)
-  remote: 远端 (-R)
-  dynamic: 动态 (-D SOCKS5)
-  kind_local: 本地
-  kind_remote: 远端
-  kind_dynamic: 动态
-
 terminal:
-  connecting: 连接中…
   closed: 会话已关闭。
   bell: 终端响铃。
-
 quick_commands:
   title: 快捷命令
   empty: 在此目录执行过的命令会显示在这里。

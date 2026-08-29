@@ -387,9 +387,6 @@ pub fn local_scope(cwd: &Path) -> String {
     format!("local:{}", cwd.to_string_lossy())
 }
 
-pub fn remote_scope(host_key: &str, cwd: &str) -> String {
-    format!("remote:{host_key}:{cwd}")
-}
 
 #[cfg(test)]
 mod tests {
@@ -544,15 +541,4 @@ mod tests {
         assert_eq!(local_scope(Path::new("/tmp/project")), "local:/tmp/project");
     }
 
-    #[test]
-    fn remote_scope_keeps_host_and_directory_identity() {
-        assert_eq!(
-            remote_scope("deploy@example.com:22", "/srv/app"),
-            "remote:deploy@example.com:22:/srv/app"
-        );
-        assert_ne!(
-            remote_scope("deploy@example.com:22", "/srv/app"),
-            remote_scope("deploy@example.com:22", "/srv/other")
-        );
-    }
 }

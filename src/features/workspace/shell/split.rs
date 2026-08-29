@@ -18,9 +18,8 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) -> Option<ActiveView> {
         let view = self.create_local_session(project_dir, cwd, cx)?;
-        if let ActiveView::LocalSession(session_id) = view {
-            self.refresh_git_status(session_id, false, cx);
-        }
+        let ActiveView::LocalSession(session_id) = view;
+        self.refresh_git_status(session_id, false, cx);
         self.status = None;
         cx.notify();
         Some(view)
@@ -31,9 +30,6 @@ impl AppShell {
         // 才表示「关闭本 Tab 的分栏」，其他 Tab 的分栏独立共存、互不干扰。
         if let Some(split) = self.workspace.active_split() {
             match split.right {
-                ActiveView::RemoteTab(index) => {
-                    self.request_close_remote_tab(index, window, cx);
-                }
                 ActiveView::LocalSession(session_id) => {
                     self.request_close_local_session(session_id, window, cx);
                 }
@@ -78,9 +74,6 @@ impl AppShell {
     /// 处理退出分栏的右窗格会话：按活动风险决定销毁或保留为普通标签。
     fn retire_split_pane(&mut self, view: ActiveView, cx: &mut Context<Self>) {
         let retirement = match view {
-            ActiveView::RemoteTab(index) => {
-                split_pane_retirement(self.remote_tab_close_risk(index, cx).as_ref())
-            }
             ActiveView::LocalSession(session_id) => {
                 split_pane_retirement(self.local_session_close_risk(session_id, cx).as_ref())
             }
@@ -89,7 +82,6 @@ impl AppShell {
             return;
         }
         match view {
-            ActiveView::RemoteTab(index) => self.close_remote_tab(index, cx),
             ActiveView::LocalSession(session_id) => self.close_local_session(session_id, cx),
         }
     }
@@ -123,7 +115,6 @@ impl AppShell {
         text: &str,
         cx: &mut Context<Self>,
     ) {
-        // 只有活动属主的分栏参与交互：隐藏分栏的窗格不可见，不会成为来源。
         let Some(split) = self.workspace.active_split() else {
             return;
         };
@@ -139,11 +130,6 @@ impl AppShell {
             split.left
         };
         match target_view {
-            ActiveView::RemoteTab(index) => {
-                if let Some(tab) = self.workspace.sessions.remote_tabs.get(index) {
-                    tab.pane.send_text(text, cx);
-                }
-            }
             ActiveView::LocalSession(session_id) => {
                 if let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) {
                     session
@@ -176,18 +162,11 @@ impl AppShell {
                 let cwd = self.local_session_cwd(session_id, cx);
                 self.open_local_session_for_split(project_dir, cwd, cx)
             }
-            ActiveView::RemoteTab(index) => {
-                let tab = self.workspace.sessions.remote_tabs.get(index)?;
-                tab.pane.terminal_entity_id()?;
-                let target = tab.target.clone();
-                Some(self.open_terminal_target_for_split(target, cx))
-            }
         }
     }
 
     fn rollback_split_terminal(&mut self, view: ActiveView, cx: &mut Context<Self>) {
         match view {
-            ActiveView::RemoteTab(index) => self.close_remote_tab(index, cx),
             ActiveView::LocalSession(session_id) => self.close_local_session(session_id, cx),
         }
     }
@@ -207,15 +186,10 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         match view {
-            ActiveView::RemoteTab(index) => {
-                if let Some(tab) = self.workspace.sessions.remote_tabs.get(index) {
-                    tab.pane.set_adjacent_terminal_available(available, cx);
-                }
-            }
             ActiveView::LocalSession(session_id) => {
                 if let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) {
-                    session.terminal.update(cx, |terminal, cx| {
-                        terminal.set_adjacent_terminal_available(available, cx)
+                    session.terminal.update(cx, |terminal, term_cx| {
+                        terminal.set_adjacent_terminal_available(available, term_cx);
                     });
                 }
             }
@@ -224,12 +198,6 @@ impl AppShell {
 
     fn terminal_entity_id_for_view(&self, view: ActiveView) -> Option<EntityId> {
         match view {
-            ActiveView::RemoteTab(index) => self
-                .workspace
-                .sessions
-                .remote_tabs
-                .get(index)
-                .and_then(|tab| tab.pane.terminal_entity_id()),
             ActiveView::LocalSession(session_id) => self
                 .workspace
                 .sessions

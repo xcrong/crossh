@@ -52,11 +52,6 @@ impl AppShell {
             return;
         }
         match view {
-            ActiveView::RemoteTab(index) => {
-                if let Some(tab) = self.workspace.sessions.remote_tabs.get(index) {
-                    tab.pane.run_command_without_focus(&text, cx);
-                }
-            }
             ActiveView::LocalSession(session_id) => {
                 if let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) {
                     session.terminal.update(cx, |terminal, term_cx| {

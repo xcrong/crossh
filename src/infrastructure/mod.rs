@@ -2,4 +2,5 @@
 
 pub(crate) mod app_menu;
 pub(crate) mod logging;
+pub(crate) mod runtime;
 pub(crate) mod theme;

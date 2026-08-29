@@ -1,7 +1,7 @@
 # crossh
 
 基于 [gpui](https://github.com/zed-industries/zed/tree/main/crates/gpui) 的本地优先终端工作环境（macOS / Linux / Windows），
-以项目目录组织多会话本地终端为核心，SSH/SFTP/端口转发、Git Viewer、Note 均为可插拔 WorkspacePane / 独立二进制。
+以项目目录组织多会话本地终端为核心，Git Viewer、Note 为可插拔 WorkspacePane / 独立二进制。
 
 ## 特性
 
@@ -10,13 +10,6 @@
 - **Note**：独立二进制 `crossh-note`，本地 SQLite（WAL + FTS5 + 触发器同步，见 `crates/crossh-note/src/lib.rs`）存储，支持全文检索、标签、置顶，零 `gpui` 依赖的纯逻辑层。
 - **系统监视 / Scratch 终端**：系统指标常驻面板与随手 Scratch 终端，均为可插拔 `WorkspacePane`，不阻塞主工作区。
 - **设置与常驻友好**：语言（zh/en）、Zed 终端字号、滚动回退行数、启动时检查更新，持久化到 `~/.config/crossh/`；日志裁剪（`/tmp/crossh/run.log`）、panic 现场保留、空闲内存 ~70MB。
-- **远程能力**
-  - **SSH 子系统复用 `~/.ssh/config`（只读）**：别名列表、`Include`/通配/`ProxyJump`、`Local/Remote/DynamicForward`、`IdentityFile`/`IdentitiesOnly` 均可解析（`Match exec` / `ProxyCommand` 为计划明确不支持，见 `crates/crossh-core/src/config/ssh_config.rs:5`）。
-  - **会话池复用**：SFTP、端口转发和后台远程命令按主机共享已认证的 russh 连接；交互式终端由 Zed 的 PTY/事件循环独立管理。
-  - **交互式终端**：Zed `terminal` 负责 PTY、终端模拟和滚动核心；Crossh 按固定 Zed revision 本地裁剪并维护 `terminal_view` 的 `TerminalElement`，继续复用 Zed 的绘制、输入、文本选择、鼠标协议、IME 和滚动行为。本地 shell 与交互式 SSH 都走同一套视图。
-  - **反应式认证**：未知主机密钥弹指纹确认（可写 `known_hosts`）；加密私钥口令、密码按需弹出，凭据不回写日志。
-  - **SFTP**：远程浏览、上传/下载、目录递归、进度条、覆盖确认。
-  - **端口转发**：`-L` / `-R` / `-D`(SOCKS5)，config 驱动，UI 启停。
 - **远程更新**：设置页从 HTTPS release manifest 检查版本，按平台下载并校验 SHA-256 与 Ed25519 签名（缺失/无效签名一律拒绝，），再交给随应用分发的独立 updater 完成替换和重启。
 
 ## 构建与运行
@@ -35,7 +28,7 @@ Git Viewer 提供变更列表、staging/unstage、commit、push/pull 与刷新�
 
 发布包会同时包含 `crossh`、`crossh-git`、`crossh-updater` 和共享的 `crossh-assets/` 资源目录（三平台一致，见 `scripts/package.sh` / `package-linux.sh` / `package-windows.ps1`）。`crossh git`
 会优先启动安装目录旁边的 `crossh-git`，所有子程序共用同一份字体、图标和主题资源，
-因此 Git Viewer 不需要加载完整的 SSH、终端和工作区功能。
+因此 Git Viewer 不需要加载完整的终端和工作区功能。
 
 打包为未签名 `.app`（当前没有 Developer ID）：
 
@@ -46,30 +39,23 @@ open dist/crossh.app
 ```
 
 三平台发布产物由 [.github/workflows/release.yml](.github/workflows/release.yml) 构建：macOS `.app` zip（aarch64/x86_64）、Linux `tar.gz` + AppImage（x86_64/aarch64）、Windows zip（x86_64，aarch64 为 optional experimental）。每个 release 同时生成 `stable.json`，由 [scripts/generate-update-manifest.sh](scripts/generate-update-manifest.sh) 根据实际产物的大小、SHA-256 与 Ed25519 签名自动生成。更新设计、平台替换策略与签名校验（v0.16.4 已落地）见 [docs/remote-update-plan.md](docs/remote-update-plan.md)。
-
-版本发布使用 `scripts/release.sh <version> --push`：统一 workspace 版本、同步 lockfile、提交、打 tag 并推送。格式、架构、Clippy 和测试检查由 tag 触发的 GitHub Actions 在构建发布产物前执行。
+当前版本的 macOS 包不做 Apple 签名，不承诺绕过 Gatekeeper 或提供公证；应用更新负责验证 HTTPS、目标平台、版本、文件大小、SHA-256 与 manifest Ed25519 签名。
 
 当前版本的 macOS 包不做 Apple 签名，不承诺绕过 Gatekeeper 或提供公证；远程更新负责验证 HTTPS、目标平台、版本、文件大小、SHA-256 与 manifest Ed25519 签名。
 
 ## 快捷键
 
 | 快捷键 | 功能 |
-| --- | --- |
 | `Cmd/Ctrl+T` | 新终端标签（复制当前标签的目标） |
 | `Cmd/Ctrl+W` | 关闭当前标签 |
 | `Cmd/Ctrl+Tab` / `Cmd/Ctrl+Shift+Tab` | 切换标签 |
 | `Cmd/Ctrl+1..9` | 跳到第 N 个标签 |
-| 侧栏搜索框回车 | 打开主机 / 快速连接 `user@host` |
-
-侧栏搜索支持关键词：`local` / `project`（或中文 `本地` / `项目`）直达目录视图与目录选择器。
-
-## 架构
+| 侧栏搜索框回车 | 打开项目 |
 
 ```
 crates/
   crossh-core/                无 UI 的配置、终端契约、命令/Git 逻辑
   crossh-theme/               无 UI 的颜色 tokens
-  crossh-ssh/                 russh 连接、SFTP、转发和认证引擎
   crossh-terminal/            终端 settings/events 模型边界
   crossh-update/              manifest、下载校验、归档安装和 updater
   crossh-assets/              无 UI 的图标资源、嵌入和资源完整性校验
@@ -79,33 +65,26 @@ src/
   main.rs                     入口编排：窗口、快捷键、启动顺序
   infrastructure/logging.rs  日志、panic hook、日志裁剪
   features/                   GPUI feature views 和跨 crate adapters
-    connections/              crossh-ssh 的 GPUI entity、连接管理和提示
     terminal/                 Zed terminal 的终端视图宿主
-    sftp/                     SFTP 面板、远程编辑器和交互逻辑
-    forwarding/               端口转发面板
     git/                      Git Viewer 窗口与变更操作
     workspace/                外壳、侧栏、标签和 WorkspacePane 抽象
     settings/                 设置窗口与持久化编排
     updates/                  更新状态机与设置页入口
 ```
 
-依赖方向保持单向：`crossh-core`、`crossh-theme`、`crossh-assets`、`crossh-ssh`、`crossh-terminal` 和 `crossh-update` 不依赖 GPUI；`crossh-ui` 将 `crossh-assets` 适配为 GPUI 的资源源；根 package 的 GPUI feature adapter 依赖这些 crate；`workspace` 通过 `WorkspacePane` trait 消费终端、SFTP 和转发面板。可重复执行的分层检查位于 `scripts/check-architecture.sh`。
+依赖方向保持单向：`crossh-core`、`crossh-theme`、`crossh-assets`、`crossh-terminal` 和 `crossh-update` 不依赖 GPUI；`crossh-ui` 将 `crossh-assets` 适配为 GPUI 的资源源；根 package 的 GPUI feature adapter 依赖这些 crate；`workspace` 通过 `WorkspacePane` trait 消费各面板。可重复执行的分层检查位于 `scripts/check-architecture.sh`。
 
 UI 图标统一放在 `crates/crossh-assets/assets/icons/`，由 `crossh-assets`
 自动嵌入。图标引用必须通过 `crossh_ui::icons::IconName`，不要在业务视图中
 直接写 `icons/<name>.svg`；资源包的单个测试会校验所有声明图标和嵌入文件。
 
-技术栈：Zed `gpui`、`terminal`、`task`（UI、PTY、终端模拟和 shell 进程）；Crossh 本地裁剪的 `terminal_view` 基础（渲染和交互）以及薄宿主（生命周期、焦点和工作区边界）；`russh`（SFTP、端口转发和后台 SSH 命令）；`tokio`（2 worker 常驻）；`crossh-note`（`rusqlite` bundled + SQLite WAL + FTS5 + 触发器同步，见 `crates/crossh-note/src/lib.rs`）提供本地笔记持久化与全文检索，`crossh-git` / `crossh-note` / `crossh-updater` 均为独立二进制，通过 `WorkspacePane` 组合进同一工作区。`alacritty_terminal` / `vte` 由 Zed `terminal` 间接使用，Crossh 不再直接维护另一套生产终端实现。
-
+技术栈：Zed `gpui`、`terminal`、`task`（UI、PTY、终端模拟和 shell 进程）；Crossh 本地裁剪的 `terminal_view` 基础（渲染和交互）以及薄宿主（生命周期、焦点和工作区边界）；`tokio`（2 worker 常驻）；`crossh-note`（`rusqlite` bundled + SQLite WAL + FTS5 + 触发器同步，见 `crates/crossh-note/src/lib.rs`）提供本地笔记持久化与全文检索，`crossh-git` / `crossh-note` / `crossh-updater` 均为独立二进制，通过 `WorkspacePane` 组合进同一工作区。`alacritty_terminal` / `vte` 由 Zed `terminal` 间接使用，Crossh 不再直接维护另一套生产终端实现。
 ## 路线图
 
-终端能力已冻结：后续终端变更以 bug 修复驱动，不再规划新协议能力。历史计划归档在 [docs/archived/](docs/archived/)。已实现的规划外补强：设置面板、i18n、连接池生命周期。
+终端能力已冻结：后续终端变更以 bug 修复驱动，不再规划新协议能力。历史计划归档在 [docs/archived/](docs/archived/)。已实现的规划外补强：设置面板、i18n。
 未落地的 stretch 项（均与终端协议无关）：
 
-- SFTP 拖拽上传 / 批量 / 断点续传
 - 标签拖拽排序
-- config 编辑 UI、自动重连
-- 多层 ProxyJump、`Match exec` / `ProxyCommand` / GSSAPI
 - 多窗口、浅色主题
 
 ## 许可证与致谢

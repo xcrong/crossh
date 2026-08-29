@@ -13,11 +13,8 @@ use crate::features::workspace::view::ActiveView;
 use gpui::{Context, SystemNotificationResponse};
 
 impl AppShell {
-    /// 分发系统通知响应:通知来自 remote tab 或 local session 的终端时
+    /// 分发系统通知响应:通知来自 local session 的终端时
     /// 返回 true(被处理),并确保焦点回到分栏场景下的属主窗格。
-    ///
-    /// 诊断日志(log::info)保留供线上取证:每次响应打印 tag 归属、
-    /// handled、通知视图、active_view 与 active_split。
     pub(crate) fn handle_system_notification_response(
         &mut self,
         response: SystemNotificationResponse,
@@ -32,37 +29,6 @@ impl AppShell {
                 "notification response tag={tag} handled={handled} view={view:?} active_view={active_view:?} active_split=({active_split})",
             );
         };
-        let mut handled_remote = false;
-        let mut remote_focus = None;
-        for (index, tab) in self.workspace.sessions.remote_tabs.iter().enumerate() {
-            let Some(focus) = tab.pane.handle_system_notification_response(&response, cx) else {
-                continue;
-            };
-            handled_remote = true;
-            if focus {
-                tab.pane.request_focus(cx);
-                remote_focus = Some(ActiveView::RemoteTab(index));
-            }
-            break;
-        }
-        if handled_remote {
-            if let Some(view) = remote_focus
-                && !self.workspace.focus_split_view(view)
-            {
-                self.jump_back_to_split_pane(view, cx);
-            }
-            if remote_focus.is_some() {
-                cx.notify();
-            }
-            log_diag(
-                response.tag.as_ref(),
-                true,
-                remote_focus,
-                self.workspace.active_view,
-                self.workspace.active_split().is_some(),
-            );
-            return true;
-        }
 
         let mut handled_local = false;
         let mut local_focus = None;
