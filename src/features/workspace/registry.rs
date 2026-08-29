@@ -10,8 +10,8 @@ use std::rc::Rc;
 
 use gpui::{Subscription, Task};
 
+use super::state::{ActiveView, LocalDir, LocalSession, LocalSessionId, Tab};
 use super::toaster::ToasterState;
-use super::view::{ActiveView, LocalDir, LocalSession, LocalSessionId, Tab};
 use crate::shared::text_editing::TextEditingState;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

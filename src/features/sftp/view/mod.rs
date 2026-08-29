@@ -31,12 +31,9 @@ use crossh_ui_component::context_menu::{
 use crossh_ui_component::{Button, ButtonSize, ButtonVariant, ModalDialog, TextInput, scroll_y};
 
 use super::logic::*;
-#[path = "end_caret.rs"]
 mod end_caret;
 use self::end_caret::EndCaretInput;
-#[path = "render.rs"]
 mod render;
-#[path = "view_input.rs"]
 mod view_input;
 
 /// 传输进度快照。

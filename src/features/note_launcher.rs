@@ -18,18 +18,7 @@ pub(crate) fn parse_cli(mut args: impl Iterator<Item = String>) -> Result<NoteCl
     }
 }
 
-// 双 binary 复用：`print_cli_help` 仅主进程使用，`print_standalone_cli_help` 仅独立二进制使用
-#[allow(dead_code)]
-pub(crate) fn print_cli_help() {
-    print_help_for("crossh note");
-}
-
-#[allow(dead_code)]
-pub(crate) fn print_standalone_cli_help() {
-    print_help_for("crossh-note");
-}
-
-fn print_help_for(command: &str) {
+pub(crate) fn print_help(command: &str) {
     println!("Usage: {command}\n\nOpen the Note Viewer.");
 }
 

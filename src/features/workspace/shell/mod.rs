@@ -64,23 +64,14 @@ use super::local_paths::{current_local_cwd, normalize_local_cwd, normalize_recen
 #[cfg(test)]
 use crate::shared::text_editing::{next_char_boundary, previous_char_boundary, selection_bounds};
 
-#[path = "compose.rs"]
 mod compose;
-#[path = "notifications.rs"]
 mod notifications;
-#[path = "quit.rs"]
 mod quit;
-#[path = "scratch.rs"]
 pub(crate) mod scratch;
-#[path = "settings_actions.rs"]
 mod settings_actions;
-#[path = "shell_input.rs"]
 mod shell_input;
-#[path = "shell_render.rs"]
 mod shell_render;
-#[path = "split.rs"]
 mod split;
-#[path = "tabs.rs"]
 mod tabs;
 
 const GIT_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
@@ -1695,23 +1686,16 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "close_project_tests.rs"]
 mod close_project_tests;
 #[cfg(test)]
-#[path = "compose_tests.rs"]
 mod compose_tests;
 #[cfg(test)]
-#[path = "default_command_tests.rs"]
 mod default_command_tests;
 #[cfg(test)]
-#[path = "editor_launch_tests.rs"]
 mod editor_launch_tests;
 #[cfg(test)]
-#[path = "git_sync_toast_tests.rs"]
 mod git_sync_toast_tests;
 #[cfg(test)]
-#[path = "pinned_tab_tests.rs"]
 mod pinned_tab_tests;
 #[cfg(test)]
-#[path = "shell_notification_tests.rs"]
 mod shell_notification_tests;

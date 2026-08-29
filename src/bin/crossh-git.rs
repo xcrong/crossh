@@ -36,13 +36,13 @@ fn main() {
         Ok(command) => command,
         Err(error) => {
             eprintln!("crossh-git: {error}\n");
-            git_launcher::print_standalone_cli_help();
+            git_launcher::print_help("crossh-git");
             std::process::exit(2);
         }
     };
 
     let git_launcher::GitCliCommand::Open(cwd) = command else {
-        git_launcher::print_standalone_cli_help();
+        git_launcher::print_help("crossh-git");
         return;
     };
 

@@ -29,18 +29,7 @@ pub(crate) fn parse_cli(
     }
 }
 
-// 双 binary 复用：`print_cli_help` 仅主进程，`print_standalone_cli_help` 仅独立二进制
-#[allow(dead_code)]
-pub(crate) fn print_cli_help() {
-    print_help_for("crossh git");
-}
-
-#[allow(dead_code)]
-pub(crate) fn print_standalone_cli_help() {
-    print_help_for("crossh-git");
-}
-
-fn print_help_for(command: &str) {
+pub(crate) fn print_help(command: &str) {
     println!(
         "Usage: {command} [DIRECTORY]\n\nOpen the Git Viewer for DIRECTORY, or the current directory when omitted."
     );

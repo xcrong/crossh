@@ -64,12 +64,12 @@ fn main() {
                 return;
             }
             Ok(features::git_launcher::GitCliCommand::Help) => {
-                features::git_launcher::print_cli_help();
+                features::git_launcher::print_help("crossh git");
                 return;
             }
             Err(error) => {
                 eprintln!("crossh git: {error}\n");
-                features::git_launcher::print_cli_help();
+                features::git_launcher::print_help("crossh git");
                 std::process::exit(2);
             }
         },
@@ -82,12 +82,12 @@ fn main() {
                 return;
             }
             Ok(features::note_launcher::NoteCliCommand::Help) => {
-                features::note_launcher::print_cli_help();
+                features::note_launcher::print_help("crossh note");
                 return;
             }
             Err(error) => {
                 eprintln!("crossh note: {error}\n");
-                features::note_launcher::print_cli_help();
+                features::note_launcher::print_help("crossh note");
                 std::process::exit(2);
             }
         },

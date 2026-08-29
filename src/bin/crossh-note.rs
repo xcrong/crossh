@@ -50,13 +50,13 @@ fn main() {
         Ok(command) => command,
         Err(error) => {
             eprintln!("crossh-note: {error}\n");
-            note_launcher::print_standalone_cli_help();
+            note_launcher::print_help("crossh-note");
             std::process::exit(2);
         }
     };
 
     let note_launcher::NoteCliCommand::Open = command else {
-        note_launcher::print_standalone_cli_help();
+        note_launcher::print_help("crossh-note");
         return;
     };
 
