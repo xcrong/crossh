@@ -20,13 +20,15 @@ pub fn sibling_executable(name: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(name))
 }
 
-/// 构造一个分离的同伴进程命令：stdin/stdout/stderr 均重定向到 null，
-/// Unix 上脱离前台进程组，Windows 上以独立进程组/DETACHED 方式创建。
-pub fn sibling_command(name: &str) -> std::process::Command {
-    let mut cmd = std::process::Command::new(sibling_executable(name));
+/// 将命令的标准输入输出重定向到 null，避免抢占前台终端或落盘输出。
+pub fn null_stdio(cmd: &mut std::process::Command) -> &mut std::process::Command {
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::process::Stdio::null())
+}
+
+/// 让命令脱离当前进程组/会话，适用于后台/同伴进程。
+pub fn detach(cmd: &mut std::process::Command) -> &mut std::process::Command {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -39,6 +41,18 @@ pub fn sibling_command(name: &str) -> std::process::Command {
         const DETACHED_PROCESS: u32 = 0x0000_0008;
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
     }
+    #[allow(unreachable_code)]
+    {
+        cmd
+    }
+}
+
+/// 构造一个分离的同伴进程命令：stdin/stdout/stderr 均重定向到 null，
+/// Unix 上脱离前台进程组，Windows 上以独立进程组/DETACHED 方式创建。
+pub fn sibling_command(name: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new(sibling_executable(name));
+    null_stdio(&mut cmd);
+    detach(&mut cmd);
     cmd
 }
 /// 在系统文件管理器中展示给定路径：macOS `open`、Linux `xdg-open`、

@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::OnceLock;
 
 /// macOS GUI 进程（dock/访达启动）继承的 PATH 仅为 `/usr/bin:/bin:/usr/sbin:/sbin`，
@@ -196,7 +196,6 @@ fn is_batch_binary(binary: &str) -> bool {
     let lower = binary.to_ascii_lowercase();
     lower.ends_with(".cmd") || lower.ends_with(".bat")
 }
-
 /// 构造「以 `directory` 为参数与工作目录」的分离进程命令。
 /// 命令本身不执行；Windows 上 `.cmd`/`.bat` 批处理经 `cmd /C` 包装。
 pub(crate) fn editor_process_command(binary: &str, directory: &Path) -> Command {
@@ -217,27 +216,9 @@ pub(crate) fn editor_process_command(binary: &str, directory: &Path) -> Command 
         command
     };
 
-    command
-        .current_dir(directory)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        command.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
-    }
-
+    command.current_dir(directory);
+    crossh_core::process::null_stdio(&mut command);
+    crossh_core::process::detach(&mut command);
     command
 }
 

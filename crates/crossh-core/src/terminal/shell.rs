@@ -327,17 +327,18 @@ __crossh_deferred_init() {{
     )
 }
 
+const MKTEMP_BOOTSTRAP: &str =
+    "d=$(mktemp -d \"${TMPDIR:-/tmp}/crossh-bootstrap.XXXXXX\") || exit 1";
+const MKTEMP_SHELL: &str = "d=$(mktemp -d \"${TMPDIR:-/tmp}/crossh-shell.XXXXXX\") || exit 1";
+
 /// Start a remote interactive shell with Crossh hooks without changing the
 /// user's shell configuration files.
 pub fn remote_shell_bootstrap_command() -> String {
     let encoded = BASE64.encode(remote_shell_bootstrap_selector().as_bytes());
     format!(
-        "d=$(mktemp -d \"${{TMPDIR:-/tmp}}/crossh-bootstrap.XXXXXX\") || exit 1; trap 'rm -rf \"$d\"' 0; printf %s {encoded} | base64 -d > \"$d/boot.sh\" || exit 1; . \"$d/boot.sh\""
+        "{MKTEMP_BOOTSTRAP}; trap 'rm -rf \"$d\"' 0; printf %s {encoded} | base64 -d > \"$d/boot.sh\" || exit 1; . \"$d/boot.sh\""
     )
 }
-
-/// One-per-shell launcher that dispatches on the remote `$SHELL` at runtime
-/// and sources each shell's startup payload from a fresh temp directory.
 ///
 /// SSH servers pass the remote command through the user's login shell. Do
 /// not embed the multi-line selector in another layer of shell quoting:
@@ -355,7 +356,7 @@ fn remote_shell_bootstrap_selector() -> String {
     format!(
         "case \"${{SHELL##*/}}\" in\n\
 bash)\n\
-    d=$(mktemp -d \"${{TMPDIR:-/tmp}}/crossh-shell.XXXXXX\") || exit 1\n\
+    {MKTEMP_SHELL}\n\
     trap 'rm -rf \"$d\"' 0\n\
     printf %s {} | base64 -d > \"$d/.bashrc\"\n\
     bash --rcfile \"$d/.bashrc\" -i\n\
@@ -363,7 +364,7 @@ bash)\n\
     exit \"$status\"\n\
     ;;\n\
 zsh)\n\
-    d=$(mktemp -d \"${{TMPDIR:-/tmp}}/crossh-shell.XXXXXX\") || exit 1\n\
+    {MKTEMP_SHELL}\n\
     trap 'rm -rf \"$d\"' 0\n\
     if [ \"${{ZDOTDIR+x}}\" = x ]; then CROSSH_USER_ZDOTDIR_SET=1 CROSSH_USER_ZDOTDIR=$ZDOTDIR; else CROSSH_USER_ZDOTDIR_SET=0 CROSSH_USER_ZDOTDIR=; fi\n\
     export CROSSH_USER_ZDOTDIR_SET CROSSH_USER_ZDOTDIR\n\
@@ -374,7 +375,7 @@ zsh)\n\
     exit \"$status\"\n\
     ;;\n\
 fish)\n\
-    d=$(mktemp -d \"${{TMPDIR:-/tmp}}/crossh-shell.XXXXXX\") || exit 1\n\
+    {MKTEMP_SHELL}\n\
     trap 'rm -rf \"$d\"' 0\n\
     printf %s {} | base64 -d > \"$d/config.fish\"\n\
     fish --init-command \"source $d/config.fish\" -i\n\

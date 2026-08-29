@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread;
@@ -640,10 +640,7 @@ fn shell_command(command: &str, cwd: &Path) -> Command {
         let mut process = Command::new(shell);
         process.args(["/D", "/S", "/C", command]);
         process.current_dir(cwd);
-        process
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        crate::process::null_stdio(&mut process);
         return process;
     }
 
@@ -655,11 +652,7 @@ fn shell_command(command: &str, cwd: &Path) -> Command {
         let mut process = Command::new(shell);
         process.args(["-lc", command]);
         process.current_dir(cwd);
-        // stdio 全部置空：后台任务不与前台终端抢输入，输出不捕获。
-        process
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        crate::process::null_stdio(&mut process);
         unsafe {
             process.pre_exec(|| {
                 libc::setpgid(0, 0);

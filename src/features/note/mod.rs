@@ -21,8 +21,6 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("cmd-n", NewNote, Some(NOTE_WINDOW_CONTEXT)),
     ]);
 }
-
 mod markdown;
-mod render;
 mod window;
 pub(crate) use window::open_note_window;
