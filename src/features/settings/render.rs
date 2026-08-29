@@ -115,12 +115,19 @@ impl Render for SettingsWindow {
                 .child(content_container)
         };
 
+        let linux_titlebar = crossh_ui::linux_titlebar::render_linux_titlebar(
+            window,
+            cx,
+            gpui::SharedString::from(i18n::text("settings.title")),
+        );
+
         let root = div()
             .id("settings-window")
             .size_full()
             .flex()
             .flex_col()
             .bg(theme::canvas())
+            .children(linux_titlebar)
             .child(main);
         root.into_any_element()
     }

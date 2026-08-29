@@ -914,6 +914,9 @@ impl gpui::Render for NoteWindow {
             .child(list)
             .child(right);
 
+        let linux_titlebar =
+            crossh_ui::linux_titlebar::render_linux_titlebar(window, cx, "Note".into());
+
         div()
             .size_full()
             .flex()
@@ -932,6 +935,7 @@ impl gpui::Render for NoteWindow {
                 cx.listener(|this, _: &DeleteNote, window, cx| this.delete_current(window, cx)),
             )
             .key_context(NOTE_WINDOW_CONTEXT)
+            .children(linux_titlebar)
             .child(header)
             .child(body)
     }
