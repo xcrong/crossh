@@ -21,12 +21,12 @@ use crossh_ui_component::{
     list_state_body, pane_toolbar, selectable_row,
 };
 
-use super::window::{
-    CommitEditor, CHANGES_PANE_MAX_WIDTH, CHANGES_PANE_MIN_WIDTH, CompactPage,
-    clamp_changes_pane_width, uses_compact_git_layout,
-};
 use super::session::{ChangeKey, DiffState, OperationState};
 use super::window::GitWindow;
+use super::window::{
+    CHANGES_PANE_MAX_WIDTH, CHANGES_PANE_MIN_WIDTH, CommitEditor, CompactPage,
+    clamp_changes_pane_width, uses_compact_git_layout,
+};
 use super::{
     BackToChanges, CommitChanges, GIT_CHANGES_CONTEXT, GIT_WINDOW_CONTEXT, MoveSelectionDown,
     MoveSelectionUp, RefreshChanges, SelectAllChanges, ToggleSelectedStage,
@@ -1281,4 +1281,3 @@ fn status_glyph(status: ChangeStatus) -> AnyElement {
         .child(SharedString::from(status.glyph()))
         .into_any_element()
 }
-

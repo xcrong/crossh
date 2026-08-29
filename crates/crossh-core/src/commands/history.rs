@@ -391,7 +391,6 @@ pub fn remote_scope(host_key: &str, cwd: &str) -> String {
     format!("remote:{host_key}:{cwd}")
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -301,4 +301,3 @@ struct ButtonStyle {
     hover_background: gpui::Rgba,
     active_background: gpui::Rgba,
 }
-

@@ -1,4 +1,3 @@
-
 use std::path::PathBuf;
 
 use crossh_core::git::GitError;

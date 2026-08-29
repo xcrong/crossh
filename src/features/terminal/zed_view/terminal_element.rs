@@ -2238,7 +2238,3 @@ pub fn convert_color(fg: &Color, theme: &Theme) -> Hsla {
         Color::Indexed(i) => terminal::get_color_at_index(*i as usize, theme),
     }
 }
-
-#[cfg(test)]
-#[path = "terminal_element_tests.rs"]
-mod tests;

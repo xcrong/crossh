@@ -103,4 +103,3 @@ pub struct ChangeScan {
     pub changes: Vec<FileChange>,
     pub status: Option<GitStatus>,
 }
-

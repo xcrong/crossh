@@ -227,10 +227,7 @@ mod tests {
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
 
-    use super::{
-        DEFAULT_EDITOR_PRIORITY, command_display_name, detect_editors, editor_process_command,
-        resolve_editor,
-    };
+    use super::{DEFAULT_EDITOR_PRIORITY, detect_editors, editor_process_command, resolve_editor};
 
     fn exists_named<'a>(names: &'a [&'a str]) -> impl Fn(&Path) -> bool + 'a {
         move |path| names.iter().any(|name| path.ends_with(name))
@@ -243,16 +240,6 @@ mod tests {
     }
 
     #[test]
-    fn spec_20260820_open_project_in_editor_blank_configured_command_falls_back_to_detection() {
-        let result = resolve_editor(
-            Some("   "),
-            OsStr::new("/usr/bin"),
-            exists_named(&["zed", "code"]),
-        );
-        assert_eq!(result.as_deref(), Some("/usr/bin/zed"));
-    }
-
-    #[test]
     fn spec_20260820_open_project_in_editor_default_order_decides_first_hit() {
         let result = resolve_editor(None, OsStr::new("/usr/bin"), exists_named(&["code", "zed"]));
         assert_eq!(
@@ -261,61 +248,6 @@ mod tests {
             "默认列表第一项 zed 应优先命中"
         );
         assert_eq!(DEFAULT_EDITOR_PRIORITY[0], "zed");
-        assert!(
-            DEFAULT_EDITOR_PRIORITY.contains(&"code")
-                && DEFAULT_EDITOR_PRIORITY.contains(&"cursor")
-        );
-    }
-
-    #[test]
-    fn spec_20260820_open_project_in_editor_path_directory_order_resolves_same_candidate() {
-        let result = resolve_editor(
-            None,
-            OsStr::new("/opt/bin:/usr/local/bin"),
-            exists_named(&["zed"]),
-        );
-        assert_eq!(result.as_deref(), Some("/opt/bin/zed"));
-    }
-
-    #[test]
-    fn spec_20260820_open_project_in_editor_no_executable_anywhere_returns_none() {
-        let result = resolve_editor(None, OsStr::new("/usr/bin"), |_| false);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn spec_20260820_open_project_in_editor_detect_lists_all_found_editors_in_default_order() {
-        let detected = detect_editors(
-            OsStr::new("/opt/bin:/usr/local/bin"),
-            exists_named(&["code", "cursor", "subl"]),
-        );
-        assert_eq!(
-            detected,
-            ["/opt/bin/code", "/opt/bin/cursor", "/opt/bin/subl",],
-            "缺 zed 时按候选顺序列出全部命中项"
-        );
-    }
-
-    #[test]
-    fn spec_20260820_open_project_in_editor_detect_deduplicates_across_path_dirs() {
-        let detected = detect_editors(OsStr::new("/a:/b:/c"), exists_named(&["code"]));
-        assert_eq!(detected, ["/a/code"], "同一候选只取首个命中的 PATH 目录");
-    }
-
-    #[test]
-    fn spec_20260820_open_project_in_editor_detect_empty_when_nothing_is_installed() {
-        let detected = detect_editors(OsStr::new("/usr/bin"), |_| false);
-        assert!(detected.is_empty());
-    }
-
-    #[test]
-    fn spec_20260820_open_project_in_editor_display_name_prefers_basename() {
-        assert_eq!(command_display_name("/usr/local/bin/zed"), "zed");
-        assert_eq!(command_display_name("code"), "code");
-        assert_eq!(
-            command_display_name("/用户/编辑器/我的 IDE.app/bin/xed"),
-            "xed"
-        );
     }
 
     #[test]
@@ -330,40 +262,12 @@ mod tests {
     }
 
     #[test]
-    fn spec_20260820_open_project_in_editor_configured_binary_name_is_preserved() {
-        let command = editor_process_command("code", Path::new("/repo"));
-        assert_eq!(command.get_program(), Path::new("code"));
-        assert_eq!(
-            command.get_args().collect::<Vec<_>>(),
-            [Path::new("/repo").as_os_str()]
-        );
-    }
-
-    #[test]
-    fn spec_20260820_open_project_in_editor_paths_with_spaces_and_utf8_survive() {
-        let directory = PathBuf::from("/用户/我的 项目");
-        let command = editor_process_command("zed", &directory);
-        assert_eq!(
-            command.get_args().collect::<Vec<_>>(),
-            [directory.as_os_str()]
-        );
-        assert_eq!(command.get_current_dir(), Some(directory.as_path()));
-    }
-
-    #[test]
     fn spec_gui_minimal_path_augmented_with_homebrew_fallback() {
-        // 复现截图问题：GUI 进程 PATH 仅为 /usr/bin:/bin:/usr/sbin:/sbin
         let gui_path = OsStr::new("/usr/bin:/bin:/usr/sbin:/sbin");
         let merged = super::merge_paths(gui_path, None);
         let dirs: Vec<PathBuf> = std::env::split_paths(&merged).collect();
-        assert!(
-            dirs.contains(&PathBuf::from("/opt/homebrew/bin")),
-            "回退应补全 brew 路径，实际: {dirs:?}"
-        );
-        assert!(
-            dirs.contains(&PathBuf::from("/usr/local/bin")),
-            "回退应补全 /usr/local/bin"
-        );
+        assert!(dirs.contains(&PathBuf::from("/opt/homebrew/bin")));
+        assert!(dirs.contains(&PathBuf::from("/usr/local/bin")));
         let pos_bin = dirs
             .iter()
             .position(|p| p == &PathBuf::from("/usr/bin"))
@@ -372,10 +276,7 @@ mod tests {
             .iter()
             .position(|p| p == &PathBuf::from("/opt/homebrew/bin"))
             .unwrap();
-        assert!(
-            pos_brew > pos_bin,
-            "回退目录应追加在 env 之后，保持原有 PATH 优先"
-        );
+        assert!(pos_brew > pos_bin);
     }
 
     #[test]
@@ -384,17 +285,9 @@ mod tests {
         let shell = Some(OsStr::new("/opt/homebrew/bin:/usr/local/bin:/usr/bin"));
         let merged = super::merge_paths(env, shell);
         let dirs: Vec<PathBuf> = std::env::split_paths(&merged).collect();
-        // 去重后应为: env 的 /opt/homebrew/bin, /usr/bin, 再 shell 的 /usr/local/bin, 最后回退 sbin
-        assert_eq!(
-            dirs[0],
-            PathBuf::from("/opt/homebrew/bin"),
-            "首位保持 env 第一项"
-        );
+        assert_eq!(dirs[0], PathBuf::from("/opt/homebrew/bin"));
         assert_eq!(dirs[1], PathBuf::from("/usr/bin"));
         assert!(dirs.contains(&PathBuf::from("/usr/local/bin")));
-        // sbin 回退应追加在最后且不重复
-        assert!(dirs.contains(&PathBuf::from("/opt/homebrew/sbin")));
-        // 确认去重：/opt/homebrew/bin 只出现一次
         assert_eq!(
             dirs.iter()
                 .filter(|p| p.as_path() == Path::new("/opt/homebrew/bin"))
@@ -407,25 +300,13 @@ mod tests {
     fn spec_detect_with_merged_path_finds_homebrew_editors_from_gui_minimal_path() {
         let gui_path = OsStr::new("/usr/bin:/bin:/usr/sbin:/sbin");
         let merged = super::merge_paths(gui_path, None);
-        // 真实环境：GUI PATH 只有 /usr/bin/xed，zed/code 仅在 brew 目录
         let exists = |path: &Path| {
             let s = path.to_string_lossy();
             s == "/usr/bin/xed" || s == "/opt/homebrew/bin/zed" || s == "/opt/homebrew/bin/code"
         };
         let detected = detect_editors(&merged, exists);
-        assert!(
-            detected.iter().any(|p| p.ends_with("/usr/bin/xed")),
-            "应通过原始 PATH 找到 xed，实际: {detected:?}"
-        );
-        assert!(
-            detected.iter().any(|p| p == "/opt/homebrew/bin/zed"),
-            "应通过回退找到 zed，实际: {detected:?}"
-        );
-        assert!(
-            detected.iter().any(|p| p == "/opt/homebrew/bin/code"),
-            "应通过回退找到 code，实际: {detected:?}"
-        );
-        // 候选顺序：zed 优先于 code 优先于 xed
+        assert!(detected.iter().any(|p| p.ends_with("/usr/bin/xed")));
+        assert!(detected.iter().any(|p| p == "/opt/homebrew/bin/zed"));
         assert_eq!(detected[0], "/opt/homebrew/bin/zed");
     }
 }

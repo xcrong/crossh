@@ -246,7 +246,7 @@ mod tests {
             ime_replacement: None,
         }
     }
-#[test]
+    #[test]
     fn shared_state_selection_bounds() {
         let s = state("hello", 2, Some(5));
         assert_eq!(s.selection(), Some((2, 5)));

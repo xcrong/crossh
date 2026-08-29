@@ -100,4 +100,3 @@ fn compatibility_fixture_is_independent_of_pty_read_boundaries(cx: &mut TestAppC
     assert!(one_buffer.mode.contains(Modes::MOUSE_DRAG));
     assert!(one_buffer.mode.contains(Modes::SGR_MOUSE));
 }
-

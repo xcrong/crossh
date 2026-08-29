@@ -344,7 +344,6 @@ mod tests {
         assert_eq!(tx3, None);
     }
 
-
     #[test]
     fn spec_20260824_system_monitor_card__memory_usage_percent() {
         assert_eq!(compute_usage_percent(50, 100), Some(50.0));
@@ -366,7 +365,6 @@ mod tests {
             None
         );
     }
-
 
     #[test]
     fn spec_20260824_system_monitor_card__build_snapshot_memory_percent() {
@@ -423,7 +421,6 @@ mod tests {
         assert!(!state.apply_snapshot(snap, 0));
     }
 
-
     #[test]
     fn disk_io__build_snapshot_with_disks_multi() {
         let d1 = DiskSnapshot {
@@ -461,5 +458,4 @@ mod tests {
         let snap = build_snapshot_with_disks(None, None, 100, 60, Vec::new(), (None, None));
         assert!(snap.disks.is_empty());
     }
-
 }

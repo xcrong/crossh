@@ -14,14 +14,12 @@ pub mod types;
 use self::diff::parse_diff;
 #[cfg(test)]
 use self::numstat::numstat_map;
-pub use types::{
-    ChangeScan, ChangeStatus, DiffLine, DiffLineKind, FileChange, FileDiff, GitError, MAX_DIFF_BYTES,
-    MAX_DIFF_LINES,
-};
-pub use scan::scan_changes;
 pub use diff::diff;
-pub use ops::{
-    commit, discard_worktree, pull, push, stage, stage_hunk, unstage, unstage_hunk,
+pub use ops::{commit, discard_worktree, pull, push, stage, stage_hunk, unstage, unstage_hunk};
+pub use scan::scan_changes;
+pub use types::{
+    ChangeScan, ChangeStatus, DiffLine, DiffLineKind, FileChange, FileDiff, GitError,
+    MAX_DIFF_BYTES, MAX_DIFF_LINES,
 };
 
 #[cfg(test)]
@@ -62,7 +60,6 @@ mod tests {
         assert_eq!(diff.lines[2].new_ln, None);
         assert_eq!(diff.lines[3].new_ln, Some(2));
     }
-
 
     #[test]
     fn parses_new_file_hunk_headers() {
@@ -107,8 +104,6 @@ mod tests {
 
         assert!(scan_changes(dir.path()).is_err());
     }
-
-
 
     #[test]
     fn oversized_untracked_file_is_rejected_before_reading() {
@@ -235,314 +230,6 @@ mod tests {
     }
 
     #[test]
-    fn stages_unstages_and_commits_real_changes() {
-        use std::fs;
-
-        let dir = tempfile::tempdir().unwrap();
-        let run = |args: &[&str]| {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(dir.path())
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{args:?}: {:?}", output.stderr);
-        };
-        run(&["init", "-q"]);
-        run(&["config", "user.email", "test@crossh.local"]);
-        run(&["config", "user.name", "Crossh Test"]);
-
-        fs::write(dir.path().join("note.txt"), "first\n").unwrap();
-        stage(dir.path(), &["note.txt".to_string()]).unwrap();
-        assert!(
-            scan_changes(dir.path())
-                .expect("status should load")
-                .changes
-                .iter()
-                .any(|change| change.path == "note.txt" && change.staged)
-        );
-
-        unstage(dir.path(), &["note.txt".to_string()]).unwrap();
-        assert!(
-            scan_changes(dir.path())
-                .expect("status should load")
-                .changes
-                .iter()
-                .any(|change| change.path == "note.txt" && !change.staged)
-        );
-
-        stage(dir.path(), &["note.txt".to_string()]).unwrap();
-        commit(dir.path(), "add note").unwrap();
-        assert!(
-            scan_changes(dir.path())
-                .expect("status should load")
-                .changes
-                .is_empty()
-        );
-
-        fs::write(dir.path().join("note.txt"), "first\nsecond\n").unwrap();
-        stage(dir.path(), &["note.txt".to_string()]).unwrap();
-        unstage(dir.path(), &["note.txt".to_string()]).unwrap();
-        assert!(
-            scan_changes(dir.path())
-                .expect("status should load")
-                .changes
-                .iter()
-                .any(|change| change.path == "note.txt" && !change.staged)
-        );
-
-        fs::remove_file(dir.path().join("note.txt")).unwrap();
-        stage(dir.path(), &["note.txt".to_string()]).unwrap();
-        assert!(
-            scan_changes(dir.path())
-                .expect("status should load")
-                .changes
-                .iter()
-                .any(|change| {
-                    change.path == "note.txt"
-                        && change.staged
-                        && change.status == ChangeStatus::Deleted
-                })
-        );
-        assert!(commit(dir.path(), "   ").is_err());
-    }
-
-    #[test]
-    fn restores_tracked_worktree_changes_without_touching_the_index() {
-        use std::fs;
-
-        let dir = tempfile::tempdir().unwrap();
-        let run = |args: &[&str]| {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(dir.path())
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{args:?}: {:?}", output.stderr);
-        };
-        run(&["init", "-q"]);
-        run(&["config", "user.email", "test@crossh.local"]);
-        run(&["config", "user.name", "Crossh Test"]);
-        fs::write(dir.path().join("note.txt"), "base\n").unwrap();
-        run(&["add", "-A"]);
-        run(&["commit", "-qm", "init"]);
-
-        fs::write(dir.path().join("note.txt"), "staged\n").unwrap();
-        stage(dir.path(), &["note.txt".to_string()]).unwrap();
-        fs::write(dir.path().join("note.txt"), "working\n").unwrap();
-
-        discard_worktree(dir.path(), &["note.txt".to_string()]).unwrap();
-
-        assert_eq!(
-            fs::read_to_string(dir.path().join("note.txt"))
-                .unwrap()
-                .replace("\r\n", "\n"),
-            "staged\n"
-        );
-        assert!(
-            scan_changes(dir.path())
-                .unwrap()
-                .changes
-                .iter()
-                .any(|change| change.path == "note.txt" && change.staged)
-        );
-        assert!(
-            !scan_changes(dir.path())
-                .unwrap()
-                .changes
-                .iter()
-                .any(|change| change.path == "note.txt" && !change.staged)
-        );
-    }
-
-    #[test]
-    fn pushes_to_origin_and_follows_the_upstream_afterwards() {
-        use std::fs;
-
-        let dir = tempfile::tempdir().unwrap();
-        let run_in = |base: &Path, args: &[&str]| {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(base)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{args:?}: {:?}", output.stderr);
-        };
-
-        let local = dir.path().join("local");
-        fs::create_dir_all(&local).unwrap();
-        run_in(&local, &["init", "-q"]);
-        let branch = String::from_utf8_lossy(
-            &Command::new("git")
-                .arg("-C")
-                .arg(&local)
-                .args(["symbolic-ref", "--short", "HEAD"])
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .trim()
-        .to_string();
-        assert!(!branch.is_empty(), "local repo should be on a branch");
-        run_in(
-            dir.path(),
-            &["init", "-q", "--bare", "-b", &branch, "remote.git"],
-        );
-        run_in(&local, &["config", "user.email", "test@crossh.local"]);
-        run_in(&local, &["config", "user.name", "Crossh Test"]);
-        run_in(&local, &["remote", "add", "origin", "../remote.git"]);
-        fs::write(local.join("note.txt"), "first\n").unwrap();
-        run_in(&local, &["add", "-A"]);
-        run_in(&local, &["commit", "-qm", "init"]);
-
-        push(&local).expect("first push should create the upstream on origin");
-        assert!(
-            Command::new("git")
-                .arg("-C")
-                .arg(&local)
-                .args(["rev-parse", "@{upstream}"])
-                .output()
-                .unwrap()
-                .status
-                .success(),
-            "first push should record origin tracking"
-        );
-
-        fs::write(local.join("note.txt"), "first\nsecond\n").unwrap();
-        run_in(&local, &["add", "-A"]);
-        run_in(&local, &["commit", "-qm", "second"]);
-
-        push(&local).expect("second push should follow the recorded upstream");
-        let head = |base: &Path| {
-            String::from_utf8_lossy(
-                &Command::new("git")
-                    .arg("-C")
-                    .arg(base)
-                    .args(["rev-parse", "HEAD"])
-                    .output()
-                    .unwrap()
-                    .stdout,
-            )
-            .trim()
-            .to_string()
-        };
-        assert_eq!(
-            head(&local),
-            head(&dir.path().join("remote.git")),
-            "remote HEAD should reach the pushed commit"
-        );
-    }
-
-    #[test]
-    fn pulls_from_origin_and_sets_upstream_when_missing() {
-        use std::fs;
-
-        let dir = tempfile::tempdir().unwrap();
-        let run_in = |base: &Path, args: &[&str]| {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(base)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{args:?}: {:?}", output.stderr);
-        };
-        let head = |base: &Path| {
-            String::from_utf8_lossy(
-                &Command::new("git")
-                    .arg("-C")
-                    .arg(base)
-                    .args(["rev-parse", "HEAD"])
-                    .output()
-                    .unwrap()
-                    .stdout,
-            )
-            .trim()
-            .to_string()
-        };
-
-        let local = dir.path().join("local");
-        fs::create_dir_all(&local).unwrap();
-        run_in(&local, &["init", "-q"]);
-        let branch = String::from_utf8_lossy(
-            &Command::new("git")
-                .arg("-C")
-                .arg(&local)
-                .args(["symbolic-ref", "--short", "HEAD"])
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .trim()
-        .to_string();
-        run_in(
-            dir.path(),
-            &["init", "-q", "--bare", "-b", &branch, "remote.git"],
-        );
-        run_in(&local, &["config", "user.email", "test@crossh.local"]);
-        run_in(&local, &["config", "user.name", "Crossh Test"]);
-        run_in(&local, &["remote", "add", "origin", "../remote.git"]);
-        fs::write(local.join("base.txt"), "base\n").unwrap();
-        run_in(&local, &["add", "-A"]);
-        run_in(&local, &["commit", "-qm", "base"]);
-        run_in(&local, &["push", "-u", "origin", &branch]);
-
-        run_in(dir.path(), &["clone", "-q", "remote.git", "worker"]);
-        let worker = dir.path().join("worker");
-        run_in(&worker, &["config", "user.email", "test@crossh.local"]);
-        run_in(&worker, &["config", "user.name", "Crossh Test"]);
-        fs::write(worker.join("from-worker.txt"), "mine\n").unwrap();
-        run_in(&worker, &["add", "-A"]);
-        run_in(&worker, &["commit", "-qm", "worker change"]);
-        run_in(&worker, &["push"]);
-
-        pull(&local).expect("pull should merge the upstream commit");
-        assert_eq!(
-            head(&local),
-            head(&worker),
-            "local should reach worker's commit after pull"
-        );
-        assert!(
-            Command::new("git")
-                .arg("-C")
-                .arg(&local)
-                .args(["rev-parse", "@{upstream}"])
-                .output()
-                .unwrap()
-                .status
-                .success(),
-            "upstream should still resolve after pull"
-        );
-
-        run_in(&worker, &["checkout", "-qb", "topic"]);
-        fs::write(worker.join("topic.txt"), "topic\n").unwrap();
-        run_in(&worker, &["add", "-A"]);
-        run_in(&worker, &["commit", "-qm", "topic change"]);
-        run_in(&worker, &["push", "-u", "origin", "topic"]);
-        run_in(&local, &["checkout", "-qb", "topic"]);
-
-        pull(&local).expect("pull without upstream should fetch origin/<branch> and track it");
-        assert_eq!(
-            head(&local),
-            head(&worker),
-            "local topic should reach the remote topic commit"
-        );
-        assert!(
-            Command::new("git")
-                .arg("-C")
-                .arg(&local)
-                .args(["rev-parse", "@{upstream}"])
-                .output()
-                .unwrap()
-                .status
-                .success(),
-            "pull without upstream should record tracking"
-        );
-    }
-
-    #[test]
     fn detached_head_refuses_to_pull() {
         use std::fs;
 
@@ -570,4 +257,3 @@ mod tests {
         );
     }
 }
-

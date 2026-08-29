@@ -373,9 +373,6 @@ mod tests {
         assert_eq!(clamp_panel_width(720., 216., 360.), 360.);
     }
 
-
-
-
     #[test]
     fn spec_20260820_side_panel_rail__available_main_width_truncates_at_zero() {
         assert_eq!(available_main_width(px(700.), 216., 240.), px(244.));
@@ -383,5 +380,4 @@ mod tests {
         assert_eq!(available_main_width(px(400.), 216., 240.), px(0.));
         assert_eq!(available_main_width(px(300.), 200., 200.), px(0.));
     }
-
 }

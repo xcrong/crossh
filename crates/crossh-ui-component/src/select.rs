@@ -344,7 +344,6 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-
     #[test]
     fn next_index_wraps_around() {
         let len = 3;

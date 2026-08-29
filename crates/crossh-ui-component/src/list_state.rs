@@ -47,9 +47,6 @@ mod tests {
 
     use super::{ListState, list_empty, list_state_body};
 
-
-
-
     #[test]
     fn list_state_body_dispatches_to_rows_or_hint() {
         let ready = list_state_body(ListState::Ready, || Hint::new("row").into_any_element());

@@ -674,7 +674,6 @@ async fn run_remote_command(
     RemoteCommandEvent { id, status }
 }
 
-
 /// 尝试用 ssh-agent 上的每个身份认证，成功即返回。
 #[cfg(unix)]
 async fn auth_agent(handle: &mut Handle<ClientHandler>, user: &str) -> anyhow::Result<bool> {

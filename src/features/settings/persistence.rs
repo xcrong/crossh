@@ -232,10 +232,7 @@ mod tests {
         )
         .expect("settings should deserialize")
         .into();
-        assert_eq!(
-            snapshot.terminal.font_size,
-            crossh_terminal::MAX_FONT_SIZE
-        );
+        assert_eq!(snapshot.terminal.font_size, crossh_terminal::MAX_FONT_SIZE);
         assert_eq!(
             snapshot.terminal.scrollback,
             crossh_terminal::MAX_SCROLLBACK

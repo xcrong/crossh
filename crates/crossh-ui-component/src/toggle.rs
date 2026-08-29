@@ -93,8 +93,6 @@ mod tests {
 
     use super::{ToggleSwitch, next_state};
 
-
-
     #[test]
     fn toggle_click_flips_state_both_ways() {
         assert!(!next_state(true));

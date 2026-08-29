@@ -29,14 +29,14 @@ use crate::features::settings::{self, SettingsSnapshot};
 use crate::features::sftp::SftpPane;
 use crate::features::terminal::{TerminalEvent, TerminalView, TerminalViewEvent};
 use crate::features::updates::{UpdateController, UpdateSettings};
-use crate::features::workspace::editors::{DefaultCommandEditor, RenameEditor};
+use crate::features::workspace::modal_editor::{DefaultCommandEditor, RenameEditor};
 use crate::features::workspace::pinned::{pinned_tabs_for_project, prune_missing_pinned_tabs};
 use crate::features::workspace::quick_commands_rail::render_quick_commands_rail;
 use crate::features::workspace::registry::WorkspaceState;
 use crate::features::workspace::settings::WorkspaceSettings;
 use crate::features::workspace::sidebar::{render_sidebar, render_sidebar_rail};
-use crate::features::workspace::toaster::{ToastNotice, ToastTone};
 use crate::features::workspace::state::rebuild_local_dirs;
+use crate::features::workspace::toaster::{ToastNotice, ToastTone};
 use crate::features::workspace::view::{
     ActiveView, LocalDir, LocalSession, LocalSessionId, Tab, render_default_command_editor,
     render_main, render_quick_command_editor, render_quick_commands, render_rename_editor,
@@ -58,8 +58,8 @@ use crossh_ui::theme;
 use crossh_ui::widgets::printable_char;
 use crossh_ui_component::context_menu::{ContextMenuState, MenuEntry, render_context_menu};
 
-use super::editors::QuickCommandEditor;
 use super::local_paths::{current_local_cwd, normalize_local_cwd, normalize_recent_dirs};
+use crate::features::workspace::modal_editor::QuickCommandEditor;
 
 mod compose;
 mod notifications;
@@ -408,41 +408,50 @@ impl AppShell {
         log::info!("local session {session_id} opened for {}", cwd_text);
         // Zed's local PTY process tracking reports the current cwd; keep it
         // separate from the session's project ownership when `cd` changes.
-        let subscription = cx.subscribe(&terminal, |this, terminal, event: &TerminalEvent, cx| match event {
-            TerminalEvent::Closed => {
-                let session_id = this.workspace.sessions.local_sessions.iter().find_map(
-                    |(&session_id, session)| {
-                        (session.terminal.entity_id() == terminal.entity_id()).then_some(session_id)
-                    },
-                );
-                if let Some(session_id) = session_id {
-                    this.close_local_session(session_id, cx);
-                }
-            }
-            TerminalEvent::CwdChanged => {
-                this.sync_local_dirs(cx);
-                if let Some(session_id) = this.local_session_id_for_terminal(terminal.entity_id()) {
-                    this.refresh_git_status(session_id, true, cx);
-                }
-                cx.notify();
-            }
-            TerminalEvent::PromptReached => {
-                if let Some(session_id) = this.local_session_id_for_terminal(terminal.entity_id()) {
-                    this.refresh_git_status(session_id, false, cx);
-                }
-            }
-            TerminalEvent::CommandStarted { command, cwd } => {
-                if let Some(cwd) = cwd
-                    && let Some(cwd) = normalize_local_cwd(PathBuf::from(cwd))
-                {
-                    this.record_command(local_scope(&cwd), command.clone(), cx);
-                }
-            }
-            TerminalEvent::CommandFinished { status } => {
-                log::debug!("local terminal command finished with status {status:?}");
-            }
-            TerminalEvent::TitleChanged | TerminalEvent::Notification => cx.notify(),
-        });
+        let subscription =
+            cx.subscribe(
+                &terminal,
+                |this, terminal, event: &TerminalEvent, cx| match event {
+                    TerminalEvent::Closed => {
+                        let session_id = this.workspace.sessions.local_sessions.iter().find_map(
+                            |(&session_id, session)| {
+                                (session.terminal.entity_id() == terminal.entity_id())
+                                    .then_some(session_id)
+                            },
+                        );
+                        if let Some(session_id) = session_id {
+                            this.close_local_session(session_id, cx);
+                        }
+                    }
+                    TerminalEvent::CwdChanged => {
+                        this.sync_local_dirs(cx);
+                        if let Some(session_id) =
+                            this.local_session_id_for_terminal(terminal.entity_id())
+                        {
+                            this.refresh_git_status(session_id, true, cx);
+                        }
+                        cx.notify();
+                    }
+                    TerminalEvent::PromptReached => {
+                        if let Some(session_id) =
+                            this.local_session_id_for_terminal(terminal.entity_id())
+                        {
+                            this.refresh_git_status(session_id, false, cx);
+                        }
+                    }
+                    TerminalEvent::CommandStarted { command, cwd } => {
+                        if let Some(cwd) = cwd
+                            && let Some(cwd) = normalize_local_cwd(PathBuf::from(cwd))
+                        {
+                            this.record_command(local_scope(&cwd), command.clone(), cx);
+                        }
+                    }
+                    TerminalEvent::CommandFinished { status } => {
+                        log::debug!("local terminal command finished with status {status:?}");
+                    }
+                    TerminalEvent::TitleChanged | TerminalEvent::Notification => cx.notify(),
+                },
+            );
         let adjacent_subscription = cx.subscribe(
             &terminal,
             |this, terminal, event: &TerminalViewEvent, cx| match event {
@@ -1637,7 +1646,9 @@ pub fn open_main_window(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::{QuickCommandsPanelMode, find_remote_terminal_index, quick_commands_panel_mode};
-    use crate::shared::text_editing::{next_char_boundary, previous_char_boundary, selection_bounds};
+    use crate::shared::text_editing::{
+        next_char_boundary, previous_char_boundary, selection_bounds,
+    };
 
     #[test]
     fn sidebar_host_reuse_selects_latest_matching_terminal() {

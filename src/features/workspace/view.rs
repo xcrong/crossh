@@ -33,7 +33,6 @@ pub use crate::features::workspace::state::{
     ActiveView, LocalDir, LocalSession, LocalSessionId, Tab,
 };
 
-
 const TERMINAL_SPLIT_MIN_PANE_WIDTH: f32 = 160.0;
 const TERMINAL_SPLIT_HANDLE_WIDTH: f32 = 8.0;
 

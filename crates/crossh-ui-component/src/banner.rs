@@ -262,4 +262,3 @@ impl RenderOnce for Banner {
         }
     }
 }
-

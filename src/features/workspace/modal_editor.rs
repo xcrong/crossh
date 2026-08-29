@@ -2,12 +2,53 @@
 //! 打开/提交/取消与统一键盘处理。渲染位于 `view.rs`（两者互斥，
 //! 键盘入口合并为一个 handler，避免重复的编辑键分支）。
 
-use gpui::{ClipboardEntry, ClipboardItem, Context, KeyDownEvent, Window};
+use gpui::{
+    ClipboardEntry, ClipboardItem, Context, FocusHandle, KeyDownEvent, ScrollHandle, Window,
+};
 
+use crate::features::workspace::state::LocalSessionId;
 use crate::shared::text_editing::{EditingKeystroke, TextEditingState, handle_text_editing_key};
 
-use super::editors::QuickCommandEditor;
 use super::*;
+
+pub(crate) struct QuickCommandEditor {
+    pub(crate) scope: String,
+    pub(crate) original: String,
+    pub(crate) state: TextEditingState,
+    pub(crate) scroll: ScrollHandle,
+    pub(crate) focus: FocusHandle,
+}
+
+impl QuickCommandEditor {
+    pub(crate) fn new(scope: String, original: String, focus: FocusHandle) -> Self {
+        Self {
+            scope,
+            original: original.clone(),
+            state: TextEditingState::new(original),
+            scroll: ScrollHandle::new(),
+            focus,
+        }
+    }
+}
+
+pub(crate) struct PinnedTabEditor {
+    pub(crate) session_id: LocalSessionId,
+    pub(crate) state: TextEditingState,
+    pub(crate) focus: FocusHandle,
+}
+
+impl PinnedTabEditor {
+    pub(crate) fn new(session_id: LocalSessionId, current: String, focus: FocusHandle) -> Self {
+        Self {
+            session_id,
+            state: TextEditingState::new(current),
+            focus,
+        }
+    }
+}
+
+pub(crate) type RenameEditor = PinnedTabEditor;
+pub(crate) type DefaultCommandEditor = PinnedTabEditor;
 
 impl AppShell {
     pub(crate) fn open_quick_command_editor(

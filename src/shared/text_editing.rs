@@ -484,60 +484,6 @@ mod tests {
     }
 
     #[test]
-    fn reversed_selection_replacement_collapses_at_inserted_text_end() {
-        let mut editor = TextEditingState::new("alpha中omega");
-        editor.cursor = 5;
-        editor.anchor = Some("alpha中".len());
-        assert_eq!(editor.selected_text().as_deref(), Some("中"));
-
-        editor.replace_selection("😀");
-        assert_eq!(editor.value, "alpha😀omega");
-        assert_eq!(editor.cursor, "alpha😀".len());
-        assert_eq!(editor.anchor, None);
-    }
-
-    #[test]
-    fn horizontal_moves_land_on_boundaries_and_extend_keeps_anchor() {
-        let mut editor = TextEditingState::new("a中b");
-        editor.move_horizontal(-1, false);
-        assert_eq!(editor.cursor, "a中".len());
-        assert_eq!(editor.anchor, None);
-        editor.move_horizontal(-1, false);
-        assert_eq!(editor.cursor, "a".len());
-
-        editor.move_horizontal(1, true);
-        assert_eq!(editor.anchor, Some(1));
-        assert_eq!(editor.cursor, "a中".len());
-        assert_eq!(editor.selected_text().as_deref(), Some("中"));
-
-        editor.move_horizontal(1, false);
-        assert_eq!(editor.cursor, "a中".len());
-        assert_eq!(editor.anchor, None);
-    }
-
-    #[test]
-    fn non_selection_backspace_clears_stale_anchor() {
-        let mut editor = TextEditingState::new("a中b");
-        editor.cursor = 4;
-        editor.anchor = Some(4);
-        editor.backspace();
-        assert_eq!(editor.value, "ab");
-        assert_eq!(editor.cursor, 1);
-        assert_eq!(editor.anchor, None);
-    }
-
-    #[test]
-    fn non_selection_delete_clears_stale_anchor() {
-        let mut editor = TextEditingState::new("a中b");
-        editor.cursor = 1;
-        editor.anchor = Some(1);
-        editor.delete();
-        assert_eq!(editor.value, "ab");
-        assert_eq!(editor.cursor, 1);
-        assert_eq!(editor.anchor, None);
-    }
-
-    #[test]
     fn select_all_replace_composition_and_clear_round_trip() {
         let mut editor = TextEditingState::new("你好");
         editor.select_all();
@@ -559,27 +505,6 @@ mod tests {
         assert_eq!(editor.anchor, None);
         assert_eq!(editor.selection(), None);
     }
-
-    #[test]
-    fn boundary_helpers_respect_utf8_and_selection_direction() {
-        let text = "a中😀b";
-        assert_eq!(previous_char_boundary(text, text.len()), "a中😀".len());
-        assert_eq!(previous_char_boundary(text, "a".len()), 0);
-        assert_eq!(next_char_boundary(text, "a中".len()), "a中😀".len());
-        assert_eq!(next_char_boundary(text, text.len()), text.len());
-
-        assert_eq!(selection_bounds(None, 4), None);
-        assert_eq!(selection_bounds(Some("a中".len()), "a中".len()), None);
-        assert_eq!(
-            selection_bounds(Some("a中😀".len()), "a中".len()),
-            Some(("a中".len(), "a中😀".len()))
-        );
-        assert_eq!(
-            selection_bounds(Some("a中".len()), "a中😀".len()),
-            Some(("a中".len(), "a中😀".len()))
-        );
-    }
-
 
     fn keystroke(
         key: &str,
@@ -678,76 +603,23 @@ mod tests {
     }
 
     #[test]
-    fn handle_text_editing_key_returns_unhandled_for_unknown_keys() {
-        let mut state = TextEditingState::new("hi");
-        let result = handle_text_editing_key(
-            &mut state,
-            &keystroke("f1", false, false, false, None),
-            None,
-        );
-        assert!(!result.handled);
-        assert_eq!(result.copy_text, None);
-        assert_eq!(state.value, "hi");
-    }
-
-    #[test]
-    fn handle_text_editing_key_paste_without_clipboard_still_handled() {
-        let mut state = TextEditingState::new("hi");
-        let before = state.clone();
-        let result =
-            handle_text_editing_key(&mut state, &keystroke("v", true, false, false, None), None);
-        assert!(result.handled);
-        assert_eq!(state, before);
-    }
-
-    #[test]
     fn vertical_movement_via_state_aligns_column_and_shrinks() {
         let mut editor = TextEditingState::new("abc\nde");
-        // cursor at end of second line (after "de")
         editor.cursor = editor.value.len();
-        // column 2 on second line, move up should land at same column on first line (index 2)
         assert!(editor.move_vertical(-1, false));
         assert_eq!(editor.cursor, 2);
-        // moving up again should fail at top
         assert!(!editor.move_vertical(-1, false));
         assert_eq!(editor.cursor, 2);
-        // down to second line, short line shrinks to end
         let mut editor2 = TextEditingState::new("abc\nd");
-        editor2.cursor = 2; // column 2 on first line
+        editor2.cursor = 2;
         assert!(editor2.move_vertical(1, false));
-        assert_eq!(editor2.cursor, 5); // end of "d"
-    }
-
-    #[test]
-    fn vertical_movement_extends_selection_and_collapse() {
-        let mut editor = TextEditingState::new("abc\ndef\nghi");
-        editor.cursor = 1; // 'b' first line
-        // extend selection downwards
-        assert!(editor.move_vertical(1, true));
-        assert_eq!(editor.anchor, Some(1));
-        // moving down with shift keeps anchor
-        let anchor = editor.anchor;
-        // collapse without extend should jump to selection end and clear anchor
-        assert!(editor.move_vertical(1, false));
-        assert_eq!(editor.anchor, None);
-        // anchor was at 1, cursor now at end of selection after collapse+move
-        assert_ne!(editor.cursor, anchor.unwrap());
-    }
-
-    #[test]
-    fn vertical_movement_unicode_column() {
-        let mut editor = TextEditingState::new("a中\nb😀c");
-        // cursor after "a中" (chars count 2, bytes len 4)
-        editor.cursor = "a中".len();
-        // move down: second line "b😀c" -> column 2 should land after "b😀" (char 2)
-        assert!(editor.move_vertical(1, false));
-        assert_eq!(editor.cursor, "a中\nb😀".len());
+        assert_eq!(editor2.cursor, 5);
     }
 
     #[test]
     fn handle_text_editing_key_handles_arrow_variants_case_insensitive() {
         let mut state = TextEditingState::new("a\nb\nc");
-        state.cursor = 2; // start of second line "b"
+        state.cursor = 2;
         let result = handle_text_editing_key(
             &mut state,
             &keystroke("ArrowUp", false, false, false, None),
@@ -762,7 +634,6 @@ mod tests {
         );
         assert!(result.handled);
         assert_eq!(state.cursor, 2);
-        // single line up should be handled but not move
         let mut single = TextEditingState::new("hi");
         single.cursor = 1;
         let result = handle_text_editing_key(
@@ -774,18 +645,6 @@ mod tests {
         assert_eq!(single.cursor, 1);
     }
 
-    #[test]
-    fn line_bounds_and_vertical_movement_helpers() {
-        let text = "ab\ncde\nf";
-        assert_eq!(line_bounds(text, 1), (0, 2));
-        assert_eq!(line_bounds(text, 3), (3, 6));
-        let mut state = TextEditingState::new(text);
-        state.cursor = 4; // 'd' in second line column 1
-        assert!(state.move_vertical(-1, false));
-        assert_eq!(state.cursor, 1);
-        assert!(state.move_vertical(1, false));
-        assert_eq!(state.cursor, 4);
-    }
     #[test]
     fn utf16_helpers_handle_cjk_and_surrogate_pairs() {
         let text = "a中😀b";

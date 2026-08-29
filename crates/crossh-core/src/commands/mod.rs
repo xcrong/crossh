@@ -10,4 +10,3 @@ pub use history::{
     CommandHistory, CommandRecord, DISPLAY_LIMIT, MAX_HISTORY_ENTRIES, command_history_cache_path,
     local_scope, quick_commands_config_path, remote_scope,
 };
-

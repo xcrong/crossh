@@ -189,8 +189,6 @@ mod tests {
         (Rc::new(Cell::new(false)), Rc::new(Cell::new(100.)))
     }
 
-
-
     #[test]
     fn right_handled_width_measures_from_left_edge() {
         let bounds = Bounds::new(Point::new(px(100.), px(20.)), Size::new(px(300.), px(40.)));

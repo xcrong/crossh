@@ -228,10 +228,8 @@ mod tests {
 
     #[test]
     fn spec_20260817_recent_local_dir_recovery_missing_remembered_dir_is_not_restored() {
-        let root = std::env::temp_dir().join(format!(
-            "crossh-recent-dir-recovery-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("crossh-recent-dir-recovery-{}", std::process::id()));
         let existing = root.join("existing");
         let missing = root.join("missing");
         std::fs::create_dir_all(&existing).expect("test directory should be created");

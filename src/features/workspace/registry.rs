@@ -264,7 +264,6 @@ impl WorkspaceState {
         SplitViewCloseOutcome::Inactive
     }
 
-
     fn prepare_owner_close(&mut self, split: TerminalSplitState) -> SplitViewCloseOutcome {
         if self.active_view == Some(split.left) {
             self.active_view = Some(split.right);

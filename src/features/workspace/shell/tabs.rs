@@ -12,8 +12,8 @@ use task::Shell;
 use crossh_core::terminal::remote_shell_bootstrap_command;
 
 use super::*;
-use crate::features::workspace::editors::{DefaultCommandEditor, RenameEditor};
 use crate::features::workspace::local_paths::{current_local_cwd, normalize_local_cwd};
+use crate::features::workspace::modal_editor::{DefaultCommandEditor, RenameEditor};
 use crate::features::workspace::pinned::{next_pin_id, pinned_tabs_for_project};
 use crate::features::workspace::settings::PinnedLocalTab;
 
@@ -141,7 +141,11 @@ impl AppShell {
                     if !terminal.read(cx).is_local()
                         && let Some(cwd) = cwd.as_deref()
                     {
-                        this.record_command(remote_scope(&event_host_key, cwd), command.clone(), cx);
+                        this.record_command(
+                            remote_scope(&event_host_key, cwd),
+                            command.clone(),
+                            cx,
+                        );
                     }
                 }
                 TerminalEvent::CommandFinished { status } => {

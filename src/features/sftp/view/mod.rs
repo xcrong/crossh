@@ -121,7 +121,6 @@ impl EndCaretInput {
     }
 }
 
-
 struct RemoteEditor {
     remote: String,
     name: String,

@@ -490,7 +490,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn command_title_marker_decodes_command_and_cwd() {
         let command = BASE64.encode("echo hi");
@@ -601,7 +600,6 @@ mod tests {
         assert!(command.contains(". \"$d/boot.sh\""));
         assert!(command.contains("base64 -d"));
     }
-
 
     #[test]
     fn remote_bootstrap_selector_embeds_unchanged_shell_payloads() {
