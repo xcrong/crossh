@@ -11,5 +11,3 @@ pub use history::{
     local_scope, quick_commands_config_path, remote_scope,
 };
 
-#[cfg(test)]
-pub(crate) use history::read_scopes;
