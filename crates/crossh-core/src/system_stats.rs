@@ -107,18 +107,54 @@ fn is_visible_mount(mount: &str) -> bool {
     } else if cfg!(windows) {
         true
     } else {
-        // Linux/其它：保留根与常见外挂点，排除 snap/loop 等虚拟挂载
-        if mount == "/" || mount.starts_with("/mnt/") || mount.starts_with("/media/") {
-            return true;
-        }
-        // 其余挂载默认保留，但排除明显的虚拟文件系统前缀
-        !(mount.starts_with("/snap/")
-            || mount.starts_with("/boot/")
-            || mount == "/boot"
-            || mount.starts_with("/sys")
-            || mount.starts_with("/proc")
-            || mount.starts_with("/dev/"))
+        // Linux：白名单默认拦截，仅放行根与用户外挂物理盘。
+        // 不额外放行 /home —— Btrfs 同盘子卷（/home、/var/log 等）会与 / 同设备同容量导致重复显示；
+        // 独立物理分区的 /home 如需支持，后续应通过“设备去重”而非扩大白名单解决。
+        mount == "/" || mount.starts_with("/mnt/") || mount.starts_with("/media/")
     }
+}
+
+/// 判断文件系统是否为面向用户的可见磁盘（过滤虚拟/合成文件系统）
+/// 仅 Linux 生效，macOS/Windows 始终返回 true。
+fn is_visible_filesystem(fs: &str) -> bool {
+    if cfg!(target_os = "macos") || cfg!(windows) {
+        return true;
+    }
+    let fs = fs.to_ascii_lowercase();
+    if fs.starts_with("fuse") {
+        return false;
+    }
+    if fs.starts_with("cgroup") {
+        return false;
+    }
+    // 常见虚拟/合成文件系统黑名单
+    !matches!(
+        fs.as_str(),
+        "tmpfs"
+            | "devtmpfs"
+            | "squashfs"
+            | "overlay"
+            | "efivarfs"
+            | "proc"
+            | "sysfs"
+            | "devpts"
+            | "selinuxfs"
+            | "securityfs"
+            | "debugfs"
+            | "tracefs"
+            | "fusectl"
+            | "configfs"
+            | "ramfs"
+            | "nsfs"
+            | "bpf"
+            | "pstore"
+            | "autofs"
+            | "mqueue"
+            | "hugetlbfs"
+            | "binfmt_misc"
+            | "rpc_pipefs"
+            | "nfsd"
+    )
 }
 
 /// 构造快照（含多盘明细）
@@ -244,16 +280,18 @@ impl SystemSampler {
         let mem_total = self.system.total_memory();
         let mem_used = self.system.used_memory();
 
-        // 收集多盘 I/O 与容量数据
-        let raw_disks: Vec<(String, u64, u64, u64, u64)> = self
+        // 收集多盘 I/O 与容量数据（含文件系统类型用于二次过滤）
+        let raw_disks: Vec<(String, String, u64, u64, u64, u64)> = self
             .disks
             .list()
             .iter()
             .map(|d| {
                 let mount = d.mount_point().to_string_lossy().to_string();
+                let fs = d.file_system().to_string_lossy().to_string();
                 let usage = d.usage();
                 (
                     mount,
+                    fs,
                     d.total_space(),
                     d.available_space(),
                     usage.total_read_bytes,
@@ -266,11 +304,14 @@ impl SystemSampler {
             .prev_instant
             .map(|prev| now.duration_since(prev).as_secs_f64());
         let mut disks: Vec<DiskSnapshot> = Vec::new();
-        for (mount, total, avail, cur_read, cur_write) in &raw_disks {
+        for (mount, fs, total, avail, cur_read, cur_write) in &raw_disks {
             if *total == 0 {
                 continue;
             }
             if !is_visible_mount(mount) {
+                continue;
+            }
+            if !is_visible_filesystem(fs) {
                 continue;
             }
             let (read_rate, write_rate) = match (self.prev_disk_io.get(mount), elapsed) {
@@ -306,7 +347,7 @@ impl SystemSampler {
             _ => (None, None),
         };
         // 更新状态：磁盘与网络共享同一时间基准
-        for (mount, _, _, cur_read, cur_write) in &raw_disks {
+        for (mount, _, _, _, cur_read, cur_write) in &raw_disks {
             self.prev_disk_io
                 .insert(mount.clone(), (*cur_read, *cur_write));
         }
@@ -457,5 +498,107 @@ mod tests {
     fn disk_io__build_snapshot_without_disks_empty() {
         let snap = build_snapshot_with_disks(None, None, 100, 60, Vec::new(), (None, None));
         assert!(snap.disks.is_empty());
+    }
+
+    #[test]
+    fn linux__is_visible_mount_whitelist() {
+        // 仅在 Linux 分支生效；macOS/Windows 分支该测试不适用，但当前 CI 为 Linux。
+        if cfg!(target_os = "macos") || cfg!(windows) {
+            return;
+        }
+        // 白名单放行
+        assert!(is_visible_mount("/"));
+        assert!(is_visible_mount("/mnt/data"));
+        assert!(is_visible_mount("/mnt/nas/photos"));
+        assert!(is_visible_mount("/media/usb"));
+        assert!(is_visible_mount("/media/user/disk1"));
+        // 严格拦截（即使历史黑名单未覆盖）
+        assert!(!is_visible_mount("/home"));
+        assert!(!is_visible_mount("/var/log"));
+        assert!(!is_visible_mount("/var/cache"));
+        assert!(!is_visible_mount("/var/tmp/flatpak-cache-abc"));
+        assert!(!is_visible_mount("/run/user/1000"));
+        assert!(!is_visible_mount("/run/media/user/usb"));
+        assert!(!is_visible_mount("/tmp"));
+        assert!(!is_visible_mount("/snap/chromium/123"));
+        assert!(!is_visible_mount("/boot"));
+        assert!(!is_visible_mount("/boot/efi"));
+        assert!(!is_visible_mount("/sys/fs/cgroup"));
+        assert!(!is_visible_mount("/proc/self"));
+        assert!(!is_visible_mount("/dev/shm"));
+        // 边界：前缀必须带斜杠
+        assert!(!is_visible_mount("/mnt"));
+        assert!(!is_visible_mount("/media"));
+        assert!(!is_visible_mount("/mntdata"));
+        assert!(!is_visible_mount("/mediadata"));
+        // 空与根相似路径
+        assert!(!is_visible_mount(""));
+        assert!(!is_visible_mount("/var"));
+    }
+
+    #[test]
+    fn linux__is_visible_filesystem_filters_virtual() {
+        if cfg!(target_os = "macos") || cfg!(windows) {
+            return;
+        }
+        // 真实物理文件系统应放行
+        assert!(is_visible_filesystem("ext4"));
+        assert!(is_visible_filesystem("btrfs"));
+        assert!(is_visible_filesystem("xfs"));
+        assert!(is_visible_filesystem("ntfs"));
+        assert!(is_visible_filesystem("exfat"));
+        assert!(is_visible_filesystem("vfat")); // /boot/efi 是 vfat 但已由挂载点过滤，/media 下的 vfat 仍可见
+        assert!(is_visible_filesystem("apfs")); // 允许透过，macOS 分支本就不过滤
+        // 虚拟/合成文件系统应拦截
+        assert!(!is_visible_filesystem("tmpfs"));
+        assert!(!is_visible_filesystem("devtmpfs"));
+        assert!(!is_visible_filesystem("squashfs"));
+        assert!(!is_visible_filesystem("overlay"));
+        assert!(!is_visible_filesystem("efivarfs"));
+        assert!(!is_visible_filesystem("cgroup"));
+        assert!(!is_visible_filesystem("cgroup2"));
+        assert!(!is_visible_filesystem("proc"));
+        assert!(!is_visible_filesystem("sysfs"));
+        // fuse 家族（大小写不敏感）
+        assert!(!is_visible_filesystem("fuse.revokefs-fuse"));
+        assert!(!is_visible_filesystem("fuse.portal"));
+        assert!(!is_visible_filesystem("fuseblk"));
+        assert!(!is_visible_filesystem("FUSE.REVOKES-FUSE"));
+        // 其余常见虚拟 FS
+        assert!(!is_visible_filesystem("ramfs"));
+        assert!(!is_visible_filesystem("nsfs"));
+        assert!(!is_visible_filesystem("bpf"));
+        assert!(!is_visible_filesystem("autofs"));
+    }
+
+    #[test]
+    fn linux__combined_mount_and_fs_filter_covers_manajaro_case() {
+        // Manjaro 实测 7 条：btrfs 同容量 4 条（/、/var/log、/var/cache、/home）+ vfat /boot/efi + 2×fuse
+        if cfg!(target_os = "macos") || cfg!(windows) {
+            return;
+        }
+        let cases = vec![
+            ("/", "btrfs", true),
+            ("/var/log", "btrfs", false),
+            ("/var/cache", "btrfs", false),
+            ("/home", "btrfs", false),
+            ("/boot/efi", "vfat", false),
+            ("/run/user/1000/doc", "fuse.revokefs-fuse", false),
+            ("/run/user/1000/doc2", "fuse.portal", false),
+            // 合法外挂
+            ("/mnt/data", "ext4", true),
+            ("/media/usb", "exfat", true),
+            ("/media/usb", "vfat", true),
+            // 挂载点合法但文件系统虚拟 → 仍应过滤
+            ("/mnt/data", "tmpfs", false),
+            ("/media/usb", "fuseblk", false),
+        ];
+        for (mount, fs, expected) in cases {
+            let visible = is_visible_mount(mount) && is_visible_filesystem(fs);
+            assert_eq!(
+                visible, expected,
+                "mount={mount} fs={fs} expected visible={expected}"
+            );
+        }
     }
 }
