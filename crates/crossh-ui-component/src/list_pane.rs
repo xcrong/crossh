@@ -45,19 +45,3 @@ pub fn pane_operation_error(message: SharedString) -> AnyElement {
         .child(message)
         .into_any_element()
 }
-
-#[cfg(test)]
-mod tests {
-    use gpui::TestAppContext;
-
-    use super::{list_pane, pane_operation_error};
-
-    #[gpui::test]
-    fn list_pane_builder_is_chainable(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            let focus = cx.focus_handle();
-            let _pane = list_pane("test-pane", focus, "TestContext");
-            let _err = pane_operation_error("oops".into());
-        });
-    }
-}

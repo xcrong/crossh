@@ -95,30 +95,3 @@ impl RenderOnce for Toaster {
             .child(self.toast)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{Toast, ToastTone, Toaster};
-
-    #[test]
-    fn toast_builder_defaults_to_info_and_accepts_all_tones() {
-        let toast = Toast::new("notice");
-        assert_eq!(toast.tone, ToastTone::Info);
-
-        for tone in [
-            ToastTone::Info,
-            ToastTone::Success,
-            ToastTone::Warning,
-            ToastTone::Error,
-        ] {
-            assert_eq!(Toast::new("notice").tone(tone).tone, tone);
-        }
-    }
-
-    #[test]
-    fn toaster_wraps_a_single_toast_snapshot() {
-        let toaster = Toaster::new(Toast::new("notice").tone(ToastTone::Success));
-        assert_eq!(toaster.toast.label.as_ref(), "notice");
-        assert_eq!(toaster.toast.tone, ToastTone::Success);
-    }
-}

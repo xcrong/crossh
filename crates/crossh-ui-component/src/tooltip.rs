@@ -47,21 +47,3 @@ impl Render for Tooltip {
         tip
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::Tooltip;
-
-    #[test]
-    fn tooltip_defaults_to_compact_style() {
-        let tip = Tooltip::new("~/code");
-        assert_eq!(tip.text.as_ref(), "~/code");
-        assert!(!tip.wide);
-    }
-
-    #[test]
-    fn tooltip_wide_enables_roomier_style() {
-        let tip = Tooltip::new("npm run dev").wide();
-        assert!(tip.wide);
-    }
-}

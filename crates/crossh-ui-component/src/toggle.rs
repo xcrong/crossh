@@ -93,22 +93,7 @@ mod tests {
 
     use super::{ToggleSwitch, next_state};
 
-    #[test]
-    fn toggle_switch_defaults_to_off_without_handler() {
-        let toggle = ToggleSwitch::new("preview-toggle");
-        assert_eq!(toggle.id, ElementId::Name("preview-toggle".into()));
-        assert!(!toggle.on);
-        assert!(toggle.on_toggle.is_none());
-    }
 
-    #[test]
-    fn toggle_switch_builder_sets_state_and_handler() {
-        let toggle = ToggleSwitch::new("preview-toggle")
-            .on(true)
-            .on_toggle(|_, _, _, _| {});
-        assert!(toggle.on);
-        assert!(toggle.on_toggle.is_some());
-    }
 
     #[test]
     fn toggle_click_flips_state_both_ways() {

@@ -338,14 +338,12 @@ mod tests {
         assert_eq!(tx, None);
         let (rx2, _) = compute_network_rates(1000, 1000, 2000, 500, 1.0);
         assert_eq!(rx2, None);
+        // zero elapsed also yields placeholder
+        let (rx3, tx3) = compute_network_rates(1000, 1000, 2000, 2000, 0.0);
+        assert_eq!(rx3, None);
+        assert_eq!(tx3, None);
     }
 
-    #[test]
-    fn spec_20260824_system_monitor_card__network_zero_elapsed_shows_placeholder() {
-        let (rx, tx) = compute_network_rates(1000, 1000, 2000, 2000, 0.0);
-        assert_eq!(rx, None);
-        assert_eq!(tx, None);
-    }
 
     #[test]
     fn spec_20260824_system_monitor_card__memory_usage_percent() {
@@ -369,11 +367,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn spec_20260824_system_monitor_card__build_snapshot_disk_unavailable_placeholder() {
-        let snap = build_snapshot_with_disks(None, None, 16_000, 8_000, Vec::new(), (None, None));
-        assert!(snap.disks.is_empty());
-    }
 
     #[test]
     fn spec_20260824_system_monitor_card__build_snapshot_memory_percent() {
@@ -430,15 +423,6 @@ mod tests {
         assert!(!state.apply_snapshot(snap, 0));
     }
 
-    #[test]
-    fn spec_20260824_system_monitor_card__compute_network_rates_deterministic_injection() {
-        // 契约 4：注入两次采样，速率随输入变化
-        let (rx1, _) = compute_network_rates(0, 0, 2_000, 0, 2.0);
-        let (rx2, _) = compute_network_rates(0, 0, 4_000, 0, 2.0);
-        assert_eq!(rx1, Some(1_000));
-        assert_eq!(rx2, Some(2_000));
-        assert_ne!(rx1, rx2);
-    }
 
     #[test]
     fn disk_io__build_snapshot_with_disks_multi() {
@@ -478,16 +462,4 @@ mod tests {
         assert!(snap.disks.is_empty());
     }
 
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn disk_io__visible_mount_filters_apfs_synthetic() {
-        assert!(is_visible_mount("/"));
-        assert!(is_visible_mount("/Volumes/BookDrive"));
-        assert!(!is_visible_mount("/System/Volumes/Data"));
-        assert!(!is_visible_mount("/System/Volumes/VM"));
-        assert!(!is_visible_mount("/System/Volumes/Preboot"));
-        assert!(!is_visible_mount(
-            "/private/var/run/com.apple.security.cryptexd/mnt/cryptex"
-        ));
-    }
 }

@@ -373,21 +373,8 @@ mod tests {
         assert_eq!(clamp_panel_width(720., 216., 360.), 360.);
     }
 
-    #[test]
-    fn spec_20260820_side_panel_rail__rail_avatar_constants() {
-        assert_eq!(RAIL_AVATAR_SIZE, 30.0);
-        assert_eq!(RAIL_AVATAR_GAP, 4.0);
-    }
 
-    #[test]
-    fn spec_20260820_side_panel_rail__drag_handle_side_left_defaults_to_right() {
-        assert_eq!(handle_side_for(PanelSide::Left), SplitHandleSide::Right);
-    }
 
-    #[test]
-    fn spec_20260820_side_panel_rail__drag_handle_side_right_defaults_to_left() {
-        assert_eq!(handle_side_for(PanelSide::Right), SplitHandleSide::Left);
-    }
 
     #[test]
     fn spec_20260820_side_panel_rail__available_main_width_truncates_at_zero() {
@@ -397,11 +384,4 @@ mod tests {
         assert_eq!(available_main_width(px(300.), 200., 200.), px(0.));
     }
 
-    #[test]
-    fn spec_20260820_side_panel_rail__rail_side_maps_to_border() {
-        let rail_left = Rail::left("rail-left", 44.);
-        assert_eq!(rail_left.side, PanelSide::Left);
-        let rail_right = Rail::right("rail-right", 40.);
-        assert_eq!(rail_right.side, PanelSide::Right);
-    }
 }

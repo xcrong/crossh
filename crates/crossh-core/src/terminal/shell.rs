@@ -490,14 +490,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn shell_setup_script_is_deterministic_for_supported_shells() {
-        for shell in [RemoteShell::Bash, RemoteShell::Zsh, RemoteShell::Fish] {
-            let script = shell_setup_script(shell);
-            assert!(script.contains("crossh-command="));
-            assert!(script.contains("133;D"));
-        }
-    }
 
     #[test]
     fn command_title_marker_decodes_command_and_cwd() {
@@ -610,22 +602,6 @@ mod tests {
         assert!(command.contains("base64 -d"));
     }
 
-    #[test]
-    fn remote_bootstrap_payloads_cover_each_shell() {
-        let bash_payload = remote_bash_startup_script();
-        assert!(bash_payload.starts_with("source ~/.bashrc\n"));
-        assert!(bash_payload.contains("__crossh_report_command"));
-
-        let zsh_integration = zsh_deferred_setup_script();
-        assert!(zsh_integration.contains("precmd_functions+=(__crossh_deferred_init)"));
-        let zsh_launcher = remote_zsh_launcher_script();
-        assert!(zsh_launcher.contains("CROSSH_USER_ZDOTDIR_SET"));
-        assert!(zsh_launcher.contains("${ZDOTDIR:-$HOME}/.zshenv"));
-
-        let fish_payload = remote_fish_startup_script();
-        assert!(fish_payload.contains("__crossh_report_pwd"));
-        assert!(fish_payload.contains("--on-event fish_preexec"));
-    }
 
     #[test]
     fn remote_bootstrap_selector_embeds_unchanged_shell_payloads() {

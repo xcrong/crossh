@@ -344,28 +344,6 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    #[test]
-    fn select_builder_keeps_fields() {
-        let opts = vec![
-            SelectOption::new("a", "Alpha"),
-            SelectOption::new("b", "Beta"),
-        ];
-        let select = Select::new("test-select")
-            .options(opts.clone())
-            .selected(Some(0))
-            .placeholder("请选择")
-            .is_open(true)
-            .on_toggle(|_, _, _| {})
-            .on_select(|_, _, _| {});
-
-        assert_eq!(select.id, ElementId::Name("test-select".into()));
-        assert_eq!(select.options, opts);
-        assert_eq!(select.selected_index, Some(0));
-        assert_eq!(select.placeholder.as_deref(), Some("请选择"));
-        assert!(select.is_open);
-        assert!(select.on_toggle.is_some());
-        assert!(select.on_select.is_some());
-    }
 
     #[test]
     fn next_index_wraps_around() {

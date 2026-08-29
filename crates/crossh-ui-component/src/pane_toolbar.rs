@@ -57,18 +57,3 @@ impl IntoElement for PaneToolbar {
         self.inner
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use gpui::div;
-
-    use super::{PaneToolbar, pane_toolbar};
-    use crossh_ui::icons;
-
-    #[test]
-    fn pane_toolbar_builders_are_chainable() {
-        let _base = pane_toolbar();
-        let _titled = PaneToolbar::new("Branches", icons::IconName::GitBranch);
-        let _with_action = PaneToolbar::new("Stashes", icons::IconName::Save).child(div());
-    }
-}

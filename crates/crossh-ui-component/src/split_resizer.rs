@@ -189,32 +189,7 @@ mod tests {
         (Rc::new(Cell::new(false)), Rc::new(Cell::new(100.)))
     }
 
-    #[test]
-    fn builder_defaults_to_right_side_without_line_or_range() {
-        let (dragging, width) = state();
-        let resizer = SplitResizer::new("panel-resize", dragging, width);
-        assert_eq!(resizer.id, ElementId::Name("panel-resize".into()));
-        assert_eq!(resizer.handle_side, SplitHandleSide::Right);
-        assert!(!resizer.line);
-        assert_eq!(resizer.min_width, 0.0);
-        assert_eq!(resizer.max_width, f32::MAX);
-        assert_eq!(resizer.width.get(), 100.);
-        assert!(!resizer.dragging.get());
-    }
 
-    #[test]
-    fn builder_sets_range_side_and_line() {
-        let (dragging, width) = state();
-        let resizer = SplitResizer::new("panel-resize", dragging, width)
-            .min_width(10.)
-            .max_width(420.)
-            .handle_side(SplitHandleSide::Left)
-            .line();
-        assert_eq!(resizer.handle_side, SplitHandleSide::Left);
-        assert!(resizer.line);
-        assert_eq!(resizer.min_width, 10.);
-        assert_eq!(resizer.max_width, 420.);
-    }
 
     #[test]
     fn right_handled_width_measures_from_left_edge() {

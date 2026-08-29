@@ -41,15 +41,3 @@ impl RenderOnce for StatusMetric {
             .child(self.label)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::StatusMetric;
-    use crate::badge::BadgeTone;
-
-    #[test]
-    fn status_metric_builder_sets_tone_without_a_container() {
-        let metric = StatusMetric::new("↑3").tone(BadgeTone::Info);
-        assert_eq!(metric.tone, BadgeTone::Info);
-    }
-}

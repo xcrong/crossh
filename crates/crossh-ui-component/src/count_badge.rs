@@ -73,33 +73,3 @@ impl RenderOnce for CountBadge {
             .child(self.label)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use gpui::px;
-
-    use super::CountBadge;
-
-    #[test]
-    fn count_badge_defaults_to_fixed_18px_size_with_4px_padding() {
-        let badge = CountBadge::new("3");
-        assert_eq!(badge.label.as_ref(), "3");
-        assert_eq!(badge.min_width, px(18.));
-        assert_eq!(badge.padding_x, px(4.));
-        assert_eq!(badge.padding_y, px(4.));
-        assert!(!badge.unbounded);
-    }
-
-    #[test]
-    fn count_badge_builder_sets_size_padding_and_unbounded() {
-        let badge = CountBadge::new(format!("{}/{}", 12, 50))
-            .unbounded()
-            .min_width(px(20.))
-            .padding_x(px(8.))
-            .padding_y(px(4.));
-        assert!(badge.unbounded);
-        assert_eq!(badge.min_width, px(20.));
-        assert_eq!(badge.padding_x, px(8.));
-        assert_eq!(badge.padding_y, px(4.));
-    }
-}

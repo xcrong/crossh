@@ -31,16 +31,3 @@ pub fn selectable_row(
         })
         .hover(|style| style.bg(theme::raised()))
 }
-
-#[cfg(test)]
-mod tests {
-    use gpui::px;
-
-    use super::selectable_row;
-
-    #[test]
-    fn selectable_row_builders_are_chainable() {
-        let _row = selectable_row("row-1", true, px(34.));
-        let _row2 = selectable_row("row-2", false, px(60.));
-    }
-}

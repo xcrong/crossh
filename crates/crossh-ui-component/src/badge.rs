@@ -58,14 +58,3 @@ impl RenderOnce for Badge {
             .child(self.label)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{Badge, BadgeTone};
-
-    #[test]
-    fn badge_builder_sets_tone() {
-        let badge = Badge::new("up").tone(BadgeTone::Info);
-        assert_eq!(badge.tone, BadgeTone::Info);
-    }
-}

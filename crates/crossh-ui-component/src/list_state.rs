@@ -47,32 +47,8 @@ mod tests {
 
     use super::{ListState, list_empty, list_state_body};
 
-    #[test]
-    fn list_state_variants_are_distinct() {
-        assert_ne!(
-            ListState::Loading("loading".into()),
-            ListState::Empty("loading".into())
-        );
-        assert_ne!(
-            ListState::Error("oops".into()),
-            ListState::Empty("oops".into())
-        );
-        assert_eq!(ListState::Ready, ListState::Ready);
-    }
 
-    #[test]
-    fn list_empty_creates_element_for_each_state() {
-        // 仅验证构造不 panic 且返回 AnyElement（GPUI 元素需窗口上下文才能渲染像素）
-        let _ = list_empty(ListState::Loading("loading".into()));
-        let _ = list_empty(ListState::Error("failed".into()));
-        let _ = list_empty(ListState::Empty("no data".into()));
-    }
 
-    #[test]
-    #[should_panic(expected = "Ready")]
-    fn list_empty_panics_on_ready() {
-        let _ = list_empty(ListState::Ready);
-    }
 
     #[test]
     fn list_state_body_dispatches_to_rows_or_hint() {

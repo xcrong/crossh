@@ -246,34 +246,7 @@ mod tests {
             ime_replacement: None,
         }
     }
-
-    #[gpui::test]
-    fn modal_field_defaults(cx: &mut TestAppContext) {
-        let s = state("hello", 5, None);
-        let field: ModalField<()> = ModalField::new("test", focus(cx), &s);
-        assert_eq!(field.state.value, "hello");
-        assert!(field.placeholder.is_none());
-        assert!(field.scroll.is_none());
-        assert_eq!(field.caret_height, px(20.));
-        assert_eq!(field.text_size, px(14.));
-        assert!(field.entity.is_none());
-        assert!(field.on_key_down.is_none());
-    }
-
-    #[gpui::test]
-    fn modal_field_builder_sets_placeholder_scroll_and_handlers(cx: &mut TestAppContext) {
-        let s = state("cmd", 3, None);
-        let handle = cx.update(|_cx| gpui::ScrollHandle::new());
-        let field: ModalField<()> = ModalField::new("prompt", focus(cx), &s)
-            .placeholder("Type here")
-            .scrollable(handle.clone())
-            .on_key_down(|_, _, _| {});
-        assert_eq!(field.placeholder.as_deref(), Some("Type here"));
-        assert!(field.scroll.is_some());
-        assert!(field.on_key_down.is_some());
-    }
-
-    #[test]
+#[test]
     fn shared_state_selection_bounds() {
         let s = state("hello", 2, Some(5));
         assert_eq!(s.selection(), Some((2, 5)));

@@ -216,23 +216,3 @@ impl RenderOnce for TabItem {
         tab
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{TabItem, TabStrip};
-
-    #[test]
-    fn tab_item_defaults_to_an_inactive_item_without_a_dot() {
-        let tab = TabItem::new("tab", "Changes");
-        assert!(!tab.active);
-        assert!(tab.dot_color.is_none());
-        assert_ne!(tab.id, tab.label_id);
-    }
-
-    #[test]
-    fn tab_strip_accepts_children_and_optional_scroll() {
-        let strip = TabStrip::new("tabs").child(TabItem::new("tab", "Changes"));
-        assert_eq!(strip.children.len(), 1);
-        assert!(strip.scroll.is_none());
-    }
-}

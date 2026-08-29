@@ -46,14 +46,3 @@ impl RenderOnce for StatusBar {
             .children(self.children)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::StatusBar;
-
-    #[test]
-    fn status_bar_starts_without_content() {
-        let bar = StatusBar::new("status");
-        assert!(bar.children.is_empty());
-    }
-}

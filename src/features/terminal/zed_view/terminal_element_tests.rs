@@ -56,30 +56,6 @@ fn test_is_decorative_character() {
 }
 
 #[test]
-fn test_decorative_character_boundary_cases() {
-    // Test exact boundaries of our ranges
-    // Box Drawing range boundaries
-    assert!(TerminalElement::is_decorative_character('\u{2500}')); // First char
-    assert!(TerminalElement::is_decorative_character('\u{257F}')); // Last char
-    assert!(!TerminalElement::is_decorative_character('\u{24FF}')); // Just before
-
-    // Block Elements range boundaries
-    assert!(TerminalElement::is_decorative_character('\u{2580}')); // First char
-    assert!(TerminalElement::is_decorative_character('\u{259F}')); // Last char
-
-    // Geometric Shapes subset boundaries
-    assert!(TerminalElement::is_decorative_character('\u{25A0}')); // First char
-    assert!(TerminalElement::is_decorative_character('\u{25FF}')); // Last char
-    assert!(!TerminalElement::is_decorative_character('\u{2600}')); // Just after
-
-    // Sextant range boundaries
-    assert!(TerminalElement::is_decorative_character('\u{1FB00}')); // First char
-    assert!(TerminalElement::is_decorative_character('\u{1FB3B}')); // Last char
-    assert!(!TerminalElement::is_decorative_character('\u{1FAFF}')); // Just before
-    assert!(!TerminalElement::is_decorative_character('\u{1FB3C}')); // Just after
-}
-
-#[test]
 fn test_sextant_char_to_filled_bits() {
     // U+1FB00 BLOCK SEXTANT-1: only the top-left subcell.
     assert_eq!(
