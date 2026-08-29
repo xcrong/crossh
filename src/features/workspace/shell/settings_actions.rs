@@ -4,7 +4,7 @@
 use gpui::Context;
 
 use crate::shared::i18n::LanguagePreference;
-use crossh_terminal::settings::{
+use crossh_terminal::{
     MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK, TerminalSettings,
 };
 

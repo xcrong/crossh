@@ -424,7 +424,7 @@ fn remote_fish_startup_script() -> String {
     remote_shell_setup_script(RemoteShell::Fish).to_string()
 }
 
-fn shell_quote(value: &str) -> String {
+pub fn shell_quote(value: &str) -> String {
     // 委托给 `shlex::try_quote` 以覆盖空串、换行与单引号等边界用例，
     // 与 `src/features/terminal/view.rs:584` 的路径粘贴保持同一套引号语义。
     // `shlex` 对 NUL 返回 `Err`，但此处输入均为临时目录/环境变量路径，

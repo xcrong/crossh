@@ -29,14 +29,14 @@ const GRAPH_STROKE_WIDTH: f32 = 2.;
 
 impl GitWindow {
     pub(super) fn render_history_body(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let width = super::model::clamp_changes_pane_width(self.changes_pane_width.get());
+        let width = super::window::clamp_changes_pane_width(self.changes_pane_width.get());
         let resizer = crossh_ui_component::SplitResizer::new(
             "git-history-resize",
             self.changes_pane_dragging.clone(),
             self.changes_pane_width.clone(),
         )
-        .min_width(super::model::CHANGES_PANE_MIN_WIDTH)
-        .max_width(super::model::CHANGES_PANE_MAX_WIDTH);
+        .min_width(super::window::CHANGES_PANE_MIN_WIDTH)
+        .max_width(super::window::CHANGES_PANE_MAX_WIDTH);
         let list = self.render_history_list(false, cx);
         let detail = self.render_history_detail(false, cx);
 

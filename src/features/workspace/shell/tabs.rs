@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crossh_terminal::events::ConnState;
+use crossh_terminal::ConnState;
 use gpui::{PromptButton, PromptLevel, Window};
 
 use task::Shell;
@@ -130,30 +130,35 @@ impl AppShell {
             cx,
         );
         let event_host_key = host_key.clone();
-        let subscription = cx.subscribe(&terminal, move |this, terminal, event, cx| match event {
-            TerminalEvent::Closed => {
-                this.close_remote_terminal(terminal.entity_id(), cx);
-            }
-            TerminalEvent::TitleChanged | TerminalEvent::Notification => cx.notify(),
-            TerminalEvent::CommandStarted { command, cwd } => {
-                if !terminal.read(cx).is_local()
-                    && let Some(cwd) = cwd.as_deref()
-                {
-                    this.record_command(remote_scope(&event_host_key, cwd), command.clone(), cx);
+        let subscription = cx.subscribe(
+            &terminal,
+            move |this, terminal, event: &TerminalEvent, cx| match event {
+                TerminalEvent::Closed => {
+                    this.close_remote_terminal(terminal.entity_id(), cx);
                 }
-            }
-            TerminalEvent::CommandFinished { status } => {
-                log::debug!("remote terminal command finished with status {status:?}");
-            }
-            TerminalEvent::CwdChanged => cx.notify(),
-            TerminalEvent::PromptReached => {}
-        });
-        let adjacent_subscription =
-            cx.subscribe(&terminal, |this, terminal, event, cx| match event {
+                TerminalEvent::TitleChanged | TerminalEvent::Notification => cx.notify(),
+                TerminalEvent::CommandStarted { command, cwd } => {
+                    if !terminal.read(cx).is_local()
+                        && let Some(cwd) = cwd.as_deref()
+                    {
+                        this.record_command(remote_scope(&event_host_key, cwd), command.clone(), cx);
+                    }
+                }
+                TerminalEvent::CommandFinished { status } => {
+                    log::debug!("remote terminal command finished with status {status:?}");
+                }
+                TerminalEvent::CwdChanged => cx.notify(),
+                TerminalEvent::PromptReached => {}
+            },
+        );
+        let adjacent_subscription = cx.subscribe(
+            &terminal,
+            |this, terminal, event: &TerminalViewEvent, cx| match event {
                 TerminalViewEvent::SendSelectionToAdjacent { text } => {
                     this.send_to_adjacent_terminal(terminal.entity_id(), text, cx);
                 }
-            });
+            },
+        );
         self.workspace
             .sessions
             .terminal_subscriptions
@@ -327,13 +332,6 @@ impl AppShell {
         session_id: LocalSessionId,
         cx: &Context<Self>,
     ) -> Option<TabCloseRisk> {
-        #[cfg(test)]
-        if self.test_risky_sessions.contains(&session_id) {
-            return Some(TabCloseRisk {
-                command_running: true,
-                ..TabCloseRisk::default()
-            });
-        }
         let session = self.workspace.sessions.local_sessions.get(&session_id)?;
         Some(TabCloseRisk {
             command_running: session.terminal.read(cx).is_command_running(cx),
@@ -600,8 +598,6 @@ impl AppShell {
         self.select_local_session(keep, cx);
     }
 
-    /// 固定本地会话：分配持久化 `pin_id` 并追加到固定记录末尾。
-    /// 同一会话重复固定不新增记录（契约 9）。
     pub(crate) fn pin_local_session(&mut self, session_id: LocalSessionId, cx: &mut Context<Self>) {
         let Some(session) = self.workspace.sessions.local_sessions.get_mut(&session_id) else {
             return;

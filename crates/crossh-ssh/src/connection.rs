@@ -632,8 +632,8 @@ async fn run_remote_command(
     };
     let remote_command = format!(
         "cd -- {} && exec sh -lc {}",
-        shell_quote_remote(&cwd),
-        shell_quote_remote(&command),
+        crossh_core::terminal::shell_quote(&cwd),
+        crossh_core::terminal::shell_quote(&command),
     );
     if channel.exec(true, remote_command).await.is_err() {
         return RemoteCommandEvent {
@@ -674,11 +674,6 @@ async fn run_remote_command(
     RemoteCommandEvent { id, status }
 }
 
-fn shell_quote_remote(value: &str) -> String {
-    shlex::try_quote(value)
-        .map(|cow| cow.into_owned())
-        .unwrap_or_else(|_| format!("'{}'", value.replace('\'', "'\\''")))
-}
 
 /// 尝试用 ssh-agent 上的每个身份认证，成功即返回。
 #[cfg(unix)]
@@ -834,10 +829,13 @@ mod tests {
 
     #[test]
     fn remote_shell_quote_preserves_command_text() {
-        assert_eq!(shell_quote_remote("printf 'hello'"), "\"printf 'hello'\"");
-        assert_eq!(shell_quote_remote("/srv/app"), "/srv/app");
-        assert_eq!(shell_quote_remote("a b"), "'a b'");
-        assert_eq!(shell_quote_remote(""), "''");
+        assert_eq!(
+            crossh_core::terminal::shell_quote("printf 'hello'"),
+            "\"printf 'hello'\""
+        );
+        assert_eq!(crossh_core::terminal::shell_quote("/srv/app"), "/srv/app");
+        assert_eq!(crossh_core::terminal::shell_quote("a b"), "'a b'");
+        assert_eq!(crossh_core::terminal::shell_quote(""), "''");
     }
 
     #[tokio::test]

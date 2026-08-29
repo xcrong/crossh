@@ -10,6 +10,7 @@ use gpui::{
     TitlebarOptions, UniformListScrollHandle, WindowBounds, WindowOptions, px,
 };
 
+use crate::shared::i18n;
 use crate::shared::text_editing::TextEditingState;
 use crossh_core::git::{
     commit, diff, discard_worktree, pull, push, scan_changes, stage, stage_hunk, unstage,
@@ -25,14 +26,121 @@ use crossh_core::git_stash::{
     pop_stash as pop_git_stash, push_stash as push_git_stash,
 };
 use crossh_core::terminal::path_display_name;
-use crossh_ui_component::context_menu::ContextMenuState;
+use crossh_ui_component::context_menu::{ContextMenuState, MenuEntry, MenuItem};
 
-use super::context_menu::{self, GitMenuAction};
-use super::editor::CommitEditor;
 #[cfg(feature = "visual-tests")]
 use super::history::{HistoryDetailState, HistoryListState};
-use super::model::{CHANGES_PANE_DEFAULT_WIDTH, CompactPage};
 use super::session::{ChangeKey, GitOperation, GitSession, OperationState, selected_index};
+
+pub(super) const GIT_COMPACT_WIDTH: f32 = 840.;
+pub(super) const CHANGES_PANE_DEFAULT_WIDTH: f32 = 300.;
+pub(super) const CHANGES_PANE_MIN_WIDTH: f32 = 220.;
+pub(super) const CHANGES_PANE_MAX_WIDTH: f32 = 420.;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum CompactPage {
+    #[default]
+    Changes,
+    Diff,
+    History,
+    HistoryDetail,
+    Branches,
+    Stashes,
+}
+
+pub(super) fn uses_compact_git_layout(width: f32) -> bool {
+    width < GIT_COMPACT_WIDTH
+}
+
+pub(super) fn clamp_changes_pane_width(width: f32) -> f32 {
+    width.clamp(CHANGES_PANE_MIN_WIDTH, CHANGES_PANE_MAX_WIDTH)
+}
+
+pub(super) struct CommitEditor {
+    pub(super) state: TextEditingState,
+    pub(super) focus: FocusHandle,
+}
+
+impl CommitEditor {
+    pub(super) fn new(focus: FocusHandle) -> Self {
+        Self {
+            state: TextEditingState::new(String::new()),
+            focus,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum GitMenuAction {
+    StageSelected,
+    UnstageSelected,
+    DiscardSelected,
+    SelectAll,
+    ClearSelection,
+}
+
+pub(crate) fn menu_entries(
+    selected_count: usize,
+    stage_count: usize,
+    unstage_count: usize,
+    can_discard: bool,
+) -> Vec<MenuEntry<GitMenuAction>> {
+    vec![
+        MenuEntry::SectionHeader(i18n::text("git.selection")),
+        MenuEntry::Item(MenuItem {
+            id: "git-stage-selected".into(),
+            label: rust_i18n::t!("git.stage_selected", count = stage_count).to_string(),
+            shortcut_hint: None,
+            disabled: stage_count == 0,
+            danger: false,
+            action: GitMenuAction::StageSelected,
+        }),
+        MenuEntry::Item(MenuItem {
+            id: "git-unstage-selected".into(),
+            label: rust_i18n::t!("git.unstage_selected", count = unstage_count).to_string(),
+            shortcut_hint: None,
+            disabled: unstage_count == 0,
+            danger: false,
+            action: GitMenuAction::UnstageSelected,
+        }),
+        MenuEntry::Separator,
+        MenuEntry::Item(MenuItem {
+            id: "git-select-all".into(),
+            label: i18n::text("git.select_all"),
+            shortcut_hint: Some(select_all_shortcut().into()),
+            disabled: false,
+            danger: false,
+            action: GitMenuAction::SelectAll,
+        }),
+        MenuEntry::Item(MenuItem {
+            id: "git-clear-selection".into(),
+            label: i18n::text("git.clear_selection"),
+            shortcut_hint: None,
+            disabled: selected_count == 0,
+            danger: false,
+            action: GitMenuAction::ClearSelection,
+        }),
+        MenuEntry::Separator,
+        MenuEntry::Item(MenuItem {
+            id: "git-discard-selected".into(),
+            label: i18n::text("git.discard_selected"),
+            shortcut_hint: None,
+            disabled: !can_discard,
+            danger: true,
+            action: GitMenuAction::DiscardSelected,
+        }),
+    ]
+}
+
+#[cfg(target_os = "macos")]
+const fn select_all_shortcut() -> &'static str {
+    "⌘A"
+}
+
+#[cfg(not(target_os = "macos"))]
+const fn select_all_shortcut() -> &'static str {
+    "Ctrl+A"
+}
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -969,7 +1077,7 @@ impl GitWindow {
     }
 
     pub(super) fn open_context_menu(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        let entries = context_menu::menu_entries(
+        let entries = menu_entries(
             self.session.selected_count(),
             self.session.selected_paths(false).len(),
             self.session.selected_paths(true).len(),

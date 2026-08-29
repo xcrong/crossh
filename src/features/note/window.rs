@@ -18,8 +18,10 @@ use crate::shared::input_handler::{
     editing_mark_text, editing_marked_range, editing_replace, editing_selected_range,
     editing_unmark,
 };
-use crate::shared::text_editing::{EditingKeystroke, TextEditingState, handle_text_editing_key};
-use crate::shared::utf16::{byte_index_for_utf16, utf16_len, utf16_offset_for_byte, utf16_slice};
+use crate::shared::text_editing::{
+    EditingKeystroke, TextEditingState, byte_index_for_utf16, handle_text_editing_key, utf16_len,
+    utf16_offset_for_byte, utf16_slice,
+};
 
 const NOTE_WINDOW_CONTEXT: &str = "NoteWindow";
 const NOTE_INPUT_PADDING: Pixels = px(12.);

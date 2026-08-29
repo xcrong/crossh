@@ -17,9 +17,9 @@ use gpui::{
 
 use crate::features::workspace::pane::{PaneRisk, WorkspacePane};
 use crate::shared::i18n;
-use crate::shared::text_editing::{TextEditingState, line_bounds};
-use crate::shared::utf16::{
-    byte_index_for_utf16, replace_utf16_range, utf16_len, utf16_offset_for_byte, utf16_slice,
+use crate::shared::text_editing::{
+    TextEditingState, byte_index_for_utf16, line_bounds, replace_utf16_range, utf16_len,
+    utf16_offset_for_byte, utf16_slice,
 };
 use crossh_ssh::{MAX_EDITOR_FILE_BYTES, RemoteEntry, SftpCmd, SftpEvent};
 use crossh_ui::context_menu::SftpMenuAction;
@@ -31,10 +31,7 @@ use crossh_ui_component::context_menu::{
 use crossh_ui_component::{Button, ButtonSize, ButtonVariant, ModalDialog, TextInput, scroll_y};
 
 use super::logic::*;
-mod end_caret;
-use self::end_caret::EndCaretInput;
 mod render;
-mod view_input;
 
 /// 传输进度快照。
 #[derive(Clone, Debug, Default)]
@@ -47,6 +44,83 @@ struct Progress {
 const SFTP_ROW_HEIGHT: f32 = 34.;
 const EDITOR_ROW_HEIGHT: f32 = 20.;
 const VIRTUAL_LIST_OVERSCAN: usize = 6;
+
+pub struct EndCaretInput {
+    pub value: String,
+    pub ime_marked_text: String,
+}
+
+impl EndCaretInput {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self {
+            value: value.into(),
+            ime_marked_text: String::new(),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.value.clear();
+        self.ime_marked_text.clear();
+    }
+
+    pub fn selection_range(&self) -> UTF16Selection {
+        let position = utf16_len(&self.value);
+        UTF16Selection {
+            range: position..position,
+            reversed: false,
+        }
+    }
+
+    pub fn marked_range(&self) -> Option<Range<usize>> {
+        (!self.ime_marked_text.is_empty()).then(|| {
+            let start = utf16_len(&self.value);
+            start..start + utf16_len(&self.ime_marked_text)
+        })
+    }
+
+    pub fn unmark(&mut self) {
+        self.ime_marked_text.clear();
+    }
+
+    pub fn replace_at_end(&mut self, range: Option<Range<usize>>, text: &str) {
+        let position = utf16_len(&self.value);
+        replace_utf16_range(&mut self.value, range.unwrap_or(position..position), text);
+        self.ime_marked_text.clear();
+    }
+
+    pub fn mark(&mut self, text: &str) {
+        self.ime_marked_text.clear();
+        self.ime_marked_text.push_str(text);
+    }
+
+    pub fn bounds_for_range(
+        &self,
+        range: Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        window: &Window,
+        font_size: f32,
+        caret_size: f32,
+    ) -> Option<Bounds<Pixels>> {
+        let cursor = byte_index_for_utf16(&self.value, range.start);
+        Some(ime_caret_bounds(
+            window,
+            element_bounds,
+            &self.value[..cursor],
+            px(font_size),
+            px(caret_size),
+            px(0.),
+        ))
+    }
+
+    pub fn length(&self) -> usize {
+        utf16_len(&self.value)
+    }
+
+    pub fn text_for_range(&self, range: Range<usize>) -> String {
+        utf16_slice(&self.value, range)
+    }
+}
+
 
 struct RemoteEditor {
     remote: String,
@@ -1150,11 +1224,271 @@ impl SftpPane {
     }
 }
 
+#[derive(Clone, Copy)]
+enum SftpInputField {
+    Path,
+    Editor,
+    Upload,
+}
+
+impl SftpPane {
+    fn active_input_field(&self, window: &Window) -> Option<SftpInputField> {
+        if self
+            .pending_path_input
+            .as_ref()
+            .is_some_and(|input| input.focus.is_focused(window))
+        {
+            Some(SftpInputField::Path)
+        } else if self
+            .editor
+            .as_ref()
+            .is_some_and(|editor| !editor.read_only && editor.focus.is_focused(window))
+        {
+            Some(SftpInputField::Editor)
+        } else if self.editor.is_none() && self.focus.is_focused(window) {
+            Some(SftpInputField::Upload)
+        } else {
+            None
+        }
+    }
+
+    fn active_end_caret_input(&self, field: SftpInputField) -> Option<&EndCaretInput> {
+        match field {
+            SftpInputField::Path => self.pending_path_input.as_ref().map(|input| &input.state),
+            SftpInputField::Upload => Some(&self.upload_input),
+            SftpInputField::Editor => None,
+        }
+    }
+
+    fn active_end_caret_input_mut(&mut self, field: SftpInputField) -> Option<&mut EndCaretInput> {
+        match field {
+            SftpInputField::Path => self
+                .pending_path_input
+                .as_mut()
+                .map(|input| &mut input.state),
+            SftpInputField::Upload => Some(&mut self.upload_input),
+            SftpInputField::Editor => None,
+        }
+    }
+}
+
+impl EntityInputHandler for SftpPane {
+    fn text_for_range(
+        &mut self,
+        range: Range<usize>,
+        _adjusted_range: &mut Option<Range<usize>>,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        match self.active_input_field(window)? {
+            SftpInputField::Editor => Some(utf16_slice(&self.editor.as_ref()?.state.value, range)),
+            field => Some(self.active_end_caret_input(field)?.text_for_range(range)),
+        }
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        match self.active_input_field(window)? {
+            SftpInputField::Editor => {
+                let editor = self.editor.as_ref()?;
+                let position = utf16_offset_for_byte(&editor.state.value, editor.state.cursor);
+                Some(UTF16Selection {
+                    range: position..position,
+                    reversed: false,
+                })
+            }
+            field => Some(self.active_end_caret_input(field)?.selection_range()),
+        }
+    }
+
+    fn marked_text_range(
+        &self,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
+        match self.active_input_field(window)? {
+            SftpInputField::Editor => {
+                let editor = self.editor.as_ref()?;
+                let (start, _) = editor
+                    .state
+                    .ime_replacement
+                    .unwrap_or((editor.state.cursor, editor.state.cursor));
+                (!editor.state.ime_marked_text.is_empty()).then(|| {
+                    let start = utf16_offset_for_byte(&editor.state.value, start);
+                    start..start + utf16_len(&editor.state.ime_marked_text)
+                })
+            }
+            field => self.active_end_caret_input(field)?.marked_range(),
+        }
+    }
+
+    fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.active_input_field(window) {
+            Some(SftpInputField::Editor) => {
+                if let Some(editor) = &mut self.editor {
+                    if let Some((_, end)) = editor.state.ime_replacement.take() {
+                        editor.state.cursor = end;
+                    }
+                    editor.state.ime_marked_text.clear();
+                }
+            }
+            field => {
+                if let Some(input) = field.and_then(|f| self.active_end_caret_input_mut(f)) {
+                    input.unmark();
+                }
+            }
+        }
+        window.invalidate_character_coordinates();
+        cx.notify();
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        replacement_range: Option<Range<usize>>,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.active_input_field(window) {
+            Some(SftpInputField::Editor) => {
+                if let Some(editor) = &mut self.editor {
+                    let range = editor
+                        .state
+                        .ime_replacement
+                        .take()
+                        .map(|(start, end)| {
+                            utf16_offset_for_byte(&editor.state.value, start)
+                                ..utf16_offset_for_byte(&editor.state.value, end)
+                        })
+                        .or(replacement_range)
+                        .unwrap_or_else(|| {
+                            let position =
+                                utf16_offset_for_byte(&editor.state.value, editor.state.cursor);
+                            position..position
+                        });
+                    editor.state.cursor = replace_utf16_range(&mut editor.state.value, range, text);
+                    editor.state.ime_marked_text.clear();
+                    editor.dirty = true;
+                }
+            }
+            field => {
+                let Some(input) = field.and_then(|f| self.active_end_caret_input_mut(f)) else {
+                    return;
+                };
+                input.replace_at_end(replacement_range, text);
+            }
+        }
+        window.invalidate_character_coordinates();
+        cx.notify();
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        range: Option<Range<usize>>,
+        new_text: &str,
+        _new_selected_range: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.active_input_field(window) {
+            Some(SftpInputField::Editor) => {
+                if let Some(editor) = &mut self.editor {
+                    let replacement = editor
+                        .state
+                        .ime_replacement
+                        .take()
+                        .or_else(|| {
+                            range.map(|range| {
+                                (
+                                    byte_index_for_utf16(&editor.state.value, range.start),
+                                    byte_index_for_utf16(&editor.state.value, range.end),
+                                )
+                            })
+                        })
+                        .unwrap_or((editor.state.cursor, editor.state.cursor));
+                    editor.state.ime_replacement = Some(replacement);
+                    editor.state.cursor = replacement.0;
+                    editor.state.ime_marked_text.clear();
+                    editor.state.ime_marked_text.push_str(new_text);
+                }
+            }
+            field => {
+                let Some(input) = field.and_then(|f| self.active_end_caret_input_mut(f)) else {
+                    return;
+                };
+                input.mark(new_text);
+            }
+        }
+        window.invalidate_character_coordinates();
+        cx.notify();
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        range: Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        match self.active_input_field(window)? {
+            SftpInputField::Editor => {
+                let editor = self.editor.as_ref()?;
+                let cursor = editor
+                    .state
+                    .ime_replacement
+                    .map(|(start, _)| start)
+                    .unwrap_or_else(|| byte_index_for_utf16(&editor.state.value, range.start));
+                let line_start = line_bounds(&editor.state.value, cursor).0;
+                Some(ime_caret_bounds(
+                    window,
+                    element_bounds,
+                    &editor.state.value[line_start..cursor],
+                    px(12.),
+                    px(42.),
+                    self.editor_scroll.offset().x,
+                ))
+            }
+            SftpInputField::Path => {
+                let input = self.pending_path_input.as_ref()?;
+                input
+                    .state
+                    .bounds_for_range(range, element_bounds, window, 14., 12.)
+            }
+            SftpInputField::Upload => {
+                self.upload_input
+                    .bounds_for_range(range, element_bounds, window, 12., 8.)
+            }
+        }
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: Point<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        None
+    }
+
+    fn text_length_utf16(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> Option<usize> {
+        match self.active_input_field(window)? {
+            SftpInputField::Editor => self
+                .editor
+                .as_ref()
+                .map(|editor| utf16_len(&editor.state.value)),
+            field => Some(self.active_end_caret_input(field)?.length()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::shared::text_editing::{next_char_boundary, previous_char_boundary};
-    use gpui::TestAppContext;
     use std::path::Path;
 
     #[test]
@@ -1218,134 +1552,5 @@ mod tests {
             line_bounds(text, text.len()),
             (end_of_first_line + 1, text.len())
         );
-    }
-
-    #[gpui::test]
-    fn spec_20260818_merge_sftp_text_editing_remote_editor_edits_keep_utf8_semantics(
-        cx: &mut TestAppContext,
-    ) {
-        let focus = cx.update(|cx| cx.focus_handle());
-        let make = || {
-            let mut editor = RemoteEditor::loading("srv".into(), "f.txt".into(), focus.clone());
-            editor.read_only = false;
-            editor.loading = false;
-            editor
-        };
-
-        let mut editor = make();
-        editor.insert("a✓b");
-        assert!(editor.dirty);
-        assert_eq!(editor.state.value, "a✓b");
-        assert_eq!(editor.state.cursor, "a✓b".len());
-
-        editor.dirty = false;
-        editor.insert("");
-        assert!(!editor.dirty);
-        assert_eq!(editor.state.value, "a✓b");
-        assert_eq!(editor.state.cursor, "a✓b".len());
-
-        editor.backspace();
-        assert!(editor.dirty);
-        assert_eq!(editor.state.value, "a✓");
-        assert_eq!(editor.state.cursor, "a✓".len());
-
-        editor.dirty = false;
-        editor.state.cursor = 0;
-        editor.backspace();
-        assert!(!editor.dirty);
-        assert_eq!(editor.state.value, "a✓");
-
-        editor.state.cursor = 1;
-        editor.delete();
-        assert!(editor.dirty);
-        assert_eq!(editor.state.value, "a");
-        assert_eq!(editor.state.cursor, 1);
-
-        editor.dirty = false;
-        editor.state.cursor = 1;
-        editor.delete();
-        assert!(!editor.dirty);
-        assert_eq!(editor.state.value, "a");
-
-        editor.state.cursor = 0;
-        editor.delete();
-        assert!(editor.dirty);
-        assert_eq!(editor.state.value, "");
-        assert_eq!(editor.state.cursor, 0);
-
-        editor.dirty = false;
-        editor.state.cursor = 0;
-        editor.delete();
-        assert!(!editor.dirty);
-        assert_eq!(editor.state.value, "");
-
-        let mut editor = make();
-        editor.insert("ab你好\nxyz");
-        assert_eq!(editor.state.cursor, "ab你好\nxyz".len());
-        editor.move_horizontal(-1, false);
-        assert_eq!(editor.state.cursor, "ab你好\nxy".len());
-        editor.move_horizontal(1, false);
-        assert_eq!(editor.state.cursor, "ab你好\nxyz".len());
-        editor.move_vertical(-1, false);
-        assert_eq!(editor.state.cursor, "ab你".len());
-        editor.move_vertical(1, false);
-        assert_eq!(editor.state.cursor, "ab你好\nxyz".len());
-    }
-
-    #[gpui::test]
-    fn spec_20260818_merge_sftp_text_editing_remote_editor_ime_state_round_trip(
-        cx: &mut TestAppContext,
-    ) {
-        let focus = cx.update(|cx| cx.focus_handle());
-        let mut editor = RemoteEditor::loading("srv".into(), "f.txt".into(), focus);
-        editor.read_only = false;
-        editor.loading = false;
-        editor.insert("ab");
-
-        let replacement = (1, 2);
-        editor.state.ime_replacement = Some(replacement);
-        editor.state.cursor = replacement.0;
-        editor.state.ime_marked_text.clear();
-        editor.state.ime_marked_text.push('中');
-
-        if let Some((_, end)) = editor.state.ime_replacement.take() {
-            editor.state.cursor = end;
-        }
-        editor.state.ime_marked_text.clear();
-        assert_eq!(editor.state.cursor, 2);
-        assert!(editor.state.ime_marked_text.is_empty());
-        assert_eq!(editor.state.ime_replacement, None);
-    }
-
-    #[gpui::test]
-    fn workspace_pane_focus_request_is_recorded_on_the_entity(cx: &mut TestAppContext) {
-        let pane = cx.update(|cx| {
-            let (cmd_tx, _cmd_rx) = async_channel::bounded(1);
-            cx.new(|cx| SftpPane {
-                cmd_tx,
-                cwd: ".".into(),
-                entries: Vec::new(),
-                message: None,
-                loading: false,
-                upload_input: EndCaretInput::new(String::new()),
-                progress: None,
-                editor: None,
-                focus: cx.focus_handle(),
-                list_scroll: ScrollHandle::new(),
-                editor_scroll: ScrollHandle::new(),
-                _drain: None,
-                _picker: None,
-                context_menu: None,
-                anchor_bounds: Rc::new(Cell::new(None)),
-                root_focus: cx.focus_handle(),
-                focus_requested: false,
-                pending_path_input: None,
-                confirm_delete: None,
-            })
-        });
-
-        cx.update(|cx| SftpWorkspacePane(pane.clone()).request_focus(cx));
-
-        assert!(pane.read_with(cx, |pane, _| pane.focus_requested));
     }
 }

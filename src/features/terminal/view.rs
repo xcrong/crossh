@@ -34,8 +34,7 @@ use crossh_core::terminal::{
     local_terminal_tab_title, local_terminal_title, prompt_marker_from_title,
     remote_terminal_title, strip_shell_host_prefix, truncate_path_title,
 };
-use crossh_terminal::events::{ConnState, TerminalEvent};
-use crossh_terminal::settings::TerminalSettings;
+use crossh_terminal::{ConnState, TerminalEvent, TerminalSettings};
 use crossh_terminal::timestamps::{TerminalRow, TerminalTimestampState, timestamp_now};
 use crossh_ui_component::context_menu::{
     CONTEXT_MENU_WIDTH, ContextMenuState, clamp_menu_position, estimate_menu_height,

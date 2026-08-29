@@ -11,6 +11,7 @@ use gpui::{
 
 use crate::features::terminal::ConnState;
 use crate::features::workspace::shell::AppShell;
+use crate::features::workspace::state::preferred_state;
 use crate::features::workspace::view::{ActiveView, LocalDir};
 use crate::shared::i18n::{self};
 use crossh_core::terminal::path_display_name;
@@ -426,7 +427,7 @@ fn local_dir_state(shell: &AppShell, dir: &LocalDir, cx: &Context<AppShell>) -> 
         .iter()
         .filter_map(|id| shell.workspace.sessions.local_sessions.get(id))
         .map(|session| session.terminal.read(cx).state.clone())
-        .reduce(crate::features::workspace::view::preferred_state)
+        .reduce(preferred_state)
 }
 
 pub(crate) fn local_dir_stop_button_visible(count: usize) -> bool {

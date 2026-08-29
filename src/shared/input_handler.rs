@@ -1,14 +1,10 @@
-//! 统一的文本输入管道：收敛 `String` 型与 `TextEditingState` 型的重复 IME/选区逻辑。
-//!
-//! `shell_input.rs` 中 6 个输入源（HostSearch/Credential/QuickCommand/Rename/DefaultCommand/Compose）
-//! 在 8 个 `EntityInputHandler` 方法里对 `String + marked` 与 `TextEditingState` 重复
-//! 同型分支。本模块将两类输入的共性抽为纯函数，使 `shell_input.rs` 仅保留
-//! “字段路由（plain vs editing）”的 2 分支分发，消除 70% 结构化重复。
+//! 文本输入管道：收敛 `String` 与 `TextEditingState` 的 IME/选区重复逻辑。
 
 use std::ops::Range;
 
-use super::text_editing::TextEditingState;
-use super::utf16::{byte_index_for_utf16, replace_utf16_range, utf16_len, utf16_offset_for_byte};
+use super::text_editing::{
+    TextEditingState, byte_index_for_utf16, replace_utf16_range, utf16_len, utf16_offset_for_byte,
+};
 
 /// UTF-16 坐标系下的选区（与 GPUI 的 `UTF16Selection` 同构，由视图层转换）。
 #[derive(Debug, Clone, PartialEq, Eq)]

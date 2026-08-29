@@ -1,6 +1,6 @@
 use gpui::{FocusHandle, ScrollHandle};
 
-use crate::features::workspace::view::LocalSessionId;
+use crate::features::workspace::state::LocalSessionId;
 use crate::shared::text_editing::TextEditingState;
 
 pub(crate) struct QuickCommandEditor {
@@ -23,13 +23,13 @@ impl QuickCommandEditor {
     }
 }
 
-pub(crate) struct RenameEditor {
+pub(crate) struct PinnedTabEditor {
     pub(crate) session_id: LocalSessionId,
     pub(crate) state: TextEditingState,
     pub(crate) focus: FocusHandle,
 }
 
-impl RenameEditor {
+impl PinnedTabEditor {
     pub(crate) fn new(session_id: LocalSessionId, current: String, focus: FocusHandle) -> Self {
         Self {
             session_id,
@@ -39,18 +39,5 @@ impl RenameEditor {
     }
 }
 
-pub(crate) struct DefaultCommandEditor {
-    pub(crate) session_id: LocalSessionId,
-    pub(crate) state: TextEditingState,
-    pub(crate) focus: FocusHandle,
-}
-
-impl DefaultCommandEditor {
-    pub(crate) fn new(session_id: LocalSessionId, current: String, focus: FocusHandle) -> Self {
-        Self {
-            session_id,
-            state: TextEditingState::new(current),
-            focus,
-        }
-    }
-}
+pub(crate) type RenameEditor = PinnedTabEditor;
+pub(crate) type DefaultCommandEditor = PinnedTabEditor;

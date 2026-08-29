@@ -1,4 +1,3 @@
-//! Git Stash 的无 UI 状态和异步请求上下文。
 
 use std::path::PathBuf;
 

@@ -51,12 +51,9 @@ pub(crate) fn init(cx: &mut App) {
 
 mod branch;
 mod branch_render;
-mod context_menu;
-mod editor;
 mod history;
 mod history_render;
 mod input;
-mod model;
 mod render;
 mod session;
 mod stash;
@@ -64,46 +61,3 @@ mod stash_render;
 mod window;
 
 pub(crate) use window::open_git_window;
-
-#[cfg(feature = "visual-tests")]
-pub(crate) fn visual_fixture(
-    cwd: std::path::PathBuf,
-    show_compact_diff: bool,
-    show_error: bool,
-    cx: &mut App,
-) -> gpui::Entity<window::GitWindow> {
-    window::GitWindow::visual_fixture(cwd, show_compact_diff, show_error, cx)
-}
-
-#[cfg(feature = "visual-tests")]
-pub(crate) fn visual_history_fixture(
-    cwd: std::path::PathBuf,
-    show_detail: bool,
-    cx: &mut App,
-) -> gpui::Entity<window::GitWindow> {
-    window::GitWindow::visual_history_fixture(cwd, show_detail, cx)
-}
-
-#[cfg(feature = "visual-tests")]
-pub(crate) fn visual_branch_fixture(
-    cwd: std::path::PathBuf,
-    cx: &mut App,
-) -> gpui::Entity<window::GitWindow> {
-    window::GitWindow::visual_branch_fixture(cwd, cx)
-}
-
-#[cfg(feature = "visual-tests")]
-pub(crate) fn visual_stash_fixture(
-    cwd: std::path::PathBuf,
-    cx: &mut App,
-) -> gpui::Entity<window::GitWindow> {
-    window::GitWindow::visual_stash_fixture(cwd, cx)
-}
-
-#[cfg(feature = "visual-tests")]
-pub(crate) fn visual_conflict_fixture(
-    cwd: std::path::PathBuf,
-    cx: &mut App,
-) -> gpui::Entity<window::GitWindow> {
-    window::GitWindow::visual_conflict_fixture(cwd, cx)
-}

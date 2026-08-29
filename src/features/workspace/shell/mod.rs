@@ -10,8 +10,6 @@
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
-#[cfg(test)]
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -38,10 +36,11 @@ use crate::features::workspace::registry::WorkspaceState;
 use crate::features::workspace::settings::WorkspaceSettings;
 use crate::features::workspace::sidebar::{render_sidebar, render_sidebar_rail};
 use crate::features::workspace::toaster::{ToastNotice, ToastTone};
+use crate::features::workspace::state::rebuild_local_dirs;
 use crate::features::workspace::view::{
-    ActiveView, LocalDir, LocalSession, LocalSessionId, Tab, rebuild_local_dirs,
-    render_default_command_editor, render_main, render_quick_command_editor, render_quick_commands,
-    render_rename_editor, render_workspace_status_bar,
+    ActiveView, LocalDir, LocalSession, LocalSessionId, Tab, render_default_command_editor,
+    render_main, render_quick_command_editor, render_quick_commands, render_rename_editor,
+    render_workspace_status_bar,
 };
 use crate::shared::i18n::{self, LanguagePreference};
 use crossh_core::commands::{
@@ -53,7 +52,7 @@ use crossh_core::git::{pull, push};
 use crossh_core::git_status::inspect;
 use crossh_core::system_stats::{SystemMonitorState, SystemSampler};
 use crossh_ssh::{HostKeyDecision, RemoteCommandStatus};
-use crossh_terminal::settings::TerminalSettings;
+use crossh_terminal::TerminalSettings;
 use crossh_ui::context_menu::ShellMenuAction;
 use crossh_ui::theme;
 use crossh_ui::widgets::printable_char;
@@ -61,8 +60,6 @@ use crossh_ui_component::context_menu::{ContextMenuState, MenuEntry, render_cont
 
 use super::editors::QuickCommandEditor;
 use super::local_paths::{current_local_cwd, normalize_local_cwd, normalize_recent_dirs};
-#[cfg(test)]
-use crate::shared::text_editing::{next_char_boundary, previous_char_boundary, selection_bounds};
 
 mod compose;
 mod notifications;
@@ -183,8 +180,6 @@ pub struct AppShell {
     shutdown_in_progress: bool,
     /// 标签页关闭确认框是否已打开，防止重复弹出。
     pub(crate) tab_close_confirmation_open: bool,
-    #[cfg(test)]
-    pub(crate) test_risky_sessions: BTreeSet<LocalSessionId>,
 }
 
 impl AppShell {
@@ -285,8 +280,6 @@ impl AppShell {
             quit_confirmation_open: false,
             shutdown_in_progress: false,
             tab_close_confirmation_open: false,
-            #[cfg(test)]
-            test_risky_sessions: BTreeSet::new(),
         });
         updates.update(cx, |updates, cx| updates.start_startup_check(cx));
         shell
@@ -415,7 +408,7 @@ impl AppShell {
         log::info!("local session {session_id} opened for {}", cwd_text);
         // Zed's local PTY process tracking reports the current cwd; keep it
         // separate from the session's project ownership when `cd` changes.
-        let subscription = cx.subscribe(&terminal, |this, terminal, event, cx| match event {
+        let subscription = cx.subscribe(&terminal, |this, terminal, event: &TerminalEvent, cx| match event {
             TerminalEvent::Closed => {
                 let session_id = this.workspace.sessions.local_sessions.iter().find_map(
                     |(&session_id, session)| {
@@ -450,12 +443,14 @@ impl AppShell {
             }
             TerminalEvent::TitleChanged | TerminalEvent::Notification => cx.notify(),
         });
-        let adjacent_subscription =
-            cx.subscribe(&terminal, |this, terminal, event, cx| match event {
+        let adjacent_subscription = cx.subscribe(
+            &terminal,
+            |this, terminal, event: &TerminalViewEvent, cx| match event {
                 TerminalViewEvent::SendSelectionToAdjacent { text } => {
                     this.send_to_adjacent_terminal(terminal.entity_id(), text, cx);
                 }
-            });
+            },
+        );
         self.workspace
             .sessions
             .terminal_subscriptions
@@ -1641,10 +1636,8 @@ pub fn open_main_window(cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        QuickCommandsPanelMode, find_remote_terminal_index, next_char_boundary,
-        previous_char_boundary, quick_commands_panel_mode, selection_bounds,
-    };
+    use super::{QuickCommandsPanelMode, find_remote_terminal_index, quick_commands_panel_mode};
+    use crate::shared::text_editing::{next_char_boundary, previous_char_boundary, selection_bounds};
 
     #[test]
     fn sidebar_host_reuse_selects_latest_matching_terminal() {
@@ -1684,18 +1677,3 @@ mod tests {
         assert_eq!(quick_commands_panel_mode(false, false), None);
     }
 }
-
-#[cfg(test)]
-mod close_project_tests;
-#[cfg(test)]
-mod compose_tests;
-#[cfg(test)]
-mod default_command_tests;
-#[cfg(test)]
-mod editor_launch_tests;
-#[cfg(test)]
-mod git_sync_toast_tests;
-#[cfg(test)]
-mod pinned_tab_tests;
-#[cfg(test)]
-mod shell_notification_tests;

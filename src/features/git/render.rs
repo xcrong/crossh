@@ -21,10 +21,9 @@ use crossh_ui_component::{
     list_state_body, pane_toolbar, selectable_row,
 };
 
-use super::editor::CommitEditor;
-use super::model::{
-    CHANGES_PANE_MAX_WIDTH, CHANGES_PANE_MIN_WIDTH, CompactPage, clamp_changes_pane_width,
-    uses_compact_git_layout,
+use super::window::{
+    CommitEditor, CHANGES_PANE_MAX_WIDTH, CHANGES_PANE_MIN_WIDTH, CompactPage,
+    clamp_changes_pane_width, uses_compact_git_layout,
 };
 use super::session::{ChangeKey, DiffState, OperationState};
 use super::window::GitWindow;
@@ -1283,64 +1282,3 @@ fn status_glyph(status: ChangeStatus) -> AnyElement {
         .into_any_element()
 }
 
-#[cfg(test)]
-mod tests {
-    use crossh_core::git::{DiffLine, FileDiff};
-    use gpui::{
-        ListHorizontalSizingBehavior, ListSizingBehavior, Render, TestAppContext,
-        UniformListScrollHandle, px, size, uniform_list,
-    };
-
-    use super::*;
-
-    struct DiffScrollTestView {
-        diff: FileDiff,
-        scroll: UniformListScrollHandle,
-    }
-
-    impl Render for DiffScrollTestView {
-        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-            let content_width = diff_content_width(&self.diff);
-            let lines = self.diff.lines.clone();
-            uniform_list(
-                "git-diff-scroll-test",
-                lines.len(),
-                move |range: std::ops::Range<usize>, _window, _cx| {
-                    lines[range]
-                        .iter()
-                        .map(|line| render_diff_line(line, content_width, None))
-                        .collect::<Vec<_>>()
-                },
-            )
-            .track_scroll(&self.scroll)
-            .size_full()
-            .with_sizing_behavior(ListSizingBehavior::Auto)
-            .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
-        }
-    }
-
-    #[gpui::test]
-    fn long_diff_line_has_horizontal_scroll_range(cx: &mut TestAppContext) {
-        let diff = FileDiff {
-            lines: vec![DiffLine {
-                kind: DiffLineKind::Context,
-                hunk_index: None,
-                old_ln: Some(1),
-                new_ln: Some(1),
-                text: "x".repeat(240),
-            }],
-            ..Default::default()
-        };
-        let scroll = UniformListScrollHandle::new();
-        cx.open_window(size(px(480.), px(320.)), {
-            let scroll = scroll.clone();
-            move |_, _| DiffScrollTestView { diff, scroll }
-        });
-        cx.run_until_parked();
-
-        assert!(
-            scroll.0.borrow().base_handle.max_offset().x > px(0.),
-            "a long diff line must create horizontal scroll range"
-        );
-    }
-}

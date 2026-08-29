@@ -105,23 +105,36 @@ pub(crate) struct WorkspaceState {
     pub(crate) sessions: SessionRegistry,
     pub(crate) active_view: Option<ActiveView>,
     pub(crate) toaster: ToasterState,
-    /// Toast 消除定时任务的「生命周期锚」：只写不读。show_toast 覆盖
-    /// 该句柄会取消前一个 toast 的计时器（toaster 单活动 toast，旧
-    /// dismiss 本就返回 false）；保留句柄使任务随 AppShell 销毁自动
-    /// 取消——若改 detach，窗口关闭后任务仍会空转完 2 秒计时。
     pub(crate) _toast_task: Option<Task<()>>,
-    /// 每个属主 Tab/会话至多一个分栏、相互独立共存。
-    /// key 即分栏属主（创建时的活动视图，等于 `split.left`）。
     pub(crate) terminal_splits: BTreeMap<ActiveView, TerminalSplitState>,
-    /// 每个终端独立的批量输入条状态（终端级，可见性+草稿），与分栏同为终端级设置。
     pub(crate) compose: BTreeMap<ActiveView, ComposeEntry>,
-    /// 每个分栏属主独立的左窗格宽度。key 与
-    /// `terminal_splits` 一致；`0.0` 是哨兵值，渲染层读到它就走均分默认。
-    /// 槽位生命周期严格跟随 `terminal_splits` 的增删/重映射路径。
     pub(crate) split_widths: BTreeMap<ActiveView, Rc<Cell<f32>>>,
 }
 
 impl WorkspaceState {
+    /// 统一移除分栏及对应的宽度槽位，避免两处 map 不同步。
+    fn remove_split_entry(&mut self, owner: &ActiveView) -> Option<TerminalSplitState> {
+        let split = self.terminal_splits.remove(owner)?;
+        self.split_widths.remove(owner);
+        Some(split)
+    }
+
+    fn retain_splits_not_involving(
+        &mut self,
+        closed: &[ActiveView],
+        removed: &mut Vec<TerminalSplitState>,
+    ) {
+        self.terminal_splits.retain(|owner, split| {
+            if closed.contains(owner) || closed.contains(&split.right) {
+                removed.push(*split);
+                self.split_widths.remove(owner);
+                false
+            } else {
+                true
+            }
+        });
+    }
+
     pub(crate) fn new(local_dirs: BTreeMap<PathBuf, LocalDir>) -> Self {
         Self {
             sessions: SessionRegistry::new(local_dirs),
@@ -223,16 +236,7 @@ impl WorkspaceState {
         closed: &[ActiveView],
     ) -> Vec<TerminalSplitState> {
         let mut removed = Vec::new();
-        self.terminal_splits.retain(|owner, split| {
-            if closed.contains(owner) || closed.contains(&split.right) {
-                removed.push(*split);
-                // 宽度槽位随分栏一起拆除，避免孤儿条目。
-                self.split_widths.remove(owner);
-                false
-            } else {
-                true
-            }
-        });
+        self.retain_splits_not_involving(closed, &mut removed);
         removed
     }
 
@@ -250,17 +254,16 @@ impl WorkspaceState {
     /// 视图；分栏隐藏时关闭属主 Tab：右窗格失去归属，交由上层退休处理
     /// （无活动销毁 / 有活动保留为普通标签）。关闭右窗格只清空分栏。
     pub(crate) fn prepare_split_view_close(&mut self, view: ActiveView) -> SplitViewCloseOutcome {
-        if let Some(split) = self.terminal_splits.remove(&view) {
-            self.split_widths.remove(&view);
+        if let Some(split) = self.remove_split_entry(&view) {
             return self.prepare_owner_close(split);
         }
         if let Some(owner) = self.split_owner_of_right(view) {
-            self.terminal_splits.remove(&owner);
-            self.split_widths.remove(&owner);
+            self.remove_split_entry(&owner);
             return SplitViewCloseOutcome::Closed { retire_pane: None };
         }
         SplitViewCloseOutcome::Inactive
     }
+
 
     fn prepare_owner_close(&mut self, split: TerminalSplitState) -> SplitViewCloseOutcome {
         if self.active_view == Some(split.left) {

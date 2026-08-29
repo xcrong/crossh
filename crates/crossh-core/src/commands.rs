@@ -641,24 +641,18 @@ fn shell_command(command: &str, cwd: &Path) -> Command {
         process.args(["/D", "/S", "/C", command]);
         process.current_dir(cwd);
         crate::process::null_stdio(&mut process);
+        crate::process::detach(&mut process);
         return process;
     }
 
     #[cfg(not(windows))]
     {
-        use std::os::unix::process::CommandExt;
-
         let shell = std::env::var_os("SHELL").unwrap_or_else(|| "sh".into());
         let mut process = Command::new(shell);
         process.args(["-lc", command]);
         process.current_dir(cwd);
         crate::process::null_stdio(&mut process);
-        unsafe {
-            process.pre_exec(|| {
-                libc::setpgid(0, 0);
-                Ok(())
-            });
-        }
+        crate::process::detach(&mut process);
         process
     }
 }

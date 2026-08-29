@@ -13,7 +13,7 @@ use crate::features::connections::Connection;
 use crate::features::terminal::TerminalView;
 use crate::features::workspace::pane::WorkspacePane;
 use crossh_core::git_status::GitStatus;
-use crossh_terminal::events::ConnState;
+use crossh_terminal::ConnState;
 
 /// 一个远程终端/SFTP 标签。
 pub struct Tab {

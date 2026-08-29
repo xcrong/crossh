@@ -32,7 +32,7 @@ use crossh_ui_component::{
 pub use crate::features::workspace::state::{
     ActiveView, LocalDir, LocalSession, LocalSessionId, Tab,
 };
-pub use crate::features::workspace::state::{rebuild_local_dirs, preferred_state};
+
 
 const TERMINAL_SPLIT_MIN_PANE_WIDTH: f32 = 160.0;
 const TERMINAL_SPLIT_HANDLE_WIDTH: f32 = 8.0;

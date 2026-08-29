@@ -2,15 +2,12 @@
 //!
 //! 共享逻辑通过 `#[path]` 直接复用 `src/shared/*` 与 `src/features/note/*`，
 //! 与主 `crossh` 二进制同源，避免为少量纯逻辑文件新增 crate。
-//! 修改 `src/shared/text_editing.rs` / `utf16.rs` / `input_handler.rs` /
+//! 修改 `src/shared/text_editing.rs` / `input_handler.rs` /
 //! `note/*` / `note_launcher.rs` / `infrastructure/theme.rs` 时，本文件
 //! 会同步编译，无需额外同步步骤；`crates/crossh-note` 仅承载存储层。
 
 #[path = "../shared/text_editing.rs"]
 pub mod text_editing;
-
-#[path = "../shared/utf16.rs"]
-pub mod utf16;
 
 #[path = "../shared/input_handler.rs"]
 pub mod input_handler;
@@ -25,7 +22,6 @@ mod shared {
 
     pub use crate::input_handler;
     pub use crate::text_editing;
-    pub use crate::utf16;
 }
 
 rust_i18n::i18n!("locales", fallback = "en");

@@ -2,7 +2,7 @@
 
 use gpui::{AnyElement, App, EntityId, SystemNotificationResponse};
 
-use crossh_terminal::settings::TerminalSettings;
+use crossh_terminal::TerminalSettings;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PaneRisk {

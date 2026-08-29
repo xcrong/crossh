@@ -7,7 +7,7 @@ use gpui::{
     Point, UTF16Selection, Window, px, size,
 };
 
-use crate::shared::utf16::{
+use crate::shared::text_editing::{
     byte_index_for_utf16, replace_utf16_range, utf16_len, utf16_offset_for_byte, utf16_slice,
 };
 use crossh_ui::widgets::{printable_char, text_width};
