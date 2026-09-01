@@ -241,6 +241,7 @@ empty_state:
 tab_close:
   title: Close Tab?
   running: A command is still running in this terminal.
+  unsaved_editors: "Unsaved editors: %{count}"
   consequence: Closing this tab will terminate the running session and its processes.
   confirm: Close Anyway
   cancel: Cancel
@@ -250,12 +251,14 @@ quit:
   title: Quit Crossh?
   warning: "Closing Crossh can interrupt active work:"
   commands: "Terminal commands still running: %{count}"
+  unsaved_editors: "Unsaved editors: %{count}"
   cleanup: Crossh will ask sessions to close before quitting.
   confirm: Quit Anyway
   cancel: Cancel
   closing: Closing active sessions…
 
 terminal:
+  connecting: Connecting…
   closed: Session closed.
   bell: Terminal bell.
 quick_commands:
@@ -288,6 +291,9 @@ default_command:
   title: Edit Default Command
   placeholder: Enter a default command (empty clears)
   save: Save
+
+prompt:
+  cancel: Cancel
 
 compose:
   placeholder: Type command locally, press Ctrl+Enter to send

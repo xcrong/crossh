@@ -241,6 +241,7 @@ empty_state:
 tab_close:
   title: 关闭标签页？
   running: 此终端中仍有命令在运行。
+  unsaved_editors: "有未保存的编辑器：%{count}"
   consequence: 关闭标签页将终止正在运行的会话及其进程。
   confirm: 仍然关闭
   cancel: 取消
@@ -250,12 +251,14 @@ quit:
   title: 要退出 Crossh 吗？
   warning: "关闭 Crossh 可能会中断以下活动："
   commands: "正在运行的终端命令：%{count}"
+  unsaved_editors: "有未保存的编辑器：%{count}"
   cleanup: 退出前会先请求会话正常关闭。
   confirm: 仍然退出
   cancel: 取消
   closing: 正在关闭活动会话…
 
 terminal:
+  connecting: 连接中…
   closed: 会话已关闭。
   bell: 终端响铃。
 quick_commands:
@@ -288,6 +291,9 @@ default_command:
   title: 编辑默认命令
   placeholder: 输入默认命令（留空清除）
   save: 保存
+
+prompt:
+  cancel: 取消
 
 compose:
   placeholder: 本地输入，按 Ctrl+Enter 发送到终端
