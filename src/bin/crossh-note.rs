@@ -1,16 +1,9 @@
 //! Standalone Note Viewer entry point.
 //!
-//! 共享逻辑通过 `#[path]` 直接复用 `src/shared/*` 与 `src/features/note/*`，
-//! 与主 `crossh` 二进制同源，避免为少量纯逻辑文件新增 crate。
-//! 修改 `src/shared/text_editing.rs` / `input_handler.rs` /
-//! `note/*` / `note_launcher.rs` / `infrastructure/theme.rs` 时，本文件
-//! 会同步编译，无需额外同步步骤；`crates/crossh-note` 仅承载存储层。
-
-#[path = "../shared/text_editing.rs"]
-pub mod text_editing;
-
-#[path = "../shared/input_handler.rs"]
-pub mod input_handler;
+//! 共享逻辑通过 `#[path]` 直接复用 `src/features/note/*` 与
+//! `note_launcher.rs` / `infrastructure/theme.rs`，与主 `crossh` 二进制同源。
+//! `crates/crossh-note` 仅承载存储层；编辑器已迁移至 `crates/crossh-editor` 的
+//! `TextareaState/InputState`，不再依赖 `src/shared/text_editing.rs`。
 
 mod shared {
     pub mod i18n {
@@ -19,9 +12,6 @@ mod shared {
             rust_i18n::t!(key).to_string()
         }
     }
-
-    pub use crate::input_handler;
-    pub use crate::text_editing;
 }
 
 rust_i18n::i18n!("locales", fallback = "en");

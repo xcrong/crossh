@@ -22,6 +22,7 @@ members = [
     "crates/crossh-ui",
     "crates/crossh-ui-component",
     "crates/crossh-note",
+    "crates/crossh-editor",
 ]
 resolver = "2"
 
@@ -33,6 +34,7 @@ crossh-terminal = { path = "crates/crossh-terminal" }
 crossh-update = { path = "crates/crossh-update" }
 crossh-ui = { path = "crates/crossh-ui" }
 crossh-ui-component = { path = "crates/crossh-ui-component" }
+crossh-editor = { path = "crates/crossh-editor" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "f66ed399cdde86092af8af3dc7b418abf45f37f8" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "f66ed399cdde86092af8af3dc7b418abf45f37f8", features = ["font-kit", "wayland", "x11"] }
 itertools = "0.14"
@@ -42,6 +44,7 @@ theme = { git = "https://github.com/zed-industries/zed", rev = "f66ed399cdde8609
 util = { git = "https://github.com/zed-industries/zed", rev = "f66ed399cdde86092af8af3dc7b418abf45f37f8" }
 release_channel = { git = "https://github.com/zed-industries/zed", rev = "f66ed399cdde86092af8af3dc7b418abf45f37f8" }
 semver = "1"
+
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time", "fs"] }
 async-channel = "2"
 log = "0.4"

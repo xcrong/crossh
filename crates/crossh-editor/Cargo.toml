@@ -1,0 +1,66 @@
+# Vendored from longbridge/gpui-component crates/base (commit b2b7e41, 2026-02-05)
+# Original license: Apache-2.0 Copyright 2024-2026 Longbridge
+# Modified for crossh: theme integration removed, kept input engine only
+# See THIRD_PARTY_NOTICES.md
+[package]
+description = "Vendored gpui-base input engine for crossh-note (fork of longbridge/gpui-component crates/base)"
+keywords = ["desktop", "gpui", "ui", "foundation"]
+license = "Apache-2.0"
+name = "crossh-editor"
+repository = "https://github.com/longbridge/gpui-component"
+homepage = "https://longbridge.github.io/gpui-component"
+documentation = "https://docs.rs/gpui-base"
+version = "0.5.2"
+publish = false
+edition = "2024"
+
+[lib]
+doctest = false
+
+[features]
+inspector = ["gpui_macros/inspector", "gpui/inspector"]
+
+[dependencies]
+anyhow = "1"
+aho-corasick = "1.1.3"
+chrono = "0.4.38"
+futures = "0.3"
+gpui = { git = "https://github.com/zed-industries/zed", rev = "f66ed399cdde86092af8af3dc7b418abf45f37f8" }
+gpui_macros = { git = "https://github.com/zed-industries/zed", rev = "f66ed399cdde86092af8af3dc7b418abf45f37f8" }
+instant = { version = "0.1", features = ["wasm-bindgen"] }
+lsp-types = { version = "0.97.0", features = ["proposed"] }
+markdown = { version = "1.0.0", features = ["serde"] }
+html5ever = "0.27"
+markup5ever_rcdom = "0.3.0"
+ropey = { version = "=2.0.0-beta.1", features = ["metric_chars", "metric_lines_lf", "metric_utf16"] }
+regex = "1"
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+smallvec = "1"
+sum-tree = { version = "0.2.0", package = "zed-sum-tree" }
+tracing = "0.1"
+unicode-segmentation = "1.12.0"
+web-time = "1"
+syntect = { version = "5.3.0", default-features = false, features = ["parsing", "default-syntaxes", "regex-fancy"] }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+smol = "2"
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "f66ed399cdde86092af8af3dc7b418abf45f37f8", features = ["font-kit", "wayland", "x11"] }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+async-channel = "2.3.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+raw-window-handle = "0.6.2"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSView", "NSWindow"] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString"] }
+
+[dev-dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", rev = "f66ed399cdde86092af8af3dc7b418abf45f37f8", features = ["test-support"] }
+indoc = "2"
+reqwest_client = { git = "https://github.com/zed-industries/zed" }
+
+[lints]
+clippy.all = "warn"

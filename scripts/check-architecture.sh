@@ -9,11 +9,18 @@ failure=0
 # Keep exceptions explicit and local to this check. This file is a 2186-line
 # local fork of Zed's terminal_view code, so it remains maintained as upstream
 # third-party code rather than being split locally.
+# crossh-editor vendors longbridge/gpui-component crates/base (commit b2b7e41),
+# keeping its large pure-input engine files unsplit to preserve upstream diffability.
 size_whitelist='src/features/terminal/zed_view/terminal_element.rs
-crates/terminal/src/terminal.rs'
+crates/terminal/src/terminal.rs
+crates/crossh-editor/src/input/base/state.rs
+crates/crossh-editor/src/input/base/element.rs'
 
 is_size_whitelisted() {
     path=$1
+    case "$path" in
+        crates/crossh-editor/*) return 0 ;;
+    esac
     for allowed_path in $size_whitelist; do
         if [ "$path" = "$allowed_path" ]; then
             return 0
