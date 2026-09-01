@@ -60,7 +60,7 @@ pub use panel::{
 };
 pub use select::{Select, SelectOption};
 pub use selectable_row::selectable_row;
-pub use split_resizer::{SplitHandleSide, SplitResizer};
+pub use split_resizer::{SplitAxis, SplitHandleSide, SplitResizer};
 pub use status_bar::StatusBar;
 pub use status_dot::StatusDot;
 pub use status_metric::StatusMetric;

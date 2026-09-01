@@ -153,6 +153,7 @@ define_icons! {
     ChevronRight => "icons/chevron-right.svg",
     Clock => "icons/clock.svg",
     Columns2 => "icons/columns-2.svg",
+    Rows2 => "icons/rows-2.svg",
     Download => "icons/download.svg",
     FileText => "icons/file-text.svg",
     Folder => "icons/folder.svg",
@@ -183,7 +184,6 @@ define_icons! {
     Square => "icons/square.svg",
     SquarePen => "icons/square-pen.svg",
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -179,7 +179,7 @@ impl AppShell {
         }
     }
 
-    fn prompt_close_tab(
+    pub(super) fn prompt_close_tab(
         &mut self,
         risk: TabCloseRisk,
         window: &mut Window,

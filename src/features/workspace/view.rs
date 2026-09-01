@@ -33,10 +33,17 @@ pub use crate::features::workspace::state::{ActiveView, LocalDir, LocalSession, 
 
 const TERMINAL_SPLIT_MIN_PANE_WIDTH: f32 = 160.0;
 const TERMINAL_SPLIT_HANDLE_WIDTH: f32 = 8.0;
+const TERMINAL_SPLIT_MIN_PANE_HEIGHT: f32 = 80.0;
+
+fn split_clamped_size(requested: f32, default: f32, min: f32, max: f32) -> f32 {
+    let base = if requested <= 0.0 { default } else { requested };
+    crossh_ui_component::clamp_panel_width(base, min, max)
+}
 
 /// 主区：标签条 + 内容区。
 pub fn render_main(
     shell: &mut AppShell,
+    window: &Window,
     available_width: Pixels,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
@@ -60,8 +67,13 @@ pub fn render_main(
     // 分栏跟随其属主 Tab：只有属主 Tab 正被展示时才渲染分栏；否则
     // 分栏状态保留，渲染当前活动 Tab 的普通视图，切回属主即恢复。
     if let Some(split) = shell.workspace.active_split() {
-        terminal_area =
-            terminal_area.child(render_terminal_split(shell, split, available_width, cx));
+        terminal_area = terminal_area.child(render_terminal_split(
+            shell,
+            split,
+            available_width,
+            window,
+            cx,
+        ));
     } else if let Some(active_view) = shell.workspace.active_view {
         if let Some(active_pane) = render_workspace_view(shell, active_view) {
             terminal_area = terminal_area.child(active_pane);
@@ -104,28 +116,26 @@ fn render_workspace_view(shell: &AppShell, view: ActiveView) -> Option<AnyElemen
             .map(|session| session.terminal.clone().into_any_element()),
     }
 }
-
 fn render_terminal_split(
     shell: &mut AppShell,
     split: TerminalSplitState,
     available_width: Pixels,
+    window: &Window,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
-    let available_width = available_width.as_f32().max(0.0);
-    let has_room = terminal_split_available(px(available_width));
-    let pane_min_width = if has_room {
+    let available_width_f = available_width.as_f32().max(0.0);
+    let has_room_h = terminal_split_available(px(available_width_f));
+    let pane_min_width = if has_room_h {
         TERMINAL_SPLIT_MIN_PANE_WIDTH
     } else {
         0.0
     };
-    let max_left_width = if has_room {
-        (available_width - TERMINAL_SPLIT_HANDLE_WIDTH - pane_min_width).max(pane_min_width)
+    let max_left_width = if has_room_h {
+        (available_width_f - TERMINAL_SPLIT_HANDLE_WIDTH - pane_min_width).max(pane_min_width)
     } else {
-        (available_width - TERMINAL_SPLIT_HANDLE_WIDTH).max(0.0)
+        (available_width_f - TERMINAL_SPLIT_HANDLE_WIDTH).max(0.0)
     };
-    let default_left_width = ((available_width - TERMINAL_SPLIT_HANDLE_WIDTH) / 2.0).max(0.0);
-    // 宽度槽位按分栏属主独立记忆；查不到槽位（理论不可达，防御）时回退
-    // 0.0 哨兵走均分，不得 panic。
+    let default_left_width = ((available_width_f - TERMINAL_SPLIT_HANDLE_WIDTH) / 2.0).max(0.0);
     let split_width = shell
         .workspace
         .split_widths
@@ -138,27 +148,122 @@ fn render_terminal_split(
         pane_min_width,
         max_left_width,
     );
-    let left = div()
-        .relative()
-        .w(px(left_width))
-        .h_full()
-        .flex_shrink_0()
-        .border_r_1()
-        .border_color(theme::border_strong())
-        .child(render_split_pane(
-            shell,
-            split.left,
-            SplitSide::Left,
-            split.focused == SplitSide::Left,
-            cx,
-        ));
-    let right = div().h_full().flex_1().min_w_0().child(render_split_pane(
+
+    // 高度：按窗口可用高度响应式，与宽度同构
+    let viewport_h = window.viewport_size().height.as_f32();
+    // 预留状态栏+标签栏约 72px，剩余为终端区高度
+    let available_height_f = (viewport_h - 72.0).max(200.0);
+    let has_room_v =
+        available_height_f >= TERMINAL_SPLIT_MIN_PANE_HEIGHT * 2.0 + TERMINAL_SPLIT_HANDLE_WIDTH;
+    let pane_min_height = if has_room_v {
+        TERMINAL_SPLIT_MIN_PANE_HEIGHT
+    } else {
+        0.0
+    };
+    let max_top_height = if has_room_v {
+        (available_height_f - TERMINAL_SPLIT_HANDLE_WIDTH - pane_min_height).max(pane_min_height)
+    } else {
+        (available_height_f - TERMINAL_SPLIT_HANDLE_WIDTH).max(0.0)
+    };
+    let default_top_height = ((available_height_f - TERMINAL_SPLIT_HANDLE_WIDTH) / 2.0).max(0.0);
+    let split_height_left = shell
+        .workspace
+        .split_heights
+        .get(&split.left)
+        .cloned()
+        .unwrap_or_else(|| Rc::new(Cell::new(0.)));
+    let split_height_right = shell
+        .workspace
+        .split_heights_right
+        .get(&split.left)
+        .cloned()
+        .unwrap_or_else(|| Rc::new(Cell::new(0.)));
+    let left_top_height = terminal_split_top_height(
+        split_height_left.get(),
+        default_top_height,
+        pane_min_height,
+        max_top_height,
+    );
+    let right_top_height = terminal_split_top_height(
+        split_height_right.get(),
+        default_top_height,
+        pane_min_height,
+        max_top_height,
+    );
+
+    // 无右列：单列上下
+    if split.right.is_none() {
+        if let Some(bottom_view) = split.bottom_left {
+            return render_single_column_vertical(
+                shell,
+                split,
+                bottom_view,
+                left_top_height,
+                split_height_left,
+                pane_min_height,
+                max_top_height,
+                cx,
+            );
+        }
+        return render_split_pane(shell, split.left, SplitSide::Left, true, cx);
+    }
+
+    // 双列：各自按列独立上下
+    let left_top_pane = render_split_pane(
         shell,
-        split.right,
+        split.left,
+        SplitSide::Left,
+        split.focused == SplitSide::Left,
+        cx,
+    );
+    let right_top_pane = render_split_pane(
+        shell,
+        split.right.unwrap(),
         SplitSide::Right,
         split.focused == SplitSide::Right,
         cx,
-    ));
+    );
+
+    let left_col = render_split_column(
+        shell,
+        left_width,
+        split_height_left,
+        left_top_height,
+        pane_min_height,
+        max_top_height,
+        left_top_pane,
+        split.bottom_left.map(|v| {
+            render_split_pane(
+                shell,
+                v,
+                SplitSide::BottomLeft,
+                split.focused == SplitSide::BottomLeft,
+                cx,
+            )
+        }),
+        SplitSide::BottomLeft,
+        true,
+    );
+    let right_col = render_split_column(
+        shell,
+        0.0, // flex_1 宽度由父 flex 决定，这里传 0 仅占位，内部按 flex_1 处理
+        split_height_right,
+        right_top_height,
+        pane_min_height,
+        max_top_height,
+        right_top_pane,
+        split.bottom_right.map(|v| {
+            render_split_pane(
+                shell,
+                v,
+                SplitSide::BottomRight,
+                split.focused == SplitSide::BottomRight,
+                cx,
+            )
+        }),
+        SplitSide::BottomRight,
+        false,
+    );
 
     div()
         .id("terminal-split")
@@ -169,8 +274,8 @@ fn render_terminal_split(
         .min_w_0()
         .min_h_0()
         .overflow_hidden()
-        .child(left)
-        .child(right)
+        .child(left_col)
+        .child(right_col)
         .child(render_terminal_split_resizer(
             shell,
             split_width,
@@ -179,6 +284,103 @@ fn render_terminal_split(
             max_left_width,
         ))
         .into_any_element()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_single_column_vertical(
+    shell: &AppShell,
+    split: TerminalSplitState,
+    bottom_view: ActiveView,
+    top_height: f32,
+    height_cell: Rc<Cell<f32>>,
+    min_height: f32,
+    max_height: f32,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    let top = render_split_pane(
+        shell,
+        split.left,
+        SplitSide::Left,
+        split.focused == SplitSide::Left,
+        cx,
+    );
+    let bottom = render_split_pane(
+        shell,
+        bottom_view,
+        SplitSide::BottomLeft,
+        split.focused == SplitSide::BottomLeft,
+        cx,
+    );
+    div()
+        .id("terminal-split-vertical-single")
+        .size_full()
+        .relative()
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .min_h_0()
+        .overflow_hidden()
+        .child(div().h(px(top_height)).w_full().flex_shrink_0().child(top))
+        .child(div().flex_1().min_h_0().w_full().child(bottom))
+        .child(render_vertical_split_resizer(
+            shell,
+            height_cell,
+            top_height,
+            min_height,
+            max_height,
+            SplitSide::BottomLeft,
+        ))
+        .into_any_element()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_split_column(
+    shell: &AppShell,
+    width: f32,
+    height_cell: Rc<Cell<f32>>,
+    top_height: f32,
+    min_height: f32,
+    max_height: f32,
+    top_pane: AnyElement,
+    bottom_pane: Option<AnyElement>,
+    bottom_side: SplitSide,
+    is_left: bool,
+) -> AnyElement {
+    let mut col = div()
+        .h_full()
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .min_h_0()
+        .overflow_hidden()
+        .relative();
+    col = if is_left {
+        col.w(px(width)).flex_shrink_0()
+    } else {
+        col.flex_1().min_w_0()
+    };
+    if let Some(bottom) = bottom_pane {
+        col = col
+            .child(
+                div()
+                    .h(px(top_height))
+                    .w_full()
+                    .flex_shrink_0()
+                    .child(top_pane),
+            )
+            .child(div().flex_1().min_h_0().w_full().child(bottom))
+            .child(render_vertical_split_resizer(
+                shell,
+                height_cell,
+                top_height,
+                min_height,
+                max_height,
+                bottom_side,
+            ));
+    } else {
+        col = col.child(div().flex_1().min_h_0().w_full().child(top_pane));
+    }
+    col.into_any_element()
 }
 
 fn render_terminal_split_resizer(
@@ -201,14 +403,47 @@ fn render_terminal_split_resizer(
                 shell.terminal_split_dragging.clone(),
                 split_width,
             )
-            .min_width(min_width)
-            .max_width(max_width)
+            .min_size(min_width)
+            .max_size(max_width)
             .line(),
         )
 }
 
+fn render_vertical_split_resizer(
+    shell: &AppShell,
+    split_height: Rc<Cell<f32>>,
+    top_height: f32,
+    min_height: f32,
+    max_height: f32,
+    side: SplitSide,
+) -> impl IntoElement {
+    let dragging = match side {
+        SplitSide::BottomRight => shell.terminal_split_vertical_right_dragging.clone(),
+        _ => shell.terminal_split_vertical_dragging.clone(),
+    };
+    let id: &'static str = match side {
+        SplitSide::BottomRight => "terminal-split-vertical-resizer-right",
+        SplitSide::BottomLeft => "terminal-split-vertical-resizer-left",
+        _ => "terminal-split-vertical-resizer-single",
+    };
+    div()
+        .relative()
+        .absolute()
+        .left_0()
+        .top_0()
+        .w_full()
+        .h(px(top_height))
+        .child(
+            SplitResizer::new(id, dragging, split_height)
+                .min_size(min_height)
+                .max_size(max_height)
+                .vertical()
+                .line(),
+        )
+}
+
 fn render_split_pane(
-    shell: &mut AppShell,
+    shell: &AppShell,
     view: ActiveView,
     side: SplitSide,
     focused: bool,
@@ -219,6 +454,8 @@ fn render_split_pane(
     let id = match side {
         SplitSide::Left => "terminal-split-left",
         SplitSide::Right => "terminal-split-right",
+        SplitSide::BottomLeft => "terminal-split-bottom-left",
+        SplitSide::BottomRight => "terminal-split-bottom-right",
     };
     div()
         .id(id)
@@ -249,8 +486,16 @@ fn terminal_split_available(width: Pixels) -> bool {
 }
 
 fn terminal_split_left_width(requested: f32, default: f32, min_width: f32, max_width: f32) -> f32 {
-    let base = if requested <= 0.0 { default } else { requested };
-    crossh_ui_component::clamp_panel_width(base, min_width, max_width)
+    split_clamped_size(requested, default, min_width, max_width)
+}
+
+fn terminal_split_top_height(
+    requested: f32,
+    default: f32,
+    min_height: f32,
+    max_height: f32,
+) -> f32 {
+    split_clamped_size(requested, default, min_height, max_height)
 }
 
 fn render_workspace_terminal_toggle(
@@ -266,33 +511,73 @@ fn render_workspace_terminal_toggle(
         return div().h(px(0.)).flex_none().into_any_element();
     }
 
-    // 分栏按钮的亮灭与当前 Tab（活动视图属主）绑定：显示「当前 Tab 是否
-    // 有分栏」，其他 Tab 的分栏不影响本 Tab 的按钮状态。。
-    let split_active = shell.workspace.active_split().is_some();
-    let can_toggle = split_active || terminal_split_available(available_width);
-    let tooltip = if split_active {
+    let split = shell.workspace.active_split();
+    let has_horizontal = split.is_some_and(|s| s.right.is_some());
+    // 上下分栏是按列独立的：选中态只反映当前聚焦列是否存在底部格
+    let has_vertical = split.is_some_and(|s| {
+        let is_right = s.focused.is_right_column() && s.right.is_some();
+        if is_right {
+            s.bottom_right.is_some()
+        } else {
+            s.bottom_left.is_some()
+        }
+    });
+    let can_toggle_horizontal = has_horizontal || terminal_split_available(available_width);
+    let can_vertical = shell.workspace.can_add_vertical() || has_vertical;
+    let horizontal_tooltip = if has_horizontal {
         "tooltip.close_split"
-    } else if can_toggle {
+    } else if can_toggle_horizontal {
         "tooltip.split_terminal"
     } else {
         "tooltip.split_terminal_narrow"
     };
-    Button::new("terminal-split-toggle")
-        .size(ButtonSize::Icon(px(22.)))
-        .variant(ButtonVariant::Ghost)
-        .selected(split_active)
-        .disabled(!can_toggle)
-        .icon(
-            icons::icon(icons::IconName::Columns2, 13.).text_color(if split_active {
-                theme::accent()
-            } else {
-                theme::muted_text()
-            }),
+    let vertical_tooltip = if has_vertical {
+        "tooltip.close_vertical_split"
+    } else if can_vertical {
+        "tooltip.split_terminal_vertical"
+    } else {
+        "tooltip.split_terminal_vertical_full"
+    };
+    div()
+        .flex()
+        .flex_row()
+        .gap_1()
+        .child(
+            Button::new("terminal-split-toggle")
+                .size(ButtonSize::Icon(px(22.)))
+                .variant(ButtonVariant::Ghost)
+                .selected(has_horizontal)
+                .disabled(!can_toggle_horizontal)
+                .icon(
+                    icons::icon(icons::IconName::Columns2, 13.).text_color(if has_horizontal {
+                        theme::accent()
+                    } else {
+                        theme::muted_text()
+                    }),
+                )
+                .tooltip(i18n::text(horizontal_tooltip))
+                .on_click(cx.listener(|this, _event, window, cx| {
+                    this.toggle_terminal_split(window, cx);
+                })),
         )
-        .tooltip(i18n::text(tooltip))
-        .on_click(cx.listener(|this, _event, window, cx| {
-            this.toggle_terminal_split(window, cx);
-        }))
+        .child(
+            Button::new("terminal-vertical-split-toggle")
+                .size(ButtonSize::Icon(px(22.)))
+                .variant(ButtonVariant::Ghost)
+                .selected(has_vertical)
+                .disabled(!can_vertical)
+                .icon(
+                    icons::icon(icons::IconName::Rows2, 13.).text_color(if has_vertical {
+                        theme::accent()
+                    } else {
+                        theme::muted_text()
+                    }),
+                )
+                .tooltip(i18n::text(vertical_tooltip))
+                .on_click(cx.listener(|this, _event, window, cx| {
+                    this.toggle_vertical_split(window, cx);
+                })),
+        )
         .into_any_element()
 }
 

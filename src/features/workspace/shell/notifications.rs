@@ -87,8 +87,15 @@ impl AppShell {
         self.workspace.active_view = Some(split.left);
         let side = if split.left == view {
             SplitSide::Left
-        } else {
+        } else if split.right == Some(view) {
             SplitSide::Right
+        } else if split.bottom_left == Some(view) {
+            SplitSide::BottomLeft
+        } else if split.bottom_right == Some(view) {
+            SplitSide::BottomRight
+        } else {
+            // 防御：split_containing 已保证 view 在分栏中，理论不可达
+            SplitSide::Left
         };
         self.workspace.focus_terminal_split(side);
         self.refocus_active_terminal(cx);

@@ -104,6 +104,9 @@ tooltip:
   split_terminal: Split the terminal into two columns
   close_split: Close the right terminal
   split_terminal_narrow: The window is too narrow for two terminal columns
+  split_terminal_vertical: Split the terminal into two rows
+  close_vertical_split: Close the bottom terminal
+  split_terminal_vertical_full: Maximum 4 terminal panes reached
   pin_command: Pin or unpin command
   open_in_editor: Open the current directory in an external editor
   open_in_editor_with: Open the current directory in %{editor}

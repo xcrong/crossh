@@ -129,6 +129,8 @@ pub struct AppShell {
     /// Left terminal split drag state; the width cell itself lives per-owner
     /// in `WorkspaceState.split_widths` (one slot per split owner).
     pub(crate) terminal_split_dragging: Rc<Cell<bool>>,
+    pub(crate) terminal_split_vertical_dragging: Rc<Cell<bool>>,
+    pub(crate) terminal_split_vertical_right_dragging: Rc<Cell<bool>>,
     pub(crate) command_history: CommandHistory,
     pub(crate) background_tasks: BackgroundTaskManager,
     pending_background_restarts: BTreeMap<u64, PendingBackgroundRestart>,
@@ -219,6 +221,8 @@ impl AppShell {
             quick_commands_width: Rc::new(Cell::new(theme::QUICK_COMMANDS_WIDTH)),
             quick_commands_dragging: Rc::new(Cell::new(false)),
             terminal_split_dragging: Rc::new(Cell::new(false)),
+            terminal_split_vertical_dragging: Rc::new(Cell::new(false)),
+            terminal_split_vertical_right_dragging: Rc::new(Cell::new(false)),
             command_history: CommandHistory::load(),
             background_tasks: BackgroundTaskManager::default(),
             pending_background_restarts: BTreeMap::new(),

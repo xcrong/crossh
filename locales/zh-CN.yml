@@ -104,6 +104,9 @@ tooltip:
   split_terminal: 将终端分为左右两栏
   close_split: 关闭右侧终端
   split_terminal_narrow: 窗口太窄，无法使用两栏终端
+  split_terminal_vertical: 将终端分为上下两栏
+  close_vertical_split: 关闭底部终端
+  split_terminal_vertical_full: 已达到最多四块终端
   pin_command: 固定或取消固定命令
   open_in_editor_with: 在 %{editor} 中打开当前目录
   open_in_editor: 在外部编辑器中打开当前目录

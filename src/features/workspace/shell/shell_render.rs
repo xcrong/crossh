@@ -78,7 +78,7 @@ impl Render for AppShell {
             sidebar_width,
             quick_commands_width,
         );
-        let main = render_main(self, available_main_width, cx);
+        let main = render_main(self, window, available_main_width, cx);
         let sidebar = if self.workspace_settings.show_host_sidebar {
             render_sidebar(self, window, cx)
         } else {
