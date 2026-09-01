@@ -69,7 +69,7 @@ jobs:
                 libxcb-keysyms1-dev libxcb-present-dev libxcb-render-util0-dev \
                 libxcb-render0-dev libxcb-shape0-dev libxcb-shm0-dev libxcb-xfixes0-dev \
                 libxcb-xkb-dev libxcb-util-dev libxcb-xinerama0-dev libxcb-xinput-dev \
-                libxkbcommon-dev libfontconfig1-dev libwayland-dev wayland-protocols \
+                libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev libwayland-dev wayland-protocols \
                 librsvg2-bin
             package: bash scripts/package-linux.sh x86_64-unknown-linux-gnu "$VERSION"
             artifact: crossh-linux-x86_64
@@ -87,7 +87,7 @@ jobs:
                 libxcb-keysyms1-dev libxcb-present-dev libxcb-render-util0-dev \
                 libxcb-render0-dev libxcb-shape0-dev libxcb-shm0-dev libxcb-xfixes0-dev \
                 libxcb-xkb-dev libxcb-util-dev libxcb-xinerama0-dev libxcb-xinput-dev \
-                libxkbcommon-dev libfontconfig1-dev libwayland-dev wayland-protocols \
+                libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev libwayland-dev wayland-protocols \
                 librsvg2-bin
             package: bash scripts/package-linux.sh aarch64-unknown-linux-gnu "$VERSION"
             artifact: crossh-linux-aarch64
