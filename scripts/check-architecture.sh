@@ -9,7 +9,8 @@ failure=0
 # Keep exceptions explicit and local to this check. This file is a 2186-line
 # local fork of Zed's terminal_view code, so it remains maintained as upstream
 # third-party code rather than being split locally.
-size_whitelist='src/features/terminal/zed_view/terminal_element.rs'
+size_whitelist='src/features/terminal/zed_view/terminal_element.rs
+crates/terminal/src/terminal.rs'
 
 is_size_whitelisted() {
     path=$1

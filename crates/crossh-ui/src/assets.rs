@@ -1,12 +1,9 @@
 use std::borrow::Cow;
 
-#[cfg(debug_assertions)]
 use assets::Assets as ZedAssets;
 use crossh_assets::AssetStore;
-#[cfg(debug_assertions)]
 use crossh_assets::load as load_crossh_asset;
 use gpui::{App, AssetSource, Result, SharedString};
-
 /// Crossh assets take precedence, with Zed's embedded assets available as the
 /// fallback for fonts and other resources consumed by reused Zed components.
 pub struct UiAssetSource {
@@ -26,17 +23,10 @@ impl AssetSource for UiAssetSource {
         if let Some(asset) = self.external.as_ref().and_then(|store| store.load(path)) {
             return Ok(Some(asset));
         }
-        #[cfg(debug_assertions)]
-        {
-            if let Some(asset) = load_crossh_asset(path) {
-                return Ok(Some(asset));
-            }
-            ZedAssets.load(path)
+        if let Some(asset) = load_crossh_asset(path) {
+            return Ok(Some(asset));
         }
-        #[cfg(not(debug_assertions))]
-        {
-            Ok(None)
-        }
+        ZedAssets.load(path)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
@@ -47,14 +37,9 @@ impl AssetSource for UiAssetSource {
                 .map(SharedString::from)
                 .collect());
         }
-        #[cfg(debug_assertions)]
-        {
-            ZedAssets.list(path)
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            Ok(Vec::new())
-        }
+        // Crossh single truth: fonts are always bundled (copied from Zed at compile time),
+        // not only in debug. Ensures Lilex is resolvable in release without external AssetStore.
+        ZedAssets.list(path)
     }
 }
 

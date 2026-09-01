@@ -37,9 +37,8 @@ mod infrastructure_theme;
 
 use gpui::{App, QuitMode};
 use release_channel as zed_release_channel;
-use settings as zed_settings;
 use theme::LoadThemes;
-use theme_settings as zed_theme_settings;
+
 fn main() {
     let args = std::env::args().skip(1);
     let command = match note_launcher::parse_cli(args) {
@@ -65,8 +64,7 @@ fn main() {
         let app_version =
             zed_release_channel::AppVersion::load(env!("CARGO_PKG_VERSION"), None, None);
         zed_release_channel::init(app_version, cx);
-        zed_settings::init(cx);
-        zed_theme_settings::init(LoadThemes::JustBase, cx);
+        theme::init(LoadThemes::JustBase, cx);
         infrastructure_theme::install_crossh_theme(cx);
         crossh_ui::assets::load_fonts(cx).expect("Crossh fonts should load");
         note::init(cx);

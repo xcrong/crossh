@@ -19,12 +19,9 @@ use gpui::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use settings::Settings as _;
 use task::Shell;
 use terminal as zed_terminal;
-use terminal::terminal_settings::{
-    AlternateScroll, CursorShape, TerminalSettings as ZedTerminalSettings,
-};
+use terminal::terminal_settings::CursorShape;
 use theme::ActiveTheme;
 
 use crate::features::workspace::pane::{PaneRisk, WorkspacePane};
@@ -194,15 +191,14 @@ pub struct TerminalView {
 }
 
 impl TerminalView {
-    /// Apply the small Crossh settings surface to Zed's terminal settings.
+    /// Apply the small Crossh settings surface to the forked terminal settings.
     ///
-    /// The renderer reads these globals exactly as Zed's TerminalElement does,
-    /// so there is one font, line-height, and scrollback configuration path.
+    /// The renderer reads the global `terminal::terminal_settings::TerminalSettings`
+    /// exactly as Zed's TerminalElement did, so there is one font / scrollback
+    /// configuration path.
     pub fn apply_zed_settings(settings: &TerminalSettings, cx: &mut App) {
-        let mut zed_settings = ZedTerminalSettings::get_global(cx).clone();
-        zed_settings.font_size = Some(px(settings.font_size));
-        zed_settings.max_scroll_history_lines = Some(settings.scrollback);
-        ZedTerminalSettings::override_global(zed_settings, cx);
+        let zed_settings = terminal::terminal_settings::TerminalSettings::from_crossh(settings);
+        cx.set_global(zed_settings);
     }
 
     pub fn from_local_zed(cwd: PathBuf, settings: TerminalSettings, cx: &mut App) -> Entity<Self> {
@@ -247,11 +243,11 @@ impl TerminalView {
     ) -> Entity<Self> {
         let settings = settings.normalized();
         Self::apply_zed_settings(&settings, cx);
-        let zed_settings = ZedTerminalSettings::get_global(cx).clone();
+        let zed_settings = terminal::terminal_settings::TerminalSettings::get_global(cx).clone();
 
         let display_builder = zed_terminal::TerminalBuilder::new_display_only_with_bounds(
             zed_settings.cursor_shape,
-            AlternateScroll::On,
+            zed_settings.alternate_scroll,
             Some(settings.scrollback),
             0,
             cx.background_executor(),
@@ -260,7 +256,7 @@ impl TerminalView {
                 INITIAL_COLUMNS,
                 INITIAL_ROWS,
                 px(DEFAULT_CELL_WIDTH),
-                px(settings.font_size * 1.3),
+                px(settings.font_size * zed_settings.line_height.value()),
             ),
         );
 
@@ -274,7 +270,7 @@ impl TerminalView {
             shell,
             shell_env,
             zed_settings.cursor_shape,
-            AlternateScroll::On,
+            zed_settings.alternate_scroll,
             Some(settings.scrollback),
             Vec::new(),
             Duration::from_millis(0),
@@ -304,7 +300,7 @@ impl TerminalView {
                 cursor_blink_pause_until: Instant::now(),
                 blinking_terminal_enabled: false,
                 cursor_shape: zed_settings.cursor_shape,
-                state: ConnState::Connecting,
+                state: ConnState::default(),
                 cwd: initial_cwd,
                 title: None,
                 ime_marked_text: String::new(),
@@ -468,7 +464,7 @@ impl TerminalView {
             (
                 terminal.try_keystroke(
                     keystroke,
-                    ZedTerminalSettings::get_global(cx).option_as_meta,
+                    terminal::terminal_settings::TerminalSettings::get_global(cx).option_as_meta,
                 ),
                 terminal.vi_mode_enabled(),
             )
@@ -1068,12 +1064,8 @@ impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.bell_pending {
             self.bell_pending = false;
-            if matches!(
-                ZedTerminalSettings::get_global(cx).bell,
-                settings::TerminalBell::System
-            ) {
-                window.play_system_bell();
-            }
+            // crossh: always play system bell for now, no Zed settings
+            window.play_system_bell();
         }
 
         if let Some(builder) = self.pending_builder.take() {

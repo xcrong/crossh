@@ -10,9 +10,7 @@ mod shared;
 
 use gpui::{App, actions};
 use release_channel as zed_release_channel;
-use settings as zed_settings;
 use theme::LoadThemes;
-use theme_settings as zed_theme_settings;
 
 rust_i18n::i18n!("locales", fallback = "en");
 
@@ -116,14 +114,10 @@ fn main() {
     app.run(move |cx: &mut App| {
         cx.set_app_identity("io.crossh.app", "Crossh");
         cx.init_colors();
-        // Initialize the settings/theme globals consumed by Zed's terminal
-        // core. Crossh's product settings remain separate and are layered on
-        // top in features::settings.
         let app_version =
             zed_release_channel::AppVersion::load(env!("CARGO_PKG_VERSION"), None, None);
         zed_release_channel::init(app_version, cx);
-        zed_settings::init(cx);
-        zed_theme_settings::init(LoadThemes::JustBase, cx);
+        theme::init(LoadThemes::JustBase, cx);
         infrastructure::theme::install_crossh_theme(cx);
         crossh_ui::assets::load_fonts(cx).expect("Crossh fonts should load");
         features::settings::init();

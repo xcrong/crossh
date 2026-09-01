@@ -13,20 +13,16 @@ use gpui::{
     UTF16Selection, UnderlineStyle, WhiteSpace, Window, fill, point, px, quad, relative, size,
 };
 use itertools::Itertools;
-use settings::Settings;
+use std::mem;
 use std::time::Instant;
 use terminal::{
     Cell, Color, CursorShape, IndexedCell, Modes, NamedColor, Point, Range, Terminal,
     TerminalBounds, is_app_chosen_exact_color as terminal_is_app_chosen_exact_color,
-    is_default_background_color, terminal_settings::TerminalSettings,
+    is_default_background_color,
 };
 use theme::{ActiveTheme, Theme};
-use theme_settings::ThemeSettings;
 use unicode_width::UnicodeWidthChar;
 use util::ResultExt;
-
-use std::fmt::Debug;
-use std::mem;
 
 use crossh_terminal::timestamps::TerminalRow;
 
@@ -1398,9 +1394,10 @@ impl TerminalElement {
             let terminal = self.terminal.clone();
             move |event, _window, cx| {
                 terminal.update(cx, |terminal, terminal_cx| {
-                    let multiplier = TerminalSettings::get_global(terminal_cx)
-                        .scroll_multiplier
-                        .max(0.01);
+                    let multiplier =
+                        terminal::terminal_settings::TerminalSettings::get_global(terminal_cx)
+                            .scroll_multiplier
+                            .max(0.01);
                     terminal.scroll_wheel(event, multiplier);
                     terminal_cx.notify();
                 });
@@ -1480,40 +1477,26 @@ impl Element for TerminalElement {
             |_, _, hitbox, window, cx| {
                 let hitbox = hitbox.unwrap();
                 let show_timestamps = self.terminal_view.read(cx).show_timestamps;
-                let settings = ThemeSettings::get_global(cx).clone();
-
-                let buffer_font_size = settings.buffer_font_size(cx);
-
-                let terminal_settings = TerminalSettings::get_global(cx);
+                let terminal_settings =
+                    terminal::terminal_settings::TerminalSettings::get_global(cx).clone();
                 let minimum_contrast = terminal_settings.minimum_contrast;
-
-                let font_family = terminal_settings.font_family.as_ref().map_or_else(
-                    || settings.buffer_font.family.clone(),
-                    |font_family| font_family.0.clone().into(),
-                );
-
-                let font_fallbacks = terminal_settings
-                    .font_fallbacks
+                // Crossh single source of truth — copied from Zed's buffer_font chain but now owned.
+                // Do not read ThemeSettings/SettingsStore; fallback is Crossh's own mono.
+                let font_family = terminal_settings
+                    .font_family
                     .as_ref()
-                    .or(settings.buffer_font.fallbacks.as_ref())
-                    .cloned();
-
+                    .map_or_else(|| "Lilex".into(), |f| f.0.clone().into());
+                let font_fallbacks = terminal_settings.font_fallbacks.clone();
                 let font_features = terminal_settings
                     .font_features
-                    .as_ref()
-                    .unwrap_or(&FontFeatures::disable_ligatures())
-                    .clone();
-
-                let font_weight = terminal_settings.font_weight.unwrap_or_default();
-
+                    .clone()
+                    .unwrap_or_else(FontFeatures::disable_ligatures);
+                let font_weight = terminal_settings.font_weight.unwrap_or(FontWeight(400.0));
                 let line_height = terminal_settings.line_height.value();
-
                 let font_size = terminal_settings
                     .font_size
-                    .map_or(buffer_font_size, |size| {
-                        theme_settings::adjusted_font_size(size, cx)
-                    });
-
+                    .map(|s| s.into())
+                    .unwrap_or_else(|| px(14.0).into());
                 let theme = cx.theme().clone();
 
                 let link_style = HighlightStyle {
@@ -1532,10 +1515,9 @@ impl Element for TerminalElement {
                     font_features,
                     font_weight,
                     font_fallbacks,
-                    font_size: font_size.into(),
+                    font_size,
                     font_style: FontStyle::Normal,
                     line_height: px(line_height).into(),
-                    background_color: Some(theme.colors().terminal_ansi_background),
                     white_space: WhiteSpace::Normal,
                     // These are going to be overridden per-cell
                     color: theme.colors().terminal_foreground,
