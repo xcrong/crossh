@@ -840,8 +840,9 @@ impl gpui::Render for NoteWindow {
             div()
                 .id("note-preview")
                 .flex_1()
-                .min_w(px(320.))
+                .min_h_0()
                 .h_full()
+                .min_w(px(320.))
                 .p_3()
                 .bg(theme::canvas())
                 .overflow_y_scroll()
@@ -850,8 +851,11 @@ impl gpui::Render for NoteWindow {
         } else {
             div()
                 .flex_1()
-                .min_w(px(320.))
+                .min_h_0()
                 .h_full()
+                .min_w(px(320.))
+                .flex()
+                .flex_col()
                 .overflow_hidden()
                 .p_2()
                 .child(render_content_editor(
@@ -865,9 +869,11 @@ impl gpui::Render for NoteWindow {
         };
 
         let body = div()
+            .flex_1()
+            .min_h_0()
+            .w_full()
             .flex()
             .flex_row()
-            .size_full()
             .overflow_hidden()
             .child(list)
             .child(right);
@@ -1027,7 +1033,9 @@ fn render_content_editor(
     let mut input = div()
         .id("note-content")
         .flex_1()
-        .min_h(px(200.))
+        .min_h_0()
+        .h_full()
+        .w_full()
         .p_2()
         .flex()
         .flex_col()
