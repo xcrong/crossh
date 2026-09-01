@@ -54,6 +54,7 @@ impl Render for AppShell {
             .min_h_0()
             .flex()
             .flex_col()
+            .relative()
             .child(main)
             .children(scratch_panel)
             .children(compose_bar);

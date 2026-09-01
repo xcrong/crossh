@@ -68,11 +68,14 @@ pub(crate) fn render_scratch_panel(
     // resizer 置于最后绘制，确保顶部 8px 拖拽区在标题栏之上可命中；
     // 原先作为首个子元素时，header（h28）会以绘制顺序覆盖 0-4px 重叠区，
     // 仅余 -4-0 的 4px 可抓取，体感即“拖不动”。
+    // 悬浮覆盖：absolute 贴底，不挤压主终端（main 保持 size_full），拖拽高度仍由 bounds.bottom() - pointer_y 计算
     div()
         .id("scratch-panel")
+        .absolute()
+        .bottom_0()
+        .left_0()
         .w_full()
         .h(px(height))
-        .flex_shrink_0()
         .flex()
         .flex_col()
         .bg(theme::canvas())
