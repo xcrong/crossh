@@ -58,20 +58,10 @@ impl AppShell {
         self.scratch_subscription = Some(subscription);
     }
 
-    fn scratch_initial_cwd(&self, cx: &Context<Self>) -> PathBuf {
-        // 优先使用当前活动 LocalSession 的 cwd，其次 HOME，最后 fallback "/"
-        if let Some(crate::features::workspace::view::ActiveView::LocalSession(session_id)) =
-            self.workspace.active_view
-            && let Some(session) = self.workspace.sessions.local_sessions.get(&session_id)
-        {
-            if let Some(cwd) = session.terminal.read(cx).cwd.as_deref()
-                && let Some(path) =
-                    crate::features::workspace::local_paths::normalize_local_cwd(PathBuf::from(cwd))
-            {
-                return path;
-            }
-            return session.cwd.clone();
-        }
+    fn scratch_initial_cwd(&self, _cx: &Context<Self>) -> PathBuf {
+        // 临时终端为全局单例，不跟随任何项目；创建时的初始 cwd 固定为家目录，
+        // 避免“从某项目打开就继承该项目目录”的项目污染。后续复用同一 PTY，
+        // 用户在内部 cd 后的目录会自然保留，无需每次重置。
         if let Some(home) = dirs::home_dir()
             && let Some(path) = crate::features::workspace::local_paths::normalize_local_cwd(home)
         {

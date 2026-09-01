@@ -2,8 +2,9 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
-    Context, DispatchPhase, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, SharedString, Styled, Window, canvas, div, px,
+    Bounds, Context, DispatchPhase, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, SharedString, Styled, Window, canvas, div,
+    px,
 };
 
 use crossh_ui::{icons, theme};
@@ -64,6 +65,9 @@ pub(crate) fn render_scratch_panel(
 
     let resizer = render_vertical_resizer(height_cell, dragging);
 
+    // resizer 置于最后绘制，确保顶部 8px 拖拽区在标题栏之上可命中；
+    // 原先作为首个子元素时，header（h28）会以绘制顺序覆盖 0-4px 重叠区，
+    // 仅余 -4-0 的 4px 可抓取，体感即“拖不动”。
     div()
         .id("scratch-panel")
         .w_full()
@@ -75,7 +79,6 @@ pub(crate) fn render_scratch_panel(
         .border_t_1()
         .border_color(theme::border_strong())
         .relative()
-        .child(resizer)
         .child(header)
         .child(
             div()
@@ -84,103 +87,97 @@ pub(crate) fn render_scratch_panel(
                 .p(px(4.))
                 .child(terminal.into_any_element()),
         )
+        .child(resizer)
         .into_any_element()
 }
 
 fn render_vertical_resizer(height: Rc<Cell<f32>>, dragging: Rc<Cell<bool>>) -> impl IntoElement {
-    let start_y: Rc<Cell<Option<f32>>> = Rc::new(Cell::new(None));
-    let start_height: Rc<Cell<f32>> = Rc::new(Cell::new(0.));
-    let backing = canvas(|_bounds, _window, _cx| {}, {
-        let height = height.clone();
-        let dragging = dragging.clone();
-        let start_y = start_y.clone();
-        let start_height = start_height.clone();
-        move |_canvas_bounds, _state, window, _cx| {
-            window.on_mouse_event({
-                let height = height.clone();
-                let dragging = dragging.clone();
-                let start_y = start_y.clone();
-                let start_height = start_height.clone();
-                move |event: &MouseMoveEvent, phase, window, _cx| {
-                    if !matches!(phase, DispatchPhase::Bubble) {
-                        return;
-                    }
-                    if !dragging.get() {
-                        return;
-                    }
-                    let Some(sy) = start_y.get() else {
-                        return;
-                    };
-                    let delta = sy - event.position.y.as_f32();
-                    let new_height =
-                        (start_height.get() + delta).clamp(SCRATCH_MIN_HEIGHT, SCRATCH_MAX_HEIGHT);
-                    height.set(new_height);
-                    window.refresh();
-                }
-            });
-            window.on_mouse_event({
-                let dragging = dragging.clone();
-                let start_y = start_y.clone();
-                move |_event: &MouseUpEvent, phase, window, _cx| {
-                    if !matches!(phase, DispatchPhase::Bubble) {
-                        return;
-                    }
-                    if dragging.replace(false) {
-                        start_y.set(None);
+    // 复用 SplitResizer 的经验证模式，但针对底部抽屉语义：
+    // - 背景 canvas 覆盖整个抽屉面板（absolute size_full），bounds.bottom() 为面板底边（固定贴底）
+    // - 拖拽时高度 = bottom - pointer_y，直观且无需 start_y/start_height 中间态
+    // - 失败根因是此前 backing 仅 h=8 的细条且分配全新 Rc/start_y 每帧，导致旧 handler 的
+    //   start_y 仍为 None，叠加 header 遮挡使命中区仅 4px，体感“拖不动”
+    let bounds: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::new(Cell::new(None));
+    let backing = canvas(
+        {
+            let bounds = bounds.clone();
+            move |canvas_bounds, _window, _cx| bounds.set(Some(canvas_bounds))
+        },
+        {
+            let bounds = bounds.clone();
+            let height = height.clone();
+            let dragging = dragging.clone();
+            move |_canvas_bounds, _state, window, _cx| {
+                window.on_mouse_event({
+                    let bounds = bounds.clone();
+                    let height = height.clone();
+                    let dragging = dragging.clone();
+                    move |event: &MouseMoveEvent, phase, window, _cx| {
+                        if !matches!(phase, DispatchPhase::Bubble) {
+                            return;
+                        }
+                        if !dragging.get() {
+                            return;
+                        }
+                        let Some(bounds) = bounds.get() else {
+                            return;
+                        };
+                        let new_height = (bounds.bottom().as_f32() - event.position.y.as_f32())
+                            .clamp(SCRATCH_MIN_HEIGHT, SCRATCH_MAX_HEIGHT);
+                        height.set(new_height);
                         window.refresh();
                     }
-                }
-            });
-        }
-    })
+                });
+                window.on_mouse_event({
+                    let dragging = dragging.clone();
+                    move |_event: &MouseUpEvent, phase, window, _cx| {
+                        if !matches!(phase, DispatchPhase::Bubble) {
+                            return;
+                        }
+                        if dragging.replace(false) {
+                            window.refresh();
+                        }
+                    }
+                });
+            }
+        },
+    )
     .absolute()
-    .top_0()
-    .left_0()
-    .w_full()
-    .h(px(8.));
+    .size_full();
 
-    let handle = {
-        let start_y_handle = start_y.clone();
-        let start_height_handle = start_height.clone();
-        let height_handle = height.clone();
-        div()
-            .id("scratch-resizer")
-            .absolute()
-            .top(px(-4.))
-            .left_0()
-            .w_full()
-            .h(px(8.))
-            .cursor_row_resize()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                div()
-                    .w(px(40.))
-                    .h(px(3.))
-                    .rounded(px(2.))
-                    .bg(theme::border())
-                    .hover(|s| s.bg(theme::accent())),
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                move |event: &MouseDownEvent, window, _cx| {
-                    dragging.set(true);
-                    start_y_handle.set(Some(event.position.y.as_f32()));
-                    start_height_handle.set(height_handle.get());
-                    window.refresh();
-                },
-            )
-    };
-
-    // clamp 辅助在逻辑层已测试，此处仅渲染
-    let _ = clamp_scratch_height(height.get());
-    div()
+    let resizing = dragging.get();
+    let handle = div()
+        .id("scratch-resizer")
         .absolute()
-        .top_0()
+        .top(px(-4.))
         .left_0()
         .w_full()
         .h(px(8.))
-        .child(backing)
-        .child(handle)
+        .cursor_row_resize()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .w(px(40.))
+                .h(px(3.))
+                .rounded(px(2.))
+                .bg(if resizing {
+                    theme::accent()
+                } else {
+                    theme::border()
+                })
+                .hover(|s| s.bg(theme::accent())),
+        )
+        .on_mouse_down(MouseButton::Left, {
+            let dragging = dragging.clone();
+            move |_event: &MouseDownEvent, window, _cx| {
+                dragging.set(true);
+                window.refresh();
+            }
+        });
+
+    let _ = clamp_scratch_height(height.get());
+    // 外层覆盖整个抽屉面板以提供稳定 bounds；视觉手柄仅在顶部 8px
+    div().absolute().size_full().child(backing).child(handle)
 }
