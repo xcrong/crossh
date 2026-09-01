@@ -20,3 +20,4 @@
 | agent TUI 运行中突然崩溃；`attempt to subtract with overflow` at main_screen.rs:63；界面在转 Working spinner 或候选在变 | `attempt to subtract with overflow`, `plan_rows`, `cap2`, `start_row`, 视口已满, empty append, n=0, 空追加, main_screen, Working spinner, 运行中崩溃 | [main_screen 增量路径空追加下溢](main-screen-incremental-panic.md) |
 | `git commit` 卡在 clippy 后被超时切断；提交未落库但改动还在暂存区 | `git commit`, `pre-commit`, `clippy -D warnings`, `timeout`, 超时, 钩子, 提交慢 | [pre-commit 钩子耗时与提交超时设置](pre-commit-hook-duration.md) |
 | 终端里 ②③ 等带圈数字与后续字符叠印、粘在一起 | `歧义宽度`, `②③`, `粘在一起`, `叠印`, `force_width`, `cell_width`, `Lilex`, `PingFang`, `Alacritty`, `unicode_width` | [终端歧义宽度字符叠印](terminal-ambiguous-width-overlap.md) |
+| target 快速膨胀到 100G；`wasmtime/cranelift` 占 633M/变体；`cargo tree --invert wasmtime` 经 `migrator/settings_json -> tree-sitter[wasm]` | `wasmtime, cranelift, wasm, migrator, settings_json, tree-sitter, target 膨胀, patch, 定向复制` | [Zed migrator 引入 wasmtime 导致 target 膨胀](zed-migrator-wasmtime-bloat.md) |

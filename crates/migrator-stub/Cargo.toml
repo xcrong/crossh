@@ -1,0 +1,14 @@
+[package]
+name = "migrator"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[lib]
+path = "src/migrator.rs"
+doctest = false
+
+[dependencies]
+anyhow = "1"
+
