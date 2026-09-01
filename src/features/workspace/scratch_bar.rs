@@ -3,14 +3,13 @@ use gpui::{
     Window, div, px,
 };
 
-use crossh_ui::{icons, theme};
-use crossh_ui_component::{Button, ButtonSize, ButtonVariant, SplitResizer};
-
-use crate::features::workspace::shell::AppShell;
+use crate::features::workspace::AppShell;
 use crate::features::workspace::shell::scratch::{
-    SCRATCH_MAX_HEIGHT, SCRATCH_MIN_HEIGHT, clamp_scratch_height,
+    SCRATCH_DEFAULT_HEIGHT, SCRATCH_MAX_HEIGHT, SCRATCH_MIN_HEIGHT, clamp_scratch_height,
 };
 use crate::shared::i18n;
+use crossh_ui::{icons, theme};
+use crossh_ui_component::{Button, ButtonSize, ButtonVariant, SplitResizer};
 
 /// 渲染 Scratch 悬浮层：复用 Command Palette 的 `absolute inset_0 + scrim + 居中卡片` 机制。
 /// 卡片复用 `SplitResizer(vertical)` 在底部可拖拽调高，尺寸较 Palette 更大以便执行任务。
@@ -19,17 +18,20 @@ pub(crate) fn render_scratch_panel(
     window: &Window,
     cx: &mut Context<AppShell>,
 ) -> gpui::AnyElement {
-    let Some(terminal) = shell.scratch_terminal.clone() else {
+    let Some(term) = shell.scratch_terminal.clone() else {
         return div().into_any_element();
     };
     let height = shell.scratch_height_value();
     let height_cell = shell.scratch_height.clone();
     let dragging = shell.scratch_dragging.clone();
 
-    // 响应式：窄窗口时卡片宽度自适应，避免超出视口
     let viewport = window.viewport_size();
-    let card_width = (viewport.width.as_f32() - 48.0).clamp(360.0, 920.0);
-    // 高度已在 shell 侧 clamp 到 [MIN,MAX]，此处仅为视觉兜底
+    let default_h = (viewport.height.as_f32() * 0.8).clamp(SCRATCH_MIN_HEIGHT, SCRATCH_MAX_HEIGHT);
+    let raw = shell.scratch_height.get();
+    let is_default = raw <= 0.0 || (raw - SCRATCH_DEFAULT_HEIGHT).abs() < 1.0;
+    let display_height = if is_default { default_h } else { height };
+    let card_width = viewport.width.as_f32() * 0.8;
+    let card_height = display_height;
     let _ = clamp_scratch_height(height);
 
     let header = div()
@@ -67,11 +69,11 @@ pub(crate) fn render_scratch_panel(
             ),
         );
 
-    // 卡片：宽度 920 以内自适应，高度由 scratch_height 驱动，底部可拖拽
+    // 卡片：默认 80% 视口，高度可拖拽
     let card = div()
         .id("scratch-card")
         .w(px(card_width))
-        .h(px(height))
+        .h(px(card_height))
         .relative()
         .flex()
         .flex_col()
@@ -88,7 +90,7 @@ pub(crate) fn render_scratch_panel(
                 .min_h_0()
                 .p(px(6.))
                 .bg(theme::canvas())
-                .child(terminal.into_any_element()),
+                .child(term.into_any_element()),
         )
         .child(
             SplitResizer::new("scratch-resizer", dragging.clone(), height_cell.clone())
