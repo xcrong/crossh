@@ -11,8 +11,7 @@ use crate::features::workspace::AppShell;
 use crate::shared::i18n;
 use crate::{
     About, CheckForUpdates, CloseActiveTab, CloseWindow, MinimizeWindow, NewTerminal, OpenProject,
-    OpenSettings, Quit, ToggleFullScreen, ToggleHostSidebar, ToggleQuickCommands, ToggleTimestamps,
-    ZoomWindow,
+    OpenSettings, Quit, ToggleFullScreen, ToggleHostSidebar, ToggleTimestamps, ZoomWindow,
 };
 
 #[cfg(target_os = "macos")]
@@ -135,10 +134,6 @@ pub(crate) fn refresh(cx: &App) {
             MenuItem::action(
                 i18n::text("app_menu.toggle_host_sidebar"),
                 ToggleHostSidebar,
-            ),
-            MenuItem::action(
-                i18n::text("app_menu.toggle_quick_commands"),
-                ToggleQuickCommands,
             ),
             MenuItem::action(i18n::text("app_menu.toggle_timestamps"), ToggleTimestamps),
         ]),

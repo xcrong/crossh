@@ -15,10 +15,6 @@ pub const STATUS_BAR_HEIGHT: f32 = 27.0;
 pub const ROW_HEIGHT: f32 = 36.0;
 pub const RADIUS_SM: f32 = 4.0;
 pub const RADIUS_MD: f32 = 8.0;
-pub const QUICK_COMMANDS_WIDTH: f32 = 240.0;
-pub const QUICK_COMMANDS_MIN_WIDTH: f32 = 240.0;
-pub const QUICK_COMMANDS_MAX_WIDTH: f32 = 460.0;
-pub const QUICK_COMMANDS_RAIL_WIDTH: f32 = 40.0;
 
 fn color(value: Rgb) -> Rgba {
     rgb(value.hex())

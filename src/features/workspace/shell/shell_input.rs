@@ -18,7 +18,6 @@ use super::*;
 #[derive(Clone, Copy)]
 enum AppShellInputField {
     HostSearch,
-    QuickCommand,
     Rename,
     DefaultCommand,
     Compose,
@@ -38,12 +37,6 @@ impl AppShell {
             .is_some_and(|editor| editor.focus.is_focused(window))
         {
             Some(AppShellInputField::Rename)
-        } else if self
-            .quick_command_editor
-            .as_ref()
-            .is_some_and(|editor| editor.focus.is_focused(window))
-        {
-            Some(AppShellInputField::QuickCommand)
         } else if self
             .workspace
             .focused_view()
@@ -87,10 +80,6 @@ impl AppShell {
     fn editing_state(&self, field: AppShellInputField) -> Option<&TextEditingState> {
         match field {
             AppShellInputField::HostSearch => None,
-            AppShellInputField::QuickCommand => self
-                .quick_command_editor
-                .as_ref()
-                .map(|editor| &editor.state),
             AppShellInputField::Rename => self.rename_editor.as_ref().map(|editor| &editor.state),
             AppShellInputField::DefaultCommand => self
                 .default_command_editor
@@ -106,10 +95,6 @@ impl AppShell {
     fn editing_state_mut(&mut self, field: AppShellInputField) -> Option<&mut TextEditingState> {
         match field {
             AppShellInputField::HostSearch => None,
-            AppShellInputField::QuickCommand => self
-                .quick_command_editor
-                .as_mut()
-                .map(|editor| &mut editor.state),
             AppShellInputField::Rename => {
                 self.rename_editor.as_mut().map(|editor| &mut editor.state)
             }
@@ -140,7 +125,6 @@ impl AppShell {
             _ => self.editing_state_mut(field),
         }
     }
-
     fn value_for_field(&self, field: AppShellInputField) -> Option<&String> {
         if let Some(value) = self.plain_value(field) {
             return Some(value);
@@ -150,11 +134,6 @@ impl AppShell {
 
     fn editing_scroll_x(&self, field: AppShellInputField) -> Pixels {
         match field {
-            AppShellInputField::QuickCommand => self
-                .quick_command_editor
-                .as_ref()
-                .map(|editor| editor.scroll.offset().x)
-                .unwrap_or(px(0.)),
             AppShellInputField::Compose => self.compose_scroll.offset().x,
             _ => px(0.),
         }

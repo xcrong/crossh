@@ -24,6 +24,7 @@ pub fn format_gb(bytes: u64) -> String {
     format!("{:.1} GB", bytes as f64 / GB as f64)
 }
 
+#[allow(dead_code)]
 pub(crate) fn unix_timestamp_secs() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()

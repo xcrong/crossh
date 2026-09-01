@@ -3,7 +3,7 @@
 //! 本模块是应用程序"文本编辑"的共享纯逻辑层，遵循架构红线：
 //! **逻辑不依赖 UI**——除标准库文本处理外，这里不允许出现任何 UI 框架
 //! 依赖（`scripts/check-architecture.sh` 亦会拦截）。焦点、滚动、重绘
-//! （`cx.notify()`）等 UI 职责由各 feature 的视图层（`QuickCommandEditor`、
+//! （`cx.notify()`）等 UI 职责由各 feature 的视图层（`RenameEditor`、
 //! `CommitEditor`、设置输入框）自行承担，本模块只负责状态与编辑运算。
 //!
 //! `TextEditingState` 统一了各编辑器共享的字段集合（value/cursor/anchor/IME

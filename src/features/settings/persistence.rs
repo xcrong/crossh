@@ -143,7 +143,6 @@ mod tests {
             updates: UpdateSettings::default(),
             workspace: WorkspaceSettings {
                 show_host_sidebar: false,
-                show_quick_commands: false,
                 recent_dirs: vec![PathBuf::from("/a"), PathBuf::from("/b")],
                 recent_dirs_max: 2,
                 editor_command: Some("zed".into()),
@@ -182,11 +181,6 @@ mod tests {
             encoded
                 .lines()
                 .any(|line| line == "show_host_sidebar = false")
-        );
-        assert!(
-            encoded
-                .lines()
-                .any(|line| line == "show_quick_commands = false")
         );
         assert!(
             encoded

@@ -41,22 +41,4 @@ pub enum ShellMenuAction {
     CloseLocalSession(u64),
     /// 关闭同目录下的其他本地会话。
     CloseOtherLocalSessions(u64),
-    /// Execute a cwd-bound quick command in the active terminal or in a task.
-    RunQuickCommand {
-        scope: String,
-        command: String,
-        background: bool,
-    },
-    /// Open the command editor.
-    EditQuickCommand { scope: String, command: String },
-    /// Toggle whether a command is shown in the collapsed rail.
-    ToggleQuickCommandPin { scope: String, command: String },
-    /// Remove a command from the aggregate history.
-    DeleteQuickCommand { scope: String, command: String },
-    /// Exclude a command from cwd-bound history.
-    IgnoreQuickCommand { scope: String, command: String },
-    /// Stop one background command task.
-    StopBackgroundTask(u64),
-    /// Stop one running background command and start it again in the background.
-    RestartBackgroundTask(u64),
 }

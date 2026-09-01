@@ -17,42 +17,6 @@ impl Render for AppShell {
             self.shell_focus.focus(window, cx);
         }
 
-        // 快捷命令是 workspace 级面板，使用当前活动视图的上下文；没有活动视图时不显示。
-        let quick_context = match self.workspace.focused_view() {
-            Some(ActiveView::LocalSession(session_id)) => self
-                .workspace
-                .sessions
-                .local_sessions
-                .get(&session_id)
-                .map(|session| {
-                    let cwd = session
-                        .terminal
-                        .read(cx)
-                        .cwd
-                        .clone()
-                        .unwrap_or_else(|| session.cwd.to_string_lossy().to_string());
-                    let cwd = PathBuf::from(cwd);
-                    (local_scope(&cwd), cwd.to_string_lossy().to_string())
-                }),
-            None => None,
-        };
-        let quick_commands_panel_mode = quick_commands_panel_mode(
-            quick_context.is_some(),
-            self.workspace_settings.show_quick_commands,
-        );
-        let quick_commands = match quick_commands_panel_mode {
-            Some(QuickCommandsPanelMode::Expanded) => {
-                let (scope, cwd) =
-                    quick_context.expect("expanded panel requires a command context");
-                Some(render_quick_commands(self, scope, cwd, cx))
-            }
-            Some(QuickCommandsPanelMode::Rail) => {
-                let (scope, _) = quick_context.expect("rail requires a command context");
-                Some(render_quick_commands_rail(self, &scope, cx))
-            }
-            None => None,
-        };
-
         // Materialize opaque elements before attaching the root listener so Rust 2024 does not
         // keep `cx` borrowed through the render helpers.
         let sidebar_width = if self.workspace_settings.show_host_sidebar {
@@ -64,19 +28,10 @@ impl Render for AppShell {
         } else {
             theme::SIDEBAR_RAIL_WIDTH
         };
-        let quick_commands_width = match quick_commands_panel_mode {
-            Some(QuickCommandsPanelMode::Expanded) => crossh_ui_component::clamp_panel_width(
-                self.quick_commands_width.get(),
-                theme::QUICK_COMMANDS_MIN_WIDTH,
-                theme::QUICK_COMMANDS_MAX_WIDTH,
-            ),
-            Some(QuickCommandsPanelMode::Rail) => theme::QUICK_COMMANDS_RAIL_WIDTH,
-            None => 0.,
-        };
         let available_main_width = crossh_ui_component::panel_available_main_width(
             window.viewport_size().width,
             sidebar_width,
-            quick_commands_width,
+            0.,
         );
         let main = render_main(self, window, available_main_width, cx);
         let sidebar = if self.workspace_settings.show_host_sidebar {
@@ -106,8 +61,7 @@ impl Render for AppShell {
             .flex()
             .flex_row()
             .child(sidebar)
-            .child(main_column)
-            .children(quick_commands);
+            .child(main_column);
         let status_bar = render_workspace_status_bar(self, available_main_width, cx);
         let linux_titlebar =
             crate::features::workspace::linux_titlebar::render_linux_titlebar(window, cx);
@@ -131,9 +85,6 @@ impl Render for AppShell {
                 .on_action(cx.listener(|this, _: &crate::ToggleHostSidebar, _, cx| {
                     this.toggle_host_sidebar(cx)
                 }))
-                .on_action(cx.listener(|this, _: &crate::ToggleQuickCommands, _, cx| {
-                    this.toggle_quick_commands(cx)
-                }))
                 .on_action(
                     cx.listener(|this, _: &crate::ToggleScratchTerminal, window, cx| {
                         this.toggle_scratch_terminal(window, cx)
@@ -154,9 +105,6 @@ impl Render for AppShell {
             );
         root = root.children(system_monitor_card);
         root = root.children(self.render_toaster());
-        if self.quick_command_editor.is_some() {
-            root = root.child(render_quick_command_editor(self, window, cx));
-        }
         if self.rename_editor.is_some() {
             root = root.child(render_rename_editor(self, window, cx));
         }

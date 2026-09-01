@@ -26,7 +26,6 @@ use crate::features::terminal::{TerminalEvent, TerminalView, TerminalViewEvent};
 use crate::features::updates::{UpdateController, UpdateSettings};
 use crate::features::workspace::modal_editor::{DefaultCommandEditor, RenameEditor};
 use crate::features::workspace::pinned::{pinned_tabs_for_project, prune_missing_pinned_tabs};
-use crate::features::workspace::quick_commands_rail::render_quick_commands_rail;
 use crate::features::workspace::registry::WorkspaceState;
 use crate::features::workspace::settings::WorkspaceSettings;
 use crate::features::workspace::sidebar::{render_sidebar, render_sidebar_rail};
@@ -34,13 +33,9 @@ use crate::features::workspace::state::rebuild_local_dirs;
 use crate::features::workspace::toaster::{ToastNotice, ToastTone};
 use crate::features::workspace::view::{
     ActiveView, LocalDir, LocalSession, LocalSessionId, render_default_command_editor, render_main,
-    render_quick_command_editor, render_quick_commands, render_rename_editor,
-    render_workspace_status_bar,
+    render_rename_editor, render_workspace_status_bar,
 };
 use crate::shared::i18n::{self, LanguagePreference};
-use crossh_core::commands::{
-    BackgroundTaskEvent, BackgroundTaskManager, BackgroundTaskStatus, CommandHistory, local_scope,
-};
 use crossh_core::git::{pull, push};
 use crossh_core::git_status::inspect;
 use crossh_core::system_stats::{SystemMonitorState, SystemSampler};
@@ -51,7 +46,6 @@ use crossh_ui::widgets::printable_char;
 use crossh_ui_component::context_menu::{ContextMenuState, MenuEntry, render_context_menu};
 
 use super::local_paths::{current_local_cwd, normalize_local_cwd, normalize_recent_dirs};
-use crate::features::workspace::modal_editor::QuickCommandEditor;
 
 mod compose;
 mod notifications;
@@ -78,21 +72,6 @@ pub(crate) struct GitSyncState {
 pub(crate) enum GitSyncOperation {
     Push,
     Pull,
-}
-
-struct ActiveCommandContext {
-    scope: String,
-    cwd: String,
-    owner: String,
-    local_session: Option<LocalSessionId>,
-}
-
-struct PendingBackgroundRestart {
-    task: crossh_core::commands::BackgroundTask,
-}
-
-fn local_background_owner(session_id: LocalSessionId) -> String {
-    format!("local-session:{session_id}")
 }
 
 pub struct AppShell {
@@ -123,19 +102,12 @@ pub struct AppShell {
     pub(crate) sidebar_dragging: Rc<Cell<bool>>,
     pub(crate) sidebar_scroll: gpui::ScrollHandle,
     pub(crate) tab_scroll: gpui::ScrollHandle,
-    /// Right-side command panel width and drag state.
-    pub(crate) quick_commands_width: Rc<Cell<f32>>,
-    pub(crate) quick_commands_dragging: Rc<Cell<bool>>,
     /// Left terminal split drag state; the width cell itself lives per-owner
     /// in `WorkspaceState.split_widths` (one slot per split owner).
     pub(crate) terminal_split_dragging: Rc<Cell<bool>>,
     pub(crate) terminal_split_vertical_dragging: Rc<Cell<bool>>,
     pub(crate) terminal_split_vertical_right_dragging: Rc<Cell<bool>>,
-    pub(crate) command_history: CommandHistory,
-    pub(crate) background_tasks: BackgroundTaskManager,
-    pending_background_restarts: BTreeMap<u64, PendingBackgroundRestart>,
-    pub(crate) quick_command_editor: Option<QuickCommandEditor>,
-    /// 固定标签重命名弹窗状态；与 quick command/default command 编辑器互斥（都是模态弹窗）。
+    /// 固定标签重命名弹窗状态；与 default command 编辑器互斥（都是模态弹窗）。
     pub(crate) rename_editor: Option<RenameEditor>,
     pub(crate) default_command_editor: Option<DefaultCommandEditor>,
     pub(crate) compose_focus: FocusHandle,
@@ -218,15 +190,9 @@ impl AppShell {
             sidebar_dragging: Rc::new(Cell::new(false)),
             sidebar_scroll: gpui::ScrollHandle::new(),
             tab_scroll: gpui::ScrollHandle::new(),
-            quick_commands_width: Rc::new(Cell::new(theme::QUICK_COMMANDS_WIDTH)),
-            quick_commands_dragging: Rc::new(Cell::new(false)),
             terminal_split_dragging: Rc::new(Cell::new(false)),
             terminal_split_vertical_dragging: Rc::new(Cell::new(false)),
             terminal_split_vertical_right_dragging: Rc::new(Cell::new(false)),
-            command_history: CommandHistory::load(),
-            background_tasks: BackgroundTaskManager::default(),
-            pending_background_restarts: BTreeMap::new(),
-            quick_command_editor: None,
             rename_editor: None,
             default_command_editor: None,
             compose_focus: cx.focus_handle(),
@@ -248,121 +214,6 @@ impl AppShell {
         updates.update(cx, |updates, cx| updates.start_startup_check(cx));
         shell
     }
-    fn active_command_context(&self, cx: &App) -> Option<ActiveCommandContext> {
-        let view = self.workspace.focused_view()?;
-        match view {
-            ActiveView::LocalSession(session_id) => {
-                let session = self.workspace.sessions.local_sessions.get(&session_id)?;
-                let cwd = session
-                    .terminal
-                    .read(cx)
-                    .cwd
-                    .clone()
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| session.cwd.clone());
-                let cwd = normalize_local_cwd(cwd)?;
-                Some(ActiveCommandContext {
-                    scope: local_scope(&cwd),
-                    cwd: cwd.to_string_lossy().to_string(),
-                    owner: local_background_owner(session_id),
-                    local_session: Some(session_id),
-                })
-            }
-        }
-    }
-
-    fn start_background_restart(
-        &mut self,
-        restart: PendingBackgroundRestart,
-        cx: &mut Context<Self>,
-    ) {
-        let task = restart.task;
-        let (id, event_rx) =
-            self.background_tasks
-                .start(task.scope, task.cwd, task.command, task.owner);
-        cx.spawn(async move |weak, cx| {
-            let Ok(event) = event_rx.recv().await else {
-                return;
-            };
-            let _ = weak.update(cx, |this, cx| {
-                this.apply_background_event(event, cx);
-                cx.notify();
-            });
-        })
-        .detach();
-        log::info!("restarted background command {id}");
-    }
-
-    pub(crate) fn restart_background_task(&mut self, id: u64, cx: &mut Context<Self>) {
-        let Some(task) = self.background_tasks.tasks.get(&id).cloned() else {
-            return;
-        };
-        if task.status != BackgroundTaskStatus::Running {
-            return;
-        }
-        self.pending_background_restarts
-            .insert(id, PendingBackgroundRestart { task });
-        self.stop_background_task(id, cx);
-    }
-
-    pub(crate) fn run_quick_command(
-        &mut self,
-        scope: String,
-        command: String,
-        background: bool,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(context) = self.active_command_context(cx) else {
-            return;
-        };
-        if context.scope != scope {
-            return;
-        }
-        if background {
-            let owner = context.owner.clone();
-            let Some(cwd) = normalize_local_cwd(PathBuf::from(context.cwd)) else {
-                return;
-            };
-            let (id, event_rx) = self.background_tasks.start(scope, cwd, command, owner);
-            cx.spawn(async move |weak, cx| {
-                let Ok(event) = event_rx.recv().await else {
-                    return;
-                };
-                let _ = weak.update(cx, |this, cx| {
-                    this.apply_background_event(event, cx);
-                    cx.notify();
-                });
-            })
-            .detach();
-            log::info!("started background command {id}");
-        } else if let Some(session_id) = context.local_session
-            && let Some(session) = self.workspace.sessions.local_sessions.get(&session_id)
-        {
-            session.terminal.update(cx, |terminal, terminal_cx| {
-                terminal.run_command(&command, terminal_cx)
-            });
-        }
-        cx.notify();
-    }
-
-    fn apply_background_event(&mut self, event: BackgroundTaskEvent, cx: &mut Context<Self>) {
-        let event_id = event.id;
-        log::info!(
-            "background command {} finished as {:?}",
-            event.id,
-            event.status
-        );
-        self.background_tasks.apply_event(event);
-        if let Some(restart) = self.pending_background_restarts.remove(&event_id) {
-            self.start_background_restart(restart, cx);
-        }
-    }
-
-    pub(crate) fn stop_background_task(&mut self, id: u64, cx: &mut Context<Self>) {
-        self.background_tasks.mark_stopping(id);
-        cx.notify();
-    }
-
     fn dispatch_shell_menu_action(
         &mut self,
         action: ShellMenuAction,
@@ -412,27 +263,6 @@ impl AppShell {
             ShellMenuAction::CloseOtherLocalSessions(session_id) => {
                 self.close_other_local_sessions(session_id, cx);
             }
-            ShellMenuAction::RunQuickCommand {
-                scope,
-                command,
-                background,
-            } => self.run_quick_command(scope, command, background, cx),
-            ShellMenuAction::EditQuickCommand { scope, command } => {
-                self.open_quick_command_editor(scope, command, window, cx)
-            }
-            ShellMenuAction::ToggleQuickCommandPin { scope, command } => {
-                self.toggle_quick_command_pin(scope, command, cx)
-            }
-            ShellMenuAction::DeleteQuickCommand { scope, command } => {
-                self.command_history.remove(&scope, &command);
-                cx.notify();
-            }
-            ShellMenuAction::IgnoreQuickCommand { scope, command } => {
-                self.command_history.ignore(&scope, &command);
-                cx.notify();
-            }
-            ShellMenuAction::StopBackgroundTask(id) => self.stop_background_task(id, cx),
-            ShellMenuAction::RestartBackgroundTask(id) => self.restart_background_task(id, cx),
         }
         self.close_context_menu(cx);
     }
@@ -450,10 +280,7 @@ impl AppShell {
             }
             return;
         }
-        if self.quick_command_editor.is_some()
-            || self.rename_editor.is_some()
-            || self.default_command_editor.is_some()
-        {
+        if self.rename_editor.is_some() || self.default_command_editor.is_some() {
             return;
         }
         // Scratch 抽屉的 Esc 隐藏：优先级高于全局快捷键，但低于模态
@@ -551,13 +378,7 @@ impl AppShell {
                             this.refresh_git_status(session_id, false, cx);
                         }
                     }
-                    TerminalEvent::CommandStarted { command, cwd } => {
-                        if let Some(cwd) = cwd
-                            && let Some(cwd) = normalize_local_cwd(PathBuf::from(cwd))
-                        {
-                            this.record_command(local_scope(&cwd), command.clone(), cx);
-                        }
-                    }
+                    TerminalEvent::CommandStarted { .. } => {}
                     TerminalEvent::CommandFinished { status } => {
                         log::debug!("local terminal command finished with status {status:?}");
                     }
@@ -675,8 +496,6 @@ impl AppShell {
         keep_pinned: bool,
         cx: &mut Context<Self>,
     ) {
-        let owner = local_background_owner(session_id);
-        self.stop_background_tasks_for_owner(&owner, cx);
         // 关闭即取消固定（契约 8）：任何关闭路径（按钮/关闭其他/进程退出）
         // 都移除持久化记录，重启后不再恢复。stop 项目时 keep_pinned=true 保留固定记录。
         if !keep_pinned {
@@ -738,31 +557,6 @@ impl AppShell {
             self.refocus_active_terminal(cx);
         }
         cx.notify();
-    }
-
-    fn record_command(&mut self, scope: String, command: String, cx: &mut Context<Self>) {
-        if self.command_history.record(&scope, &command) {
-            cx.notify();
-        }
-    }
-
-    pub(crate) fn toggle_quick_command_pin(
-        &mut self,
-        scope: String,
-        command: String,
-        cx: &mut Context<Self>,
-    ) {
-        if self.command_history.toggle_pinned(&scope, &command) {
-            cx.notify();
-        }
-    }
-
-    fn stop_background_tasks_for_owner(&mut self, owner: &str, cx: &mut Context<Self>) {
-        let ids = self.background_tasks.active_for_owner(owner);
-        for id in ids {
-            self.pending_background_restarts.remove(&id);
-            self.stop_background_task(id, cx);
-        }
     }
 
     fn open_query(&mut self, cx: &mut Context<Self>) {
@@ -1283,23 +1077,6 @@ impl AppShell {
             .find(|cwd| cwd.to_string_lossy().to_ascii_lowercase().contains(query))
             .cloned()
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum QuickCommandsPanelMode {
-    Expanded,
-    Rail,
-}
-
-fn quick_commands_panel_mode(
-    has_command_context: bool,
-    show_quick_commands: bool,
-) -> Option<QuickCommandsPanelMode> {
-    has_command_context.then_some(if show_quick_commands {
-        QuickCommandsPanelMode::Expanded
-    } else {
-        QuickCommandsPanelMode::Rail
-    })
 }
 
 /// 打开主窗口。在 main.rs 中调用。

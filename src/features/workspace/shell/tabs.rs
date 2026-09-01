@@ -349,7 +349,6 @@ impl AppShell {
     }
 
     /// 打开固定标签的重命名弹窗（初始值取当前自定义名称；空白表示回退默认标题）。
-    /// 与 Quick Command 编辑器互斥，打开时静默关闭另一个模态。
     pub(crate) fn open_rename_local_session(
         &mut self,
         session_id: LocalSessionId,
@@ -360,7 +359,6 @@ impl AppShell {
             return;
         };
         let focus = cx.focus_handle();
-        self.quick_command_editor = None;
         self.rename_editor = Some(RenameEditor::new(
             session_id,
             session.custom_name.clone().unwrap_or_default(),
@@ -422,7 +420,6 @@ impl AppShell {
             return;
         }
         let focus = cx.focus_handle();
-        self.quick_command_editor = None;
         self.rename_editor = None;
         self.default_command_editor = Some(DefaultCommandEditor::new(
             session_id,

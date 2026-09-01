@@ -33,7 +33,6 @@ actions!(
         ShowAll,
         ToggleFullScreen,
         ToggleHostSidebar,
-        ToggleQuickCommands,
         ToggleScratchTerminal,
         ToggleTimestamps,
         ZoomWindow

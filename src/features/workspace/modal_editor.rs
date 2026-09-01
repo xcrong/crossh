@@ -1,35 +1,13 @@
-//! 模态文本编辑器（Quick Command 编辑器 + 固定标签重命名弹窗）的行为：
+//! 模态文本编辑器（固定标签重命名弹窗 + 默认命令编辑器）的行为：
 //! 打开/提交/取消与统一键盘处理。渲染位于 `view.rs`（两者互斥，
 //! 键盘入口合并为一个 handler，避免重复的编辑键分支）。
 
-use gpui::{
-    ClipboardEntry, ClipboardItem, Context, FocusHandle, KeyDownEvent, ScrollHandle, Window,
-};
+use gpui::{ClipboardEntry, ClipboardItem, Context, FocusHandle, KeyDownEvent, Window};
 
 use crate::features::workspace::state::LocalSessionId;
 use crate::shared::text_editing::{EditingKeystroke, TextEditingState, handle_text_editing_key};
 
 use super::*;
-
-pub(crate) struct QuickCommandEditor {
-    pub(crate) scope: String,
-    pub(crate) original: String,
-    pub(crate) state: TextEditingState,
-    pub(crate) scroll: ScrollHandle,
-    pub(crate) focus: FocusHandle,
-}
-
-impl QuickCommandEditor {
-    pub(crate) fn new(scope: String, original: String, focus: FocusHandle) -> Self {
-        Self {
-            scope,
-            original: original.clone(),
-            state: TextEditingState::new(original),
-            scroll: ScrollHandle::new(),
-            focus,
-        }
-    }
-}
 
 pub(crate) struct PinnedTabEditor {
     pub(crate) session_id: LocalSessionId,
@@ -51,36 +29,7 @@ pub(crate) type RenameEditor = PinnedTabEditor;
 pub(crate) type DefaultCommandEditor = PinnedTabEditor;
 
 impl AppShell {
-    pub(crate) fn open_quick_command_editor(
-        &mut self,
-        scope: String,
-        command: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let focus = cx.focus_handle();
-        self.quick_command_editor = Some(QuickCommandEditor::new(scope, command, focus.clone()));
-        window.focus(&focus, cx);
-        cx.notify();
-    }
-
-    pub(crate) fn submit_quick_command_editor(&mut self, cx: &mut Context<Self>) {
-        let Some(editor) = self.quick_command_editor.take() else {
-            return;
-        };
-        self.command_history
-            .edit(&editor.scope, &editor.original, &editor.state.value);
-        cx.notify();
-    }
-
-    pub(crate) fn cancel_quick_command_editor(&mut self, cx: &mut Context<Self>) {
-        if self.quick_command_editor.take().is_some() {
-            cx.notify();
-        }
-    }
-
-    /// 模态文本编辑器的统一键盘处理：固定标签重命名弹窗与 Quick Command
-    /// 编辑器共用（两者互斥，最多只有一个打开）。
+    /// 模态文本编辑器的统一键盘处理：固定标签重命名弹窗与默认命令编辑器共用（两者互斥，最多只有一个打开）。
     pub(crate) fn handle_modal_editor_key(
         &mut self,
         ev: &KeyDownEvent,
@@ -95,8 +44,6 @@ impl AppShell {
                     self.submit_default_command(cx);
                 } else if self.rename_editor.is_some() {
                     self.submit_rename_local_session(cx);
-                } else if self.quick_command_editor.is_some() {
-                    self.submit_quick_command_editor(cx);
                 } else {
                     return;
                 }
@@ -107,8 +54,6 @@ impl AppShell {
                     self.cancel_default_command(cx);
                 } else if self.rename_editor.is_some() {
                     self.cancel_rename_local_session(cx);
-                } else if self.quick_command_editor.is_some() {
-                    self.cancel_quick_command_editor(cx);
                 } else {
                     return;
                 }
@@ -145,18 +90,14 @@ impl AppShell {
         }
     }
 
-    /// 当前打开的模态编辑器的文本状态（默认命令 > 重命名 > QuickCommand；三者互斥）。
+    /// 当前打开的模态编辑器的文本状态（默认命令 > 重命名；两者互斥）。
     fn active_editor_state(&mut self) -> Option<&mut TextEditingState> {
         if self.default_command_editor.is_some() {
             self.default_command_editor
                 .as_mut()
                 .map(|editor| &mut editor.state)
-        } else if self.rename_editor.is_some() {
-            self.rename_editor.as_mut().map(|editor| &mut editor.state)
         } else {
-            self.quick_command_editor
-                .as_mut()
-                .map(|editor| &mut editor.state)
+            self.rename_editor.as_mut().map(|editor| &mut editor.state)
         }
     }
 }

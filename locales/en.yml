@@ -25,7 +25,6 @@ app_menu:
   clear_terminal: Clear Terminal
   view: View
   toggle_host_sidebar: Toggle Host Sidebar
-  toggle_quick_commands: Toggle Quick Commands
   toggle_timestamps: Toggle Timestamps
   window: Window
   minimize: Minimize
@@ -100,14 +99,12 @@ tooltip:
   close_tab: Close tab
   host_sidebar: Show or hide the project sidebar
   timestamps: Show or hide line timestamps
-  quick_commands: Show or hide the quick commands panel
   split_terminal: Split the terminal into two columns
   close_split: Close the right terminal
   split_terminal_narrow: The window is too narrow for two terminal columns
   split_terminal_vertical: Split the terminal into two rows
   close_vertical_split: Close the bottom terminal
   split_terminal_vertical_full: Maximum 4 terminal panes reached
-  pin_command: Pin or unpin command
   open_in_editor: Open the current directory in an external editor
   open_in_editor_with: Open the current directory in %{editor}
   compose_bar: Toggle compose input bar
@@ -261,27 +258,6 @@ terminal:
   connecting: Connecting…
   closed: Session closed.
   bell: Terminal bell.
-quick_commands:
-  title: Quick commands
-  empty: Commands from this directory will appear here.
-  run: Run in terminal
-  run_background: Run in background
-  restart: Restart
-  edit: Edit command
-  edit_title: Edit quick command
-  command_placeholder: Enter a command
-  save: Save
-  delete: Remove command
-  ignore: Exclude from history
-  unpin: Unpin command
-  background_tasks: Background tasks
-  running: Running
-  stopping: Stopping
-  succeeded: Done
-  failed: Failed
-  terminated: Stopped
-  stop: Stop task
-
 rename_tab:
   title: Rename Tab
   name_placeholder: Tab name (empty restores the default)

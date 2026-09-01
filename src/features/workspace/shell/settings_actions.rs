@@ -62,12 +62,6 @@ impl AppShell {
         cx.notify();
     }
 
-    pub(crate) fn toggle_quick_commands(&mut self, cx: &mut Context<Self>) {
-        self.workspace_settings.show_quick_commands = !self.workspace_settings.show_quick_commands;
-        self.persist_settings();
-        cx.notify();
-    }
-
     pub(crate) fn toggle_terminal_notifications(&mut self, cx: &mut Context<Self>) {
         let mut terminal = self.terminal_settings.clone();
         terminal.notifications_enabled = !terminal.notifications_enabled;

@@ -7,7 +7,6 @@ pub(crate) mod local_paths;
 pub(crate) mod modal_editor;
 pub(crate) mod pane;
 pub(crate) mod pinned;
-pub(crate) mod quick_commands_rail;
 pub(crate) mod registry;
 pub(crate) mod scratch_bar;
 pub(crate) mod settings;

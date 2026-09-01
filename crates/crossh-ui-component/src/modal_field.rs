@@ -1,11 +1,10 @@
 //! 单行模态输入框：`TextInput` 的选中高亮 + placeholder + 横向滚动缺口。
 //!
 //! 复用 `TextEditingState`（value / cursor / anchor / IME）作为单一状态源，
-//! 把 `view.rs` 中 3 个 `render_*_editor` 里 90% 逐行相同的
+//! 把 `view.rs` 中 2 个 `render_*_editor` 里 90% 逐行相同的
 //! `div().id(...).min_h(38).px_3.py_2.flex.items_center...` 骨架收敛到一处。
 //! 选中块、caret、placeholder、IME marked 与 `ime_input_canvas` 的分支与
-//! 原 `render_quick_command_editor` 等逐行等价，修 IME 选中只需改此处。
-//!
+//! 原 `render_rename_editor` 等逐行等价，修 IME 选中只需改此处。
 //! 与 `TextInput` 的差异：
 //! - `TextInput` 是无选区、末尾 caret 的通用单行框（掩码、搜索等）；
 //! - `ModalField` 暴露 `TextEditingState` 的选区高亮（`accent_soft` 块）
@@ -84,7 +83,7 @@ impl<V> ModalField<V> {
         self
     }
 
-    /// 仅 quick_command 等需要横向滚动的模态使用；无滚动的 rename/default 保持无 scroll。
+    /// 需要横向滚动的模态使用；无滚动的 rename/default 保持无 scroll。
     pub fn scrollable(mut self, handle: gpui::ScrollHandle) -> Self {
         self.scroll = Some(handle);
         self
@@ -136,7 +135,7 @@ impl<V: EntityInputHandler + 'static> RenderOnce for ModalField<V> {
         let value = state.value;
         let ime_marked_text = state.ime_marked_text;
 
-        // quick_command 在渲染前调用 `scroll.scroll_to_item(1)` 以自动滚动到光标；
+        // 需要横向滚动的输入在渲染前调用 `scroll.scroll_to_item(1)` 以自动滚动到光标；
         // 此处在 render 阶段复现，保持调用点精简到一行链式调用。
         if let Some(handle) = &scroll {
             handle.scroll_to_item(1);

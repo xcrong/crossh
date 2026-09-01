@@ -104,8 +104,7 @@ impl SplitResizer {
 
     /// 在手柄内渲染 1px 视觉线（拖拽中/悬停高亮）。
     ///
-    /// 生产消费者：终端分栏、侧边栏、Quick Commands 三处（渲染视觉分隔
-    /// 线）；Git 变更/历史面板不调用（无视觉线）。勿删。
+    /// 生产消费者：终端分栏、侧边栏两处（渲染视觉分隔线）；Git 变更/历史面板不调用（无视觉线）。勿删。
     pub fn line(mut self) -> Self {
         self.line = true;
         self

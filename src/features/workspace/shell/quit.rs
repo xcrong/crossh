@@ -123,10 +123,7 @@ impl AppShell {
     }
 
     fn quit_risks(&self, cx: &Context<Self>) -> QuitRiskSummary {
-        let mut risks = QuitRiskSummary {
-            running_commands: self.background_tasks.running_count(),
-            ..QuitRiskSummary::default()
-        };
+        let mut risks = QuitRiskSummary::default();
         for session in self.workspace.sessions.local_sessions.values() {
             if session.terminal.read(cx).is_command_running(cx) {
                 risks.running_commands += 1;
@@ -141,22 +138,6 @@ impl AppShell {
         }
         self.shutdown_in_progress = true;
         self.status = Some(i18n::text("quit.closing"));
-        let running_background = self
-            .background_tasks
-            .tasks
-            .values()
-            .filter(|task| {
-                matches!(
-                    task.status,
-                    crossh_core::commands::BackgroundTaskStatus::Running
-                        | crossh_core::commands::BackgroundTaskStatus::Stopping
-                )
-            })
-            .map(|task| task.id)
-            .collect::<Vec<_>>();
-        for id in running_background {
-            self.stop_background_task(id, cx);
-        }
 
         let terminals = self
             .workspace
@@ -182,18 +163,19 @@ mod tests {
     #[test]
     fn quit_confirmation_is_only_required_for_material_activity() {
         assert!(!QuitRiskSummary::default().needs_confirmation());
-
-        for risks in [
+        assert!(
             QuitRiskSummary {
                 running_commands: 1,
                 ..Default::default()
-            },
+            }
+            .needs_confirmation()
+        );
+        assert!(
             QuitRiskSummary {
-                unsaved_editors: 1,
+                unsaved_editors: 2,
                 ..Default::default()
-            },
-        ] {
-            assert!(risks.needs_confirmation());
-        }
+            }
+            .needs_confirmation()
+        );
     }
 }

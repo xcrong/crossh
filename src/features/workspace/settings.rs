@@ -26,8 +26,6 @@ pub(crate) struct PinnedLocalTab {
 pub(crate) struct WorkspaceSettings {
     #[serde(default = "default_show_host_sidebar")]
     pub(crate) show_host_sidebar: bool,
-    #[serde(default = "default_show_quick_commands")]
-    pub(crate) show_quick_commands: bool,
     #[serde(default, rename = "recent_local_dirs")]
     pub(crate) recent_dirs: Vec<PathBuf>,
     #[serde(default = "default_recent_dirs_max", rename = "recent_local_dirs_max")]
@@ -45,7 +43,6 @@ impl Default for WorkspaceSettings {
     fn default() -> Self {
         Self {
             show_host_sidebar: default_show_host_sidebar(),
-            show_quick_commands: default_show_quick_commands(),
             recent_dirs: Vec::new(),
             recent_dirs_max: default_recent_dirs_max(),
             pinned_local_tabs: Vec::new(),
@@ -92,10 +89,6 @@ fn default_recent_dirs_max() -> usize {
 }
 
 fn default_show_host_sidebar() -> bool {
-    true
-}
-
-fn default_show_quick_commands() -> bool {
     true
 }
 

@@ -46,13 +46,13 @@ pub fn clamp_panel_width(value: f32, min_width: f32, max_width: f32) -> f32 {
     value.clamp(min_width, max_width)
 }
 
-/// 工作区主区可用宽度：`max(viewport - sidebar - quick, 0)`，与 `shell.rs:1652` 契约一致。
+/// 工作区主区可用宽度：`max(viewport - sidebar - other, 0)`。
 pub fn available_main_width(
     viewport_width: Pixels,
     sidebar_width: f32,
-    quick_width: f32,
+    other_width: f32,
 ) -> Pixels {
-    px((viewport_width.as_f32() - sidebar_width - quick_width).max(0.0))
+    px((viewport_width.as_f32() - sidebar_width - other_width).max(0.0))
 }
 
 /// 可拖拽的展开态侧边面板。
@@ -102,8 +102,7 @@ impl SidePanel {
     pub fn left(id: impl Into<ElementId>, width: Rc<Cell<f32>>, dragging: Rc<Cell<bool>>) -> Self {
         Self::new(id, PanelSide::Left, width, dragging)
     }
-
-    /// 右侧面板（Quick Commands）：默认 `bg(surface) + border`，手柄贴左边缘。
+    /// 右侧面板：默认 `bg(surface) + border`，手柄贴左边缘。
     pub fn right(id: impl Into<ElementId>, width: Rc<Cell<f32>>, dragging: Rc<Cell<bool>>) -> Self {
         Self::new(id, PanelSide::Right, width, dragging)
     }
@@ -217,7 +216,7 @@ impl Rail {
         Self::new(id, width, PanelSide::Left)
     }
 
-    /// 右侧 Rail（Quick Commands Rail）：`border_l_1`，默认 `bg(surface)`。
+    /// 右侧 Rail：`border_l_1`，默认 `bg(surface)`。
     pub fn right(id: impl Into<ElementId>, width: f32) -> Self {
         Self::new(id, width, PanelSide::Right)
     }

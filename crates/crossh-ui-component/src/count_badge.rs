@@ -7,7 +7,7 @@ use gpui::{
 
 use crate::theme;
 
-/// 紧凑的计数 pill(如分组标题的 host 数、quick commands 的进度计数)。
+/// 紧凑的计数 pill(如分组标题的 host 数)。
 ///
 /// 默认固定 `min_width`/`height` 为 18px,内容垂直水平居中;
 /// `unbounded()` 去掉固定尺寸,由 flex 按内容 + 内边距自适配。
