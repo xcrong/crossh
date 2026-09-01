@@ -45,18 +45,13 @@ impl Render for AppShell {
             .workspace
             .compose_visible_for_focused()
             .then(|| crate::features::workspace::compose_bar::render_compose_bar(self, window, cx));
-        let scratch_panel = self.scratch_visible.then(|| {
-            crate::features::workspace::scratch_bar::render_scratch_panel(self, window, cx)
-        });
         let main_column = div()
             .flex_1()
             .min_w_0()
             .min_h_0()
             .flex()
             .flex_col()
-            .relative()
             .child(main)
-            .children(scratch_panel)
             .children(compose_bar);
         let workspace = div()
             .flex_1()
@@ -108,6 +103,11 @@ impl Render for AppShell {
             );
         root = root.children(system_monitor_card);
         root = root.children(self.render_toaster());
+        if self.scratch_visible {
+            root = root.child(
+                crate::features::workspace::scratch_bar::render_scratch_panel(self, window, cx),
+            );
+        }
         if self.command_palette.is_some() {
             root = root.child(render_command_palette(self, window, cx));
         }

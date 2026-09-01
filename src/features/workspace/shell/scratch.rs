@@ -8,9 +8,9 @@ use gpui::{Context, Window};
 use super::AppShell;
 use crate::features::terminal::view::TerminalView as TerminalViewEntity;
 
-pub(crate) const SCRATCH_DEFAULT_HEIGHT: f32 = 220.0;
-pub(crate) const SCRATCH_MIN_HEIGHT: f32 = 120.0;
-pub(crate) const SCRATCH_MAX_HEIGHT: f32 = 400.0;
+pub(crate) const SCRATCH_DEFAULT_HEIGHT: f32 = 420.0;
+pub(crate) const SCRATCH_MIN_HEIGHT: f32 = 200.0;
+pub(crate) const SCRATCH_MAX_HEIGHT: f32 = 640.0;
 
 impl AppShell {
     pub(crate) fn toggle_scratch_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -98,8 +98,8 @@ mod tests {
         assert_eq!(clamp_scratch_height(0.), SCRATCH_DEFAULT_HEIGHT);
         assert_eq!(clamp_scratch_height(-10.), SCRATCH_DEFAULT_HEIGHT);
         assert_eq!(clamp_scratch_height(50.), SCRATCH_MIN_HEIGHT);
-        assert_eq!(clamp_scratch_height(220.), 220.);
-        assert_eq!(clamp_scratch_height(500.), SCRATCH_MAX_HEIGHT);
+        assert_eq!(clamp_scratch_height(420.), 420.);
+        assert_eq!(clamp_scratch_height(800.), SCRATCH_MAX_HEIGHT);
     }
 
     #[test]

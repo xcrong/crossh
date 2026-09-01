@@ -1,14 +1,10 @@
-use std::cell::Cell;
-use std::rc::Rc;
-
 use gpui::{
-    Bounds, Context, DispatchPhase, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, SharedString, Styled, Window, canvas, div,
-    px,
+    Context, InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString, Styled,
+    Window, div, px,
 };
 
 use crossh_ui::{icons, theme};
-use crossh_ui_component::{Button, ButtonSize, ButtonVariant};
+use crossh_ui_component::{Button, ButtonSize, ButtonVariant, SplitResizer};
 
 use crate::features::workspace::shell::AppShell;
 use crate::features::workspace::shell::scratch::{
@@ -16,10 +12,11 @@ use crate::features::workspace::shell::scratch::{
 };
 use crate::shared::i18n;
 
-/// 渲染 Scratch 抽屉：顶部可拖拽边框 + 标题栏 + 终端内容。
+/// 渲染 Scratch 悬浮层：复用 Command Palette 的 `absolute inset_0 + scrim + 居中卡片` 机制。
+/// 卡片复用 `SplitResizer(vertical)` 在底部可拖拽调高，尺寸较 Palette 更大以便执行任务。
 pub(crate) fn render_scratch_panel(
     shell: &mut AppShell,
-    _window: &Window,
+    window: &Window,
     cx: &mut Context<AppShell>,
 ) -> gpui::AnyElement {
     let Some(terminal) = shell.scratch_terminal.clone() else {
@@ -29,25 +26,32 @@ pub(crate) fn render_scratch_panel(
     let height_cell = shell.scratch_height.clone();
     let dragging = shell.scratch_dragging.clone();
 
+    // 响应式：窄窗口时卡片宽度自适应，避免超出视口
+    let viewport = window.viewport_size();
+    let card_width = (viewport.width.as_f32() - 48.0).clamp(360.0, 920.0);
+    // 高度已在 shell 侧 clamp 到 [MIN,MAX]，此处仅为视觉兜底
+    let _ = clamp_scratch_height(height);
+
     let header = div()
-        .h(px(28.))
+        .h(px(36.))
         .flex_shrink_0()
         .flex()
         .flex_row()
         .items_center()
         .justify_between()
-        .px_2()
+        .px_3()
         .bg(theme::surface())
         .border_b_1()
         .border_color(theme::border())
+        .rounded_t(px(theme::RADIUS_MD))
         .child(
             div()
                 .flex()
                 .items_center()
                 .gap_2()
-                .text_xs()
+                .text_sm()
                 .text_color(theme::muted_text())
-                .child(icons::icon(icons::IconName::Terminal, 12.).text_color(theme::accent()))
+                .child(icons::icon(icons::IconName::Terminal, 14.).text_color(theme::accent()))
                 .child(SharedString::from(i18n::text("scratch.title"))),
         )
         .child(
@@ -63,124 +67,62 @@ pub(crate) fn render_scratch_panel(
             ),
         );
 
-    let resizer = render_vertical_resizer(height_cell, dragging);
-
-    // resizer 置于最后绘制，确保顶部 8px 拖拽区在标题栏之上可命中；
-    // 原先作为首个子元素时，header（h28）会以绘制顺序覆盖 0-4px 重叠区，
-    // 仅余 -4-0 的 4px 可抓取，体感即“拖不动”。
-    // 悬浮覆盖：absolute 贴底，不挤压主终端（main 保持 size_full），拖拽高度仍由 bounds.bottom() - pointer_y 计算
-    div()
-        .id("scratch-panel")
-        .absolute()
-        .bottom_0()
-        .left_0()
-        .w_full()
+    // 卡片：宽度 920 以内自适应，高度由 scratch_height 驱动，底部可拖拽
+    let card = div()
+        .id("scratch-card")
+        .w(px(card_width))
         .h(px(height))
+        .relative()
         .flex()
         .flex_col()
-        .bg(theme::canvas())
-        .border_t_1()
+        .bg(theme::surface())
+        .border_1()
         .border_color(theme::border_strong())
-        .relative()
+        .rounded(px(theme::RADIUS_MD))
+        .shadow_lg()
+        .overflow_hidden()
         .child(header)
         .child(
             div()
                 .flex_1()
                 .min_h_0()
-                .p(px(4.))
+                .p(px(6.))
+                .bg(theme::canvas())
                 .child(terminal.into_any_element()),
         )
-        .child(resizer)
-        .into_any_element()
-}
+        .child(
+            SplitResizer::new("scratch-resizer", dragging.clone(), height_cell.clone())
+                .vertical()
+                .min_size(SCRATCH_MIN_HEIGHT)
+                .max_size(SCRATCH_MAX_HEIGHT)
+                .line(),
+        );
 
-fn render_vertical_resizer(height: Rc<Cell<f32>>, dragging: Rc<Cell<bool>>) -> impl IntoElement {
-    // 复用 SplitResizer 的经验证模式，但针对底部抽屉语义：
-    // - 背景 canvas 覆盖整个抽屉面板（absolute size_full），bounds.bottom() 为面板底边（固定贴底）
-    // - 拖拽时高度 = bottom - pointer_y，直观且无需 start_y/start_height 中间态
-    // - 失败根因是此前 backing 仅 h=8 的细条且分配全新 Rc/start_y 每帧，导致旧 handler 的
-    //   start_y 仍为 None，叠加 header 遮挡使命中区仅 4px，体感“拖不动”
-    let bounds: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::new(Cell::new(None));
-    let backing = canvas(
-        {
-            let bounds = bounds.clone();
-            move |canvas_bounds, _window, _cx| bounds.set(Some(canvas_bounds))
-        },
-        {
-            let bounds = bounds.clone();
-            let height = height.clone();
-            let dragging = dragging.clone();
-            move |_canvas_bounds, _state, window, _cx| {
-                window.on_mouse_event({
-                    let bounds = bounds.clone();
-                    let height = height.clone();
-                    let dragging = dragging.clone();
-                    move |event: &MouseMoveEvent, phase, window, _cx| {
-                        if !matches!(phase, DispatchPhase::Bubble) {
-                            return;
-                        }
-                        if !dragging.get() {
-                            return;
-                        }
-                        let Some(bounds) = bounds.get() else {
-                            return;
-                        };
-                        let new_height = (bounds.bottom().as_f32() - event.position.y.as_f32())
-                            .clamp(SCRATCH_MIN_HEIGHT, SCRATCH_MAX_HEIGHT);
-                        height.set(new_height);
-                        window.refresh();
-                    }
-                });
-                window.on_mouse_event({
-                    let dragging = dragging.clone();
-                    move |_event: &MouseUpEvent, phase, window, _cx| {
-                        if !matches!(phase, DispatchPhase::Bubble) {
-                            return;
-                        }
-                        if dragging.replace(false) {
-                            window.refresh();
-                        }
-                    }
-                });
-            }
-        },
-    )
-    .absolute()
-    .size_full();
-
-    let resizing = dragging.get();
-    let handle = div()
-        .id("scratch-resizer")
+    div()
+        .id("scratch-scrim")
         .absolute()
-        .top(px(-4.))
-        .left_0()
-        .w_full()
-        .h(px(8.))
-        .cursor_row_resize()
+        .inset_0()
         .flex()
-        .items_center()
+        .items_start()
         .justify_center()
+        .pt(px(72.))
+        .bg(theme::scrim())
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _ev, _window, cx| {
+                this.hide_scratch_terminal(cx);
+            }),
+        )
         .child(
             div()
-                .w(px(40.))
-                .h(px(3.))
-                .rounded(px(2.))
-                .bg(if resizing {
-                    theme::accent()
-                } else {
-                    theme::border()
-                })
-                .hover(|s| s.bg(theme::accent())),
+                .id("scratch-card-wrapper")
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|_, _ev, _window, cx| {
+                        cx.stop_propagation();
+                    }),
+                )
+                .child(card),
         )
-        .on_mouse_down(MouseButton::Left, {
-            let dragging = dragging.clone();
-            move |_event: &MouseDownEvent, window, _cx| {
-                dragging.set(true);
-                window.refresh();
-            }
-        });
-
-    let _ = clamp_scratch_height(height.get());
-    // 外层覆盖整个抽屉面板以提供稳定 bounds；视觉手柄仅在顶部 8px
-    div().absolute().size_full().child(backing).child(handle)
+        .into_any_element()
 }
