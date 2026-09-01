@@ -3,7 +3,7 @@
 use crossh_note::{Note, NoteStore};
 use crossh_ui::widgets::{ime_input_canvas, marked_text_span, text_caret, text_span, text_width};
 use crossh_ui::{icons, theme};
-use crossh_ui_component::{Button, ButtonSize, ButtonVariant};
+use crossh_ui_component::{BadgeTone, Button, ButtonSize, ButtonVariant, StatusBar, StatusMetric};
 use gpui::{
     AnyElement, App, AppContext, Bounds, ClipboardItem, Context, EntityInputHandler, FocusHandle,
     Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
@@ -251,6 +251,151 @@ impl NoteWindow {
         } else {
             Vec::new()
         }
+    }
+
+    fn is_dirty(&self) -> bool {
+        let content = self.content_state.value.trim().to_string();
+        let tags = normalize_tags(self.tags_state.value.trim());
+        if let Some(id) = self.selected_id
+            && let Some(note) = self.notes.iter().find(|n| n.id == id)
+        {
+            return content != note.content || tags != note.tags;
+        }
+        !content.is_empty() || !tags.is_empty()
+    }
+
+    fn is_save_disabled(&self) -> bool {
+        let content = self.content_state.value.trim();
+        if content.is_empty() {
+            return true;
+        }
+        !self.is_dirty()
+    }
+
+    fn status_title(&self) -> String {
+        if let Some(id) = self.selected_id
+            && let Some(note) = self.notes.iter().find(|n| n.id == id)
+        {
+            return note
+                .content
+                .lines()
+                .next()
+                .unwrap_or("空笔记")
+                .chars()
+                .take(30)
+                .collect();
+        }
+        if self.is_dirty() {
+            return "新建笔记".to_string();
+        }
+        if self.notes.is_empty() {
+            return "无笔记".to_string();
+        }
+        "未选择".to_string()
+    }
+
+    fn render_status_bar(&self, _window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let total = self.notes.len();
+        let pinned = self.notes.iter().filter(|n| n.pinned).count();
+        let tag_count = self.filtered_tags().len();
+        let char_count = self.content_state.value.chars().count();
+        let dirty = self.is_dirty();
+        let save_disabled = self.is_save_disabled();
+        let title = self.status_title();
+
+        let mut left = div()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(icons::icon(icons::IconName::FileText, 13.).text_color(theme::accent()))
+            .child(
+                div()
+                    .min_w_0()
+                    .max_w(px(240.))
+                    .truncate()
+                    .text_color(theme::text())
+                    .child(SharedString::from(title)),
+            );
+        if total > 0 {
+            left = left.child(StatusMetric::new(format!("{} 条", total)).tone(BadgeTone::Neutral));
+        }
+        if pinned > 0 {
+            left = left.child(StatusMetric::new(format!("📌 {}", pinned)).tone(BadgeTone::Accent));
+        }
+        if tag_count > 0 {
+            left = left
+                .child(StatusMetric::new(format!("{} 标签", tag_count)).tone(BadgeTone::Neutral));
+        }
+        if dirty {
+            left = left.child(StatusMetric::new("未保存").tone(BadgeTone::Warning));
+        }
+        if self.preview {
+            left = left.child(StatusMetric::new("预览").tone(BadgeTone::Info));
+        } else if char_count > 0 {
+            left = left
+                .child(StatusMetric::new(format!("{} 字", char_count)).tone(BadgeTone::Neutral));
+        }
+
+        let actions = div()
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(
+                Button::new("note-status-new")
+                    .size(ButtonSize::Icon(px(22.)))
+                    .variant(ButtonVariant::Ghost)
+                    .icon(icons::icon(icons::IconName::Plus, 13.).text_color(theme::muted_text()))
+                    .tooltip("新建笔记")
+                    .on_click(cx.listener(|this, _, window, cx| this.new_note(window, cx))),
+            )
+            .child(
+                Button::new("note-status-save")
+                    .size(ButtonSize::Icon(px(22.)))
+                    .variant(ButtonVariant::Ghost)
+                    .icon(icons::icon(icons::IconName::Save, 13.).text_color(
+                        if dirty && !save_disabled {
+                            theme::accent()
+                        } else {
+                            theme::muted_text()
+                        },
+                    ))
+                    .tooltip("保存")
+                    .disabled(save_disabled)
+                    .on_click(cx.listener(|this, _, window, cx| this.save_current(window, cx))),
+            )
+            .child(
+                Button::new("note-status-delete")
+                    .size(ButtonSize::Icon(px(22.)))
+                    .variant(ButtonVariant::Ghost)
+                    .icon(icons::icon(icons::IconName::Trash, 13.).text_color(theme::muted_text()))
+                    .tooltip("删除")
+                    .disabled(self.selected_id.is_none())
+                    .on_click(cx.listener(|this, _, window, cx| this.delete_current(window, cx))),
+            )
+            .child(
+                Button::new("note-status-preview")
+                    .size(ButtonSize::Icon(px(22.)))
+                    .variant(ButtonVariant::Ghost)
+                    .selected(self.preview)
+                    .icon(if self.preview {
+                        icons::icon(icons::IconName::Pencil, 13.).text_color(if self.preview {
+                            theme::accent()
+                        } else {
+                            theme::muted_text()
+                        })
+                    } else {
+                        icons::icon(icons::IconName::FileText, 13.).text_color(theme::muted_text())
+                    })
+                    .tooltip(if self.preview { "编辑" } else { "预览" })
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_preview(window, cx))),
+            );
+
+        StatusBar::new("note-status-bar")
+            .child(left)
+            .child(actions)
+            .into_any_element()
     }
 
     fn handle_search_key(
@@ -683,8 +828,6 @@ impl gpui::Render for NoteWindow {
         let content_state = self.content_state.clone();
         let tags = self.filtered_tags();
         let notes = self.notes.clone();
-        let selected = self.selected_id;
-        let preview = self.preview;
 
         let header = div()
             .flex()
@@ -700,36 +843,7 @@ impl gpui::Render for NoteWindow {
                 self.search_focus.clone(),
                 window,
                 cx,
-            ))
-            .child(
-                Button::new("note-new")
-                    .size(ButtonSize::Small)
-                    .variant(ButtonVariant::Primary)
-                    .label("新建")
-                    .on_click(cx.listener(|this, _, window, cx| this.new_note(window, cx))),
-            )
-            .child(
-                Button::new("note-save")
-                    .size(ButtonSize::Small)
-                    .variant(ButtonVariant::Secondary)
-                    .label("保存")
-                    .on_click(cx.listener(|this, _, window, cx| this.save_current(window, cx))),
-            )
-            .child(
-                Button::new("note-delete")
-                    .size(ButtonSize::Small)
-                    .variant(ButtonVariant::Danger)
-                    .label("删除")
-                    .disabled(selected.is_none())
-                    .on_click(cx.listener(|this, _, window, cx| this.delete_current(window, cx))),
-            )
-            .child(
-                Button::new("note-preview")
-                    .size(ButtonSize::Small)
-                    .variant(ButtonVariant::Ghost)
-                    .label(if preview { "编辑" } else { "预览" })
-                    .on_click(cx.listener(|this, _, window, cx| this.toggle_preview(window, cx))),
-            );
+            ));
 
         let list = div()
             .w(px(260.))
@@ -753,7 +867,7 @@ impl gpui::Render for NoteWindow {
                     .overflow_y_scroll()
                     .track_scroll(&self.list_scroll)
                     .children(notes.iter().map(|note| {
-                        let is_selected = Some(note.id) == selected;
+                        let is_selected = Some(note.id) == self.selected_id;
                         let id = note.id;
                         let pin_label = if note.pinned { "📌 " } else { "" };
                         let preview_text = note
@@ -870,7 +984,7 @@ impl gpui::Render for NoteWindow {
                     )),
             );
 
-        let right: AnyElement = if preview {
+        let right: AnyElement = if self.preview {
             let md = self.content_state.value.clone();
             div()
                 .id("note-preview")
@@ -940,6 +1054,7 @@ impl gpui::Render for NoteWindow {
             .children(linux_titlebar)
             .child(header)
             .child(body)
+            .child(self.render_status_bar(window, cx))
     }
 }
 
@@ -1675,7 +1790,6 @@ mod tests {
                 if note_window.content_state.anchor == Some(note_window.content_state.cursor) {
                     note_window.content_state.anchor = None;
                 }
-                // 验证 copy 仍可用
                 let mut st = note_window.content_state.clone();
                 st.select_all();
                 let copy = EditingKeystroke {
@@ -1688,6 +1802,79 @@ mod tests {
                 let r = handle_text_editing_key(&mut st, &copy, None);
                 assert_eq!(r.copy_text.as_deref(), Some("first"));
                 assert_ne!(n1.id, n2.id);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn note_status_dirty_and_save_disabled(cx: &mut TestAppContext) {
+        let window = cx.add_window(NoteWindow::new);
+        cx.run_until_parked();
+        window
+            .update(cx, |note_window, _window, _cx| {
+                // 空态：无选中、无内容 => 不脏、保存禁用
+                note_window.notes = Vec::new();
+                note_window.selected_id = None;
+                note_window.content_state = TextEditingState::new(String::new());
+                note_window.tags_state = TextEditingState::new(String::new());
+                assert!(!note_window.is_dirty());
+                assert!(note_window.is_save_disabled());
+                assert_eq!(note_window.status_title(), "无笔记");
+
+                // 新建草稿：有内容 => 脏、可保存
+                note_window.content_state = TextEditingState::new("hello".to_string());
+                assert!(note_window.is_dirty());
+                assert!(!note_window.is_save_disabled());
+                assert_eq!(note_window.status_title(), "新建笔记");
+
+                // 选中态未修改 => 不脏、保存禁用
+                let note = Note {
+                    id: 1,
+                    content: "hello".to_string(),
+                    tags: "a,b".to_string(),
+                    pinned: false,
+                    created_at: 0,
+                    updated_at: 0,
+                };
+                note_window.notes = vec![note.clone()];
+                note_window.selected_id = Some(note.id);
+                note_window.content_state = TextEditingState::new(note.content.clone());
+                note_window.tags_state = TextEditingState::new(note.tags.clone());
+                assert!(!note_window.is_dirty());
+                assert!(note_window.is_save_disabled());
+                assert_eq!(note_window.status_title(), "hello");
+
+                // 修改内容 => 脏
+                note_window.content_state = TextEditingState::new("hello world".to_string());
+                assert!(note_window.is_dirty());
+                assert!(!note_window.is_save_disabled());
+
+                // 标签去重归一后相等 => 不脏
+                note_window.content_state = TextEditingState::new(note.content.clone());
+                note_window.tags_state = TextEditingState::new("a, b, a".to_string());
+                assert!(!note_window.is_dirty());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn note_status_title_fallbacks(cx: &mut TestAppContext) {
+        let window = cx.add_window(NoteWindow::new);
+        cx.run_until_parked();
+        window
+            .update(cx, |note_window, _window, _cx| {
+                note_window.notes = vec![Note {
+                    id: 1,
+                    content: "".to_string(),
+                    tags: "".to_string(),
+                    pinned: false,
+                    created_at: 0,
+                    updated_at: 0,
+                }];
+                note_window.selected_id = None;
+                note_window.content_state = TextEditingState::new(String::new());
+                note_window.tags_state = TextEditingState::new(String::new());
+                assert_eq!(note_window.status_title(), "未选择");
             })
             .unwrap();
     }
