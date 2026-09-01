@@ -32,7 +32,6 @@ const NOTE_LINE_HEIGHT_F32: f32 = 18.;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ActiveField {
     Search,
-    Tags,
     Content,
 }
 
@@ -43,15 +42,12 @@ pub struct NoteWindow {
     preview: bool,
     search_state: TextEditingState,
     search_focus: FocusHandle,
-    tags_state: TextEditingState,
-    tags_focus: FocusHandle,
     content_state: TextEditingState,
     content_focus: FocusHandle,
     content_scroll: ScrollHandle,
     list_scroll: ScrollHandle,
     window_focus: FocusHandle,
     search_bounds: Option<Bounds<Pixels>>,
-    tags_bounds: Option<Bounds<Pixels>>,
     content_bounds: Option<Bounds<Pixels>>,
     content_dragging: bool,
 }
@@ -66,15 +62,12 @@ impl NoteWindow {
             preview: false,
             search_state: TextEditingState::new(String::new()),
             search_focus: cx.focus_handle(),
-            tags_state: TextEditingState::new(String::new()),
-            tags_focus: cx.focus_handle(),
             content_state: TextEditingState::new(String::new()),
             content_focus: cx.focus_handle(),
             content_scroll: ScrollHandle::new(),
             list_scroll: ScrollHandle::new(),
             window_focus: cx.focus_handle(),
             search_bounds: None,
-            tags_bounds: None,
             content_bounds: None,
             content_dragging: false,
         };
@@ -95,8 +88,6 @@ impl NoteWindow {
     fn active_field(&self, window: &Window) -> Option<ActiveField> {
         if self.search_focus.is_focused(window) {
             Some(ActiveField::Search)
-        } else if self.tags_focus.is_focused(window) {
-            Some(ActiveField::Tags)
         } else if self.content_focus.is_focused(window) {
             Some(ActiveField::Content)
         } else {
@@ -105,7 +96,7 @@ impl NoteWindow {
     }
 
     fn is_draft_dirty(&self) -> bool {
-        !self.content_state.value.trim().is_empty() || !self.tags_state.value.trim().is_empty()
+        !self.content_state.value.trim().is_empty()
     }
 
     fn reload_notes(&mut self, cx: &mut Context<Self>) {
@@ -143,7 +134,6 @@ impl NoteWindow {
             let first = self.notes[0].clone();
             self.select_note(first.id, cx);
         } else if self.selected_id.is_none() {
-            self.tags_state = TextEditingState::new(String::new());
             self.content_state = TextEditingState::new(String::new());
         }
         cx.notify();
@@ -152,7 +142,6 @@ impl NoteWindow {
     fn select_note(&mut self, id: i64, cx: &mut Context<Self>) {
         self.selected_id = Some(id);
         if let Some(note) = self.notes.iter().find(|n| n.id == id).cloned() {
-            self.tags_state = TextEditingState::new(note.tags.clone());
             self.content_state = TextEditingState::new(note.content.clone());
             self.preview = false;
             self.content_dragging = false;
@@ -173,15 +162,13 @@ impl NoteWindow {
         if content.is_empty() {
             return;
         }
-        let tags = normalize_tags(self.tags_state.value.trim());
         if let Some(id) = self.selected_id {
             if let Some(note) = self.notes.iter().find(|n| n.id == id)
                 && note.content == content
-                && note.tags == tags
             {
                 return;
             }
-            match store.update(id, &content, &tags) {
+            match store.update(id, &content) {
                 Ok(_) => {
                     self.reload_notes(cx);
                     // 保存后保持编辑态，便于继续复制/编辑
@@ -190,7 +177,7 @@ impl NoteWindow {
                 Err(e) => log::warn!("note update failed: {}", e),
             }
         } else {
-            match store.create(&content, &tags) {
+            match store.create(&content) {
                 Ok(note) => {
                     self.selected_id = Some(note.id);
                     self.reload_notes(cx);
@@ -203,7 +190,6 @@ impl NoteWindow {
 
     fn new_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.selected_id = None;
-        self.tags_state = TextEditingState::new(String::new());
         self.content_state = TextEditingState::new(String::new());
         self.preview = false;
         self.content_dragging = false;
@@ -245,23 +231,14 @@ impl NoteWindow {
         }
     }
 
-    fn filtered_tags(&self) -> Vec<String> {
-        if let Some(store) = &self.store {
-            store.all_tags().unwrap_or_default()
-        } else {
-            Vec::new()
-        }
-    }
-
     fn is_dirty(&self) -> bool {
         let content = self.content_state.value.trim().to_string();
-        let tags = normalize_tags(self.tags_state.value.trim());
         if let Some(id) = self.selected_id
             && let Some(note) = self.notes.iter().find(|n| n.id == id)
         {
-            return content != note.content || tags != note.tags;
+            return content != note.content;
         }
-        !content.is_empty() || !tags.is_empty()
+        !content.is_empty()
     }
 
     fn is_save_disabled(&self) -> bool {
@@ -297,7 +274,6 @@ impl NoteWindow {
     fn render_status_bar(&self, _window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let total = self.notes.len();
         let pinned = self.notes.iter().filter(|n| n.pinned).count();
-        let tag_count = self.filtered_tags().len();
         let char_count = self.content_state.value.chars().count();
         let dirty = self.is_dirty();
         let save_disabled = self.is_save_disabled();
@@ -322,10 +298,6 @@ impl NoteWindow {
         }
         if pinned > 0 {
             left = left.child(StatusMetric::new(format!("📌 {}", pinned)).tone(BadgeTone::Accent));
-        }
-        if tag_count > 0 {
-            left = left
-                .child(StatusMetric::new(format!("{} 标签", tag_count)).tone(BadgeTone::Neutral));
         }
         if dirty {
             left = left.child(StatusMetric::new("未保存").tone(BadgeTone::Warning));
@@ -451,43 +423,6 @@ impl NoteWindow {
         }
     }
 
-    fn handle_tags_key(
-        &mut self,
-        event: &KeyDownEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let ks = event.keystroke.clone();
-        let key_lower = ks.key.to_lowercase();
-        // 单行标签输入：上下键不消费，保留给父容器或焦点遍历
-        if matches!(key_lower.as_str(), "up" | "arrowup" | "down" | "arrowdown") {
-            return;
-        }
-        let editing_ks = EditingKeystroke {
-            key: ks.key.clone(),
-            key_char: ks.key_char.clone(),
-            control: ks.modifiers.control,
-            platform: ks.modifiers.platform,
-            shift: ks.modifiers.shift,
-        };
-        let paste_text = if (editing_ks.control || editing_ks.platform)
-            && editing_ks.key.to_lowercase() == "v"
-        {
-            cx.read_from_clipboard()
-                .and_then(|item| item.text().map(|s| s.to_string()))
-        } else {
-            None
-        };
-        let result =
-            handle_text_editing_key(&mut self.tags_state, &editing_ks, paste_text.as_deref());
-        if let Some(t) = result.copy_text {
-            cx.write_to_clipboard(ClipboardItem::new_string(t));
-        }
-        if result.handled {
-            cx.notify();
-        }
-    }
-
     fn handle_content_key(
         &mut self,
         event: &KeyDownEvent,
@@ -544,21 +479,6 @@ impl NoteWindow {
     }
 }
 
-fn normalize_tags(raw: &str) -> String {
-    let mut out = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    for part in raw.split(',') {
-        let t = part.trim();
-        if t.is_empty() {
-            continue;
-        }
-        if seen.insert(t.to_string()) {
-            out.push(t.to_string());
-        }
-    }
-    out.join(",")
-}
-
 fn line_starts(text: &str) -> Vec<usize> {
     let mut starts = vec![0];
     for (i, ch) in text.char_indices() {
@@ -606,7 +526,6 @@ impl EntityInputHandler for NoteWindow {
         let field = self.active_field(window)?;
         let state = match field {
             ActiveField::Search => &self.search_state,
-            ActiveField::Tags => &self.tags_state,
             ActiveField::Content => &self.content_state,
         };
         Some(utf16_slice(&state.value, range))
@@ -621,7 +540,6 @@ impl EntityInputHandler for NoteWindow {
         let field = self.active_field(window)?;
         let state = match field {
             ActiveField::Search => &self.search_state,
-            ActiveField::Tags => &self.tags_state,
             ActiveField::Content => &self.content_state,
         };
         let sel = editing_selected_range(state);
@@ -639,7 +557,6 @@ impl EntityInputHandler for NoteWindow {
         let field = self.active_field(window)?;
         let state = match field {
             ActiveField::Search => &self.search_state,
-            ActiveField::Tags => &self.tags_state,
             ActiveField::Content => &self.content_state,
         };
         editing_marked_range(state)
@@ -651,7 +568,6 @@ impl EntityInputHandler for NoteWindow {
         };
         match field {
             ActiveField::Search => editing_unmark(&mut self.search_state),
-            ActiveField::Tags => editing_unmark(&mut self.tags_state),
             ActiveField::Content => editing_unmark(&mut self.content_state),
         }
         window.invalidate_character_coordinates();
@@ -670,7 +586,6 @@ impl EntityInputHandler for NoteWindow {
         };
         let state = match field {
             ActiveField::Search => &mut self.search_state,
-            ActiveField::Tags => &mut self.tags_state,
             ActiveField::Content => &mut self.content_state,
         };
         editing_replace(state, replacement_range, text);
@@ -694,7 +609,6 @@ impl EntityInputHandler for NoteWindow {
         };
         let state = match field {
             ActiveField::Search => &mut self.search_state,
-            ActiveField::Tags => &mut self.tags_state,
             ActiveField::Content => &mut self.content_state,
         };
         editing_mark_text(state, new_text);
@@ -714,19 +628,6 @@ impl EntityInputHandler for NoteWindow {
             ActiveField::Search => {
                 self.search_bounds = Some(element_bounds);
                 let state = &self.search_state;
-                let cursor = byte_index_for_utf16(&state.value, range.start);
-                Some(crossh_ui::widgets::ime_caret_bounds(
-                    window,
-                    element_bounds,
-                    &state.value[..cursor],
-                    NOTE_FONT_SIZE,
-                    NOTE_INPUT_PADDING,
-                    px(0.),
-                ))
-            }
-            ActiveField::Tags => {
-                self.tags_bounds = Some(element_bounds);
-                let state = &self.tags_state;
                 let cursor = byte_index_for_utf16(&state.value, range.start);
                 Some(crossh_ui::widgets::ime_caret_bounds(
                     window,
@@ -773,13 +674,6 @@ impl EntityInputHandler for NoteWindow {
                 let best_byte = closest_byte_for_x(window, &state.value, relative_x);
                 Some(utf16_offset_for_byte(&state.value, best_byte))
             }
-            ActiveField::Tags => {
-                let bounds = self.tags_bounds?;
-                let state = &self.tags_state;
-                let relative_x = point.x - bounds.origin.x - NOTE_INPUT_PADDING;
-                let best_byte = closest_byte_for_x(window, &state.value, relative_x);
-                Some(utf16_offset_for_byte(&state.value, best_byte))
-            }
             ActiveField::Content => {
                 let bounds = self.content_bounds?;
                 let state = &self.content_state;
@@ -814,7 +708,6 @@ impl EntityInputHandler for NoteWindow {
         let field = self.active_field(window)?;
         let state = match field {
             ActiveField::Search => &self.search_state,
-            ActiveField::Tags => &self.tags_state,
             ActiveField::Content => &self.content_state,
         };
         Some(utf16_len(&state.value))
@@ -824,9 +717,7 @@ impl EntityInputHandler for NoteWindow {
 impl gpui::Render for NoteWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let search_state = self.search_state.clone();
-        let tags_state = self.tags_state.clone();
         let content_state = self.content_state.clone();
-        let tags = self.filtered_tags();
         let notes = self.notes.clone();
 
         let header = div()
@@ -941,47 +832,7 @@ impl gpui::Render for NoteWindow {
                                             })),
                                     ),
                             )
-                            .child(div().text_xs().text_color(theme::muted_text()).child(
-                                if note.tags.is_empty() {
-                                    "无标签".to_string()
-                                } else {
-                                    note.tags.clone()
-                                },
-                            ))
                     })),
-            )
-            .child(
-                div()
-                    .p_2()
-                    .border_t_1()
-                    .border_color(theme::border())
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::muted_text())
-                            .child("标签"),
-                    )
-                    .child(div().flex().flex_row().flex_wrap().gap_1().mt_1().children(
-                        tags.iter().map(|t| {
-                            let tag = t.clone();
-                            div()
-                                .id(SharedString::from(tag.clone()))
-                                .px_2()
-                                .py_1()
-                                .rounded(px(theme::RADIUS_SM))
-                                .bg(theme::canvas())
-                                .border_1()
-                                .border_color(theme::border())
-                                .text_xs()
-                                .text_color(theme::text())
-                                .child(tag.clone())
-                                .cursor_pointer()
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.search_state = TextEditingState::new(tag.clone());
-                                    this.reload_notes(cx);
-                                }))
-                        }),
-                    )),
             );
 
         let right: AnyElement = if self.preview {
@@ -1003,19 +854,10 @@ impl gpui::Render for NoteWindow {
                 .h_full()
                 .overflow_hidden()
                 .p_2()
-                .flex()
-                .flex_col()
-                .gap_2()
                 .child(render_content_editor(
                     content_state,
                     self.content_focus.clone(),
                     self.content_scroll.clone(),
-                    window,
-                    cx,
-                ))
-                .child(render_tags_field(
-                    tags_state,
-                    self.tags_focus.clone(),
                     window,
                     cx,
                 ))
@@ -1129,119 +971,6 @@ fn render_search_field(
                 div().into_any_element()
             })
             .child(div().text_color(theme::muted_text()).child("搜索..."))
-            .into_any_element()
-    } else {
-        let (start, end) = if cursor <= anchor {
-            (cursor, anchor)
-        } else {
-            (anchor, cursor)
-        };
-        let before = &value[..start.min(value.len())];
-        let selected = &value[start.min(value.len())..end.min(value.len())];
-        let after = &value[end.min(value.len())..];
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .child(text_span(before.to_string()))
-            .child(if selected.is_empty() && ime_marked.is_empty() {
-                div().into_any_element()
-            } else if ime_marked.is_empty() {
-                div()
-                    .bg(theme::accent_soft())
-                    .child(text_span(selected.to_string()))
-                    .into_any_element()
-            } else {
-                marked_text_span(ime_marked.clone()).into_any_element()
-            })
-            .child(if focused {
-                text_caret(NOTE_FONT_SIZE).into_any_element()
-            } else {
-                div().into_any_element()
-            })
-            .child(text_span(after.to_string()))
-            .into_any_element()
-    };
-
-    input
-        .child(content)
-        .child(ime_input_canvas(focus.clone(), cx.entity()))
-        .into_any_element()
-}
-fn render_tags_field(
-    state: TextEditingState,
-    focus: FocusHandle,
-    window: &Window,
-    cx: &mut Context<NoteWindow>,
-) -> AnyElement {
-    let focused = focus.is_focused(window);
-    let value = state.value.clone();
-    let cursor = state.cursor;
-    let anchor = state.anchor.unwrap_or(cursor);
-    let ime_marked = state.ime_marked_text.clone();
-
-    let input = div()
-        .id("note-tags")
-        .w_full()
-        .p_2()
-        .bg(theme::canvas())
-        .border_1()
-        .border_color(if focused {
-            theme::accent()
-        } else {
-            theme::border()
-        })
-        .rounded(px(theme::RADIUS_SM))
-        .text_sm()
-        .text_color(theme::text())
-        .track_focus(&focus)
-        .tab_stop(true)
-        .cursor_text()
-        .on_click({
-            let focus = focus.clone();
-            move |_, window: &mut Window, cx: &mut App| window.focus(&focus, cx)
-        })
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                window.focus(&this.tags_focus, cx);
-                if let Some(bounds) = this.tags_bounds {
-                    let state = &mut this.tags_state;
-                    let extend = event.modifiers.shift;
-                    if extend && state.anchor.is_none() {
-                        state.anchor = Some(state.cursor);
-                    } else if !extend {
-                        state.anchor = None;
-                    }
-                    let relative_x = event.position.x - bounds.origin.x - NOTE_INPUT_PADDING;
-                    let new_cursor = closest_byte_for_x(window, &state.value, relative_x);
-                    state.cursor = new_cursor;
-                    if !extend {
-                        state.anchor = None;
-                    }
-                    state.clear_composition();
-                    cx.notify();
-                    window.invalidate_character_coordinates();
-                }
-                cx.stop_propagation();
-            }),
-        )
-        .on_key_down(cx.listener(|this, e, window, cx| this.handle_tags_key(e, window, cx)));
-    let content: AnyElement = if value.is_empty() && ime_marked.is_empty() {
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .child(if focused {
-                text_caret(NOTE_FONT_SIZE).into_any_element()
-            } else {
-                div().into_any_element()
-            })
-            .child(
-                div()
-                    .text_color(theme::muted_text())
-                    .child("标签, 逗号分隔"),
-            )
             .into_any_element()
     } else {
         let (start, end) = if cursor <= anchor {
@@ -1702,7 +1431,6 @@ mod tests {
                 let historic = Note {
                     id: 1,
                     content: "hello 历史笔记".to_string(),
-                    tags: "tag1".to_string(),
                     pinned: false,
                     created_at: 0,
                     updated_at: 0,
@@ -1755,7 +1483,6 @@ mod tests {
                 let n1 = Note {
                     id: 1,
                     content: "first".to_string(),
-                    tags: "".to_string(),
                     pinned: false,
                     created_at: 0,
                     updated_at: 0,
@@ -1763,7 +1490,6 @@ mod tests {
                 let n2 = Note {
                     id: 2,
                     content: "second".to_string(),
-                    tags: "".to_string(),
                     pinned: false,
                     created_at: 0,
                     updated_at: 1,
@@ -1816,7 +1542,6 @@ mod tests {
                 note_window.notes = Vec::new();
                 note_window.selected_id = None;
                 note_window.content_state = TextEditingState::new(String::new());
-                note_window.tags_state = TextEditingState::new(String::new());
                 assert!(!note_window.is_dirty());
                 assert!(note_window.is_save_disabled());
                 assert_eq!(note_window.status_title(), "无笔记");
@@ -1831,7 +1556,6 @@ mod tests {
                 let note = Note {
                     id: 1,
                     content: "hello".to_string(),
-                    tags: "a,b".to_string(),
                     pinned: false,
                     created_at: 0,
                     updated_at: 0,
@@ -1839,7 +1563,6 @@ mod tests {
                 note_window.notes = vec![note.clone()];
                 note_window.selected_id = Some(note.id);
                 note_window.content_state = TextEditingState::new(note.content.clone());
-                note_window.tags_state = TextEditingState::new(note.tags.clone());
                 assert!(!note_window.is_dirty());
                 assert!(note_window.is_save_disabled());
                 assert_eq!(note_window.status_title(), "hello");
@@ -1848,11 +1571,6 @@ mod tests {
                 note_window.content_state = TextEditingState::new("hello world".to_string());
                 assert!(note_window.is_dirty());
                 assert!(!note_window.is_save_disabled());
-
-                // 标签去重归一后相等 => 不脏
-                note_window.content_state = TextEditingState::new(note.content.clone());
-                note_window.tags_state = TextEditingState::new("a, b, a".to_string());
-                assert!(!note_window.is_dirty());
             })
             .unwrap();
     }
@@ -1866,14 +1584,12 @@ mod tests {
                 note_window.notes = vec![Note {
                     id: 1,
                     content: "".to_string(),
-                    tags: "".to_string(),
                     pinned: false,
                     created_at: 0,
                     updated_at: 0,
                 }];
                 note_window.selected_id = None;
                 note_window.content_state = TextEditingState::new(String::new());
-                note_window.tags_state = TextEditingState::new(String::new());
                 assert_eq!(note_window.status_title(), "未选择");
             })
             .unwrap();

@@ -1,4 +1,4 @@
-//! 纯逻辑笔记存储：SQLite + FTS5 + 标签，零 gpui 依赖
+//! 纯逻辑笔记存储：SQLite + FTS5，零 gpui 依赖
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -6,13 +6,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
 pub const MAX_CONTENT_BYTES: usize = 8 * 1024;
-pub const MAX_TAGS_BYTES: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Note {
     pub id: i64,
     pub content: String,
-    pub tags: String,
     pub pinned: bool,
     pub created_at: i64,
     pub updated_at: i64,
@@ -204,17 +202,16 @@ impl NoteStore {
     pub fn list(&self) -> Result<Vec<Note>, String> {
         let conn = self.conn.lock();
         let mut stmt = conn
-            .prepare("SELECT id, content, tags, pinned, created_at, updated_at FROM notes ORDER BY pinned DESC, updated_at DESC, id DESC")
+            .prepare("SELECT id, content, pinned, created_at, updated_at FROM notes ORDER BY pinned DESC, updated_at DESC, id DESC")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(Note {
                     id: row.get(0)?,
                     content: row.get(1)?,
-                    tags: row.get(2).unwrap_or_default(),
-                    pinned: row.get::<_, i64>(3)? != 0,
-                    created_at: row.get(4)?,
-                    updated_at: row.get(5)?,
+                    pinned: row.get::<_, i64>(2)? != 0,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -244,7 +241,7 @@ impl NoteStore {
         let escaped = query.replace('"', "\"\"");
         // 使用 FTS5 的简单匹配：直接用用户输入，失败则抛错回退
         let conn = self.conn.lock();
-        let sql = "SELECT n.id, n.content, n.tags, n.pinned, n.created_at, n.updated_at FROM notes n JOIN notes_fts f ON n.id = f.rowid WHERE notes_fts MATCH ? ORDER BY n.pinned DESC, n.updated_at DESC, n.id DESC";
+        let sql = "SELECT n.id, n.content, n.pinned, n.created_at, n.updated_at FROM notes n JOIN notes_fts f ON n.id = f.rowid WHERE notes_fts MATCH ? ORDER BY n.pinned DESC, n.updated_at DESC, n.id DESC";
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
         // 构造 MATCH 表达式：对空格分词，用 OR 连接以实现宽松匹配
         let match_expr = escaped
@@ -257,10 +254,9 @@ impl NoteStore {
                 Ok(Note {
                     id: row.get(0)?,
                     content: row.get(1)?,
-                    tags: row.get(2).unwrap_or_default(),
-                    pinned: row.get::<_, i64>(3)? != 0,
-                    created_at: row.get(4)?,
-                    updated_at: row.get(5)?,
+                    pinned: row.get::<_, i64>(2)? != 0,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -277,17 +273,16 @@ impl NoteStore {
         let esc = query.replace('%', "\\%").replace('_', "\\_");
         let pat = format!("%{}%", esc);
         let mut stmt = conn
-            .prepare("SELECT id, content, tags, pinned, created_at, updated_at FROM notes WHERE content LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\' ORDER BY pinned DESC, updated_at DESC, id DESC")
+            .prepare("SELECT id, content, pinned, created_at, updated_at FROM notes WHERE content LIKE ? ESCAPE '\\' ORDER BY pinned DESC, updated_at DESC, id DESC")
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![pat, pat], |row| {
+            .query_map(params![pat], |row| {
                 Ok(Note {
                     id: row.get(0)?,
                     content: row.get(1)?,
-                    tags: row.get(2).unwrap_or_default(),
-                    pinned: row.get::<_, i64>(3)? != 0,
-                    created_at: row.get(4)?,
-                    updated_at: row.get(5)?,
+                    pinned: row.get::<_, i64>(2)? != 0,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -298,64 +293,56 @@ impl NoteStore {
         Ok(out)
     }
 
-    pub fn create(&self, content: &str, tags: &str) -> Result<Note, String> {
+    pub fn create(&self, content: &str) -> Result<Note, String> {
         let content = truncate_bytes(content.trim(), MAX_CONTENT_BYTES);
         if content.is_empty() {
             return Err("empty_content".to_string());
         }
-        let tags = truncate_bytes(tags.trim(), MAX_TAGS_BYTES);
-        // 规范化标签：逗号分隔，去重，去空，trim
-        let tags = normalize_tags(&tags);
         let now = now_ts();
         let conn = self.conn.lock();
+        // 兼容旧库的 tags 列：新笔记 tags 始终置空
         conn.execute(
-            "INSERT INTO notes (content, tags, pinned, created_at, updated_at) VALUES (?1, ?2, 0, ?3, ?4)",
-            params![content, tags, now, now],
+            "INSERT INTO notes (content, tags, pinned, created_at, updated_at) VALUES (?1, '', 0, ?2, ?3)",
+            params![content, now, now],
         )
         .map_err(|e| e.to_string())?;
         let id = conn.last_insert_rowid();
         Ok(Note {
             id,
             content,
-            tags,
             pinned: false,
             created_at: now,
             updated_at: now,
         })
     }
 
-    pub fn update(&self, id: i64, content: &str, tags: &str) -> Result<Note, String> {
+    pub fn update(&self, id: i64, content: &str) -> Result<Note, String> {
         let content = truncate_bytes(content.trim(), MAX_CONTENT_BYTES);
         if content.is_empty() {
             return Err("empty_content".to_string());
         }
-        let tags = truncate_bytes(tags.trim(), MAX_TAGS_BYTES);
-        let tags = normalize_tags(&tags);
         let now = now_ts();
         let conn = self.conn.lock();
         let changed = conn
             .execute(
-                "UPDATE notes SET content=?1, tags=?2, updated_at=?3 WHERE id=?4",
-                params![content, tags, now, id],
+                "UPDATE notes SET content=?1, updated_at=?2 WHERE id=?3",
+                params![content, now, id],
             )
             .map_err(|e| e.to_string())?;
         if changed == 0 {
             return Err("not_found".to_string());
         }
         let mut stmt = conn
-            .prepare(
-                "SELECT id, content, tags, pinned, created_at, updated_at FROM notes WHERE id=?1",
-            )
+            .prepare("SELECT id, content, pinned, created_at, updated_at FROM notes WHERE id=?1")
             .map_err(|e| e.to_string())?;
         let note = stmt
             .query_row(params![id], |row| {
                 Ok(Note {
                     id: row.get(0)?,
                     content: row.get(1)?,
-                    tags: row.get(2).unwrap_or_default(),
-                    pinned: row.get::<_, i64>(3)? != 0,
-                    created_at: row.get(4)?,
-                    updated_at: row.get(5)?,
+                    pinned: row.get::<_, i64>(2)? != 0,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -394,61 +381,22 @@ impl NoteStore {
     pub fn get(&self, id: i64) -> Result<Option<Note>, String> {
         let conn = self.conn.lock();
         let mut stmt = conn
-            .prepare(
-                "SELECT id, content, tags, pinned, created_at, updated_at FROM notes WHERE id=?1",
-            )
+            .prepare("SELECT id, content, pinned, created_at, updated_at FROM notes WHERE id=?1")
             .map_err(|e| e.to_string())?;
         let res = stmt
             .query_row(params![id], |row| {
                 Ok(Note {
                     id: row.get(0)?,
                     content: row.get(1)?,
-                    tags: row.get(2).unwrap_or_default(),
-                    pinned: row.get::<_, i64>(3)? != 0,
-                    created_at: row.get(4)?,
-                    updated_at: row.get(5)?,
+                    pinned: row.get::<_, i64>(2)? != 0,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
                 })
             })
             .optional()
             .map_err(|e| e.to_string())?;
         Ok(res)
     }
-
-    pub fn all_tags(&self) -> Result<Vec<String>, String> {
-        let conn = self.conn.lock();
-        let mut stmt = conn
-            .prepare("SELECT tags FROM notes")
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(|e| e.to_string())?;
-        let mut set = std::collections::BTreeSet::new();
-        for r in rows {
-            let tags = r.map_err(|e| e.to_string())?;
-            for t in tags.split(',') {
-                let t = t.trim();
-                if !t.is_empty() {
-                    set.insert(t.to_string());
-                }
-            }
-        }
-        Ok(set.into_iter().collect())
-    }
-}
-
-fn normalize_tags(raw: &str) -> String {
-    let mut out = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    for part in raw.split(',') {
-        let t = part.trim();
-        if t.is_empty() {
-            continue;
-        }
-        if seen.insert(t.to_string()) {
-            out.push(t.to_string());
-        }
-    }
-    out.join(",")
 }
 
 #[cfg(test)]
@@ -467,9 +415,8 @@ mod tests {
     #[test]
     fn spec_20260827_note__create_and_list() {
         let (store, _dir) = tmp_store();
-        let note = store.create("hello", "work,idea").unwrap();
+        let note = store.create("hello").unwrap();
         assert_eq!(note.content, "hello");
-        assert_eq!(note.tags, "work,idea");
         let list = store.list().unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, note.id);
@@ -478,7 +425,7 @@ mod tests {
     #[test]
     fn spec_20260827_note__empty_content_rejected() {
         let (store, _dir) = tmp_store();
-        assert!(store.create("   ", "").is_err());
+        assert!(store.create("   ").is_err());
         assert_eq!(store.list().unwrap().len(), 0);
     }
 
@@ -486,26 +433,25 @@ mod tests {
     fn spec_20260827_note__max_bytes_truncated() {
         let (store, _dir) = tmp_store();
         let big = "a".repeat(MAX_CONTENT_BYTES + 100);
-        let note = store.create(&big, "").unwrap();
+        let note = store.create(&big).unwrap();
         assert!(note.content.len() <= MAX_CONTENT_BYTES);
     }
 
     #[test]
     fn spec_20260827_note__update_changes_updated_at() {
         let (store, _dir) = tmp_store();
-        let note = store.create("a", "").unwrap();
+        let note = store.create("a").unwrap();
         std::thread::sleep(std::time::Duration::from_secs(1));
-        let updated = store.update(note.id, "b", "tag1").unwrap();
+        let updated = store.update(note.id, "b").unwrap();
         assert_eq!(updated.content, "b");
-        assert_eq!(updated.tags, "tag1");
         assert!(updated.updated_at >= note.updated_at);
     }
 
     #[test]
     fn spec_20260827_note__pin_orders_first() {
         let (store, _dir) = tmp_store();
-        let n1 = store.create("a", "").unwrap();
-        let n2 = store.create("b", "").unwrap();
+        let n1 = store.create("a").unwrap();
+        let n2 = store.create("b").unwrap();
         store.set_pinned(n1.id, true).unwrap();
         let list = store.list().unwrap();
         assert_eq!(list[0].id, n1.id);
@@ -513,21 +459,19 @@ mod tests {
     }
 
     #[test]
-    fn spec_20260827_note__search_content_and_tags() {
+    fn spec_20260827_note__search_content() {
         let (store, _dir) = tmp_store();
-        store.create("hello world", "work").unwrap();
-        store.create("other", "idea").unwrap();
-        let res = store.search("work").unwrap();
+        store.create("hello world").unwrap();
+        store.create("other").unwrap();
+        let res = store.search("hello").unwrap();
         assert_eq!(res.len(), 1);
-        assert!(res[0].tags.contains("work"));
-        let res2 = store.search("hello").unwrap();
-        assert_eq!(res2.len(), 1);
+        assert_eq!(res[0].content, "hello world");
     }
 
     #[test]
     fn spec_20260827_note__search_like_escape() {
         let (store, _dir) = tmp_store();
-        store.create("a%b", "").unwrap();
+        store.create("a%b").unwrap();
         // 搜索含 % 的内容，不应注入
         let res = store.search("a%b").unwrap();
         assert_eq!(res.len(), 1);
@@ -536,7 +480,7 @@ mod tests {
     #[test]
     fn spec_20260827_note__delete() {
         let (store, _dir) = tmp_store();
-        let n = store.create("x", "").unwrap();
+        let n = store.create("x").unwrap();
         store.delete(n.id).unwrap();
         assert_eq!(store.list().unwrap().len(), 0);
         // 删除不存在不报错
@@ -546,26 +490,19 @@ mod tests {
     #[test]
     fn spec_20260827_note__clear_all() {
         let (store, _dir) = tmp_store();
-        store.create("a", "").unwrap();
-        store.create("b", "").unwrap();
+        store.create("a").unwrap();
+        store.create("b").unwrap();
         store.clear_all().unwrap();
         assert_eq!(store.list().unwrap().len(), 0);
     }
 
     #[test]
-    fn spec_20260827_note__tags_normalized() {
+    fn spec_20260827_note__hash_tag_search_via_content() {
         let (store, _dir) = tmp_store();
-        let n = store.create("c", " work, work , idea ,, ").unwrap();
-        assert_eq!(n.tags, "work,idea");
-    }
-
-    #[test]
-    fn spec_20260827_note__all_tags() {
-        let (store, _dir) = tmp_store();
-        store.create("a", "work,idea").unwrap();
-        store.create("b", "work").unwrap();
-        let tags = store.all_tags().unwrap();
-        assert_eq!(tags, vec!["idea", "work"]);
+        store.create("hello #work idea").unwrap();
+        store.create("other").unwrap();
+        let res = store.search("#work").unwrap();
+        assert_eq!(res.len(), 1);
     }
 
     #[test]
