@@ -23,7 +23,7 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("cmd-v", zed_terminal::Paste, Some("Terminal")),
         KeyBinding::new("ctrl-cmd-v", zed_terminal::PasteText, Some("Terminal")),
         KeyBinding::new("cmd-a", zed_terminal::SelectAll, Some("Terminal")),
-        KeyBinding::new("cmd-k", zed_terminal::Clear, Some("Terminal")),
+        KeyBinding::new("cmd-shift-k", zed_terminal::Clear, Some("Terminal")),
         KeyBinding::new("shift-pageup", zed_terminal::ScrollPageUp, Some("Terminal")),
         KeyBinding::new("cmd-up", zed_terminal::ScrollPageUp, Some("Terminal")),
         KeyBinding::new(

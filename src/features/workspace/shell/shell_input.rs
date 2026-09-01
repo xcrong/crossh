@@ -15,17 +15,24 @@ use crate::shared::text_editing::TextEditingState;
 
 use super::*;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum AppShellInputField {
     HostSearch,
     Rename,
     DefaultCommand,
+    CommandPalette,
     Compose,
 }
 
 impl AppShell {
     fn active_input_field(&self, window: &Window) -> Option<AppShellInputField> {
         if self
+            .command_palette
+            .as_ref()
+            .is_some_and(|palette| palette.focus.is_focused(window))
+        {
+            Some(AppShellInputField::CommandPalette)
+        } else if self
             .default_command_editor
             .as_ref()
             .is_some_and(|editor| editor.focus.is_focused(window))
@@ -80,6 +87,9 @@ impl AppShell {
     fn editing_state(&self, field: AppShellInputField) -> Option<&TextEditingState> {
         match field {
             AppShellInputField::HostSearch => None,
+            AppShellInputField::CommandPalette => {
+                self.command_palette.as_ref().map(|palette| &palette.query)
+            }
             AppShellInputField::Rename => self.rename_editor.as_ref().map(|editor| &editor.state),
             AppShellInputField::DefaultCommand => self
                 .default_command_editor
@@ -95,6 +105,10 @@ impl AppShell {
     fn editing_state_mut(&mut self, field: AppShellInputField) -> Option<&mut TextEditingState> {
         match field {
             AppShellInputField::HostSearch => None,
+            AppShellInputField::CommandPalette => self
+                .command_palette
+                .as_mut()
+                .map(|palette| &mut palette.query),
             AppShellInputField::Rename => {
                 self.rename_editor.as_mut().map(|editor| &mut editor.state)
             }
@@ -125,6 +139,7 @@ impl AppShell {
             _ => self.editing_state_mut(field),
         }
     }
+
     fn value_for_field(&self, field: AppShellInputField) -> Option<&String> {
         if let Some(value) = self.plain_value(field) {
             return Some(value);
@@ -134,6 +149,11 @@ impl AppShell {
 
     fn editing_scroll_x(&self, field: AppShellInputField) -> Pixels {
         match field {
+            AppShellInputField::CommandPalette => self
+                .command_palette
+                .as_ref()
+                .map(|palette| palette.scroll.offset().x)
+                .unwrap_or(px(0.)),
             AppShellInputField::Compose => self.compose_scroll.offset().x,
             _ => px(0.),
         }
@@ -210,6 +230,11 @@ impl EntityInputHandler for AppShell {
                 plain_replace(value, marked, replacement_range, text);
             } else if let Some(state) = self.editing_state_mut_for_replace(field) {
                 editing_replace(state, replacement_range, text);
+                if field == AppShellInputField::CommandPalette
+                    && let Some(palette) = self.command_palette.as_mut()
+                {
+                    palette.clamp_selection();
+                }
             } else {
                 return;
             }

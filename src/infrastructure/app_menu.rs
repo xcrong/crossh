@@ -11,7 +11,8 @@ use crate::features::workspace::AppShell;
 use crate::shared::i18n;
 use crate::{
     About, CheckForUpdates, CloseActiveTab, CloseWindow, MinimizeWindow, NewTerminal, OpenProject,
-    OpenSettings, Quit, ToggleFullScreen, ToggleHostSidebar, ToggleTimestamps, ZoomWindow,
+    OpenSettings, Quit, ToggleCommandPalette, ToggleFullScreen, ToggleHostSidebar,
+    ToggleTimestamps, ZoomWindow,
 };
 
 #[cfg(target_os = "macos")]
@@ -28,6 +29,8 @@ pub(crate) fn install(cx: &mut App) {
         KeyBinding::new("cmd-o", OpenProject, Some("AppShell")),
         KeyBinding::new("cmd-t", NewTerminal, Some("AppShell")),
         KeyBinding::new("cmd-w", CloseActiveTab, Some("AppShell")),
+        KeyBinding::new("cmd-k", ToggleCommandPalette, None),
+        KeyBinding::new("ctrl-k", ToggleCommandPalette, None),
     ]);
 
     #[cfg(target_os = "macos")]
@@ -61,13 +64,21 @@ pub(crate) fn install(cx: &mut App) {
 
     // 即使设置等辅助窗口处于前台，Quit 也统一交给 AppShell，避免绕过
     // 风险确认与资源清理。菜单 action 分发时当前窗口仍在 GPUI 更新栈中，
-    // 必须延迟后才能重新访问它。
     cx.on_action(|_: &Quit, cx| {
         cx.defer(|cx| {
             if let Some(window) = find_main_window(cx) {
                 let _ = window.update(cx, |shell, window, cx| shell.request_app_quit(window, cx));
             } else {
                 cx.quit();
+            }
+        });
+    });
+    cx.on_action(|_: &ToggleCommandPalette, cx| {
+        cx.defer(|cx| {
+            if let Some(window) = find_main_window(cx) {
+                let _ = window.update(cx, |shell, window, cx| {
+                    shell.toggle_command_palette(window, cx)
+                });
             }
         });
     });

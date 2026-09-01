@@ -24,6 +24,7 @@ use crate::features::editor_launcher;
 use crate::features::settings::{self, SettingsSnapshot};
 use crate::features::terminal::{TerminalEvent, TerminalView, TerminalViewEvent};
 use crate::features::updates::{UpdateController, UpdateSettings};
+use crate::features::workspace::command_palette::CommandPaletteState;
 use crate::features::workspace::modal_editor::{DefaultCommandEditor, RenameEditor};
 use crate::features::workspace::pinned::{pinned_tabs_for_project, prune_missing_pinned_tabs};
 use crate::features::workspace::registry::WorkspaceState;
@@ -110,6 +111,7 @@ pub struct AppShell {
     /// 固定标签重命名弹窗状态；与 default command 编辑器互斥（都是模态弹窗）。
     pub(crate) rename_editor: Option<RenameEditor>,
     pub(crate) default_command_editor: Option<DefaultCommandEditor>,
+    pub(crate) command_palette: Option<CommandPaletteState>,
     pub(crate) compose_focus: FocusHandle,
     pub(crate) compose_scroll: gpui::ScrollHandle,
     /// 周期性刷新本地会话的 Git 状态，覆盖 shell 空闲时的外部文件变更。
@@ -195,6 +197,7 @@ impl AppShell {
             terminal_split_vertical_right_dragging: Rc::new(Cell::new(false)),
             rename_editor: None,
             default_command_editor: None,
+            command_palette: None,
             compose_focus: cx.focus_handle(),
             compose_scroll: gpui::ScrollHandle::new(),
             _git_status_refresh_task: None,
@@ -270,7 +273,7 @@ impl AppShell {
     fn handle_shell_key_down(
         &mut self,
         ev: &KeyDownEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         // 菜单打开时只响应 Escape（其余键被菜单模态拦截）。
@@ -278,6 +281,11 @@ impl AppShell {
             if ev.keystroke.key == "escape" {
                 self.close_context_menu(cx);
             }
+            return;
+        }
+        if self.command_palette.is_some() {
+            self.handle_command_palette_key(ev, window, cx);
+            cx.stop_propagation();
             return;
         }
         if self.rename_editor.is_some() || self.default_command_editor.is_some() {

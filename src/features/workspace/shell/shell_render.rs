@@ -1,3 +1,5 @@
+use crate::features::workspace::command_palette::render_command_palette;
+
 use super::*;
 
 impl Render for AppShell {
@@ -105,6 +107,9 @@ impl Render for AppShell {
             );
         root = root.children(system_monitor_card);
         root = root.children(self.render_toaster());
+        if self.command_palette.is_some() {
+            root = root.child(render_command_palette(self, window, cx));
+        }
         if self.rename_editor.is_some() {
             root = root.child(render_rename_editor(self, window, cx));
         }

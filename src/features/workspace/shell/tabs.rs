@@ -61,7 +61,7 @@ impl TabCloseRisk {
 }
 
 impl AppShell {
-    pub(super) fn handle_new_terminal(
+    pub(crate) fn handle_new_terminal(
         &mut self,
         _: &crate::NewTerminal,
         window: &mut Window,
@@ -70,7 +70,7 @@ impl AppShell {
         self.new_tab(window, cx);
     }
 
-    pub(super) fn handle_close_active_tab(
+    pub(crate) fn handle_close_active_tab(
         &mut self,
         _: &crate::CloseActiveTab,
         window: &mut Window,
@@ -359,6 +359,7 @@ impl AppShell {
             return;
         };
         let focus = cx.focus_handle();
+        self.command_palette = None;
         self.rename_editor = Some(RenameEditor::new(
             session_id,
             session.custom_name.clone().unwrap_or_default(),
@@ -420,6 +421,7 @@ impl AppShell {
             return;
         }
         let focus = cx.focus_handle();
+        self.command_palette = None;
         self.rename_editor = None;
         self.default_command_editor = Some(DefaultCommandEditor::new(
             session_id,

@@ -35,6 +35,7 @@ actions!(
         ToggleHostSidebar,
         ToggleScratchTerminal,
         ToggleTimestamps,
+        ToggleCommandPalette,
         ZoomWindow
     ]
 );
