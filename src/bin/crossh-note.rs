@@ -5,17 +5,6 @@
 //! `crates/crossh-note` 仅承载存储层；编辑器已迁移至 `crates/crossh-editor` 的
 //! `TextareaState/InputState`，不再依赖 `src/shared/text_editing.rs`。
 
-mod shared {
-    pub mod i18n {
-        #[allow(dead_code)]
-        pub fn text(key: &str) -> String {
-            rust_i18n::t!(key).to_string()
-        }
-    }
-}
-
-rust_i18n::i18n!("locales", fallback = "en");
-
 #[path = "../features/note_launcher.rs"]
 mod note_launcher;
 

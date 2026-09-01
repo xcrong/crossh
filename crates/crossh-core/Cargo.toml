@@ -5,20 +5,13 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 
 [dependencies]
-async-channel = "2"
 base64 = "0.22"
 shlex = "1"
 unicode-width = "0.2"
 dirs = "6"
-glob = "0.3"
-libc = "0.2"
-shellexpand = "3"
 sysinfo = "0.37"
-log = "0.4"
-serde = { version = "1", features = ["derive"] }
 tempfile = "3"
 thiserror = "2"
-toml = "0.8"
 
 [dev-dependencies]
 pretty_assertions = "1"

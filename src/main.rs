@@ -1,8 +1,7 @@
 //! crossh —— 基于 gpui 的本地优先终端工作环境（macOS / Linux / Windows）。
 //!
-//! 以项目目录组织多会话本地终端为核心，Git Viewer、Note 均为可插拔
-//! WorkspacePane / 独立二进制（`crossh-git` / `crossh-note` / `crossh-updater`），
-//! 通过 WorkspacePane 组合进同一工作区。
+//! 以项目目录组织多会话本地终端为核心，工作区内置终端与独立的
+//! `crossh-git` / `crossh-note` / `crossh-updater` 二进制共同组成应用。
 mod app;
 mod features;
 mod infrastructure;

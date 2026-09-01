@@ -46,7 +46,6 @@ release_channel = { git = "https://github.com/zed-industries/zed", rev = "f66ed3
 semver = "1"
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time", "fs"] }
-async-channel = "2"
 log = "0.4"
 env_logger = "0.11"
 dirs = "6"
@@ -58,7 +57,6 @@ shlex = "1"
 schemars = "1"
 unicode-width = "0.2"
 pulldown-cmark = "0.10"
-parking_lot = "0.12"
 
 [dev-dependencies]
 assets = { git = "https://github.com/zed-industries/zed", rev = "f66ed399cdde86092af8af3dc7b418abf45f37f8" }

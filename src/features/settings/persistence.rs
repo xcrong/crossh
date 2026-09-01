@@ -95,31 +95,7 @@ pub(crate) fn save(snapshot: &SettingsSnapshot) -> std::io::Result<()> {
 }
 
 fn settings_path() -> Option<PathBuf> {
-    #[cfg(test)]
-    if let Some(path) = test_settings_path() {
-        return Some(path);
-    }
     dirs::home_dir().map(|home| settings_path_from_home(&home))
-}
-
-/// 测试隔离：把设置读写重定向到指定路径（`None` 恢复默认目录）。
-/// `thread_local` 保证并行测试互不干扰；重定向只作用于当前测试线程。
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) fn set_test_settings_path(path: Option<PathBuf>) {
-    TEST_SETTINGS_PATH.with(|cell| *cell.borrow_mut() = path);
-}
-
-#[cfg(test)]
-thread_local! {
-    static TEST_SETTINGS_PATH: std::cell::RefCell<Option<PathBuf>> = const {
-        std::cell::RefCell::new(None)
-    };
-}
-
-#[cfg(test)]
-fn test_settings_path() -> Option<PathBuf> {
-    TEST_SETTINGS_PATH.with(|cell| cell.borrow().clone())
 }
 
 fn settings_path_from_home(home: &Path) -> PathBuf {

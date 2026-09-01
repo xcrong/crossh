@@ -3,7 +3,7 @@
 //! The terminal emulator, PTY lifecycle, resize protocol, mouse handling,
 //! selection, IME, scrolling, and painting are owned by Zed's terminal crate
 //! plus the local terminal element fork. This module only supplies the host
-//! entity, focus/event wiring, and the workspace pane boundary.
+//! entity and focus/event wiring for the workspace.
 
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -24,7 +24,6 @@ use terminal as zed_terminal;
 use terminal::terminal_settings::CursorShape;
 use theme::ActiveTheme;
 
-use crate::features::workspace::pane::{PaneRisk, WorkspacePane};
 use crate::shared::i18n;
 use crossh_core::terminal::{
     LocalShellEnvironment, ShellCommandMarker, ShellPromptMarker, command_marker_from_title,
@@ -976,87 +975,6 @@ impl TerminalView {
         }
         cx.dismiss_system_notification(response.tag.as_ref());
         Some(true)
-    }
-}
-
-// 保留：本地优先下仅单 pane，但抽象为未来 pane 类型保留
-#[allow(dead_code)]
-pub(crate) struct TerminalWorkspacePane(pub(crate) Entity<TerminalView>);
-
-// 保留：本地优先下仅单 pane，但抽象为未来 pane 类型保留
-#[allow(dead_code)]
-pub(crate) fn workspace_pane(entity: Entity<TerminalView>) -> Box<dyn WorkspacePane> {
-    Box::new(TerminalWorkspacePane(entity))
-}
-
-impl WorkspacePane for TerminalWorkspacePane {
-    fn render(&self) -> AnyElement {
-        self.0.clone().into_any_element()
-    }
-
-    fn title(&self, cx: &App) -> String {
-        self.0.read(cx).tab_title("Terminal")
-    }
-
-    fn terminal_entity_id(&self) -> Option<gpui::EntityId> {
-        Some(self.0.entity_id())
-    }
-
-    fn cwd(&self, cx: &App) -> Option<String> {
-        self.0.read(cx).cwd.clone()
-    }
-
-    fn is_command_running(&self, cx: &App) -> bool {
-        self.0.read(cx).is_command_running(cx)
-    }
-
-    fn run_command(&self, command: &str, cx: &mut App) {
-        self.0
-            .update(cx, |terminal, cx| terminal.run_command(command, cx));
-    }
-
-    fn run_command_without_focus(&self, command: &str, cx: &mut App) {
-        self.0.update(cx, |terminal, cx| {
-            terminal.run_command_without_focus(command, cx)
-        });
-    }
-
-    fn send_text(&self, text: &str, cx: &mut App) {
-        self.0
-            .update(cx, |terminal, cx| terminal.paste_raw_text(text, cx));
-    }
-
-    fn set_adjacent_terminal_available(&self, available: bool, cx: &mut App) {
-        self.0.update(cx, |terminal, cx| {
-            terminal.set_adjacent_terminal_available(available, cx)
-        });
-    }
-
-    fn handle_system_notification_response(
-        &self,
-        response: &SystemNotificationResponse,
-        cx: &mut App,
-    ) -> Option<bool> {
-        self.0.update(cx, |terminal, cx| {
-            terminal.handle_system_notification_response(response, cx)
-        })
-    }
-
-    fn request_focus(&self, cx: &mut App) {
-        self.0.update(cx, |terminal, _| terminal.request_focus());
-    }
-
-    fn request_close(&self, cx: &mut App) {
-        self.0.update(cx, |terminal, cx| terminal.request_close(cx));
-    }
-
-    fn apply_terminal_settings(&self, settings: TerminalSettings, cx: &mut App) {
-        self.0
-            .update(cx, |terminal, cx| terminal.apply_settings(settings, cx));
-    }
-
-    fn risk(&self, _cx: &App) -> PaneRisk {
-        PaneRisk::default()
     }
 }
 

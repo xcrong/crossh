@@ -350,18 +350,6 @@ impl LayoutPoint {
     fn new(line: i32, column: i32) -> Self {
         Self { line, column }
     }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    fn line(&self) -> i32 {
-        self.line
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    fn column(&self) -> i32 {
-        self.column
-    }
 }
 
 /// A batched text run that combines multiple adjacent cells with the same style
@@ -511,12 +499,6 @@ impl BlockElementLayoutRect {
         );
 
         window.paint_quad(fill(Bounds::new(position, size), self.color));
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    fn line(&self) -> i32 {
-        (self.point.line + self.num_of_lines as i32 - 1) / BLOCK_SUBCELL_LINES
     }
 }
 

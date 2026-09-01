@@ -23,23 +23,8 @@ pub(crate) enum SplitSide {
 }
 
 impl SplitSide {
-    #[allow(dead_code)]
-    pub(crate) fn is_left_column(self) -> bool {
-        matches!(self, SplitSide::Left | SplitSide::BottomLeft)
-    }
-
     pub(crate) fn is_right_column(self) -> bool {
         matches!(self, SplitSide::Right | SplitSide::BottomRight)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn is_top(self) -> bool {
-        matches!(self, SplitSide::Left | SplitSide::Right)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn is_bottom(self) -> bool {
-        matches!(self, SplitSide::BottomLeft | SplitSide::BottomRight)
     }
 }
 
@@ -91,16 +76,6 @@ impl TerminalSplitState {
             SplitSide::Right => self.right.unwrap_or(self.left),
             SplitSide::BottomLeft => self.bottom_left.unwrap_or(self.left),
             SplitSide::BottomRight => self.bottom_right.or(self.right).unwrap_or(self.left),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn pane_for(&self, side: SplitSide) -> Option<ActiveView> {
-        match side {
-            SplitSide::Left => Some(self.left),
-            SplitSide::Right => self.right,
-            SplitSide::BottomLeft => self.bottom_left,
-            SplitSide::BottomRight => self.bottom_right,
         }
     }
 
@@ -360,18 +335,6 @@ impl WorkspaceState {
         })
     }
 
-    /// 找到右窗格/下窗格是 `view` 的分栏所属主（兼容旧名）。
-    #[allow(dead_code)]
-    fn split_owner_of_right(&self, view: ActiveView) -> Option<ActiveView> {
-        self.split_owner_of(view)
-    }
-
-    /// 为当前活动视图创建或扩展水平分栏（左右）。若已存在垂直分栏则在其基础上扩展为 2/3 格。
-    #[allow(dead_code)]
-    pub(crate) fn begin_horizontal_split(&mut self, right: ActiveView) -> bool {
-        self.begin_terminal_split(right)
-    }
-
     /// 尝试为当前活动视图的聚焦列创建垂直分栏（上下），最多四格。
     pub(crate) fn begin_vertical_split(&mut self, bottom: ActiveView) -> bool {
         let Some(owner) = self.active_view else {
@@ -429,21 +392,6 @@ impl WorkspaceState {
             self.split_heights_right
                 .insert(owner, Rc::new(Cell::new(0.)));
             true
-        }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn has_vertical_split(&self) -> bool {
-        self.active_split()
-            .is_some_and(|s| s.bottom_left.is_some() || s.bottom_right.is_some())
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn can_add_horizontal(&self) -> bool {
-        if let Some(split) = self.active_split() {
-            split.right.is_none()
-        } else {
-            self.active_view.is_some()
         }
     }
 
@@ -572,25 +520,6 @@ impl WorkspaceState {
             // 为兼容，返回第一个 secondary 作为 retire_pane，其余由调用方通过 take 逻辑处理
             let retire = secondaries.into_iter().next();
             // 若有其余 secondary，它们仍以独立标签形式残留需由 AppShell 决定
-            SplitViewCloseOutcome::Closed {
-                retire_pane: retire,
-            }
-        }
-    }
-
-    #[allow(dead_code)]
-    fn prepare_owner_close_legacy(&mut self, split: TerminalSplitState) -> SplitViewCloseOutcome {
-        if self.active_view == Some(split.left) {
-            if let Some(next) = split.right {
-                self.active_view = Some(next);
-            } else if let Some(next) = split.bottom_left {
-                self.active_view = Some(next);
-            } else if let Some(next) = split.bottom_right {
-                self.active_view = Some(next);
-            }
-            SplitViewCloseOutcome::Closed { retire_pane: None }
-        } else {
-            let retire = split.right.or(split.bottom_left).or(split.bottom_right);
             SplitViewCloseOutcome::Closed {
                 retire_pane: retire,
             }

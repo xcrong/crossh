@@ -32,5 +32,6 @@ Direct `gpui-component` would force `gpui` rev alignment (`f66ed399` vs `1d217ee
 ## Maintenance
 
 - Do not edit `src/input/base/state.rs` (5338 lines) / `element.rs` (3245 lines) locally except for `crossh-theme` color shims; keep them diffable.
-- Size whitelist in `scripts/check-architecture.sh` covers those two files.
+- The size whitelist in `scripts/check-architecture.sh` covers only the large
+  upstream-derived files that are still kept intact.
 - To update: `git clone --depth 1 https://github.com/longbridge/gpui-component && cp -R crates/base/* crates/crossh-editor/src/` then re-apply `Cargo.toml` rev patch (`scripts/fetch-crossh-editor.sh` TBD).

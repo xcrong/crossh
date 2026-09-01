@@ -49,9 +49,9 @@ shared resources  -> external `crossh-assets` directory loaded by every binary
 - `crossh-ui-component`: reusable stateless GPUI control kit (buttons, badges, status metrics, avatars, tooltips, toasts, layout helpers, shared tabs, and status-bar shells) layered on `crossh-ui`.
 - `crossh`: process startup plus user-facing feature views and GPUI adapters. `crossh git` and the workspace status-bar Git entry delegate to the sibling `crossh-git` binary; `crossh note` and the workspace status-bar Note entry delegate to the sibling `crossh-note` binary; `features/terminal/view.rs` is the `terminal_view`-style host around Zed's terminal foundation.
 - `crossh-git`: standalone Git Viewer entry point. It owns the Git window source and reuses the same GPUI and UI dependencies, but does not initialize terminal, workspace, or settings features.
-- `crossh-note`: standalone Note Viewer entry point. It owns the Note window source (list/search/tags, `TextEditingState` + Markdown preview) and reuses the same GPUI/UI dependencies, but does not initialize terminal, workspace, or settings features. Its pure logic lives in `crossh-note`.
+- `crossh-note`: standalone Note Viewer entry point. It owns the Note window source (list/search/tags, `crossh-editor` input state + Markdown preview) and reuses the same GPUI/UI dependencies, but does not initialize terminal, workspace, or settings features. Its pure logic lives in `crossh-note`.
 
-- `features/workspace`: navigation, tabs, active view, local projects, pane composition, status-bar Git status, and pull/push sync actions.
+- `features/workspace`: navigation, tabs, active view, local projects, terminal split state, status-bar Git status, and pull/push sync actions.
 - `features/settings`: application settings persistence and settings window.
 - `features/git_launcher`: Git CLI parsing and fire-and-forget startup of the sibling `crossh-git` process.
 - `features/note_launcher`: Note CLI parsing and fire-and-forget startup of the sibling `crossh-note` process.
@@ -59,7 +59,8 @@ shared resources  -> external `crossh-assets` directory loaded by every binary
 - `src/features/note`: Note Viewer window, Markdown preview, and editor adapter; `window.rs` owns state and GPUI, `markdown.rs` is UI-independent. This source is not mounted by the `crossh` application binary and is owned by the standalone `crossh-note` entry point.
 - `features/updates`: update controller and update presentation only.
 `AppShell` is the GPUI composition root for the workspace feature. Session
-collections live in `WorkspaceState` and `SessionRegistry`.
+collections and terminal split state live in `WorkspaceState` and
+`SessionRegistry`.
 
 ## Boundary Rules
 
