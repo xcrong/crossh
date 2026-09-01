@@ -207,7 +207,7 @@ impl AppShell {
             _system_monitor_task: None,
             scratch_visible: false,
             scratch_terminal: None,
-            scratch_height: Rc::new(Cell::new(220.)),
+            scratch_height: Rc::new(Cell::new(0.)),
             scratch_dragging: Rc::new(Cell::new(false)),
             scratch_subscription: None,
             quit_confirmation_open: false,

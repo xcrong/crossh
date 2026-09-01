@@ -10,7 +10,6 @@ use crate::features::terminal::view::TerminalView as TerminalViewEntity;
 
 pub(crate) const SCRATCH_DEFAULT_HEIGHT: f32 = 420.0;
 pub(crate) const SCRATCH_MIN_HEIGHT: f32 = 200.0;
-pub(crate) const SCRATCH_MAX_HEIGHT: f32 = 800.0;
 
 impl AppShell {
     pub(crate) fn toggle_scratch_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -75,17 +74,17 @@ impl AppShell {
         if raw <= 0.0 {
             SCRATCH_DEFAULT_HEIGHT
         } else {
-            raw.clamp(SCRATCH_MIN_HEIGHT, SCRATCH_MAX_HEIGHT)
+            raw.max(SCRATCH_MIN_HEIGHT)
         }
     }
 }
 
-/// 供纯逻辑单测使用的高度 clamp 辅助，保持与渲染层一致的边界。
+/// 供纯逻辑单测使用的高度 clamp 辅助，窗口自适应下仅保底 MIN，无固定 MAX。
 pub(crate) fn clamp_scratch_height(raw: f32) -> f32 {
     if raw <= 0.0 {
         SCRATCH_DEFAULT_HEIGHT
     } else {
-        raw.clamp(SCRATCH_MIN_HEIGHT, SCRATCH_MAX_HEIGHT)
+        raw.max(SCRATCH_MIN_HEIGHT)
     }
 }
 
@@ -99,7 +98,7 @@ mod tests {
         assert_eq!(clamp_scratch_height(-10.), SCRATCH_DEFAULT_HEIGHT);
         assert_eq!(clamp_scratch_height(50.), SCRATCH_MIN_HEIGHT);
         assert_eq!(clamp_scratch_height(420.), 420.);
-        assert_eq!(clamp_scratch_height(900.), SCRATCH_MAX_HEIGHT);
+        assert_eq!(clamp_scratch_height(900.), 900.);
     }
 
     #[test]

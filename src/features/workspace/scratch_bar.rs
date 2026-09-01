@@ -4,9 +4,7 @@ use gpui::{
 };
 
 use crate::features::workspace::AppShell;
-use crate::features::workspace::shell::scratch::{
-    SCRATCH_DEFAULT_HEIGHT, SCRATCH_MAX_HEIGHT, SCRATCH_MIN_HEIGHT, clamp_scratch_height,
-};
+use crate::features::workspace::shell::scratch::{SCRATCH_MIN_HEIGHT, clamp_scratch_height};
 use crate::shared::i18n;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{Button, ButtonSize, ButtonVariant, SplitResizer};
@@ -26,10 +24,16 @@ pub(crate) fn render_scratch_panel(
     let dragging = shell.scratch_dragging.clone();
 
     let viewport = window.viewport_size();
-    let default_h = (viewport.height.as_f32() * 0.8).clamp(SCRATCH_MIN_HEIGHT, SCRATCH_MAX_HEIGHT);
+    // 窗口自适应：无固定 MAX，默认 80% 视口，拖拽上下界随视口动态计算
+    let max_h = (viewport.height.as_f32() - 96.0).max(SCRATCH_MIN_HEIGHT);
+    let min_h = SCRATCH_MIN_HEIGHT;
     let raw = shell.scratch_height.get();
-    let is_default = raw <= 0.0 || (raw - SCRATCH_DEFAULT_HEIGHT).abs() < 1.0;
-    let display_height = if is_default { default_h } else { height };
+    let is_default = raw <= 0.0;
+    let display_height = if is_default {
+        (viewport.height.as_f32() * 0.8).clamp(min_h, max_h)
+    } else {
+        height.clamp(min_h, max_h)
+    };
     let card_width = viewport.width.as_f32() * 0.8;
     let card_height = display_height;
     let _ = clamp_scratch_height(height);
@@ -95,8 +99,8 @@ pub(crate) fn render_scratch_panel(
         .child(
             SplitResizer::new("scratch-resizer", dragging.clone(), height_cell.clone())
                 .vertical()
-                .min_size(SCRATCH_MIN_HEIGHT)
-                .max_size(SCRATCH_MAX_HEIGHT)
+                .min_size(min_h)
+                .max_size(max_h)
                 .line(),
         );
 
