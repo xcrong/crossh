@@ -82,7 +82,13 @@ impl AppShell {
     pub(super) fn switch_tab(&mut self, idx: usize, cx: &mut Context<Self>) {
         match self.workspace.active_view {
             Some(ActiveView::LocalSession(_session_id)) => {
-                let ids: Vec<LocalSessionId> = self.workspace.sessions.local_sessions.keys().cloned().collect();
+                let ids: Vec<LocalSessionId> = self
+                    .workspace
+                    .sessions
+                    .local_sessions
+                    .keys()
+                    .cloned()
+                    .collect();
                 if idx < ids.len() {
                     self.select_local_session(ids[idx], cx);
                 }
@@ -215,7 +221,13 @@ impl AppShell {
             return;
         };
         let ActiveView::LocalSession(active_id) = active;
-        let ids: Vec<LocalSessionId> = self.workspace.sessions.local_sessions.keys().cloned().collect();
+        let ids: Vec<LocalSessionId> = self
+            .workspace
+            .sessions
+            .local_sessions
+            .keys()
+            .cloned()
+            .collect();
         if ids.is_empty() {
             return;
         }
@@ -227,12 +239,13 @@ impl AppShell {
     /// 从当前标签复制一个终端标签；没有活动标签时把焦点放到快速连接框。
     pub(crate) fn new_tab(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ActiveView::LocalSession(session_id)) = self.workspace.active_view
-            && let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) {
-                let project_dir = session.project_dir.clone();
-                let cwd = session.cwd.clone();
-                let _ = self.open_local_session(project_dir, cwd, cx);
-                return;
-            }
+            && let Some(session) = self.workspace.sessions.local_sessions.get(&session_id)
+        {
+            let project_dir = session.project_dir.clone();
+            let cwd = session.cwd.clone();
+            let _ = self.open_local_session(project_dir, cwd, cx);
+            return;
+        }
         let cwd = current_local_cwd();
         let _ = self.open_local_session(cwd.clone(), cwd, cx);
     }
@@ -653,12 +666,19 @@ impl AppShell {
                     terminal.request_focus();
                 });
             }
-        } else if let Some(session_id) = self.workspace.sessions.local_sessions.keys().next().cloned()
-            && let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) {
-                session.terminal.update(cx, |terminal, _| {
-                    terminal.request_focus();
-                });
-            }
+        } else if let Some(session_id) = self
+            .workspace
+            .sessions
+            .local_sessions
+            .keys()
+            .next()
+            .cloned()
+            && let Some(session) = self.workspace.sessions.local_sessions.get(&session_id)
+        {
+            session.terminal.update(cx, |terminal, _| {
+                terminal.request_focus();
+            });
+        }
     }
 }
 

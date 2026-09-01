@@ -338,8 +338,8 @@ mod tests {
     use super::{Select, SelectOption, next_index};
     use gpui::prelude::*;
     use gpui::{
-        Context, ElementId, InputEvent, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent,
-        Pixels, Point, TestAppContext, Window, div, point, px, size,
+        Context, InputEvent, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point,
+        TestAppContext, Window, div, point, px, size,
     };
     use std::cell::RefCell;
     use std::rc::Rc;

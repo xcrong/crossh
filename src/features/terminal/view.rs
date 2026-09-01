@@ -237,7 +237,6 @@ impl TerminalView {
         )
     }
 
-
     fn from_zed_shell_with_environment(
         working_directory: Option<PathBuf>,
         initial_cwd: Option<String>,
@@ -822,8 +821,21 @@ impl TerminalView {
         (self.show_timestamps, timestamps)
     }
 
+    pub(crate) fn show_timestamps(&self) -> bool {
+        self.show_timestamps
+    }
+
+    pub(crate) fn set_show_timestamps(&mut self, show: bool, cx: &mut Context<Self>) {
+        if self.show_timestamps != show {
+            self.show_timestamps = show;
+            cx.notify();
+        }
+    }
+
     pub(crate) fn apply_settings(&mut self, settings: TerminalSettings, cx: &mut Context<Self>) {
-        self.show_timestamps = settings.show_timestamps;
+        // `show_timestamps` is per-terminal (per `TerminalView`) since split panes must be
+        // independently toggleable. Global `TerminalSettings` only provides the default for
+        // new terminals and for font/scrollback propagated via Zed's global settings.
         self.notifications_enabled = settings.notifications_enabled;
         // The workspace updates Zed's global font/scrollback settings before
         // calling this method. Host-only settings are applied above.
@@ -957,7 +969,6 @@ impl TerminalView {
 
         fallback.to_owned()
     }
-
 
     pub(crate) fn handle_system_notification_response(
         &mut self,

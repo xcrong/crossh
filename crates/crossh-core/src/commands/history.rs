@@ -387,7 +387,6 @@ pub fn local_scope(cwd: &Path) -> String {
     format!("local:{}", cwd.to_string_lossy())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -540,5 +539,4 @@ mod tests {
     fn scope_keys_keep_directory_identity() {
         assert_eq!(local_scope(Path::new("/tmp/project")), "local:/tmp/project");
     }
-
 }

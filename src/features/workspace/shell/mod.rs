@@ -33,8 +33,8 @@ use crate::features::workspace::sidebar::{render_sidebar, render_sidebar_rail};
 use crate::features::workspace::state::rebuild_local_dirs;
 use crate::features::workspace::toaster::{ToastNotice, ToastTone};
 use crate::features::workspace::view::{
-    ActiveView, LocalDir, LocalSession, LocalSessionId, render_default_command_editor,
-    render_main, render_quick_command_editor, render_quick_commands, render_rename_editor,
+    ActiveView, LocalDir, LocalSession, LocalSessionId, render_default_command_editor, render_main,
+    render_quick_command_editor, render_quick_commands, render_rename_editor,
     render_workspace_status_bar,
 };
 use crate::shared::i18n::{self, LanguagePreference};
@@ -341,7 +341,6 @@ impl AppShell {
         cx.notify();
     }
 
-
     fn apply_background_event(&mut self, event: BackgroundTaskEvent, cx: &mut Context<Self>) {
         let event_id = event.id;
         log::info!(
@@ -354,7 +353,6 @@ impl AppShell {
             self.start_background_restart(restart, cx);
         }
     }
-
 
     pub(crate) fn stop_background_task(&mut self, id: u64, cx: &mut Context<Self>) {
         self.background_tasks.mark_stopping(id);
@@ -476,15 +474,6 @@ impl AppShell {
             _ => {}
         }
     }
-
-
-
-
-
-
-
-
-
 
     /// 在项目目录 view 中打开一个独立的 Zed terminal session。
     /// `project_dir` 决定侧栏归属，`cwd` 只决定 shell 的初始工作目录。
@@ -676,7 +665,6 @@ impl AppShell {
         self.close_local_session_internal(session_id, false, cx);
     }
 
-
     pub(crate) fn close_local_session_internal(
         &mut self,
         session_id: LocalSessionId,
@@ -748,8 +736,6 @@ impl AppShell {
         cx.notify();
     }
 
-
-
     fn record_command(&mut self, scope: String, command: String, cx: &mut Context<Self>) {
         if self.command_history.record(&scope, &command) {
             cx.notify();
@@ -766,20 +752,6 @@ impl AppShell {
             cx.notify();
         }
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     fn stop_background_tasks_for_owner(&mut self, owner: &str, cx: &mut Context<Self>) {
         let ids = self.background_tasks.active_for_owner(owner);
@@ -876,8 +848,6 @@ impl AppShell {
             }
         }
     }
-
-
 
     /// 打开右键上下文菜单（替换已有菜单）。
     pub(crate) fn open_context_menu(
@@ -1309,18 +1279,6 @@ impl AppShell {
             .find(|cwd| cwd.to_string_lossy().to_ascii_lowercase().contains(query))
             .cloned()
     }
-
-    
-
-
-    
-
-
-    
-
-
-    
-
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

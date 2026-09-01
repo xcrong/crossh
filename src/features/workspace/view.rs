@@ -29,9 +29,7 @@ use crossh_ui_component::{
     SharedTextState, SidePanel, SplitResizer, StatusBar, StatusDot, StatusMetric, Tooltip,
 };
 
-pub use crate::features::workspace::state::{
-    ActiveView, LocalDir, LocalSession, LocalSessionId,
-};
+pub use crate::features::workspace::state::{ActiveView, LocalDir, LocalSession, LocalSessionId};
 
 const TERMINAL_SPLIT_MIN_PANE_WIDTH: f32 = 160.0;
 const TERMINAL_SPLIT_HANDLE_WIDTH: f32 = 8.0;
@@ -416,11 +414,22 @@ pub(crate) fn render_workspace_status_bar(
             cx,
         ));
     if terminal_active {
+        // 按终端独立：状态栏钟表反映当前焦点终端的实际状态（分屏时随聚焦侧变化）。
+        let show_timestamps = focused_view
+            .and_then(|view| match view {
+                ActiveView::LocalSession(session_id) => shell
+                    .workspace
+                    .sessions
+                    .local_sessions
+                    .get(&session_id)
+                    .map(|session| session.terminal.read(cx).show_timestamps()),
+            })
+            .unwrap_or(shell.terminal_settings.show_timestamps);
         left = left.child(render_status_bar_toggle(
             "status-timestamps",
             icons::IconName::Clock,
             "tooltip.timestamps",
-            shell.terminal_settings.show_timestamps,
+            show_timestamps,
             AppShell::toggle_timestamps,
             cx,
         ));

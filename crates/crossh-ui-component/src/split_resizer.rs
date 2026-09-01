@@ -178,16 +178,9 @@ impl RenderOnce for SplitResizer {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
-    use std::rc::Rc;
+    use gpui::{Bounds, Point, Size, px};
 
-    use gpui::{Bounds, ElementId, Point, Size, px};
-
-    use super::{SplitHandleSide, SplitResizer, drag_width};
-
-    fn state() -> (Rc<Cell<bool>>, Rc<Cell<f32>>) {
-        (Rc::new(Cell::new(false)), Rc::new(Cell::new(100.)))
-    }
+    use super::{SplitHandleSide, drag_width};
 
     #[test]
     fn right_handled_width_measures_from_left_edge() {

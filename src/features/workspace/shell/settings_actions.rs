@@ -29,9 +29,31 @@ impl AppShell {
     }
 
     pub(crate) fn toggle_timestamps(&mut self, cx: &mut Context<Self>) {
-        let mut terminal = self.terminal_settings.clone();
-        terminal.show_timestamps = !terminal.show_timestamps;
-        self.apply_terminal_settings(terminal, cx);
+        // 按终端独立：仅切换当前焦点终端（分屏时为聚焦侧），非全局广播。
+        // 新建终端的默认值仍跟随全局 `terminal_settings.show_timestamps`，此处同步更新
+        // 该默认值并落盘，但不广播到其他已存在终端。
+        let Some(crate::features::workspace::state::ActiveView::LocalSession(session_id)) =
+            self.workspace.focused_view()
+        else {
+            return;
+        };
+        let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) else {
+            return;
+        };
+        let terminal = session.terminal.clone();
+        let new_value = {
+            let mut next = false;
+            terminal.update(cx, |view, cx| {
+                next = !view.show_timestamps();
+                view.set_show_timestamps(next, cx);
+            });
+            next
+        };
+        if self.terminal_settings.show_timestamps != new_value {
+            self.terminal_settings.show_timestamps = new_value;
+            self.persist_settings();
+        }
+        cx.notify();
     }
 
     pub(crate) fn toggle_host_sidebar(&mut self, cx: &mut Context<Self>) {

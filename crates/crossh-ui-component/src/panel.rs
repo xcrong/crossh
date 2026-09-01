@@ -350,11 +350,7 @@ pub fn rail_status_badge(color: gpui::Rgba, border: gpui::Rgba) -> impl IntoElem
 #[cfg(test)]
 #[allow(non_snake_case)]
 mod tests {
-    use super::{
-        PanelSide, RAIL_AVATAR_GAP, RAIL_AVATAR_SIZE, Rail, available_main_width,
-        clamp_panel_width, handle_side_for,
-    };
-    use crate::split_resizer::SplitHandleSide;
+    use super::{available_main_width, clamp_panel_width};
     use gpui::px;
 
     #[test]

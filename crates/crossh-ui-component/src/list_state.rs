@@ -45,7 +45,7 @@ mod tests {
     use crate::hint::Hint;
     use gpui::IntoElement as _;
 
-    use super::{ListState, list_empty, list_state_body};
+    use super::{ListState, list_state_body};
 
     #[test]
     fn list_state_body_dispatches_to_rows_or_hint() {

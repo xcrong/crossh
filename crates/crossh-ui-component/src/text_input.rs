@@ -457,7 +457,9 @@ mod tests {
 
     #[gpui::test]
     fn layout_flags_and_focus_visible_are_sticky(cx: &mut TestAppContext) {
-        let input: TextInput<()> = TextInput::new("test_input", focus(cx)).flex_1().full_width();
+        let input: TextInput<()> = TextInput::new("test_input", focus(cx))
+            .flex_1()
+            .full_width();
         assert!(input.flex_1);
         assert!(input.full_width);
     }

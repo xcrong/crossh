@@ -229,13 +229,7 @@ impl<V: EntityInputHandler + 'static> RenderOnce for ModalField<V> {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{FocusHandle, TestAppContext, px};
-
-    use super::{ModalField, SharedTextState};
-
-    fn focus(cx: &mut TestAppContext) -> FocusHandle {
-        cx.update(|cx| cx.focus_handle())
-    }
+    use super::SharedTextState;
 
     fn state(value: &str, cursor: usize, anchor: Option<usize>) -> SharedTextState {
         SharedTextState {

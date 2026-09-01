@@ -105,6 +105,7 @@ fn settings_path() -> Option<PathBuf> {
 /// 测试隔离：把设置读写重定向到指定路径（`None` 恢复默认目录）。
 /// `thread_local` 保证并行测试互不干扰；重定向只作用于当前测试线程。
 #[cfg(test)]
+#[allow(dead_code)]
 pub(crate) fn set_test_settings_path(path: Option<PathBuf>) {
     TEST_SETTINGS_PATH.with(|cell| *cell.borrow_mut() = path);
 }

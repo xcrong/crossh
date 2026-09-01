@@ -89,9 +89,7 @@ fn next_state(on: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use gpui::ElementId;
-
-    use super::{ToggleSwitch, next_state};
+    use super::next_state;
 
     #[test]
     fn toggle_click_flips_state_both_ways() {
