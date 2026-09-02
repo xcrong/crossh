@@ -42,7 +42,7 @@ fn main() {
         std::env::args().skip(1),
         std::env::current_dir().map_err(|error| error.to_string()),
     );
-    let launch_target = match cli {
+    match cli {
         app::cli::CliCommand::Help => {
             app::cli::print_help();
             return;
@@ -92,22 +92,21 @@ fn main() {
             app::cli::print_help();
             std::process::exit(2);
         }
-        app::cli::CliCommand::Main(target) => target,
+        app::cli::CliCommand::Main => {}
     };
-    infrastructure::logging::init();
+    app::bootstrap::init();
 
     // 预热 tokio 运行时（单例，限 2 worker 线程，控内存）。
-    let _rt = infrastructure::runtime::runtime();
+    let _rt = app::bootstrap::runtime();
 
     let app = gpui_platform::application().with_assets(crossh_ui::assets::UiAssetSource::default());
-    let reopen_target = launch_target.clone();
     app.on_reopen(move |cx| {
         // Reuse an existing window, including a hidden one. Only create a
         // window when the application has no windows left.
         if let Some(window) = cx.windows().into_iter().next() {
             let _ = window.update(cx, |_, window, _| window.activate_window());
         } else {
-            app::open_launch_target(reopen_target.clone(), cx);
+            crate::features::workspace::open_main_window(cx);
         }
     });
     app.run(move |cx: &mut App| {
@@ -128,6 +127,6 @@ fn main() {
             gpui::KeyBinding::new("cmd-j", ToggleScratchTerminal, Some("AppShell")),
         ]);
         infrastructure::app_menu::install(cx);
-        app::open_launch_target(launch_target, cx);
+        crate::features::workspace::open_main_window(cx);
     });
 }

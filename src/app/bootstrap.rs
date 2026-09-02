@@ -1,8 +1,14 @@
-//! Process-wide logging and panic diagnostics.
+//! Application bootstrap: process-wide logging and tokio runtime.
+//!
+//! Extracted from `src/infrastructure/{logging,runtime}.rs` to keep `main.rs`
+//! thin while co-locating startup concerns under `app::`.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
+use std::sync::LazyLock;
+
+use tokio::runtime::Runtime;
 
 /// 持久化日志路径。放在 /tmp，系统重启自动清空，无需手动维护。
 const LOG_PATH: &str = "/tmp/crossh/run.log";
@@ -10,6 +16,20 @@ const LOG_PATH: &str = "/tmp/crossh/run.log";
 const LOG_TRIM_THRESHOLD: usize = 50_000;
 /// 裁剪后保留的末尾行数。
 const LOG_TRIM_KEEP: usize = 10_000;
+
+static RT: LazyLock<Runtime> = LazyLock::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .thread_name("crossh-runtime")
+        .build()
+        .expect("failed to build tokio runtime")
+});
+
+/// 全局 tokio Runtime 引用。
+pub(crate) fn runtime() -> &'static Runtime {
+    &RT
+}
 
 /// Initialize logging and install the process panic hook.
 pub(crate) fn init() {

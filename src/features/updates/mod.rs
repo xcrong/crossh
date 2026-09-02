@@ -6,7 +6,7 @@ use gpui::{Context, Task};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-use crate::infrastructure::runtime::runtime;
+use crate::app::bootstrap::runtime;
 use crossh_update::{
     DEFAULT_MANIFEST_URL, UpdateCandidate, UpdateError, UpdateTarget, download_artifact,
     fetch_manifest, spawn_updater, take_update_result,

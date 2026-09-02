@@ -53,11 +53,10 @@ open dist/crossh.app
 ```
 crates/
   crossh-core/                无 UI 的配置、终端契约、命令/Git 逻辑
-  crossh-theme/               无 UI 的颜色 tokens
   crossh-terminal/            终端 settings/events 模型边界
   crossh-update/              manifest、下载校验、归档安装和 updater
   crossh-assets/              无 UI 的图标资源、嵌入和资源完整性校验
-  crossh-ui/                  GPUI 主题、图标、菜单和通用控件
+  crossh-ui/                  GPUI 主题、调色板、图标、菜单和通用控件
   crossh-ui-component/        通用 GPUI 控件（按钮、徽章、头像、分隔线等）
 src/
   main.rs                     入口编排：窗口、快捷键、启动顺序
@@ -70,7 +69,7 @@ src/
     updates/                  更新状态机与设置页入口
 ```
 
-依赖方向保持单向：`crossh-core`、`crossh-theme`、`crossh-assets`、`crossh-terminal` 和 `crossh-update` 不依赖 GPUI；`crossh-ui` 将 `crossh-assets` 适配为 GPUI 的资源源；根 package 的 GPUI feature adapter 依赖这些 crate；`workspace` 直接管理本地终端实体、活动视图与分栏状态。可重复执行的分层检查位于 `scripts/check-architecture.sh`。
+依赖方向保持单向：`crossh-core`、`crossh-assets`、`crossh-terminal` 和 `crossh-update` 不依赖 GPUI；`crossh-ui`（含调色板 `palette`）将 `crossh-assets` 适配为 GPUI 的资源源；根 package 的 GPUI feature adapter 依赖这些 crate；`workspace` 直接管理本地终端实体、活动视图与分栏状态。可重复执行的分层检查位于 `scripts/check-architecture.sh`。
 
 UI 图标统一放在 `crates/crossh-assets/assets/icons/`，由 `crossh-assets`
 自动嵌入。图标引用必须通过 `crossh_ui::icons::IconName`，不要在业务视图中

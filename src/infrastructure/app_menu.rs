@@ -7,7 +7,7 @@ use terminal as zed_terminal;
 use gpui::SystemMenuType;
 
 use crate::features::settings::{self, SettingsSection};
-use crate::features::workspace::AppShell;
+use crate::features::workspace::{AppShell, open_main_window};
 use crate::shared::i18n;
 use crate::{
     About, CheckForUpdates, CloseActiveTab, CloseWindow, MinimizeWindow, NewTerminal, OpenProject,
@@ -200,7 +200,7 @@ fn ensure_main_shell(cx: &mut App) -> Entity<AppShell> {
         return shell;
     }
 
-    crate::app::open_main_window(cx);
+    open_main_window(cx);
     find_main_shell(cx).expect("main window should contain an AppShell")
 }
 

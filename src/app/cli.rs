@@ -10,8 +10,6 @@ use crate::features::{
     note_launcher::{self, NoteCliCommand},
 };
 
-use super::LaunchTarget;
-
 /// 顶层 CLI 分发结果，由 `main` 负责副作用（打印、退出、启动窗口）。
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum CliCommand {
@@ -20,7 +18,7 @@ pub(crate) enum CliCommand {
     Git(Result<GitCliCommand, String>),
     Note(Result<NoteCliCommand, String>),
     Unknown(String),
-    Main(LaunchTarget),
+    Main,
 }
 
 /// 解析顶层参数。
@@ -33,7 +31,7 @@ pub(crate) fn parse_cli(
     current_dir: Result<PathBuf, String>,
 ) -> CliCommand {
     match args.next().as_deref() {
-        None => CliCommand::Main(LaunchTarget::Main),
+        None => CliCommand::Main,
         Some("--help" | "-h" | "help") => CliCommand::Help,
         Some("--version" | "-V") => CliCommand::Version,
         Some("git") => {
@@ -75,7 +73,7 @@ mod tests {
     #[test]
     fn no_arguments_maps_to_main() {
         let command = parse_cli(std::iter::empty(), cwd_ok("/repo"));
-        assert_eq!(command, CliCommand::Main(super::super::LaunchTarget::Main));
+        assert_eq!(command, CliCommand::Main);
     }
 
     #[test]

@@ -46,8 +46,7 @@ check_absent \
     "$repo_root/crates/crossh-core" \
     "$repo_root/crates/crossh-assets" \
     "$repo_root/crates/crossh-terminal" \
-    "$repo_root/crates/crossh-update" \
-    "$repo_root/crates/crossh-theme"
+    "$repo_root/crates/crossh-update"
 
 check_absent \
     "logic crates import the application or shared UI crate" \
@@ -55,8 +54,7 @@ check_absent \
     "$repo_root/crates/crossh-core" \
     "$repo_root/crates/crossh-assets" \
     "$repo_root/crates/crossh-terminal" \
-    "$repo_root/crates/crossh-update" \
-    "$repo_root/crates/crossh-theme"
+    "$repo_root/crates/crossh-update"
 
 check_absent \
     "workspace matches over concrete pane variants" \

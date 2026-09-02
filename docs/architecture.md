@@ -7,7 +7,6 @@ the UI.
 
 ```text
 crossh (application + feature views)
-  -> crossh-theme
   -> crossh-ui -> crossh-assets
   -> crossh-ui-component -> crossh-ui
   -> crossh-terminal -> crossh-core
@@ -17,22 +16,19 @@ crossh (application + feature views)
 crossh-git (standalone Git Viewer)
   -> crossh-ui-component -> crossh-ui
   -> crossh-ui -> crossh-assets
-  -> crossh-theme
   -> crossh-core
 
 crossh-note (standalone Note Viewer)
   -> crossh-ui-component -> crossh-ui
   -> crossh-ui -> crossh-assets
-  -> crossh-theme
   -> crossh-note
 
 crossh-core       -> no GPUI, no application crate; Git command, status, branch,
                       history, stash, conflict, and commit-detail contracts
 crossh-terminal   -> no GPUI, terminal settings/events only
 crossh-update     -> no GPUI, release/download/install implementation
-crossh-theme      -> no GPUI, renderer-independent color tokens
 crossh-assets     -> no GPUI, embedded Crossh icon assets and icon identifiers
-crossh-ui         -> GPUI primitives and the asset-source adapter
+crossh-ui         -> GPUI primitives, renderer-independent palette (ex crossh-theme), icon rendering, and the asset-source adapter
 crossh-ui-component -> GPUI widgets on top of crossh-ui
 crossh-note       -> no GPUI, SQLite note store (WAL, FTS5, tags, pinned) and tag normalization
 shared resources  -> external `crossh-assets` directory loaded by every binary
@@ -41,17 +37,14 @@ shared resources  -> external `crossh-assets` directory loaded by every binary
 ## Crate Ownership
 
 - `crossh-core`: terminal-neutral contracts and title helpers, command history/background tasks, Git command/diff parsing, local branch inspection/switching, stash and conflict operations, the shared `git_status`, `git_branch`, `git_history`, `git_stash`, and `git_conflict` parsers.
-- `crossh-theme`: renderer-independent Crossh color tokens shared by the GPUI and ratatui surfaces.
 - `crossh-terminal`: terminal-owned settings and events. It is the model boundary consumed by the GPUI terminal view.
 - `crossh-update`: release manifest validation, HTTPS downloads, checksum verification, archive installation, and the standalone updater hand-off.
 - `crossh-assets`: UI-neutral Lucide SVG storage, shared external-resource discovery, debug embedded fallback, shared icon identifiers, and asset integrity tests. Its files live under `crates/crossh-assets/assets/icons/`.
-- `crossh-ui`: reusable GPUI widgets, context menus, the GPUI adapter for `crossh-theme`, icon rendering, and the `AssetSource` adapter backed by the shared external resource directory.
+- `crossh-ui`: reusable GPUI widgets, context menus, renderer-independent palette (`palette.rs`, migrated from `crossh-theme`), icon rendering, and the `AssetSource` adapter backed by the shared external resource directory.
 - `crossh-ui-component`: reusable stateless GPUI control kit (buttons, badges, status metrics, avatars, tooltips, toasts, layout helpers, shared tabs, and status-bar shells) layered on `crossh-ui`.
 - `crossh`: process startup plus user-facing feature views and GPUI adapters. `crossh git` and the workspace status-bar Git entry delegate to the sibling `crossh-git` binary; `crossh note` and the workspace status-bar Note entry delegate to the sibling `crossh-note` binary; `features/terminal/view.rs` is the `terminal_view`-style host around Zed's terminal foundation.
 - `crossh-git`: standalone Git Viewer entry point. It owns the Git window source and reuses the same GPUI and UI dependencies, but does not initialize terminal, workspace, or settings features.
 - `crossh-note`: standalone Note Viewer entry point. It owns the Note window source (list/search/tags, `crossh-editor` input state + Markdown preview) and reuses the same GPUI/UI dependencies, but does not initialize terminal, workspace, or settings features. Its pure logic lives in `crossh-note`.
-
-- `features/workspace`: navigation, tabs, active view, local projects, terminal split state, status-bar Git status, and pull/push sync actions.
 - `features/settings`: application settings persistence and settings window.
 - `features/git_launcher`: Git CLI parsing and fire-and-forget startup of the sibling `crossh-git` process.
 - `features/note_launcher`: Note CLI parsing and fire-and-forget startup of the sibling `crossh-note` process.
@@ -64,7 +57,7 @@ collections and terminal split state live in `WorkspaceState` and
 
 ## Boundary Rules
 
-1. `crossh-core`, `crossh-assets`, `crossh-theme`, `crossh-terminal`, and `crossh-update` must not import `gpui`, `gpui_platform`, or `crossh-ui`.
+1. `crossh-core`, `crossh-assets`, `crossh-terminal`, and `crossh-update` must not import `gpui`, `gpui_platform`, or `crossh-ui`.
 2. Feature views consume crate-root APIs, not private implementation modules from `crossh-update`.
 3. Feature settings stay next to the feature that owns their behavior; the persistence layer composes snapshots without becoming the settings owner.
 4. `main.rs` is assembly only: logging, runtime warm-up, platform setup, Zed global initialization, key bindings, and window boot.

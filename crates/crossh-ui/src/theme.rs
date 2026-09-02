@@ -1,9 +1,9 @@
-use crossh_theme::Rgb;
+use crate::palette::Rgb;
 use gpui::{Hsla, Rgba, hsla, rgb};
 
 /// Crossh's visual language: a graphite command deck with a mint signal.
 ///
-/// Color values live in `crossh-theme`; this module adapts them to GPUI and
+/// Color values live in `crate::palette`; this module adapts them to GPUI and
 /// keeps GPUI-specific selection and focus colors next to the renderer.
 pub const SIDEBAR_WIDTH: f32 = 252.0;
 pub const SIDEBAR_MIN_WIDTH: f32 = 216.0;
@@ -21,51 +21,51 @@ fn color(value: Rgb) -> Rgba {
 }
 
 pub fn canvas() -> Rgba {
-    color(crossh_theme::canvas())
+    color(crate::palette::canvas())
 }
 
 pub fn sidebar() -> Rgba {
-    color(crossh_theme::sidebar())
+    color(crate::palette::sidebar())
 }
 
 pub fn surface() -> Rgba {
-    color(crossh_theme::surface())
+    color(crate::palette::surface())
 }
 
 pub fn raised() -> Rgba {
-    color(crossh_theme::raised())
+    color(crate::palette::raised())
 }
 
 pub fn border() -> Rgba {
-    color(crossh_theme::border())
+    color(crate::palette::border())
 }
 
 pub fn border_strong() -> Rgba {
-    color(crossh_theme::border_strong())
+    color(crate::palette::border_strong())
 }
 
 pub fn overlay() -> Rgba {
-    color(crossh_theme::overlay())
+    color(crate::palette::overlay())
 }
 
 pub fn text() -> Rgba {
-    color(crossh_theme::text())
+    color(crate::palette::text())
 }
 
 pub fn muted_text() -> Rgba {
-    color(crossh_theme::muted_text())
+    color(crate::palette::muted_text())
 }
 
 pub fn faint_text() -> Rgba {
-    color(crossh_theme::faint_text())
+    color(crate::palette::faint_text())
 }
 
 pub fn accent() -> Rgba {
-    color(crossh_theme::accent())
+    color(crate::palette::accent())
 }
 
 pub fn accent_hover() -> Rgba {
-    color(crossh_theme::accent_hover())
+    color(crate::palette::accent_hover())
 }
 
 /// Background tint of an active text selection. The translucent accent keeps
@@ -76,39 +76,39 @@ pub fn selection() -> Hsla {
 }
 
 pub fn accent_soft() -> Rgba {
-    color(crossh_theme::accent_soft())
+    color(crate::palette::accent_soft())
 }
 
 pub fn info() -> Rgba {
-    color(crossh_theme::info())
+    color(crate::palette::info())
 }
 
 pub fn warning() -> Rgba {
-    color(crossh_theme::warning())
+    color(crate::palette::warning())
 }
 
 pub fn danger() -> Rgba {
-    color(crossh_theme::danger())
+    color(crate::palette::danger())
 }
 
 pub fn danger_hover() -> Rgba {
-    color(crossh_theme::danger_hover())
+    color(crate::palette::danger_hover())
 }
 
 pub fn diff_add_bg() -> Rgba {
-    color(crossh_theme::diff_add_bg())
+    color(crate::palette::diff_add_bg())
 }
 
 pub fn diff_add_fg() -> Rgba {
-    color(crossh_theme::diff_add_fg())
+    color(crate::palette::diff_add_fg())
 }
 
 pub fn diff_del_bg() -> Rgba {
-    color(crossh_theme::diff_del_bg())
+    color(crate::palette::diff_del_bg())
 }
 
 pub fn diff_del_fg() -> Rgba {
-    color(crossh_theme::diff_del_fg())
+    color(crate::palette::diff_del_fg())
 }
 
 pub fn scrim() -> Hsla {

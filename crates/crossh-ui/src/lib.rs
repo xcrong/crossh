@@ -7,5 +7,6 @@ pub mod assets;
 pub mod context_menu;
 pub mod icons;
 pub mod linux_titlebar;
+pub mod palette;
 pub mod theme;
 pub mod widgets;

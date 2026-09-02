@@ -1,6 +1,6 @@
 //! Application-wide theme — Crossh single source of truth.
 //! Copied from Zed's `theme::Theme` structure but now owned: Crossh defines
-//! its own palette in `crossh-theme`/`crossh-ui`, and `install_crossh_theme`
+//! its own palette in `crossh-ui::palette` (via `crossh-ui::theme`), and `install_crossh_theme`
 //! is the sole writer of `GlobalTheme` after `theme::init(JustBase)`.
 //! ANSI 16 colors remain at Zed One Dark base; Crossh's canvas (#23272e) is
 //! the terminal background and `minimum_contrast 45` via APCA guarantees
