@@ -6,6 +6,8 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::Path;
+#[cfg(target_os = "linux")]
+use std::process::Command;
 use tempfile::{Builder as TempDirBuilder, TempDir};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,8 +182,177 @@ builtin source {}
                 .env
                 .push(("PATH".to_string(), os_str_to_string(&path)?));
         }
+        #[cfg(target_os = "linux")]
+        {
+            for (key, value) in gnome_proxy_env() {
+                if env::var_os(&key).is_some() {
+                    continue;
+                }
+                if environment.env.iter().any(|(k, _)| k == &key) {
+                    continue;
+                }
+                environment.env.push((key, value));
+            }
+        }
         Ok(Some(environment))
     }
+}
+
+#[cfg(target_os = "linux")]
+fn gnome_proxy_env() -> Vec<(String, String)> {
+    let mode = gsettings_get("org.gnome.system.proxy", "mode")
+        .map(|v| parse_gsettings_string(&v))
+        .unwrap_or_default();
+    if mode != "manual" {
+        return Vec::new();
+    }
+    let mut envs = Vec::new();
+    let ignore_hosts = gsettings_get("org.gnome.system.proxy", "ignore-hosts")
+        .map(|v| parse_gsettings_str_array(&v))
+        .unwrap_or_default();
+    let no_proxy = ignore_hosts.join(",");
+    if !no_proxy.is_empty() {
+        envs.push(("no_proxy".to_string(), no_proxy.clone()));
+        envs.push(("NO_PROXY".to_string(), no_proxy));
+    }
+    let http_host = gsettings_get("org.gnome.system.proxy.http", "host")
+        .map(|v| parse_gsettings_string(&v))
+        .unwrap_or_default();
+    let http_port = gsettings_get("org.gnome.system.proxy.http", "port")
+        .and_then(|v| v.trim().parse::<u16>().ok())
+        .unwrap_or(0);
+    if let Some(url) = build_http_proxy_url(&http_host, http_port) {
+        envs.push(("http_proxy".to_string(), url.clone()));
+        envs.push(("HTTP_PROXY".to_string(), url));
+    }
+    let https_host = gsettings_get("org.gnome.system.proxy.https", "host")
+        .map(|v| parse_gsettings_string(&v))
+        .unwrap_or_default();
+    let https_port = gsettings_get("org.gnome.system.proxy.https", "port")
+        .and_then(|v| v.trim().parse::<u16>().ok())
+        .unwrap_or(0);
+    let https_url = build_http_proxy_url(&https_host, https_port).or_else(|| {
+        let use_same = gsettings_get("org.gnome.system.proxy", "use-same-proxy")
+            .map(|v| v.trim() == "true")
+            .unwrap_or(false);
+        if use_same {
+            build_http_proxy_url(&http_host, http_port)
+        } else {
+            None
+        }
+    });
+    if let Some(url) = https_url {
+        envs.push(("https_proxy".to_string(), url.clone()));
+        envs.push(("HTTPS_PROXY".to_string(), url));
+    }
+    let ftp_host = gsettings_get("org.gnome.system.proxy.ftp", "host")
+        .map(|v| parse_gsettings_string(&v))
+        .unwrap_or_default();
+    let ftp_port = gsettings_get("org.gnome.system.proxy.ftp", "port")
+        .and_then(|v| v.trim().parse::<u16>().ok())
+        .unwrap_or(0);
+    let ftp_url = build_http_proxy_url(&ftp_host, ftp_port).or_else(|| {
+        let use_same = gsettings_get("org.gnome.system.proxy", "use-same-proxy")
+            .map(|v| v.trim() == "true")
+            .unwrap_or(false);
+        if use_same {
+            build_http_proxy_url(&http_host, http_port)
+        } else {
+            None
+        }
+    });
+    if let Some(url) = ftp_url {
+        envs.push(("ftp_proxy".to_string(), url.clone()));
+        envs.push(("FTP_PROXY".to_string(), url));
+    }
+    let socks_host = gsettings_get("org.gnome.system.proxy.socks", "host")
+        .map(|v| parse_gsettings_string(&v))
+        .unwrap_or_default();
+    let socks_port = gsettings_get("org.gnome.system.proxy.socks", "port")
+        .and_then(|v| v.trim().parse::<u16>().ok())
+        .unwrap_or(0);
+    if let Some(url) = build_socks_proxy_url(&socks_host, socks_port) {
+        envs.push(("all_proxy".to_string(), url.clone()));
+        envs.push(("ALL_PROXY".to_string(), url));
+    }
+    envs
+}
+
+#[cfg(target_os = "linux")]
+fn gsettings_get(schema: &str, key: &str) -> Option<String> {
+    let output = Command::new("gsettings")
+        .args(["get", schema, key])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn parse_gsettings_string(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.len() >= 2 && trimmed.starts_with('\'') && trimmed.ends_with('\'') {
+        trimmed[1..trimmed.len() - 1].to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn parse_gsettings_str_array(value: &str) -> Vec<String> {
+    let trimmed = value.trim();
+    if trimmed == "@as []" || trimmed == "[]" {
+        return Vec::new();
+    }
+    if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
+        return Vec::new();
+    }
+    let inner = &trimmed[1..trimmed.len() - 1];
+    let mut result = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut quote_char = '\'';
+    for ch in inner.chars() {
+        if in_quotes {
+            if ch == quote_char {
+                in_quotes = false;
+                result.push(current.clone());
+                current.clear();
+            } else {
+                current.push(ch);
+            }
+        } else if ch == '\'' || ch == '"' {
+            in_quotes = true;
+            quote_char = ch;
+        } else if ch == ',' {
+            // separator, already handled by quote closing
+        }
+    }
+    result
+}
+
+#[cfg(target_os = "linux")]
+fn build_http_proxy_url(host: &str, port: u16) -> Option<String> {
+    if host.is_empty() || port == 0 {
+        return None;
+    }
+    Some(format!("http://{host}:{port}"))
+}
+
+#[cfg(target_os = "linux")]
+fn build_socks_proxy_url(host: &str, port: u16) -> Option<String> {
+    if host.is_empty() || port == 0 {
+        return None;
+    }
+    Some(format!("socks5://{host}:{port}"))
 }
 
 fn new_shell_temp_dir() -> io::Result<TempDir> {
