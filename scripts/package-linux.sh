@@ -8,12 +8,12 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+DIST="$(pwd)/dist"
 
 TARGET="${1:?usage: scripts/package-linux.sh <target> [version]}"
 VERSION="${2:-$(grep '^version' Cargo.toml | head -1 | sed 's/.*= *"\(.*\)".*/\1/')}"
 APP_NAME="crossh"
 APP_ID="me.xcrong.crossh"
-DIST="dist"
 case "$TARGET" in
     x86_64-*) ARCH="x86_64" ;;
     aarch64-*) ARCH="aarch64" ;;
@@ -158,6 +158,10 @@ if [ -n "${RUNTIME:-}" ] && [ -f "$RUNTIME" ]; then
 else
     APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" VERSION="$VERSION" \
         "$APPIMAGETOOL" "$APPDIR" "$APPIMAGE"
+fi
+if [ ! -f "$APPIMAGE" ]; then
+    echo "Error: AppImage 未生成: $APPIMAGE (appimagetool 可能返回了相对路径错误)" >&2
+    exit 1
 fi
 
 # --- 配套安装器 -------------------------------------------------------------
