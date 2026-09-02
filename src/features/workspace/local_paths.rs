@@ -17,7 +17,9 @@ pub(super) fn normalize_local_cwd(path: PathBuf) -> Option<PathBuf> {
     if !path.is_dir() {
         return None;
     }
-    let path = path.canonicalize().ok()?;
+    // dunce::canonicalize 在 Windows 上去掉 \\?\ 扩展路径前缀，
+    // 避免传给子进程 cwd 后 PowerShell prompt 显示丑陋的完整 Provider 路径。
+    let path = dunce::canonicalize(path).ok()?;
     path.is_dir().then_some(path)
 }
 
@@ -59,7 +61,7 @@ mod tests {
 
         let normalized = normalize_recent_dirs([existing.clone(), file, missing, existing.clone()]);
 
-        assert_eq!(normalized, vec![existing.canonicalize().unwrap()]);
+        assert_eq!(normalized, vec![dunce::canonicalize(&existing).unwrap()]);
         std::fs::remove_dir_all(root).expect("test directory should be removed");
     }
 }
