@@ -70,6 +70,105 @@ impl AppShell {
         self.new_tab(window, cx);
     }
 
+    pub(crate) fn handle_cycle_next_tab(
+        &mut self,
+        _: &crate::features::workspace::shell::CycleNextTab,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cycle_guarded(1, cx);
+    }
+
+    pub(crate) fn handle_cycle_prev_tab(
+        &mut self,
+        _: &crate::features::workspace::shell::CyclePrevTab,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cycle_guarded(-1, cx);
+    }
+
+    pub(crate) fn handle_switch_to_tab1(
+        &mut self,
+        _: &crate::features::workspace::shell::SwitchToTab1,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.switch_to_index(0, cx);
+    }
+
+    pub(crate) fn handle_switch_to_tab2(
+        &mut self,
+        _: &crate::features::workspace::shell::SwitchToTab2,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.switch_to_index(1, cx);
+    }
+
+    pub(crate) fn handle_switch_to_tab3(
+        &mut self,
+        _: &crate::features::workspace::shell::SwitchToTab3,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.switch_to_index(2, cx);
+    }
+
+    pub(crate) fn handle_switch_to_tab4(
+        &mut self,
+        _: &crate::features::workspace::shell::SwitchToTab4,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.switch_to_index(3, cx);
+    }
+
+    pub(crate) fn handle_switch_to_tab5(
+        &mut self,
+        _: &crate::features::workspace::shell::SwitchToTab5,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.switch_to_index(4, cx);
+    }
+
+    pub(crate) fn handle_switch_to_tab6(
+        &mut self,
+        _: &crate::features::workspace::shell::SwitchToTab6,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.switch_to_index(5, cx);
+    }
+
+    pub(crate) fn handle_switch_to_tab7(
+        &mut self,
+        _: &crate::features::workspace::shell::SwitchToTab7,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.switch_to_index(6, cx);
+    }
+
+    pub(crate) fn handle_switch_to_tab8(
+        &mut self,
+        _: &crate::features::workspace::shell::SwitchToTab8,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.switch_to_index(7, cx);
+    }
+
+    pub(crate) fn handle_switch_to_tab9(
+        &mut self,
+        _: &crate::features::workspace::shell::SwitchToTab9,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.switch_to_index(8, cx);
+    }
+
     pub(crate) fn handle_close_active_tab(
         &mut self,
         _: &crate::CloseActiveTab,
@@ -234,6 +333,25 @@ impl AppShell {
         let current_idx = ids.iter().position(|id| *id == active_id).unwrap_or(0);
         let next_idx = (current_idx as isize + direction).rem_euclid(ids.len() as isize) as usize;
         self.select_local_session(ids[next_idx], cx);
+    }
+    fn should_block_tab_shortcuts(&self) -> bool {
+        self.context_menu.is_some()
+            || self.command_palette.is_some()
+            || self.rename_editor.is_some()
+            || self.default_command_editor.is_some()
+    }
+    fn switch_to_index(&mut self, idx: usize, cx: &mut Context<Self>) {
+        if self.should_block_tab_shortcuts() {
+            return;
+        }
+        self.switch_tab(idx, cx);
+    }
+
+    fn cycle_guarded(&mut self, direction: isize, cx: &mut Context<Self>) {
+        if self.should_block_tab_shortcuts() {
+            return;
+        }
+        self.cycle_tab(direction, cx);
     }
 
     /// 从当前标签复制一个终端标签；没有活动标签时把焦点放到快速连接框。

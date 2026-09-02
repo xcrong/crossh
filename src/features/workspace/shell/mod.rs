@@ -16,8 +16,9 @@ use std::time::Duration;
 
 use gpui::{
     App, AppContext, Context, Entity, EntityId, FocusHandle, InteractiveElement, IntoElement,
-    KeyDownEvent, ParentElement, PathPromptOptions, Pixels, Point, Render, Styled, Subscription,
-    Task, TitlebarOptions, Window, WindowBounds, WindowOptions, div, px, size,
+    KeyBinding, KeyDownEvent, ParentElement, PathPromptOptions, Pixels, Point, Render, Styled,
+    Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, px,
+    size,
 };
 
 use crate::features::editor_launcher;
@@ -57,6 +58,56 @@ mod shell_input;
 mod shell_render;
 mod split;
 mod tabs;
+
+actions!(
+    shell,
+    [
+        CycleNextTab,
+        CyclePrevTab,
+        SwitchToTab1,
+        SwitchToTab2,
+        SwitchToTab3,
+        SwitchToTab4,
+        SwitchToTab5,
+        SwitchToTab6,
+        SwitchToTab7,
+        SwitchToTab8,
+        SwitchToTab9,
+    ]
+);
+
+/// 注册声明式快捷键：`cmd/ctrl+数字` 直达标签、`cmd/ctrl+tab/shift+tab` 循环标签。
+///
+/// 消融前这些由 `handle_shell_key_down` 命令式硬编码，无法被 `Keymap` 冒泡/覆盖，
+/// 也无法在 `key_context` 维度做隔离。此处迁至 `KeyBinding` 后，
+/// `Terminal` 聚焦时仍通过 `context_stack` 冒泡命中 `AppShell`，且可用
+/// `KeyBinding` 的 `context_predicate` 精确裁剪。
+pub(crate) fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("cmd-tab", CycleNextTab, Some("AppShell")),
+        KeyBinding::new("ctrl-tab", CycleNextTab, Some("AppShell")),
+        KeyBinding::new("cmd-shift-tab", CyclePrevTab, Some("AppShell")),
+        KeyBinding::new("ctrl-shift-tab", CyclePrevTab, Some("AppShell")),
+        KeyBinding::new("cmd-1", SwitchToTab1, Some("AppShell")),
+        KeyBinding::new("ctrl-1", SwitchToTab1, Some("AppShell")),
+        KeyBinding::new("cmd-2", SwitchToTab2, Some("AppShell")),
+        KeyBinding::new("ctrl-2", SwitchToTab2, Some("AppShell")),
+        KeyBinding::new("cmd-3", SwitchToTab3, Some("AppShell")),
+        KeyBinding::new("ctrl-3", SwitchToTab3, Some("AppShell")),
+        KeyBinding::new("cmd-4", SwitchToTab4, Some("AppShell")),
+        KeyBinding::new("ctrl-4", SwitchToTab4, Some("AppShell")),
+        KeyBinding::new("cmd-5", SwitchToTab5, Some("AppShell")),
+        KeyBinding::new("ctrl-5", SwitchToTab5, Some("AppShell")),
+        KeyBinding::new("cmd-6", SwitchToTab6, Some("AppShell")),
+        KeyBinding::new("ctrl-6", SwitchToTab6, Some("AppShell")),
+        KeyBinding::new("cmd-7", SwitchToTab7, Some("AppShell")),
+        KeyBinding::new("ctrl-7", SwitchToTab7, Some("AppShell")),
+        KeyBinding::new("cmd-8", SwitchToTab8, Some("AppShell")),
+        KeyBinding::new("ctrl-8", SwitchToTab8, Some("AppShell")),
+        KeyBinding::new("cmd-9", SwitchToTab9, Some("AppShell")),
+        KeyBinding::new("ctrl-9", SwitchToTab9, Some("AppShell")),
+    ]);
+}
 
 const GIT_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -295,23 +346,10 @@ impl AppShell {
         if self.scratch_visible && ev.keystroke.key == "escape" {
             self.hide_scratch_terminal(cx);
             cx.stop_propagation();
-            return;
         }
-        let ks = &ev.keystroke;
-        let primary = ks.modifiers.platform || ks.modifiers.control;
-        if !primary {
-            return;
-        }
-
-        match ks.key.as_str() {
-            "tab" => self.cycle_tab(if ks.modifiers.shift { -1 } else { 1 }, cx),
-            "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" => {
-                if let Ok(n) = ks.key.parse::<usize>() {
-                    self.switch_tab(n - 1, cx);
-                }
-            }
-            _ => {}
-        }
+        // 消融完成：`cmd/ctrl+tab` 与 `cmd/ctrl+1..9` 已迁至声明式 `KeyBinding`
+        //（`self::init`），此处不再做命令式分发。保留模态/抽屉的 `Escape`
+        // 拦截与 `stop_propagation`，其余未命中按键交由 `Keymap` 冒泡或终端直通。
     }
 
     /// 在项目目录 view 中打开一个独立的 Zed terminal session。
