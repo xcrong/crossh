@@ -1518,6 +1518,7 @@ dependencies = [
  "crossh-ui-component",
  "crossh-update",
  "dirs",
+ "dunce",
  "env_logger",
  "gpui",
  "gpui_platform",
