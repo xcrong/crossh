@@ -113,6 +113,7 @@ pub(crate) fn render_scratch_panel(
         .justify_center()
         .pt(px(72.))
         .bg(theme::scrim())
+        .occlude()
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(|this, _ev, _window, cx| {
