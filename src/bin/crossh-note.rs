@@ -38,7 +38,7 @@ fn main() {
         .with_assets(crossh_ui::assets::UiAssetSource::default())
         .with_quit_mode(QuitMode::LastWindowClosed);
     app.run(move |cx: &mut App| {
-        cx.set_app_identity("io.github.xcrong.crossh.note", "Crossh Note");
+        cx.set_app_identity("me.xcrong.crossh.note", "Crossh Note");
         cx.init_colors();
         let app_version =
             zed_release_channel::AppVersion::load(env!("CARGO_PKG_VERSION"), None, None);

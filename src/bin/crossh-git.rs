@@ -46,7 +46,7 @@ fn main() {
         .with_assets(crossh_ui::assets::UiAssetSource::default())
         .with_quit_mode(QuitMode::LastWindowClosed);
     app.run(move |cx: &mut App| {
-        cx.set_app_identity("io.github.xcrong.crossh.git", "Crossh Git");
+        cx.set_app_identity("me.xcrong.crossh.git", "Crossh Git");
         cx.init_colors();
         crossh_ui::assets::load_fonts(cx).expect("Crossh fonts should load");
         git::init(cx);

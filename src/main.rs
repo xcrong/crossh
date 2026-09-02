@@ -110,7 +110,7 @@ fn main() {
         }
     });
     app.run(move |cx: &mut App| {
-        cx.set_app_identity("io.crossh.app", "Crossh");
+        cx.set_app_identity("me.xcrong.crossh", "Crossh");
         cx.init_colors();
         let app_version =
             zed_release_channel::AppVersion::load(env!("CARGO_PKG_VERSION"), None, None);

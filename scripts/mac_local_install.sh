@@ -10,7 +10,7 @@ echo "==> packaging..."
 bash scripts/package.sh "$@"
 
 APP_DIR="dist/crossh.app"
-BUNDLE_ID="io.crossh.app"
+BUNDLE_ID="me.xcrong.crossh"
 DEST="/Applications/crossh.app"
 
 if [ ! -d "$APP_DIR" ]; then

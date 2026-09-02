@@ -1141,8 +1141,8 @@ pub fn open_main_window(cx: &mut App) {
             }),
             // Wayland: xdg_toplevel app_id 需与 .desktop 的 StartupWMClass / Icon 匹配，
             // 否则 GNOME/KDE dock 无法关联图标（退化为灰色齿轮）。保持与
-            // main.rs:cx.set_app_identity("io.crossh.app") 一致。
-            app_id: Some("io.crossh.app".into()),
+            // main.rs:cx.set_app_identity("me.xcrong.crossh") 一致。
+            app_id: Some("me.xcrong.crossh".into()),
             // X11: _NET_WM_ICON 需显式提供 RgbaImage；Wayland 忽略此字段，图标由
             // .desktop + hicolor 主题提供。此处暂不嵌入光栅图，避免额外依赖；
             // 若需 X11 托盘图标，可在此加入 `icon: load_window_icon()`。

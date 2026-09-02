@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.."
 TARGET="${1:-}"
 VERSION="${2:-$(grep '^version' Cargo.toml | head -1 | sed 's/.*= *"\(.*\)".*/\1/')}"
 APP_NAME="crossh"
-BUNDLE_ID="io.crossh.app"
+BUNDLE_ID="me.xcrong.crossh"
 DIST="dist"
 APP_DIR="$DIST/$APP_NAME.app"
 CONTENTS="$APP_DIR/Contents"
@@ -84,7 +84,7 @@ PLIST
 echo "==> signing nested executable"
 # A stable ad-hoc signature binds the bundle identifier to the executable.
 # Without it, macOS can treat every rebuilt development bundle as a different
-# notification client even though Info.plist still declares io.crossh.app.
+# notification client even though Info.plist still declares me.xcrong.crossh.
 codesign --force --sign - --identifier "$BUNDLE_ID.git" "$MACOS/crossh-git"
 codesign --force --sign - --identifier "$BUNDLE_ID.note" "$MACOS/crossh-note"
 codesign --force --sign - --identifier "$BUNDLE_ID.updater" "$MACOS/crossh-updater"

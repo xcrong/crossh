@@ -65,23 +65,24 @@ package() {
         ln -s "crossh/crossh-assets" "${pkgdir}/usr/share/crossh-assets"
     fi
 
-    # 3. Desktop Entry — 必须与 WindowOptions.app_id="io.crossh.app" 和
-    #    main.rs:set_app_identity("io.crossh.app") 一致，否则 Wayland dock 无图标
-    install -Dm644 /dev/stdin "${pkgdir}/usr/share/applications/io.crossh.app.desktop" <<'DESKTOP'
+    # 3. Desktop Entry — 必须与 WindowOptions.app_id="me.xcrong.crossh" 和
+    #    main.rs:set_app_identity("me.xcrong.crossh") 一致，否则 Wayland dock 无图标
+    install -Dm644 /dev/stdin "${pkgdir}/usr/share/applications/me.xcrong.crossh.desktop" <<'DESKTOP'
 [Desktop Entry]
 Name=crossh
 GenericName=Terminal Workspace
 Comment=Local-first terminal workspace (GPUI)
 Exec=crossh %u
-Icon=io.crossh.app
+Icon=me.xcrong.crossh
 Terminal=false
 Type=Application
 Categories=Development;
-StartupWMClass=io.crossh.app
+StartupWMClass=me.xcrong.crossh
 Keywords=terminal;workspace;project;git;notes;
 DESKTOP
     # 兼容旧名
-    ln -s "io.crossh.app.desktop" "${pkgdir}/usr/share/applications/crossh.desktop"
+    ln -s "me.xcrong.crossh.desktop" "${pkgdir}/usr/share/applications/crossh.desktop"
+    ln -s "me.xcrong.crossh.desktop" "${pkgdir}/usr/share/applications/io.crossh.app.desktop"
 
     # 4. 图标 — 从 tarball 内的 brand/crossh-logo.svg 生成 512x512 PNG
     #    tarball 已含该 SVG: resources/crossh-assets/brand/crossh-logo.svg (即 assets/appicon/icon-master.svg)
@@ -89,19 +90,21 @@ DESKTOP
     local _pngdir="${pkgdir}/usr/share/icons/hicolor/512x512/apps"
     install -dm755 "${_pngdir}"
     if [[ -f "${_svg}" ]] && command -v rsvg-convert >/dev/null 2>&1; then
-        rsvg-convert -w 512 -h 512 "${_svg}" -o "${_pngdir}/io.crossh.app.png"
+        rsvg-convert -w 512 -h 512 "${_svg}" -o "${_pngdir}/me.xcrong.crossh.png"
     elif [[ -f "${_svg}" ]]; then
         # 回退：直接安装 SVG 为 hicolor/scalable
-        install -Dm644 "${_svg}" "${pkgdir}/usr/share/icons/hicolor/scalable/apps/io.crossh.app.svg"
+        install -Dm644 "${_svg}" "${pkgdir}/usr/share/icons/hicolor/scalable/apps/me.xcrong.crossh.svg"
         # 同时为需要 PNG 的环境提供一个占位拷贝（若 rsvg 不可用）
-        cp "${_svg}" "${_pngdir}/io.crossh.app.png" 2>/dev/null || true
+        cp "${_svg}" "${_pngdir}/me.xcrong.crossh.png" 2>/dev/null || true
     fi
-    # 兼容旧 Icon=crossh
-    if [[ -f "${_pngdir}/io.crossh.app.png" ]]; then
-        ln -s "io.crossh.app.png" "${_pngdir}/crossh.png"
+    # 兼容旧 Icon=crossh / io.crossh.app
+    if [[ -f "${_pngdir}/me.xcrong.crossh.png" ]]; then
+        ln -s "me.xcrong.crossh.png" "${_pngdir}/crossh.png"
+        ln -s "me.xcrong.crossh.png" "${_pngdir}/io.crossh.app.png"
     fi
-    if [[ -f "${pkgdir}/usr/share/icons/hicolor/scalable/apps/io.crossh.app.svg" ]]; then
-        ln -s "io.crossh.app.svg" "${pkgdir}/usr/share/icons/hicolor/scalable/apps/crossh.svg"
+    if [[ -f "${pkgdir}/usr/share/icons/hicolor/scalable/apps/me.xcrong.crossh.svg" ]]; then
+        ln -s "me.xcrong.crossh.svg" "${pkgdir}/usr/share/icons/hicolor/scalable/apps/crossh.svg"
+        ln -s "me.xcrong.crossh.svg" "${pkgdir}/usr/share/icons/hicolor/scalable/apps/io.crossh.app.svg"
     fi
 
     # 5. 许可证与文档
