@@ -46,6 +46,10 @@ fn main() {
         return;
     };
 
+    // 跟随主应用的语言设置：独立二进制不挂载 settings feature，
+    // 只读 settings.toml 的 language 键（缺失/非法时跟随系统）。
+    rust_i18n::set_locale(crossh_core::locale::persisted_locale_code());
+
     let app = gpui_platform::application()
         .with_assets(crossh_ui::assets::UiAssetSource::default())
         .with_quit_mode(QuitMode::LastWindowClosed);

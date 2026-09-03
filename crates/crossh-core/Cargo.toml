@@ -10,6 +10,7 @@ shlex = "1"
 unicode-width = "0.2"
 dirs = "6"
 sysinfo = "0.37"
+sys-locale = "0.3"
 tempfile = "3"
 thiserror = "2"
 

@@ -14,6 +14,7 @@ pub mod git_history_graph;
 pub mod git_remote;
 pub mod git_stash;
 pub mod git_status;
+pub mod locale;
 pub mod process;
 pub mod system_stats;
 pub mod terminal;
