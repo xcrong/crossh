@@ -6,8 +6,10 @@
 use std::path::Path;
 
 use crate::git::GitError;
-use crate::git::command::{field, run_git_output};
+use crate::git::command::{field, git_output_limited, run_git_output};
+use crate::git::diff::parse_diff;
 use crate::git::numstat::parse_numstat_vec;
+use crate::git::{FileDiff, MAX_DIFF_BYTES};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitSummary {
@@ -126,6 +128,55 @@ pub fn show_commit(cwd: &Path, id: &str) -> Result<CommitDetail, GitError> {
         body: summary_and_body.1,
         files: parse_numstat_vec(&numstat),
     })
+}
+
+/// 读取某次提交中单个文件的统一 diff，供历史详情按需展开。
+///
+/// 先用 `-m --first-parent` 取相对第一父提交的补丁：plain
+/// `git show <merge> -- <path>` 对合并提交返回空，而文件列表（numstat）却列得出
+/// 文件；取不到内容时再回退到 plain `git show`，避免已列出的文件无内容可看。
+pub fn show_commit_file(
+    cwd: &Path,
+    id: &str,
+    path: &str,
+    old_path: Option<&str>,
+) -> Result<Option<FileDiff>, GitError> {
+    validate_revision(id)?;
+    if path.is_empty() || old_path.is_some_and(str::is_empty) {
+        return Err(GitError::CommandFailed("文件路径无效".to_string()));
+    }
+    // 重命名需同时给源与目标路径，和工作区 `diff_args` 一致。
+    let mut paths = Vec::with_capacity(2);
+    if let Some(old) = old_path {
+        paths.push(old);
+    }
+    paths.push(path);
+    for first_parent in [true, false] {
+        let mut args = Vec::new();
+        if first_parent {
+            args.extend(["show", "-m", "--first-parent"]);
+        } else {
+            args.push("show");
+        }
+        args.extend([
+            "--no-color",
+            "--no-ext-diff",
+            "--format=",
+            "--unified=3",
+            "--find-renames",
+            "--find-copies",
+            id,
+            "--",
+        ]);
+        args.extend(paths.iter().copied());
+        let output = git_output_limited(cwd, &args, MAX_DIFF_BYTES)?;
+        if let Some(diff) = parse_diff(&output)?
+            && (!diff.lines.is_empty() || diff.binary)
+        {
+            return Ok(Some(diff));
+        }
+    }
+    Ok(None)
 }
 
 fn list_refs(cwd: &Path) -> Result<Vec<HistoryRef>, GitError> {
@@ -308,6 +359,140 @@ mod tests {
         assert!(detail.files.iter().any(|file| {
             file.path == "space  name.txt" && file.insertions == 1 && file.deletions == 0
         }));
+    }
+
+    #[test]
+    fn shows_modified_file_diff_with_line_numbers() {
+        let dir = repository();
+        write_commit(&dir, "a.txt", "hello\n", "first", None);
+        write_commit(&dir, "a.txt", "hello\nworld\n", "second", None);
+
+        let id = list_history(&dir, 1).unwrap().entries.remove(0).id;
+        let diff = show_commit_file(&dir, &id, "a.txt", None)
+            .unwrap()
+            .expect("modified file has a diff");
+
+        assert!(
+            diff.lines.iter().any(|line| {
+                line.kind == crate::git::DiffLineKind::Added && line.text == "world"
+            })
+        );
+        assert!(diff.lines.iter().any(|line| {
+            line.kind == crate::git::DiffLineKind::Context && line.text == "hello"
+        }));
+    }
+
+    #[test]
+    fn shows_new_file_in_root_commit_as_additions() {
+        let dir = repository();
+        write_commit(&dir, "a.txt", "hello\n", "root", None);
+
+        let id = list_history(&dir, 1).unwrap().entries.remove(0).id;
+        let diff = show_commit_file(&dir, &id, "a.txt", None)
+            .unwrap()
+            .expect("new file has a diff");
+
+        assert!(!diff.binary);
+        assert!(
+            diff.lines
+                .iter()
+                .filter(|line| line.kind != crate::git::DiffLineKind::Hunk)
+                .all(|line| line.kind == crate::git::DiffLineKind::Added)
+        );
+    }
+
+    #[test]
+    fn shows_deleted_and_renamed_file_diffs() {
+        let dir = repository();
+        write_commit(&dir, "a.txt", "hello\n", "first", None);
+        std::fs::remove_file(dir.join("a.txt")).unwrap();
+        std::fs::write(dir.join("gone.txt"), "bye\n").unwrap();
+        run(&dir, &["add", "-A"]);
+        run(&dir, &["commit", "-qm", "second"]);
+
+        let id = list_history(&dir, 1).unwrap().entries.remove(0).id;
+        let deleted = show_commit_file(&dir, &id, "a.txt", None)
+            .unwrap()
+            .expect("deleted file has a diff");
+        assert!(deleted.lines.iter().any(|line| {
+            line.kind == crate::git::DiffLineKind::Removed && line.text == "hello"
+        }));
+
+        run(&dir, &["mv", "gone.txt", "kept.txt"]);
+        std::fs::write(dir.join("kept.txt"), "bye\nchanged\n").unwrap();
+        run(&dir, &["add", "-A"]);
+        run(&dir, &["commit", "-qm", "third"]);
+        let renamed_id = list_history(&dir, 1).unwrap().entries.remove(0).id;
+        let detail = show_commit(&dir, &renamed_id).unwrap();
+        let renamed = detail
+            .files
+            .iter()
+            .find(|file| file.path == "kept.txt")
+            .expect("rename is listed");
+        let diff = show_commit_file(
+            &dir,
+            &renamed_id,
+            &renamed.path,
+            renamed.old_path.as_deref(),
+        )
+        .unwrap()
+        .expect("renamed file has a diff");
+        assert!(diff.lines.iter().any(|line| {
+            line.kind == crate::git::DiffLineKind::Added && line.text == "changed"
+        }));
+    }
+
+    #[test]
+    fn shows_binary_file_without_text_lines() {
+        let dir = repository();
+        std::fs::write(dir.join("bin.dat"), [0u8, 159, 146, 150]).unwrap();
+        run(&dir, &["add", "-A"]);
+        run(&dir, &["commit", "-qm", "binary"]);
+
+        let id = list_history(&dir, 1).unwrap().entries.remove(0).id;
+        let diff = show_commit_file(&dir, &id, "bin.dat", None)
+            .unwrap()
+            .expect("binary file reports a diff marker");
+
+        assert!(diff.binary);
+        assert!(diff.lines.is_empty());
+    }
+
+    #[test]
+    fn shows_merge_commit_diff_against_first_parent() {
+        let dir = repository();
+        write_commit(&dir, "a.txt", "a\n", "base", None);
+        run(&dir, &["branch", "-M", "main"]);
+        run(&dir, &["checkout", "-qb", "feature"]);
+        write_commit(&dir, "b.txt", "b\n", "feature change", None);
+        run(&dir, &["checkout", "-q", "main"]);
+        std::fs::write(dir.join("c.txt"), "c\n").unwrap();
+        run(&dir, &["add", "-A"]);
+        run(&dir, &["commit", "-qm", "main change"]);
+        run(&dir, &["merge", "-q", "--no-ff", "feature", "-m", "merge"]);
+
+        let id = list_history(&dir, 1).unwrap().entries.remove(0).id;
+        let detail = show_commit(&dir, &id).unwrap();
+        assert!(detail.files.iter().any(|file| file.path == "b.txt"));
+        let diff = show_commit_file(&dir, &id, "b.txt", None)
+            .unwrap()
+            .expect("merge diff shows the merged file");
+        assert!(
+            diff.lines
+                .iter()
+                .any(|line| { line.kind == crate::git::DiffLineKind::Added && line.text == "b" })
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_revision_and_path_for_file_diff() {
+        let dir = repository();
+        write_commit(&dir, "a.txt", "hello\n", "first", None);
+        let id = list_history(&dir, 1).unwrap().entries.remove(0).id;
+
+        assert!(show_commit_file(&dir, "HEAD~1", "a.txt", None).is_err());
+        assert!(show_commit_file(&dir, &id, "", None).is_err());
+        assert!(show_commit_file(&dir, &id, "a.txt", Some("")).is_err());
     }
 
     #[test]

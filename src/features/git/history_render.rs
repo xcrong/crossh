@@ -1,25 +1,31 @@
 //! Git Log 的提交图、筛选列表和提交详情渲染。
 
 use gpui::{
-    AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ListSizingBehavior,
-    ParentElement, PathBuilder, SharedString, StatefulInteractiveElement, Styled, canvas, div,
-    point, prelude::FluentBuilder, px, uniform_list,
+    AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ListHorizontalSizingBehavior,
+    ListSizingBehavior, ParentElement, PathBuilder, SharedString, StatefulInteractiveElement,
+    Styled, canvas, div, point, prelude::FluentBuilder, px, uniform_list,
 };
 
 use crate::shared::i18n;
 use crossh_core::git_history::{CommitDetail, CommitFileChange, HistoryRef, HistoryRefKind};
 use crossh_core::git_history_graph::HistoryGraphRow;
+use crossh_editor::{Scrollbar, ScrollbarMode};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
     Badge, BadgeTone, Button, ButtonSize, ButtonVariant, Hint, ListState, TextInput, list_pane,
     list_state_body, pane_toolbar, scroll_y, selectable_row,
 };
 
-use super::history::{HistoryDetailState, HistoryListState, HistoryRow};
+use super::history::{HistoryDetailState, HistoryFileDiffState, HistoryListState, HistoryRow};
+use super::render::{diff_content_width, render_diff_line};
 use super::window::GitWindow;
 use super::{GIT_HISTORY_CONTEXT, MoveHistoryDown, MoveHistoryUp};
 
 const HISTORY_ROW_HEIGHT: f32 = 68.;
+const HISTORY_FILE_ROW_HEIGHT: f32 = 34.;
+const HISTORY_FILE_COL_WIDTH: f32 = 260.;
+/// 窄屏纵向时文件列表按内容定高，超出后内部滚动，剩余空间留给 diff。
+const HISTORY_FILE_LIST_MAX_ROWS: usize = 5;
 const GRAPH_WIDTH: f32 = 88.;
 const GRAPH_LANE_WIDTH: f32 = 16.;
 const GRAPH_LEFT: f32 = 16.;
@@ -333,7 +339,7 @@ impl GitWindow {
             HistoryDetailState::Error(error) => {
                 Hint::new(error.clone()).centered().into_any_element()
             }
-            HistoryDetailState::Ready(detail) => self.render_commit_detail(detail),
+            HistoryDetailState::Ready(detail) => self.render_commit_detail(detail, compact, cx),
         };
 
         div()
@@ -353,101 +359,356 @@ impl GitWindow {
             .into_any_element()
     }
 
-    fn render_commit_detail(&self, detail: &CommitDetail) -> AnyElement {
-        let files = detail.files.clone();
-        let file_count = files.len();
-        let file_list = if files.is_empty() {
-            Hint::new(i18n::text("git.no_files_changed"))
-                .padded()
-                .into_any_element()
-        } else {
-            uniform_list(
-                "git-commit-files",
-                file_count,
-                move |range: std::ops::Range<usize>, _window, _cx| {
-                    files[range]
-                        .iter()
-                        .map(render_commit_file_row)
-                        .collect::<Vec<_>>()
-                },
-            )
-            .track_scroll(&self.history_detail_scroll)
-            .flex_1()
-            .min_h_0()
-            .with_sizing_behavior(ListSizingBehavior::Auto)
-            .into_any_element()
-        };
-        let body = detail.body.trim();
+    fn render_commit_detail(
+        &self,
+        detail: &CommitDetail,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let files_bar = div()
+            .h(px(34.))
+            .flex_shrink_0()
+            .px_3()
+            .flex()
+            .items_center()
+            .border_y_1()
+            .border_color(theme::border())
+            .text_xs()
+            .text_color(theme::muted_text())
+            .child(SharedString::from(
+                rust_i18n::t!("git.files_changed", count = detail.files.len()).to_string(),
+            ))
+            .into_any_element();
+        let file_list = self.render_commit_file_list(detail, compact, cx);
+        let meta = self.render_commit_meta(detail);
+        let message = self.render_commit_message(detail);
+        if compact {
+            // 窄屏纵向：文件列表按内容封顶，剩余空间给 diff。
+            return div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(meta)
+                .child(message)
+                .child(files_bar)
+                .child(file_list)
+                .child(self.render_history_file_diff_header(detail))
+                .child(self.render_history_file_diff(detail, cx))
+                .into_any_element();
+        }
+        // 宽屏三栏：commit 信息横跨，左文件列右 diff 列，diff 独占整列高度。
         div()
             .flex_1()
             .min_h_0()
             .flex()
             .flex_col()
+            .child(meta)
+            .child(message)
             .child(
                 div()
-                    .h(px(38.))
-                    .flex_shrink_0()
-                    .px_3()
+                    .flex_1()
+                    .min_h_0()
                     .flex()
-                    .items_center()
-                    .gap_2()
-                    .border_b_1()
-                    .border_color(theme::border())
-                    .text_xs()
                     .child(
                         div()
-                            .text_color(theme::accent())
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(SharedString::from(detail.summary.short_id.clone())),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex_1()
-                            .truncate()
-                            .text_color(theme::muted_text())
-                            .child(SharedString::from(detail.summary.author.clone())),
-                    )
-                    .child(
-                        div()
+                            .w(px(HISTORY_FILE_COL_WIDTH))
                             .flex_shrink_0()
-                            .text_color(theme::faint_text())
-                            .child(SharedString::from(detail.summary.date.clone())),
+                            .min_h_0()
+                            .flex()
+                            .flex_col()
+                            .border_r_1()
+                            .border_color(theme::border_strong())
+                            .child(files_bar)
+                            .child(file_list),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .flex()
+                            .flex_col()
+                            .child(self.render_history_file_diff_header(detail))
+                            .child(self.render_history_file_diff(detail, cx)),
                     ),
             )
+            .into_any_element()
+    }
+
+    fn render_commit_meta(&self, detail: &CommitDetail) -> AnyElement {
+        div()
+            .h(px(38.))
+            .flex_shrink_0()
+            .px_3()
+            .flex()
+            .items_center()
+            .gap_2()
+            .border_b_1()
+            .border_color(theme::border())
+            .text_xs()
             .child(
-                scroll_y(&self.history_message_scroll)
-                    .id("git-commit-message")
-                    .max_h(px(150.))
-                    .flex_shrink_0()
-                    .overflow_y_scroll()
-                    .px_3()
-                    .py_2()
-                    .text_xs()
-                    .text_color(theme::text())
-                    .child(SharedString::from(if body.is_empty() {
-                        detail.summary.subject.clone()
-                    } else {
-                        body.to_string()
-                    })),
+                div()
+                    .text_color(theme::accent())
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(SharedString::from(detail.summary.short_id.clone())),
             )
             .child(
                 div()
-                    .h(px(34.))
-                    .flex_shrink_0()
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .border_y_1()
-                    .border_color(theme::border())
-                    .text_xs()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
                     .text_color(theme::muted_text())
-                    .child(SharedString::from(
-                        rust_i18n::t!("git.files_changed", count = file_count).to_string(),
-                    )),
+                    .child(SharedString::from(detail.summary.author.clone())),
             )
-            .child(file_list)
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(theme::faint_text())
+                    .child(SharedString::from(detail.summary.date.clone())),
+            )
             .into_any_element()
+    }
+
+    fn render_commit_message(&self, detail: &CommitDetail) -> AnyElement {
+        let body = detail.body.trim();
+        scroll_y(&self.history_message_scroll)
+            .id("git-commit-message")
+            .max_h(px(90.))
+            .flex_shrink_0()
+            .overflow_y_scroll()
+            .px_3()
+            .py_2()
+            .text_xs()
+            .text_color(theme::text())
+            .child(SharedString::from(if body.is_empty() {
+                detail.summary.subject.clone()
+            } else {
+                body.to_string()
+            }))
+            .into_any_element()
+    }
+
+    fn render_commit_file_list(
+        &self,
+        detail: &CommitDetail,
+        capped: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let files = detail.files.clone();
+        let file_count = files.len();
+        if files.is_empty() {
+            return Hint::new(i18n::text("git.no_files_changed"))
+                .padded()
+                .into_any_element();
+        }
+        let list = uniform_list(
+            "git-commit-files",
+            file_count,
+            cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                files[range]
+                    .iter()
+                    .map(|file| this.render_history_file_row(file, cx))
+                    .collect::<Vec<_>>()
+            }),
+        )
+        .track_scroll(&self.history_detail_scroll)
+        .with_sizing_behavior(ListSizingBehavior::Auto);
+        if capped {
+            // 窄屏纵向：按内容定高，大提交在封顶高度内滚动。
+            let list_height =
+                px(HISTORY_FILE_ROW_HEIGHT * file_count.min(HISTORY_FILE_LIST_MAX_ROWS) as f32);
+            div()
+                .h(list_height)
+                .flex_shrink_0()
+                .w_full()
+                .child(list.size_full())
+                .into_any_element()
+        } else {
+            list.flex_1().min_h_0().into_any_element()
+        }
+    }
+
+    fn render_history_file_row(
+        &self,
+        file: &CommitFileChange,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selected = self.session.history.selected_file.as_deref() == Some(file.path.as_str());
+        let id = file.path.clone();
+        selectable_row(
+            SharedString::from(format!("git-commit-file-{}", file.path)),
+            selected,
+            px(HISTORY_FILE_ROW_HEIGHT),
+        )
+        .px_3()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .truncate()
+                .text_xs()
+                .text_color(theme::text())
+                .child(SharedString::from(commit_file_display_path(file))),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_xs()
+                .text_color(theme::muted_text())
+                .child(SharedString::from(commit_file_stats(file))),
+        )
+        .on_click(cx.listener(move |this, _event, _window, cx| {
+            this.select_history_file(id.clone(), cx);
+        }))
+        .into_any_element()
+    }
+
+    fn render_history_file_diff_header(&self, detail: &CommitDetail) -> AnyElement {
+        let content = match self
+            .session
+            .history
+            .selected_file
+            .as_deref()
+            .and_then(|path| detail.files.iter().find(|file| file.path == path))
+        {
+            Some(file) => div()
+                .min_w_0()
+                .flex_1()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .truncate()
+                        .child(SharedString::from(commit_file_display_path(file))),
+                )
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .child(SharedString::from(commit_file_stats(file))),
+                )
+                .into_any_element(),
+            None => div()
+                .min_w_0()
+                .flex_1()
+                .truncate()
+                .child(SharedString::from(i18n::text("git.no_selection")))
+                .into_any_element(),
+        };
+        div()
+            .h(px(34.))
+            .flex_shrink_0()
+            .px_3()
+            .flex()
+            .items_center()
+            .border_y_1()
+            .border_color(theme::border())
+            .text_xs()
+            .text_color(theme::muted_text())
+            .child(content)
+            .into_any_element()
+    }
+
+    fn render_history_file_diff(
+        &self,
+        detail: &CommitDetail,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selected = self.session.history.selected_file.clone();
+        let Some(path) = selected else {
+            return Hint::new(i18n::text("git.no_selection"))
+                .centered()
+                .into_any_element();
+        };
+        match self.session.history.file_diffs.get(&path) {
+            None | Some(HistoryFileDiffState::Idle) | Some(HistoryFileDiffState::Loading) => {
+                Hint::new(i18n::text("git.loading"))
+                    .centered()
+                    .into_any_element()
+            }
+            Some(HistoryFileDiffState::Error(error)) => {
+                Hint::new(error.clone()).centered().into_any_element()
+            }
+            Some(HistoryFileDiffState::Ready(None)) => Hint::new(i18n::text("git.no_diff"))
+                .centered()
+                .into_any_element(),
+            Some(HistoryFileDiffState::Ready(Some(file_diff))) if file_diff.binary => {
+                Hint::new(i18n::text("git.binary"))
+                    .centered()
+                    .into_any_element()
+            }
+            Some(HistoryFileDiffState::Ready(Some(file_diff))) if file_diff.lines.is_empty() => {
+                Hint::new(i18n::text("git.no_diff"))
+                    .centered()
+                    .into_any_element()
+            }
+            Some(HistoryFileDiffState::Ready(Some(file_diff))) => {
+                let content_width = diff_content_width(file_diff);
+                let commit_id = detail.summary.id.clone();
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        uniform_list(
+                            "git-commit-file-diff",
+                            file_diff.lines.len(),
+                            cx.processor(
+                                move |this, range: std::ops::Range<usize>, _window, _cx| match this
+                                    .session
+                                    .history
+                                    .file_diffs
+                                    .get(&path)
+                                {
+                                    Some(HistoryFileDiffState::Ready(Some(file_diff)))
+                                        if this.session.history.selected.as_deref()
+                                            == Some(commit_id.as_str())
+                                            && this.session.history.selected_file.as_deref()
+                                                == Some(path.as_str()) =>
+                                    {
+                                        file_diff.lines[range]
+                                            .iter()
+                                            .map(|line| render_diff_line(line, content_width, None))
+                                            .collect::<Vec<_>>()
+                                    }
+                                    _ => Vec::new(),
+                                },
+                            ),
+                        )
+                        .track_scroll(&self.history_file_diff_scroll)
+                        .flex_1()
+                        .min_h_0()
+                        .min_w_0()
+                        .font_family("Lilex")
+                        .with_sizing_behavior(ListSizingBehavior::Auto)
+                        .with_horizontal_sizing_behavior(
+                            ListHorizontalSizingBehavior::Unconstrained,
+                        ),
+                    )
+                    // 常显、加粗的横向滚动条：长行只靠 Shift+滚轮发现不了。
+                    .child(
+                        div().absolute().inset_0().child(
+                            Scrollbar::horizontal(&self.history_file_diff_scroll)
+                                .id("git-commit-file-diff-scrollbar")
+                                .mode(ScrollbarMode::Always)
+                                .styles(|styles| {
+                                    styles.thumb(|thumb| thumb.width(px(6.)).bg(theme::accent()))
+                                })
+                                .viewport_from_layout(),
+                        ),
+                    )
+                    .into_any_element()
+            }
+        }
     }
 }
 
@@ -597,41 +858,203 @@ fn graph_color(index: usize) -> gpui::Rgba {
     }
 }
 
-fn render_commit_file_row(file: &CommitFileChange) -> AnyElement {
-    let path = file
-        .old_path
+fn commit_file_display_path(file: &CommitFileChange) -> String {
+    file.old_path
         .as_ref()
         .map(|old| format!("{old} -> {}", file.path))
-        .unwrap_or_else(|| file.path.clone());
-    let stats = if file.binary {
+        .unwrap_or_else(|| file.path.clone())
+}
+
+fn commit_file_stats(file: &CommitFileChange) -> String {
+    if file.binary {
         i18n::text("git.binary")
     } else {
         format!("+{} −{}", file.insertions, file.deletions)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use gpui::{
+        App, AppContext, Bounds, Context, Element, ElementId, GlobalElementId, InspectorElementId,
+        IntoElement, LayoutId, Length, ListHorizontalSizingBehavior, ListSizingBehavior,
+        ParentElement, Pixels, Render, ScrollDelta, ScrollWheelEvent, Styled, TestAppContext,
+        UniformListScrollHandle, Window, div, point, px, uniform_list,
     };
-    div()
-        .h(px(34.))
-        .w_full()
-        .px_3()
-        .flex()
-        .items_center()
-        .gap_2()
-        .border_b_1()
-        .border_color(theme::border())
-        .child(
-            div()
-                .min_w_0()
-                .flex_1()
-                .truncate()
-                .text_xs()
-                .text_color(theme::text())
-                .child(SharedString::from(path)),
-        )
-        .child(
-            div()
-                .flex_shrink_0()
-                .text_xs()
-                .text_color(theme::muted_text())
-                .child(SharedString::from(stats)),
-        )
-        .into_any_element()
+
+    /// 固定 4000px 宽的探针行，记录每次 prepaint 的行原点 x。
+    /// 列表横滚时行整体左移，原点 x 减小。
+    struct OriginProbe {
+        recorder: Rc<Cell<f32>>,
+    }
+
+    impl IntoElement for OriginProbe {
+        type Element = Self;
+
+        fn into_element(self) -> Self::Element {
+            self
+        }
+    }
+
+    impl Element for OriginProbe {
+        type RequestLayoutState = ();
+        type PrepaintState = ();
+
+        fn id(&self) -> Option<ElementId> {
+            None
+        }
+
+        fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+            None
+        }
+
+        fn request_layout(
+            &mut self,
+            _id: Option<&GlobalElementId>,
+            _inspector_id: Option<&InspectorElementId>,
+            window: &mut Window,
+            cx: &mut App,
+        ) -> (LayoutId, ()) {
+            let mut style = gpui::Style::default();
+            style.size.width = Length::Definite(px(4000.).into());
+            style.size.height = Length::Definite(px(20.).into());
+            (window.request_layout(style, [], cx), ())
+        }
+
+        fn prepaint(
+            &mut self,
+            _id: Option<&GlobalElementId>,
+            _inspector_id: Option<&InspectorElementId>,
+            bounds: Bounds<Pixels>,
+            _request_layout: &mut (),
+            _window: &mut Window,
+            _cx: &mut App,
+        ) {
+            self.recorder.set(bounds.origin.x.into());
+        }
+
+        fn paint(
+            &mut self,
+            _id: Option<&GlobalElementId>,
+            _inspector_id: Option<&InspectorElementId>,
+            _bounds: Bounds<Pixels>,
+            _request_layout: &mut (),
+            _prepaint: &mut (),
+            _window: &mut Window,
+            _cx: &mut App,
+        ) {
+        }
+    }
+
+    struct ProbeList {
+        scroll: UniformListScrollHandle,
+        recorder: Rc<Cell<f32>>,
+        nested: bool,
+    }
+
+    impl Render for ProbeList {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let recorder = self.recorder.clone();
+            // 与历史 diff 列表完全相同的构造链。
+            let list = uniform_list(
+                "probe-diff-list",
+                30,
+                cx.processor(move |_, range: std::ops::Range<usize>, _, _| {
+                    range
+                        .map(|_| {
+                            OriginProbe {
+                                recorder: recorder.clone(),
+                            }
+                            .into_any_element()
+                        })
+                        .collect::<Vec<_>>()
+                }),
+            )
+            .track_scroll(&self.scroll)
+            .with_sizing_behavior(ListSizingBehavior::Auto)
+            .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained);
+            if self.nested {
+                // 生产嵌套：文件列（固定 260）+ diff 列。
+                div()
+                    .size_full()
+                    .flex()
+                    .child(
+                        div()
+                            .w(px(260.))
+                            .flex_shrink_0()
+                            .min_h_0()
+                            .flex()
+                            .flex_col(),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .flex()
+                            .flex_col()
+                            .child(list.flex_1().min_h_0().min_w_0()),
+                    )
+                    .into_any_element()
+            } else {
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .child(list.flex_1().min_h_0())
+                    .into_any_element()
+            }
+        }
+    }
+
+    fn scrolled_horizontally(cx: &mut TestAppContext, nested: bool) -> (f32, f32) {
+        let recorder = Rc::new(Cell::new(f32::MAX));
+        let view_recorder = recorder.clone();
+        let (_, cx) = cx.add_window_view(|_, _| ProbeList {
+            scroll: UniformListScrollHandle::new(),
+            recorder: view_recorder,
+            nested,
+        });
+        cx.run_until_parked();
+        let before = recorder.get();
+        assert!(
+            before < f32::MAX,
+            "probe row should be laid out before scrolling"
+        );
+        let position = cx.update(|window, _| {
+            let bounds = window.bounds();
+            point(
+                bounds.origin.x + bounds.size.width - px(100.),
+                bounds.origin.y + bounds.size.height / 2.,
+            )
+        });
+        cx.simulate_event(ScrollWheelEvent {
+            position,
+            delta: ScrollDelta::Pixels(point(px(-600.), px(0.))),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        (before, recorder.get())
+    }
+
+    #[gpui::test]
+    fn bare_diff_list_scrolls_horizontally(cx: &mut TestAppContext) {
+        let (before, after) = scrolled_horizontally(cx, false);
+        assert!(
+            after < before - 500.,
+            "bare list should shift rows left: before={before} after={after}"
+        );
+    }
+
+    #[gpui::test]
+    fn nested_diff_list_scrolls_horizontally(cx: &mut TestAppContext) {
+        let (before, after) = scrolled_horizontally(cx, true);
+        assert!(
+            after < before - 500.,
+            "nested list should shift rows left: before={before} after={after}"
+        );
+    }
 }

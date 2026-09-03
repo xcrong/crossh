@@ -10,8 +10,13 @@ use gpui::{
     TitlebarOptions, UniformListScrollHandle, WindowBounds, WindowOptions, px,
 };
 
+#[cfg(feature = "visual-tests")]
+use super::history::{HistoryDetailState, HistoryFileDiffState, HistoryListState};
+use super::session::{ChangeKey, GitOperation, GitSession, OperationState, selected_index};
 use crate::shared::i18n;
 use crate::shared::text_editing::TextEditingState;
+#[cfg(feature = "visual-tests")]
+use crossh_core::git::{DiffLine, DiffLineKind, FileDiff};
 use crossh_core::git::{
     commit, diff, discard_worktree, pull, push, scan_changes, stage, stage_hunk, unstage,
     unstage_hunk,
@@ -20,17 +25,13 @@ use crossh_core::git_branch::{list_branches, switch_branch as checkout_branch};
 use crossh_core::git_conflict::{ConflictResolution, resolve_conflict};
 #[cfg(feature = "visual-tests")]
 use crossh_core::git_history::{CommitDetail, CommitFileChange, CommitSummary};
-use crossh_core::git_history::{list_history, show_commit};
+use crossh_core::git_history::{list_history, show_commit, show_commit_file};
 use crossh_core::git_stash::{
     apply_stash as apply_git_stash, drop_stash as drop_git_stash, list_stashes,
     pop_stash as pop_git_stash, push_stash as push_git_stash,
 };
 use crossh_core::terminal::path_display_name;
 use crossh_ui_component::context_menu::{ContextMenuState, MenuEntry, MenuItem};
-
-#[cfg(feature = "visual-tests")]
-use super::history::{HistoryDetailState, HistoryListState};
-use super::session::{ChangeKey, GitOperation, GitSession, OperationState, selected_index};
 
 pub(super) const GIT_COMPACT_WIDTH: f32 = 840.;
 pub(super) const CHANGES_PANE_DEFAULT_WIDTH: f32 = 300.;
@@ -163,6 +164,7 @@ pub struct GitWindow {
     pub(super) diff_scroll: UniformListScrollHandle,
     pub(super) history_scroll: UniformListScrollHandle,
     pub(super) history_detail_scroll: UniformListScrollHandle,
+    pub(super) history_file_diff_scroll: UniformListScrollHandle,
     pub(super) history_message_scroll: ScrollHandle,
     pub(super) branch_scroll: UniformListScrollHandle,
     pub(super) stash_scroll: UniformListScrollHandle,
@@ -193,6 +195,7 @@ impl GitWindow {
             diff_scroll: UniformListScrollHandle::new(),
             history_scroll: UniformListScrollHandle::new(),
             history_detail_scroll: UniformListScrollHandle::new(),
+            history_file_diff_scroll: UniformListScrollHandle::new(),
             history_message_scroll: ScrollHandle::new(),
             branch_scroll: UniformListScrollHandle::new(),
             stash_scroll: UniformListScrollHandle::new(),
@@ -251,6 +254,8 @@ impl GitWindow {
                 };
                 git_window.session.history.entries = vec![summary.clone()];
                 git_window.session.history.selected = Some(id);
+                git_window.session.history.selected_file =
+                    Some("src/features/git/history.rs".to_string());
                 git_window.session.history.list_state = HistoryListState::Ready;
                 git_window.session.history.detail = HistoryDetailState::Ready(CommitDetail {
                     summary,
@@ -272,6 +277,44 @@ impl GitWindow {
                         },
                     ],
                 });
+                git_window.session.history.file_diffs.insert(
+                    "src/features/git/history.rs".to_string(),
+                    HistoryFileDiffState::Ready(Some(FileDiff {
+                        old_path: Some("src/features/git/history.rs".to_string()),
+                        new_path: Some("src/features/git/history.rs".to_string()),
+                        binary: false,
+                        lines: vec![
+                            DiffLine {
+                                kind: DiffLineKind::Hunk,
+                                hunk_index: Some(0),
+                                old_ln: None,
+                                new_ln: None,
+                                text: "@@ -1,3 +1,3 @@".to_string(),
+                            },
+                            DiffLine {
+                                kind: DiffLineKind::Context,
+                                hunk_index: Some(0),
+                                old_ln: Some(1),
+                                new_ln: Some(1),
+                                text: "use std::path::PathBuf;".to_string(),
+                            },
+                            DiffLine {
+                                kind: DiffLineKind::Removed,
+                                hunk_index: Some(0),
+                                old_ln: Some(2),
+                                new_ln: None,
+                                text: "use crossh_core::git::GitError;".to_string(),
+                            },
+                            DiffLine {
+                                kind: DiffLineKind::Added,
+                                hunk_index: Some(0),
+                                old_ln: None,
+                                new_ln: Some(2),
+                                text: "use crossh_core::git::{FileDiff, GitError};".to_string(),
+                            },
+                        ],
+                    })),
+                );
                 git_window.compact_page = CompactPage::HistoryDetail;
             } else {
                 git_window.show_history(cx);
@@ -417,6 +460,7 @@ impl GitWindow {
                 .await;
             let _ = weak.update(cx, |this, cx| {
                 if this.session.history.apply_detail(request, result) {
+                    this.refresh_history_file_diff(cx);
                     cx.notify();
                 }
             });
@@ -507,6 +551,42 @@ impl GitWindow {
             (current + 1).min(entries.len() - 1)
         };
         self.select_history_commit(entries[next].entry.id.clone(), cx);
+    }
+
+    pub(super) fn select_history_file(&mut self, path: String, cx: &mut Context<Self>) {
+        self.session.history.select_file(path);
+        self.history_file_diff_scroll
+            .scroll_to_item_strict(0, gpui::ScrollStrategy::Top);
+        self.refresh_history_file_diff(cx);
+        cx.notify();
+    }
+
+    fn refresh_history_file_diff(&mut self, cx: &mut Context<Self>) {
+        let Some(request) = self
+            .session
+            .history
+            .begin_file_diff(self.session.cwd.clone())
+        else {
+            return;
+        };
+        let cwd = request.cwd.clone();
+        let commit_id = request.commit_id.clone();
+        let path = request.path.clone();
+        let old_path = request.old_path.clone();
+        cx.spawn(async move |weak, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(
+                    async move { show_commit_file(&cwd, &commit_id, &path, old_path.as_deref()) },
+                )
+                .await;
+            let _ = weak.update(cx, |this, cx| {
+                if this.session.history.apply_file_diff(&request, result) {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     pub(super) fn set_history_query(&mut self, query: String, cx: &mut Context<Self>) {
@@ -1156,8 +1236,8 @@ fn create_git_window(cwd: PathBuf, cx: &mut App) {
     let bounds = Bounds::centered(
         None,
         Size {
-            width: px(1000.),
-            height: px(640.),
+            width: px(1160.),
+            height: px(760.),
         },
         cx,
     );

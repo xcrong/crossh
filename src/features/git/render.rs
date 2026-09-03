@@ -12,6 +12,7 @@ use gpui::{
 use crate::shared::i18n;
 use crossh_core::git::{ChangeStatus, DiffLine, DiffLineKind, FileChange};
 use crossh_core::git_conflict::ConflictResolution;
+use crossh_editor::{Scrollbar, ScrollbarMode};
 use crossh_ui::widgets::{ime_input_canvas, marked_text_span, text_caret, text_span};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::context_menu::render_context_menu;
@@ -858,44 +859,71 @@ impl GitWindow {
                 let content_width = diff_content_width(file_diff);
                 let key = key.clone();
                 let staged = entry.staged;
-                uniform_list(
-                    if compact {
-                        "git-diff-scroll-compact"
-                    } else {
-                        "git-diff-scroll"
-                    },
-                    file_diff.lines.len(),
-                    cx.processor(
-                        move |this, range: std::ops::Range<usize>, _window, cx| match &this
-                            .session
-                            .diff
-                        {
-                            DiffState::Ready(ready_key, Some(file_diff)) if ready_key == &key => {
-                                file_diff.lines[range]
-                                    .iter()
-                                    .map(|line| {
-                                        let hunk_action = (line.kind == DiffLineKind::Hunk)
-                                            .then_some(line.hunk_index)
-                                            .flatten()
-                                            .map(|hunk_index| {
-                                                this.render_hunk_action(staged, hunk_index, cx)
-                                            });
-                                        render_diff_line(line, content_width, hunk_action)
-                                    })
-                                    .collect::<Vec<_>>()
-                            }
-                            _ => Vec::new(),
-                        },
-                    ),
-                )
-                .track_scroll(&self.diff_scroll)
-                .flex_1()
-                .size_full()
-                .min_w_0()
-                .font_family("Lilex")
-                .with_sizing_behavior(ListSizingBehavior::Auto)
-                .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
-                .into_any_element()
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        uniform_list(
+                            if compact {
+                                "git-diff-scroll-compact"
+                            } else {
+                                "git-diff-scroll"
+                            },
+                            file_diff.lines.len(),
+                            cx.processor(
+                                move |this, range: std::ops::Range<usize>, _window, cx| match &this
+                                    .session
+                                    .diff
+                                {
+                                    DiffState::Ready(ready_key, Some(file_diff))
+                                        if ready_key == &key =>
+                                    {
+                                        file_diff.lines[range]
+                                            .iter()
+                                            .map(|line| {
+                                                let hunk_action = (line.kind == DiffLineKind::Hunk)
+                                                    .then_some(line.hunk_index)
+                                                    .flatten()
+                                                    .map(|hunk_index| {
+                                                        this.render_hunk_action(
+                                                            staged, hunk_index, cx,
+                                                        )
+                                                    });
+                                                render_diff_line(line, content_width, hunk_action)
+                                            })
+                                            .collect::<Vec<_>>()
+                                    }
+                                    _ => Vec::new(),
+                                },
+                            ),
+                        )
+                        .track_scroll(&self.diff_scroll)
+                        .flex_1()
+                        .size_full()
+                        .min_w_0()
+                        .font_family("Lilex")
+                        .with_sizing_behavior(ListSizingBehavior::Auto)
+                        .with_horizontal_sizing_behavior(
+                            ListHorizontalSizingBehavior::Unconstrained,
+                        ),
+                    )
+                    // 常显、加粗的横向滚动条：长行只靠 Shift+滚轮发现不了。
+                    .child(
+                        div().absolute().inset_0().child(
+                            Scrollbar::horizontal(&self.diff_scroll)
+                                .id("git-diff-scrollbar")
+                                .mode(ScrollbarMode::Always)
+                                .styles(|styles| {
+                                    styles.thumb(|thumb| thumb.width(px(6.)).bg(theme::accent()))
+                                })
+                                .viewport_from_layout(),
+                        ),
+                    )
+                    .into_any_element()
             }
             DiffState::Ready(ready_key, None) if ready_key == &key => {
                 Hint::new(i18n::text("git.no_diff"))
@@ -1176,7 +1204,7 @@ const DIFF_ROW_HEIGHT: f32 = 20.;
 
 /// 单等宽字符按 12px 预留宽度，避免为每一行调用文本布局系统。
 /// 这个上界覆盖中日韩全角字符；横向滚动范围略宽于实际文本是可接受的。
-fn diff_content_width(file_diff: &crossh_core::git::FileDiff) -> Pixels {
+pub(super) fn diff_content_width(file_diff: &crossh_core::git::FileDiff) -> Pixels {
     let widest_chars = file_diff
         .lines
         .iter()
@@ -1186,7 +1214,7 @@ fn diff_content_width(file_diff: &crossh_core::git::FileDiff) -> Pixels {
     px(DIFF_GUTTER_WIDTH + widest_chars as f32 * DIFF_CHARACTER_WIDTH)
 }
 
-fn render_diff_line(
+pub(super) fn render_diff_line(
     line: &DiffLine,
     content_width: Pixels,
     hunk_action: Option<AnyElement>,
