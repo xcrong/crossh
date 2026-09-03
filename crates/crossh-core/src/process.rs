@@ -47,6 +47,23 @@ pub fn detach(cmd: &mut std::process::Command) -> &mut std::process::Command {
     }
 }
 
+/// Windows 上为命令加上 CREATE_NO_WINDOW，使控制台子系统程序
+/// （如 git.exe、tasklist.exe）在 GUI 会话里不闪出黑窗口；
+/// 其他平台无操作。所有输出捕获类调用（`output()` / `spawn()`）都应先调它。
+/// 注意：这不是 `detach` 的替代品——后台常驻的同伴进程继续用 `detach`。
+pub fn no_window(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[allow(unreachable_code)]
+    {
+        cmd
+    }
+}
+
 /// Windows GUI 入口在 `windows` 子系统下运行（无控制台），启动时调用此函数
 /// 尝试挂回父控制台，使终端里 `crossh --help` 等 CLI 输出仍然可见。
 /// 从资源管理器/开始菜单启动时没有父控制台，挂接失败是预期的，直接忽略。
@@ -119,6 +136,16 @@ mod tests {
             sibling.display()
         );
         assert_eq!(sibling_executable(name), PathBuf::from(name));
+    }
+
+    #[test]
+    fn no_window_keeps_program_and_never_panics() {
+        let mut cmd = std::process::Command::new("git");
+        let program = no_window(&mut cmd)
+            .get_program()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(program, "git");
     }
 
     #[test]

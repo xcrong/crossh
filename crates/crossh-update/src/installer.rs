@@ -55,6 +55,22 @@ struct UpdaterArguments {
     launch: PathBuf,
 }
 
+/// Windows 上为命令加上 CREATE_NO_WINDOW，使控制台子系统程序不闪出黑窗口；
+/// 其他平台无操作。自更新链路的三处拉起（updater 本体、tasklist 轮询、
+/// 新版拉起）都经此收敛。
+fn no_window(cmd: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[allow(unreachable_code)]
+    {
+        cmd
+    }
+}
+
 /// Start the bundled updater and return immediately so the caller can quit.
 pub fn spawn_updater(package: &Path, format: ArtifactFormat) -> Result<(), InstallerError> {
     let current_exe = std::env::current_exe().map_err(InstallerError::CurrentExecutable)?;
@@ -81,12 +97,7 @@ pub fn spawn_updater(package: &Path, format: ArtifactFormat) -> Result<(), Insta
     // updater 保持控制台子系统（手动运行时能看到报错），但从 GUI 自更新
     // 启动时不能闪出黑色控制台窗口。stdout 已重定向到 null，结果落盘到
     // UpdateResult，所以隐藏控制台没有信息损失。
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    no_window(&mut cmd);
     cmd.spawn()?;
     Ok(())
 }
@@ -261,7 +272,8 @@ fn process_is_running(pid: u32) -> bool {
 
 #[cfg(windows)]
 fn process_is_running(pid: u32) -> bool {
-    let Ok(output) = Command::new("tasklist")
+    // 等待循环每 250ms 调用一次：tasklist 是控制台子系统，不加会持续闪黑窗。
+    let Ok(output) = no_window(&mut Command::new("tasklist"))
         .args(["/FI", &format!("PID eq {pid}"), "/NH"])
         .output()
     else {
@@ -489,7 +501,9 @@ fn launch(path: &Path) -> Result<(), InstallerError> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Command::new(path).spawn()?;
+        // 被拉起的新版主程序已是 windows 子系统，此 flag 无作用；
+        // 旧版/其他控制台程序则借此避免闪出黑窗口。
+        no_window(&mut Command::new(path)).spawn()?;
     }
     Ok(())
 }

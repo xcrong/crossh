@@ -4,28 +4,30 @@ use std::process::{Command, Stdio};
 
 use crate::git::GitError;
 
+/// 所有 git 调用的唯一入口：`git -C <cwd>`，Windows 上带 CREATE_NO_WINDOW，
+/// 防止 git.exe（控制台子系统）在 GUI 会话里闪出黑窗口。
+pub fn git_command(cwd: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(cwd);
+    crate::process::no_window(&mut cmd);
+    cmd
+}
+
 /// Runs `git -C <cwd> <args>` and maps non-zero exit to `GitError::CommandFailed`.
 pub fn run_git(cwd: &Path, args: &[&str]) -> Result<(), GitError> {
-    let output = Command::new("git").arg("-C").arg(cwd).args(args).output()?;
+    let output = git_command(cwd).args(args).output()?;
     git_result(output)
 }
 
 /// Runs `git -C <cwd> <args> -- <paths>` and maps failure to `GitError`.
 pub fn run_git_paths(cwd: &Path, args: &[&str], paths: &[String]) -> Result<(), GitError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .args(paths)
-        .output()?;
+    let output = git_command(cwd).args(args).args(paths).output()?;
     git_result(output)
 }
 
 /// Single-path variant used by conflict resolution.
 pub fn run_git_path(cwd: &Path, args: &[&str], path: &str) -> Result<(), GitError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
+    let output = git_command(cwd)
         .args(args)
         .arg(path)
         .env("GIT_OPTIONAL_LOCKS", "0")
@@ -40,9 +42,7 @@ pub fn run_git_path(cwd: &Path, args: &[&str], path: &str) -> Result<(), GitErro
 /// Runs `git -C <cwd> <args>` where args are owned `String`s and returns stdout.
 /// Used by `git_branch` / `git_history` / `git_stash` which build `Vec<String>`.
 pub fn run_git_output(cwd: &Path, args: &[String]) -> Result<Vec<u8>, GitError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
+    let output = git_command(cwd)
         .args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .output()?;
@@ -55,9 +55,7 @@ pub fn run_git_output(cwd: &Path, args: &[String]) -> Result<Vec<u8>, GitError> 
 
 /// Read-only helper that adds `GIT_OPTIONAL_LOCKS=0` and returns stdout.
 pub fn git_output(cwd: &Path, args: &[&str]) -> Result<Vec<u8>, GitError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
+    let output = git_command(cwd)
         .args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .output()?;
@@ -66,9 +64,7 @@ pub fn git_output(cwd: &Path, args: &[&str]) -> Result<Vec<u8>, GitError> {
 
 /// Best-effort variant for status probing where failure is mapped to `None`.
 pub fn try_git_output(cwd: &Path, args: &[&str]) -> Option<Vec<u8>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
+    let output = git_command(cwd)
         .args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .output()
@@ -78,9 +74,7 @@ pub fn try_git_output(cwd: &Path, args: &[&str]) -> Option<Vec<u8>> {
 
 /// Limited variant that caps stdout at `limit + 1` bytes to detect overflow.
 pub fn git_output_limited(cwd: &Path, args: &[&str], limit: u64) -> Result<Vec<u8>, GitError> {
-    let mut child = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
+    let mut child = git_command(cwd)
         .args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .stdout(Stdio::piped())

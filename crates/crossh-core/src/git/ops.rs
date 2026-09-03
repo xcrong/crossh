@@ -1,8 +1,8 @@
 use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
-use crate::git::command::{git_output_limited, git_result, run_git, run_git_paths};
+use crate::git::command::{git_command, git_output_limited, git_result, run_git, run_git_paths};
 use crate::git::diff::{diff_args, select_hunk_patch};
 use crate::git::types::{ChangeStatus, FileChange, GitError, MAX_DIFF_BYTES};
 
@@ -19,9 +19,7 @@ pub fn unstage(cwd: &Path, paths: &[String]) -> Result<(), GitError> {
     if paths.is_empty() {
         return Ok(());
     }
-    let has_head = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
+    let has_head = git_command(cwd)
         .args(["rev-parse", "--verify", "HEAD"])
         .output()?
         .status
@@ -122,9 +120,7 @@ pub fn pull(cwd: &Path) -> Result<(), GitError> {
 }
 
 fn has_upstream(cwd: &Path) -> Result<bool, GitError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
+    let output = git_command(cwd)
         .args([
             "rev-parse",
             "--abbrev-ref",
@@ -137,9 +133,7 @@ fn has_upstream(cwd: &Path) -> Result<bool, GitError> {
 
 /// 当前分支名；分离头指针或出错时返回 None。
 fn current_branch(cwd: &Path) -> Result<Option<String>, GitError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
+    let output = git_command(cwd)
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .output()?;
     if !output.status.success() {
@@ -170,11 +164,8 @@ fn apply_hunk(
         GitError::CommandFailed(format!("找不到第 {} 个 Diff Hunk", hunk_index + 1))
     })?;
 
-    let mut command = Command::new("git");
-    command
-        .arg("-C")
-        .arg(cwd)
-        .args(["apply", "--cached", "--recount"])
+    let mut command = git_command(cwd);
+    command.args(["apply", "--cached", "--recount"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
