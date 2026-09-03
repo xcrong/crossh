@@ -5,17 +5,14 @@
 //! plus the local terminal element fork. This module only supplies the host
 //! entity and focus/event wiring for the workspace.
 
-use std::cell::Cell;
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{
     Action, AnyElement, App, AppContext, Bounds, ClipboardEntry, Context, Entity, EntityId,
     EventEmitter, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent, Keystroke,
-    MouseDownEvent, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement,
-    Styled, Subscription, SystemNotification, SystemNotificationResponse, Task, Window, canvas,
-    div, point, px, size,
+    ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled, Subscription,
+    SystemNotification, SystemNotificationResponse, Task, Window, div, point, px, size,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -32,12 +29,6 @@ use crossh_core::terminal::{
 };
 use crossh_terminal::timestamps::{TerminalRow, TerminalTimestampState, timestamp_now};
 use crossh_terminal::{ConnState, TerminalEvent, TerminalSettings};
-use crossh_ui_component::context_menu::{
-    CONTEXT_MENU_WIDTH, ContextMenuState, clamp_menu_position, estimate_menu_height,
-    render_context_menu,
-};
-
-use super::context_menu::{TerminalMenuAction, menu_entries};
 
 #[path = "zed_view/terminal_element.rs"]
 mod terminal_element;
@@ -103,6 +94,11 @@ fn terminal_bounds_for_grid(
     )
 }
 
+/// 右键应复制（true）还是粘贴（false）：仅当存在非空选中文本时复制。
+fn has_copyable_selection(has_selection: bool, selection_text: Option<&str>) -> bool {
+    has_selection && selection_text.is_some_and(|text| !text.is_empty())
+}
+
 fn status_view(message: &str, focus: &FocusHandle) -> AnyElement {
     div()
         .id("terminal-status")
@@ -138,18 +134,6 @@ fn open_navigation_target(target: &zed_terminal::MaybeNavigationTarget, cx: &mut
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
 
-/// UI-only requests emitted by a terminal view and handled by the workspace.
-///
-/// Kept as an event enum rather than a direct method call so future UI-only
-/// requests (e.g. copy-all, reopen session) can be added without growing the
-/// workspace's match arms or coupling the terminal view to concrete consumers.
-#[derive(Clone, Debug)]
-pub(crate) enum TerminalViewEvent {
-    SendSelectionToAdjacent { text: String },
-}
-
-impl EventEmitter<TerminalViewEvent> for TerminalView {}
-
 pub struct TerminalView {
     /// The display-only entity is replaced by the PTY-backed entity once the
     /// Zed builder finishes. The element reads this field directly.
@@ -176,12 +160,8 @@ pub struct TerminalView {
     /// Set when the terminal emitted a bell since the last frame; consumed by
     /// the renderer so the system bell fires exactly once per event.
     bell_pending: bool,
-    context_menu: Option<ContextMenuState<TerminalMenuAction>>,
-    adjacent_terminal_available: bool,
     /// Whether the current right-button press was forwarded to the PTY.
     right_mouse_down: bool,
-    /// The terminal view origin in window coordinates, used to place the menu.
-    anchor_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     show_timestamps: bool,
     notifications_enabled: bool,
     notification_serial: u64,
@@ -304,10 +284,7 @@ impl TerminalView {
                 title: None,
                 ime_marked_text: String::new(),
                 bell_pending: false,
-                context_menu: None,
-                adjacent_terminal_available: false,
                 right_mouse_down: false,
-                anchor_bounds: Rc::new(Cell::new(None)),
                 show_timestamps: settings.show_timestamps,
                 notifications_enabled: settings.notifications_enabled,
                 notification_serial: 0,
@@ -677,13 +654,6 @@ impl TerminalView {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.context_menu.is_some() {
-            if event.keystroke.key == "escape" {
-                self.close_context_menu(cx);
-            }
-            cx.stop_propagation();
-            return;
-        }
         self.cursor_blink_on = true;
         self.cursor_blink_pause_until = Instant::now() + Duration::from_millis(500);
         if self.process_keystroke(&event.keystroke, cx) {
@@ -707,7 +677,6 @@ impl TerminalView {
     fn focus_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.focused = false;
         self.cursor_blink_on = true;
-        self.context_menu = None;
         self.right_mouse_down = false;
         self.zed_terminal.update(cx, |terminal, _| {
             terminal.focus_out();
@@ -743,29 +712,6 @@ impl TerminalView {
         }
         self.zed_terminal
             .update(cx, |terminal, _| terminal.input(bytes));
-    }
-
-    pub(crate) fn paste_raw_text(&mut self, text: &str, cx: &mut Context<Self>) {
-        if text.is_empty() {
-            return;
-        }
-        self.ime_marked_text.clear();
-        self.zed_terminal
-            .update(cx, |terminal, _| terminal.paste(text));
-        self.request_focus();
-        cx.notify();
-    }
-
-    pub(crate) fn set_adjacent_terminal_available(
-        &mut self,
-        available: bool,
-        cx: &mut Context<Self>,
-    ) {
-        if self.adjacent_terminal_available == available {
-            return;
-        }
-        self.adjacent_terminal_available = available;
-        cx.notify();
     }
 
     pub(crate) fn run_command(&mut self, command: &str, cx: &mut Context<Self>) {
@@ -837,16 +783,9 @@ impl TerminalView {
         cx.notify();
     }
 
-    pub(crate) fn begin_right_mouse_down(
-        &mut self,
-        position: gpui::Point<Pixels>,
-        forward_to_terminal: bool,
-        cx: &mut Context<Self>,
-    ) {
-        self.right_mouse_down = forward_to_terminal;
-        if !forward_to_terminal {
-            self.open_context_menu(position, cx);
-        }
+    /// 记录当前右键按下是否已转发给 PTY（应用接管鼠标时），供对称的弹起处理消费。
+    pub(crate) fn set_right_mouse_forwarded(&mut self, forwarded: bool) {
+        self.right_mouse_down = forwarded;
     }
 
     pub(crate) fn take_right_mouse_down(&mut self) -> bool {
@@ -855,82 +794,24 @@ impl TerminalView {
         forwarded
     }
 
-    pub(crate) fn open_context_menu(
-        &mut self,
-        position: gpui::Point<Pixels>,
-        cx: &mut Context<Self>,
-    ) {
-        if self.state != ConnState::Connected {
-            return;
-        }
-
-        let (has_selection, hovered_word) = {
+    /// Windows Terminal 风格右键：有选区则复制，无选区则粘贴。
+    /// 不弹菜单，也不会为凑复制条件而合成词选中。
+    pub(crate) fn handle_right_click(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let has_selection = {
             let terminal = self.zed_terminal.read(cx);
             let content = terminal.last_content();
-            let had_selection = content.selection.is_some();
-            (
-                // A word is selected by the element's right-click handler
-                // before this menu opens; treat that as having a selection so
-                // the Copy entry is enabled, mirroring Zed.
-                !had_selection
-                    || content
-                        .selection_text
-                        .as_ref()
-                        .is_some_and(|text| !text.is_empty()),
-                content
-                    .last_hovered_word
-                    .as_ref()
-                    .map(|word| word.word.clone()),
+            has_copyable_selection(
+                content.selection.is_some(),
+                content.selection_text.as_deref(),
             )
         };
-        let entries = menu_entries(
-            true,
-            has_selection,
-            self.adjacent_terminal_available,
-            hovered_word,
-        );
-        self.context_menu = Some(ContextMenuState { position, entries });
+        if has_selection {
+            self.copy_selection(cx);
+        } else if self.state == ConnState::Connected {
+            self.paste_clipboard(cx);
+        }
+        window.focus(&self.focus, cx);
         cx.notify();
-    }
-
-    fn close_context_menu(&mut self, cx: &mut Context<Self>) {
-        if self.context_menu.take().is_some() {
-            cx.notify();
-        }
-    }
-
-    fn dispatch_menu_action(
-        &mut self,
-        action: TerminalMenuAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let refocus_source = !matches!(&action, TerminalMenuAction::SendSelectionToAdjacent);
-
-        match action {
-            TerminalMenuAction::Copy => self.copy_selection(cx),
-            TerminalMenuAction::Paste => self.paste_clipboard(cx),
-            TerminalMenuAction::SelectAll => self.select_all_terminal(cx),
-            TerminalMenuAction::SendSelectionToAdjacent => {
-                let text = self
-                    .zed_terminal
-                    .read(cx)
-                    .last_content()
-                    .selection_text
-                    .clone()
-                    .filter(|text| !text.is_empty());
-                if let Some(text) = text {
-                    cx.emit(TerminalViewEvent::SendSelectionToAdjacent { text });
-                }
-            }
-            TerminalMenuAction::OpenUrl(url) => cx.open_url(&url),
-        }
-        // Sending schedules focus on the destination terminal; restoring the source focus here
-        // would race that request and make the final focus platform-dependent.
-        if refocus_source {
-            window.focus(&self.focus, cx);
-        }
-        self.close_context_menu(cx);
     }
 
     pub(crate) fn is_command_running(&self, cx: &App) -> bool {
@@ -1039,62 +920,6 @@ impl Render for TerminalView {
             cursor_visible,
         );
 
-        let anchor_bounds = self.anchor_bounds.clone();
-        let bounds_capture = anchor_bounds.clone();
-        let outside_click_anchor = anchor_bounds.clone();
-        let context_menu = self.context_menu.clone();
-        let context_menu_weak = cx.entity().downgrade();
-        let bounds_canvas = canvas(
-            move |bounds, _window, _cx| {
-                bounds_capture.set(Some(bounds));
-                bounds
-            },
-            move |_bounds, _state, window, _cx| {
-                let Some(menu) = context_menu.as_ref() else {
-                    return;
-                };
-                let menu_position = clamp_menu_position(menu.position, window, &menu.entries);
-                let menu_bounds = Bounds {
-                    origin: menu_position,
-                    size: size(
-                        px(CONTEXT_MENU_WIDTH + 32.0),
-                        px(estimate_menu_height(&menu.entries) + 32.0),
-                    ),
-                };
-                let anchor = outside_click_anchor.clone();
-                let weak = context_menu_weak.clone();
-                window.on_mouse_event(move |event: &MouseDownEvent, phase, event_window, cx| {
-                    if phase != gpui::DispatchPhase::Capture {
-                        return;
-                    }
-                    let outside = anchor
-                        .get()
-                        .is_some_and(|bounds| !bounds.contains(&event.position));
-                    if !outside || menu_bounds.contains(&event.position) {
-                        return;
-                    }
-                    let closed = weak
-                        .update(cx, |this, cx| {
-                            if this.context_menu.take().is_some() {
-                                cx.notify();
-                                true
-                            } else {
-                                false
-                            }
-                        })
-                        .unwrap_or(false);
-                    if closed {
-                        cx.stop_propagation();
-                        event_window.refresh();
-                    }
-                });
-            },
-        )
-        .absolute()
-        .left_0()
-        .top_0()
-        .size_full();
-
         let mut root = div()
             .id("terminal-view")
             .size_full()
@@ -1121,7 +946,6 @@ impl Render for TerminalView {
                 let focus = focus.clone();
                 move |_event, window, cx| window.focus(&focus, cx)
             })
-            .child(bounds_canvas)
             .child(
                 div()
                     .id("terminal-view-container")
@@ -1147,21 +971,6 @@ impl Render for TerminalView {
             );
         }
 
-        if let Some(menu) = self.context_menu.clone() {
-            let anchor = anchor_bounds
-                .get()
-                .map(|bounds| bounds.origin)
-                .unwrap_or_else(|| point(px(0.), px(0.)));
-            root = root.child(render_context_menu(
-                &menu,
-                anchor,
-                window,
-                cx,
-                |this, action, window, cx| this.dispatch_menu_action(action, window, cx),
-                |this, cx| this.close_context_menu(cx),
-            ));
-        }
-
         root.into_any_element()
     }
 }
@@ -1169,6 +978,15 @@ impl Render for TerminalView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn right_click_copies_only_with_non_empty_selection() {
+        assert!(has_copyable_selection(true, Some("ls -la")));
+        assert!(!has_copyable_selection(false, None));
+        assert!(!has_copyable_selection(false, Some("stale")));
+        assert!(!has_copyable_selection(true, None));
+        assert!(!has_copyable_selection(true, Some("")));
+    }
 
     #[gpui::test]
     fn terminal_url_navigation_uses_platform_opener(cx: &mut gpui::TestAppContext) {

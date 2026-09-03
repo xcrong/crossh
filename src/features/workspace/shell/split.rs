@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use gpui::{Context, EntityId, Window};
+use gpui::{Context, Window};
 
 use crate::features::workspace::registry::SplitSide;
 
@@ -74,20 +74,6 @@ impl AppShell {
             self.rollback_split_terminal(right_view, cx);
             return;
         }
-        let split = self
-            .workspace
-            .active_split()
-            .expect("split state was created above");
-        self.set_terminal_adjacent_available(split.left, true, cx);
-        if let Some(right) = split.right {
-            self.set_terminal_adjacent_available(right, true, cx);
-        }
-        if let Some(bl) = split.bottom_left {
-            self.set_terminal_adjacent_available(bl, true, cx);
-        }
-        if let Some(br) = split.bottom_right {
-            self.set_terminal_adjacent_available(br, true, cx);
-        }
         self.workspace.focus_terminal_split(SplitSide::Right);
         self.refocus_active_terminal(cx);
         cx.notify();
@@ -106,21 +92,6 @@ impl AppShell {
             if !self.workspace.begin_vertical_split(bottom_view) {
                 self.rollback_split_terminal(bottom_view, cx);
                 return;
-            }
-            let split = self
-                .workspace
-                .active_split()
-                .expect("vertical split created");
-            for pane in [
-                Some(split.left),
-                split.right,
-                split.bottom_left,
-                split.bottom_right,
-            ]
-            .into_iter()
-            .flatten()
-            {
-                self.set_terminal_adjacent_available(pane, true, cx);
             }
             // 焦点已在 begin_vertical_split 中设为 BottomLeft
             self.refocus_active_terminal(cx);
@@ -158,39 +129,13 @@ impl AppShell {
             self.rollback_split_terminal(bottom_view, cx);
             return;
         }
-        let split = self
-            .workspace
-            .active_split()
-            .expect("vertical split created");
-        for pane in [
-            Some(split.left),
-            split.right,
-            split.bottom_left,
-            split.bottom_right,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            self.set_terminal_adjacent_available(pane, true, cx);
-        }
         self.refocus_active_terminal(cx);
         cx.notify();
     }
     /// 批量清扫前拆掉与被清扫视图相关的分栏
-    pub(crate) fn detach_splits_for(&mut self, closed: &[ActiveView], cx: &mut Context<Self>) {
-        for split in self.workspace.take_splits_involving(closed) {
-            for pane in [
-                Some(split.left),
-                split.right,
-                split.bottom_left,
-                split.bottom_right,
-            ]
-            .into_iter()
-            .flatten()
-            {
-                self.set_terminal_adjacent_available(pane, false, cx);
-            }
-        }
+    pub(crate) fn detach_splits_for(&mut self, closed: &[ActiveView], _cx: &mut Context<Self>) {
+        // 取回并丢弃涉及被清扫视图的分栏，registry 内部完成接管/清理。
+        let _ = self.workspace.take_splits_involving(closed);
         // 同步清理终端级的 compose 状态，避免已关闭视图的草稿残留
         let _ = self.workspace.take_composes_involving(closed);
         self.reset_split_ui_if_idle();
@@ -211,7 +156,7 @@ impl AppShell {
         }
     }
 
-    /// 分栏视图关闭前的状态处理：解除 adjacent 标志、让 registry 处理接管/退休
+    /// 分栏视图关闭前的状态处理：让 registry 处理接管/退休
     /// 支持 2x2：属主关闭时遍历所有 secondary，按风险分别退休/保留
     pub(super) fn prepare_terminal_split_view_close(
         &mut self,
@@ -223,17 +168,6 @@ impl AppShell {
         };
         let is_owner_close = split.left == view;
         let was_active_owner = self.workspace.active_view == Some(view);
-        for pane in [
-            Some(split.left),
-            split.right,
-            split.bottom_left,
-            split.bottom_right,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            self.set_terminal_adjacent_available(pane, false, cx);
-        }
         let outcome = self.workspace.prepare_split_view_close(view);
         match outcome {
             crate::features::workspace::registry::SplitViewCloseOutcome::Closed {
@@ -278,56 +212,6 @@ impl AppShell {
         self.reset_split_ui_if_idle();
         true
     }
-
-    pub(super) fn send_to_adjacent_terminal(
-        &mut self,
-        source_terminal_id: EntityId,
-        text: &str,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(split) = self.workspace.active_split() else {
-            return;
-        };
-        let panes = [
-            (SplitSide::Left, Some(split.left)),
-            (SplitSide::Right, split.right),
-            (SplitSide::BottomLeft, split.bottom_left),
-            (SplitSide::BottomRight, split.bottom_right),
-        ];
-        let Some((source_side, _)) = panes.iter().find(|(_, pane)| {
-            pane.is_some_and(|v| self.terminal_entity_id_for_view(v) == Some(source_terminal_id))
-        }) else {
-            return;
-        };
-        let target_view = match source_side {
-            SplitSide::Left => split.right.or(split.bottom_left).or(split.bottom_right),
-            SplitSide::Right => split
-                .bottom_right
-                .or(Some(split.left))
-                .or(split.bottom_left),
-            SplitSide::BottomLeft => Some(split.left).or(split.bottom_right).or(split.right),
-            SplitSide::BottomRight => split.right.or(split.bottom_left).or(Some(split.left)),
-        };
-        // 若按优先策略未找到且源不是单一，则回退到首个非源窗格
-        let target_view = target_view.or_else(|| {
-            panes
-                .iter()
-                .filter_map(|(_, pane)| *pane)
-                .find(|v| self.terminal_entity_id_for_view(*v) != Some(source_terminal_id))
-        });
-        let Some(target_view) = target_view else {
-            return;
-        };
-        match target_view {
-            ActiveView::LocalSession(session_id) => {
-                if let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) {
-                    session
-                        .terminal
-                        .update(cx, |terminal, cx| terminal.paste_raw_text(text, cx));
-                }
-            }
-        }
-    }
     pub(crate) fn focus_terminal_split(&mut self, side: SplitSide, cx: &mut Context<Self>) {
         if self.workspace.focus_terminal_split(side) {
             self.refocus_active_terminal(cx);
@@ -366,34 +250,6 @@ impl AppShell {
             self.terminal_split_dragging.set(false);
             self.terminal_split_vertical_dragging.set(false);
             self.terminal_split_vertical_right_dragging.set(false);
-        }
-    }
-
-    fn set_terminal_adjacent_available(
-        &mut self,
-        view: ActiveView,
-        available: bool,
-        cx: &mut Context<Self>,
-    ) {
-        match view {
-            ActiveView::LocalSession(session_id) => {
-                if let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) {
-                    session.terminal.update(cx, |terminal, term_cx| {
-                        terminal.set_adjacent_terminal_available(available, term_cx);
-                    });
-                }
-            }
-        }
-    }
-
-    fn terminal_entity_id_for_view(&self, view: ActiveView) -> Option<EntityId> {
-        match view {
-            ActiveView::LocalSession(session_id) => self
-                .workspace
-                .sessions
-                .local_sessions
-                .get(&session_id)
-                .map(|session| session.terminal.entity_id()),
         }
     }
 }

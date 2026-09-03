@@ -1,7 +1,7 @@
 //! Derived from Zed's terminal_view TerminalElement at revision
 //! 90d024b88abc91264d9a0ad260eb4f365fa695c3. Application-only editor and
 //! workspace integrations are intentionally omitted from this fork. The
-//! terminal-local context menu is routed through TerminalView below.
+//! terminal-local right-click (copy/paste) is resolved through TerminalView below.
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use gpui::{
@@ -1324,6 +1324,10 @@ impl TerminalElement {
             ),
         );
 
+        // Windows-Terminal-style right click: the press is either forwarded to
+        // the PTY (application mouse-tracking mode, unless Shift is held) or
+        // resolved by TerminalView as copy-selection / paste. No popup menu,
+        // and a bare click never synthesizes a word selection.
         let forwards_right_click = mode.intersects(Modes::MOUSE_MODE);
         self.interactivity.on_mouse_down(MouseButton::Right, {
             let terminal = terminal.clone();
@@ -1331,28 +1335,18 @@ impl TerminalElement {
             let focus = focus.clone();
             move |event, window, cx| {
                 let forward_to_terminal = forwards_right_click && !event.modifiers.shift;
-                if !forward_to_terminal {
-                    // Mirror Zed: select the clicked word before opening the
-                    // context menu so the Copy entry is available.
-                    let had_selection = terminal.read(cx).last_content().selection.is_some();
-                    if !had_selection {
-                        terminal.update(cx, |terminal, _| {
-                            terminal.select_word_at_event_position(event);
-                        });
-                    }
-                }
-                terminal_view.update(cx, |terminal_view, terminal_cx| {
-                    terminal_view.begin_right_mouse_down(
-                        event.position,
-                        forward_to_terminal,
-                        terminal_cx,
-                    );
-                });
                 if forward_to_terminal {
+                    terminal_view.update(cx, |terminal_view, _| {
+                        terminal_view.set_right_mouse_forwarded(true);
+                    });
                     window.focus(&focus, cx);
                     terminal.update(cx, |terminal, terminal_cx| {
                         terminal.mouse_down(event, terminal_cx);
                         terminal_cx.notify();
+                    });
+                } else {
+                    terminal_view.update(cx, |terminal_view, terminal_cx| {
+                        terminal_view.handle_right_click(window, terminal_cx);
                     });
                 }
                 cx.stop_propagation();

@@ -5,11 +5,10 @@ use terminal as zed_terminal;
 
 use crate::features::terminal::view::{SendKeystroke, SendText};
 
-pub(crate) mod context_menu;
 pub(crate) mod view;
 
 pub(crate) use crossh_terminal::{ConnState, TerminalEvent};
-pub(crate) use view::{TerminalView, TerminalViewEvent};
+pub(crate) use view::TerminalView;
 
 /// Install the terminal-only portion of Zed's default keymap.
 ///

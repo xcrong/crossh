@@ -23,7 +23,7 @@ use gpui::{
 
 use crate::features::editor_launcher;
 use crate::features::settings::{self, SettingsSnapshot};
-use crate::features::terminal::{TerminalEvent, TerminalView, TerminalViewEvent};
+use crate::features::terminal::{TerminalEvent, TerminalView};
 use crate::features::updates::{UpdateController, UpdateSettings};
 use crate::features::workspace::command_palette::CommandPaletteState;
 use crate::features::workspace::modal_editor::{DefaultCommandEditor, RenameEditor};
@@ -431,22 +431,10 @@ impl AppShell {
                     TerminalEvent::TitleChanged | TerminalEvent::Notification => cx.notify(),
                 },
             );
-        let adjacent_subscription = cx.subscribe(
-            &terminal,
-            |this, terminal, event: &TerminalViewEvent, cx| match event {
-                TerminalViewEvent::SendSelectionToAdjacent { text } => {
-                    this.send_to_adjacent_terminal(terminal.entity_id(), text, cx);
-                }
-            },
-        );
         self.workspace
             .sessions
             .terminal_subscriptions
             .push(subscription);
-        self.workspace
-            .sessions
-            .terminal_subscriptions
-            .push(adjacent_subscription);
         self.workspace.sessions.local_sessions.insert(
             session_id,
             LocalSession {
