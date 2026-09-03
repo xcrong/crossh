@@ -141,32 +141,21 @@ impl NoteStore {
         conn.execute_batch("PRAGMA user_version=1;") // 契约 1
             .map_err(|e| e.to_string())?;
 
+        // 建表：只留 content/pinned/时间戳，无 tags
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS notes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 content TEXT NOT NULL,
-                tags TEXT NOT NULL DEFAULT '',
                 pinned INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             );
-            CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(content, tags, content='notes', content_rowid='id', tokenize='unicode61');
-            CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
-                INSERT INTO notes_fts(rowid, content, tags) VALUES (new.id, new.content, new.tags);
-            END;
-            CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
-                INSERT INTO notes_fts(notes_fts, rowid, content, tags) VALUES ('delete', old.id, old.content, old.tags);
-            END;
-            CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
-                INSERT INTO notes_fts(notes_fts, rowid, content, tags) VALUES ('delete', old.id, old.content, old.tags);
-                INSERT INTO notes_fts(rowid, content, tags) VALUES (new.id, new.content, new.tags);
-            END;
             "#,
         )
         .map_err(|e| e.to_string())?;
 
-        // 兼容旧库：分别探测 tags / pinned 列，缺失则补列
+        // 探测现有列：老库可能带有 tags 列
         let cols: Vec<String> = conn
             .prepare("SELECT name FROM pragma_table_info('notes')")
             .and_then(|mut stmt| {
@@ -180,14 +169,16 @@ impl NoteStore {
             .unwrap_or_default();
         let has_tags = cols.iter().any(|c| c == "tags");
         let has_pinned = cols.iter().any(|c| c == "pinned");
-        if !has_tags
-            && let Err(e) = conn.execute(
-                "ALTER TABLE notes ADD COLUMN tags TEXT NOT NULL DEFAULT ''",
-                [],
-            )
-        {
-            log::warn!("migrate tags column failed: {}", e);
+        // 先删旧 trigger（引用了 new.tags/old.tags），否则 DROP COLUMN 可能因引用失败
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS notes_ai; DROP TRIGGER IF EXISTS notes_ad; DROP TRIGGER IF EXISTS notes_au;",
+        )
+        .map_err(|e| e.to_string())?;
+        // 老库去 tags 列：无历史包袱，直接删列，不留双写
+        if has_tags && let Err(e) = conn.execute("ALTER TABLE notes DROP COLUMN tags", []) {
+            log::warn!("remove tags column failed: {}", e);
         }
+        // 补 pinned 列（保留旧库迁移）
         if !has_pinned
             && let Err(e) = conn.execute(
                 "ALTER TABLE notes ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
@@ -196,6 +187,25 @@ impl NoteStore {
         {
             log::warn!("migrate pinned column failed: {}", e);
         }
+        // 重建 FTS 与 trigger：直接 DROP 后按当前定义重建并回填，新旧库一致
+        conn.execute_batch(
+            r#"
+            DROP TABLE IF EXISTS notes_fts;
+            CREATE VIRTUAL TABLE notes_fts USING fts5(content, content='notes', content_rowid='id', tokenize='unicode61');
+            CREATE TRIGGER notes_ai AFTER INSERT ON notes BEGIN
+                INSERT INTO notes_fts(rowid, content) VALUES (new.id, new.content);
+            END;
+            CREATE TRIGGER notes_ad AFTER DELETE ON notes BEGIN
+                INSERT INTO notes_fts(notes_fts, rowid, content) VALUES ('delete', old.id, old.content);
+            END;
+            CREATE TRIGGER notes_au AFTER UPDATE ON notes BEGIN
+                INSERT INTO notes_fts(notes_fts, rowid, content) VALUES ('delete', old.id, old.content);
+                INSERT INTO notes_fts(rowid, content) VALUES (new.id, new.content);
+            END;
+            INSERT INTO notes_fts(rowid, content) SELECT id, content FROM notes;
+            "#,
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -227,14 +237,13 @@ impl NoteStore {
         if q.is_empty() {
             return self.list();
         }
-        // 优先 FTS5
-        if let Ok(res) = self.search_fts(q) {
-            return Ok(res);
+        // 优先 FTS5；成功但结果为空时回退 LIKE（中文在 unicode61 下 FTS 命中不了）
+        match self.search_fts(q) {
+            Ok(res) if !res.is_empty() => Ok(res),
+            // FTS 出错或结果为空：回退 LIKE，两边都空才返回空
+            _ => self.search_like(q),
         }
-        // 回退 LIKE
-        self.search_like(q)
     }
-
     fn search_fts(&self, query: &str) -> Result<Vec<Note>, String> {
         // 将查询转为 FTS5 合法：用双引号包裹每个词，避免特殊字符
         // 简化：对单引号转义，空格分词后用 OR 连接
@@ -300,9 +309,8 @@ impl NoteStore {
         }
         let now = now_ts();
         let conn = self.conn.lock();
-        // 兼容旧库的 tags 列：新笔记 tags 始终置空
         conn.execute(
-            "INSERT INTO notes (content, tags, pinned, created_at, updated_at) VALUES (?1, '', 0, ?2, ?3)",
+            "INSERT INTO notes (content, pinned, created_at, updated_at) VALUES (?1, 0, ?2, ?3)",
             params![content, now, now],
         )
         .map_err(|e| e.to_string())?;
@@ -503,6 +511,117 @@ mod tests {
         store.create("other").unwrap();
         let res = store.search("#work").unwrap();
         assert_eq!(res.len(), 1);
+    }
+
+    #[test]
+    fn spec_20260903_note__chinese_search_fallback_like() {
+        // 中文在 unicode61 下 FTS 命中不了，应回退 LIKE 搜到
+        let (store, _dir) = tmp_store();
+        store.create("今天天气不错，适合散步").unwrap();
+        store.create("other english note").unwrap();
+        let res = store.search("天气").unwrap();
+        assert_eq!(res.len(), 1);
+        assert!(res[0].content.contains("天气"));
+        // LIKE 只查 content 即可搜到中文
+        let like = store.search_like("天气").unwrap();
+        assert_eq!(like.len(), 1);
+    }
+
+    #[test]
+    fn spec_20260903_note__fts_hit_preferred() {
+        // 英文 FTS 能命中时，search 直接返回 FTS 结果
+        let (store, _dir) = tmp_store();
+        store.create("hello world").unwrap();
+        store.create("other").unwrap();
+        let fts = store.search_fts("hello").unwrap();
+        assert_eq!(fts.len(), 1);
+        let res = store.search("hello").unwrap();
+        assert_eq!(res, fts);
+    }
+
+    #[test]
+    fn spec_20260903_note__schema_has_no_tags() {
+        // 建表不再含 tags：notes 列无 tags，notes_fts 定义不含 tags
+        let (store, _dir) = tmp_store();
+        let conn = store.conn.lock();
+        let cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('notes')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|c| c.unwrap())
+            .collect();
+        assert!(!cols.iter().any(|c| c == "tags"));
+        let fts_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name='notes_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!fts_sql.contains("tags"));
+    }
+
+    #[test]
+    fn spec_20260903_note__legacy_db_with_tags_opens() {
+        // 老库（带 tags 列 / 带 tags 的 FTS）能正常打开，数据不丢
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("note.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                r#"
+                CREATE TABLE notes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content TEXT NOT NULL,
+                    tags TEXT NOT NULL DEFAULT '',
+                    pinned INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE VIRTUAL TABLE notes_fts USING fts5(content, tags, content='notes', content_rowid='id', tokenize='unicode61');
+                CREATE TRIGGER notes_ai AFTER INSERT ON notes BEGIN
+                    INSERT INTO notes_fts(rowid, content, tags) VALUES (new.id, new.content, new.tags);
+                END;
+                CREATE TRIGGER notes_ad AFTER DELETE ON notes BEGIN
+                    INSERT INTO notes_fts(notes_fts, rowid, content, tags) VALUES ('delete', old.id, old.content, old.tags);
+                END;
+                CREATE TRIGGER notes_au AFTER UPDATE ON notes BEGIN
+                    INSERT INTO notes_fts(notes_fts, rowid, content, tags) VALUES ('delete', old.id, old.content, old.tags);
+                    INSERT INTO notes_fts(rowid, content, tags) VALUES (new.id, new.content, new.tags);
+                END;
+                INSERT INTO notes (content, tags, pinned, created_at, updated_at) VALUES ('legacy hello', '', 0, 1, 1);
+                INSERT INTO notes (content, tags, pinned, created_at, updated_at) VALUES ('旧数据中文测试', '', 0, 1, 1);
+                "#,
+            )
+            .unwrap();
+        }
+        let store = NoteStore::open(&path).unwrap();
+        assert_eq!(store.list().unwrap().len(), 2);
+        // tags 列已去掉，FTS 定义不含 tags
+        let conn = store.conn.lock();
+        let cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('notes')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|c| c.unwrap())
+            .collect();
+        assert!(!cols.iter().any(|c| c == "tags"));
+        let fts_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name='notes_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!fts_sql.contains("tags"));
+        drop(conn);
+        // 老数据仍可搜到（英文走 FTS，中文走 LIKE 回退），新写入正常
+        assert_eq!(store.search("legacy").unwrap().len(), 1);
+        assert_eq!(store.search("中文").unwrap().len(), 1);
+        store.create("new note").unwrap();
+        assert_eq!(store.list().unwrap().len(), 3);
     }
 
     #[test]
