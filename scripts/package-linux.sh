@@ -96,7 +96,7 @@ exec "${HERE}/usr/bin/crossh" "$@"
 EOF
 chmod +x "$APPDIR/AppRun"
 
-# 携带运行时库（wayland/xkbcommon/fontconfig/xcb 家族），依赖深度递归收集
+# 携带运行时库，依赖深度递归收集
 collect_libs() {
     local lib path
     for lib in "$@"; do
@@ -107,20 +107,23 @@ collect_libs() {
     done
 }
 
+# 只携带字体栈（fontconfig/freetype/harfbuzz，保证跨发行版字体渲染一致）。
+# 显示栈（wayland/xkbcommon/xcb/X 系列）与底层运行时库一律不打包，交由本机提供：
+# AppImage 内旧构建机（如 Ubuntu 22.04）的 libwayland/libxcb 会盖住本机 Mesa 所依赖的
+# 系统库，导致 EGL/Vulkan 后端全部初始化失败（空 backend 表，窗口建不起来）。
+# 注意 expat/lzma 也不打包——本机 Mesa 驱动同样链接它们，必须用系统自洽的一对。
 collect_libs \
-    libwayland-client.so.0 libwayland-cursor.so.0 libwayland-egl.so.1 \
-    libxkbcommon.so.0 libxkbcommon-x11.so.0 \
-    libxcb.so.1 libxcb-render.so.0 libxcb-shape.so.0 libxcb-xfixes.so.0 \
-    libxcb-shm.so.0 libxau.so.6 libxdmcp.so.6 \
-    libfontconfig.so.1 libfreetype.so.6 libexpat.so.1 libharfbuzz.so.0
+    libfontconfig.so.1 libfreetype.so.6 libharfbuzz.so.0
 for f in "$APP_LIB"/*.so*; do
     [ -e "$f" ] || continue
     # 使用系统库路径解析传递依赖，避免 LD_LIBRARY_PATH 指向未闭包的 AppLib 导致 ldd 挂起
     while IFS= read -r dep; do
         case "$dep" in
             *ld-linux*|*libc.so.6|*/libm.so*|*/libdl.so*|*/librt.so*|*/libpthread.so* \
-            |*libgcc_s.so*|*libstdc++.so*|*libGL*|*libEGL*|*libvulkan*|*libdrm*|*libgbm*)
-                continue ;;
+            |*libgcc_s.so*|*libstdc++.so*|*libGL*|*libEGL*|*libvulkan*|*libdrm*|*libgbm* \
+            |*libwayland*|*libxkbcommon*|*libxcb*|*libX* \
+            |*libffi*|*libglib*|*libgobject*|*libgio*|*libpcre*|*libz.so*|*libexpat*|*liblzma* \
+            |*libxml2*|*libuuid*|*libselinux*|*libbsd*|*libmd*|*libzstd*)
         esac
         if [ ! -e "$APP_LIB/${dep##*/}" ]; then
             cp -L "$dep" "$APP_LIB/" || true
