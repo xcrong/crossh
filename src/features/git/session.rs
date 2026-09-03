@@ -12,6 +12,7 @@ use crossh_core::terminal::path_display_name;
 
 use super::branch::BranchState;
 use super::history::HistoryState;
+use super::remote::RemoteState;
 use super::stash::StashState;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -124,7 +125,6 @@ fn selected_change<'a>(
 ) -> Option<&'a FileChange> {
     selected_index(changes, selected).and_then(|index| changes.get(index))
 }
-
 fn operation_affects_path(operation: &GitOperation, path: &str) -> bool {
     match operation {
         GitOperation::Stage(paths)
@@ -140,7 +140,11 @@ fn operation_affects_path(operation: &GitOperation, path: &str) -> bool {
         | GitOperation::StashPush
         | GitOperation::StashApply(_)
         | GitOperation::StashPop(_)
-        | GitOperation::StashDrop(_) => false,
+        | GitOperation::StashDrop(_)
+        | GitOperation::FetchRemote(_)
+        | GitOperation::FetchAllRemotes
+        | GitOperation::AddRemote { .. }
+        | GitOperation::RemoveRemote(_) => false,
         GitOperation::ResolveConflict {
             path: candidate, ..
         } => candidate == path,
@@ -168,6 +172,13 @@ pub(super) enum GitOperation {
     StashApply(String),
     StashPop(String),
     StashDrop(String),
+    FetchRemote(String),
+    FetchAllRemotes,
+    AddRemote {
+        name: String,
+        url: String,
+    },
+    RemoveRemote(String),
     ResolveConflict {
         path: String,
         resolution: ConflictResolution,
@@ -189,6 +200,7 @@ pub(super) struct GitSession {
     pub(super) branch: BranchState,
     pub(super) history: HistoryState,
     pub(super) stash: StashState,
+    pub(super) remote: RemoteState,
     pub(super) list_generation: u64,
     pub(super) diff_generation: u64,
     pub(super) operation_generation: u64,
@@ -249,6 +261,7 @@ impl GitSession {
             branch: BranchState::default(),
             history: HistoryState::default(),
             stash: StashState::default(),
+            remote: RemoteState::default(),
             list_generation: 0,
             diff_generation: 0,
             operation_generation: 0,

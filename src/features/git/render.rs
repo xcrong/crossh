@@ -91,7 +91,8 @@ impl Render for GitWindow {
                     CompactPage::Changes
                     | CompactPage::Diff
                     | CompactPage::Branches
-                    | CompactPage::Stashes => {
+                    | CompactPage::Stashes
+                    | CompactPage::Remotes => {
                         unreachable!()
                     }
                 }
@@ -102,6 +103,8 @@ impl Render for GitWindow {
             self.render_branch_list(self.compact_layout, cx)
         } else if self.is_stash_page() {
             self.render_stash_list(self.compact_layout, cx)
+        } else if self.is_remote_page() {
+            self.render_remote_list(self.compact_layout, cx)
         } else if self.compact_layout {
             match self.compact_page {
                 CompactPage::Changes => self.render_changes_pane(true, window, cx),
@@ -109,7 +112,8 @@ impl Render for GitWindow {
                 CompactPage::History
                 | CompactPage::HistoryDetail
                 | CompactPage::Branches
-                | CompactPage::Stashes => {
+                | CompactPage::Stashes
+                | CompactPage::Remotes => {
                     unreachable!()
                 }
             }
@@ -163,11 +167,12 @@ impl GitWindow {
         let history = self.is_history_page();
         let branches = self.is_branch_page();
         let stashes = self.is_stash_page();
+        let remotes = self.is_remote_page();
         TabStrip::new("git-page-tabs")
             .border_bottom()
             .child(
                 TabItem::new("git-page-changes", i18n::text("git.changes_tab"))
-                    .active(!history && !branches && !stashes)
+                    .active(!history && !branches && !stashes && !remotes)
                     .on_select(cx.listener(|this, _event, _window, cx| {
                         this.show_changes(cx);
                     })),
@@ -191,6 +196,13 @@ impl GitWindow {
                     .active(stashes)
                     .on_select(cx.listener(|this, _event, _window, cx| {
                         this.show_stashes(cx);
+                    })),
+            )
+            .child(
+                TabItem::new("git-page-remotes", i18n::text("git.remotes_tab"))
+                    .active(remotes)
+                    .on_select(cx.listener(|this, _event, _window, cx| {
+                        this.show_remotes(cx);
                     })),
             )
             .into_any_element()
@@ -298,6 +310,8 @@ impl GitWindow {
             self.session.branch.list_state.is_loading()
         } else if self.is_stash_page() {
             self.session.stash.list_state.is_loading()
+        } else if self.is_remote_page() {
+            self.session.remote.list_state.is_loading()
         } else {
             self.session.refresh.in_flight()
         };

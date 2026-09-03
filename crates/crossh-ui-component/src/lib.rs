@@ -12,6 +12,7 @@ pub mod button;
 pub mod context_menu;
 pub mod count_badge;
 pub mod hint;
+pub mod labeled_field;
 pub mod layout;
 pub mod list_pane;
 pub mod list_state;
@@ -47,6 +48,7 @@ pub use context_menu::{
 };
 pub use count_badge::CountBadge;
 pub use hint::Hint;
+pub use labeled_field::{LABELED_FIELD_LABEL_WIDTH, labeled_field};
 pub use layout::{h_flex, scroll_y};
 pub use list_pane::{list_pane, pane_operation_error};
 pub use list_state::{ListState, list_state_body};

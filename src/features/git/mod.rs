@@ -19,7 +19,10 @@ actions!(
         SwitchSelectedBranch,
         MoveStashUp,
         MoveStashDown,
-        ApplySelectedStash
+        ApplySelectedStash,
+        MoveRemoteUp,
+        MoveRemoteDown,
+        FetchSelectedRemote
     ]
 );
 
@@ -28,6 +31,7 @@ const GIT_CHANGES_CONTEXT: &str = "GitChanges";
 const GIT_HISTORY_CONTEXT: &str = "GitHistory";
 const GIT_BRANCH_CONTEXT: &str = "GitBranch";
 const GIT_STASH_CONTEXT: &str = "GitStash";
+const GIT_REMOTE_CONTEXT: &str = "GitRemote";
 
 pub(crate) fn init(cx: &mut App) {
     cx.bind_keys([
@@ -45,6 +49,9 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("up", MoveStashUp, Some(GIT_STASH_CONTEXT)),
         KeyBinding::new("down", MoveStashDown, Some(GIT_STASH_CONTEXT)),
         KeyBinding::new("enter", ApplySelectedStash, Some(GIT_STASH_CONTEXT)),
+        KeyBinding::new("up", MoveRemoteUp, Some(GIT_REMOTE_CONTEXT)),
+        KeyBinding::new("down", MoveRemoteDown, Some(GIT_REMOTE_CONTEXT)),
+        KeyBinding::new("enter", FetchSelectedRemote, Some(GIT_REMOTE_CONTEXT)),
         KeyBinding::new("escape", BackToChanges, Some(GIT_WINDOW_CONTEXT)),
     ]);
 }
@@ -54,6 +61,8 @@ mod branch_render;
 mod history;
 mod history_render;
 mod input;
+mod remote;
+mod remote_render;
 mod render;
 mod session;
 mod stash;

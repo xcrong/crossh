@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use gpui::{
     App, AppContext, Bounds, Context, FocusHandle, Pixels, Point, ScrollHandle, Size, Task,
-    TitlebarOptions, UniformListScrollHandle, WindowBounds, WindowOptions, px,
+    TitlebarOptions, UniformListScrollHandle, Window, WindowBounds, WindowOptions, px,
 };
 
 #[cfg(feature = "visual-tests")]
@@ -26,6 +26,10 @@ use crossh_core::git_conflict::{ConflictResolution, resolve_conflict};
 #[cfg(feature = "visual-tests")]
 use crossh_core::git_history::{CommitDetail, CommitFileChange, CommitSummary};
 use crossh_core::git_history::{list_history, show_commit, show_commit_file};
+use crossh_core::git_remote::{
+    add_remote as add_git_remote, fetch_all_remotes as fetch_all_git_remotes,
+    fetch_remote as fetch_git_remote, list_remotes, remove_remote as remove_git_remote,
+};
 use crossh_core::git_stash::{
     apply_stash as apply_git_stash, drop_stash as drop_git_stash, list_stashes,
     pop_stash as pop_git_stash, push_stash as push_git_stash,
@@ -47,6 +51,7 @@ pub(super) enum CompactPage {
     HistoryDetail,
     Branches,
     Stashes,
+    Remotes,
 }
 
 pub(super) fn uses_compact_git_layout(width: f32) -> bool {
@@ -157,6 +162,9 @@ pub struct GitWindow {
     pub(super) history_search_focus: FocusHandle,
     pub(super) branch_focus: FocusHandle,
     pub(super) stash_focus: FocusHandle,
+    pub(super) remote_focus: FocusHandle,
+    pub(super) remote_add_name_focus: FocusHandle,
+    pub(super) remote_add_url_focus: FocusHandle,
     /// 刷新循环已启动标记。仅用于防重入（is_some 检查），从不置回 None：
     /// 持有 Task 句柄使循环随实体 drop 自动取消。
     pub(super) refresh_task: Option<Task<()>>,
@@ -168,11 +176,16 @@ pub struct GitWindow {
     pub(super) history_message_scroll: ScrollHandle,
     pub(super) branch_scroll: UniformListScrollHandle,
     pub(super) stash_scroll: UniformListScrollHandle,
+    pub(super) remote_scroll: UniformListScrollHandle,
     pub(super) changes_pane_width: Rc<Cell<f32>>,
     pub(super) changes_pane_dragging: Rc<Cell<bool>>,
     pub(super) context_menu: Option<ContextMenuState<GitMenuAction>>,
     pub(super) pending_discard: Option<Vec<String>>,
     pub(super) pending_stash_drop: Option<String>,
+    pub(super) pending_remote_remove: Option<String>,
+    pub(super) remote_add_open: bool,
+    pub(super) remote_add_name: TextEditingState,
+    pub(super) remote_add_url: TextEditingState,
     pub(super) history_query: TextEditingState,
 }
 
@@ -190,6 +203,9 @@ impl GitWindow {
             history_search_focus: cx.focus_handle(),
             branch_focus: cx.focus_handle(),
             stash_focus: cx.focus_handle(),
+            remote_focus: cx.focus_handle(),
+            remote_add_name_focus: cx.focus_handle(),
+            remote_add_url_focus: cx.focus_handle(),
             refresh_task: None,
             changes_scroll: UniformListScrollHandle::new(),
             diff_scroll: UniformListScrollHandle::new(),
@@ -199,11 +215,16 @@ impl GitWindow {
             history_message_scroll: ScrollHandle::new(),
             branch_scroll: UniformListScrollHandle::new(),
             stash_scroll: UniformListScrollHandle::new(),
+            remote_scroll: UniformListScrollHandle::new(),
             changes_pane_width: Rc::new(Cell::new(CHANGES_PANE_DEFAULT_WIDTH)),
             changes_pane_dragging: Rc::new(Cell::new(false)),
             context_menu: None,
             pending_discard: None,
             pending_stash_drop: None,
+            pending_remote_remove: None,
+            remote_add_open: false,
+            remote_add_name: TextEditingState::new(String::new()),
+            remote_add_url: TextEditingState::new(String::new()),
             history_query: TextEditingState::new(String::new()),
         };
         git_window.refresh_list(cx);
@@ -342,6 +363,15 @@ impl GitWindow {
     }
 
     #[cfg(feature = "visual-tests")]
+    pub(crate) fn visual_remote_fixture(cwd: PathBuf, cx: &mut App) -> gpui::Entity<Self> {
+        cx.new(|cx| {
+            let mut git_window = Self::new(cwd, cx);
+            git_window.show_remotes(cx);
+            git_window
+        })
+    }
+
+    #[cfg(feature = "visual-tests")]
     pub(crate) fn visual_conflict_fixture(cwd: PathBuf, cx: &mut App) -> gpui::Entity<Self> {
         cx.new(|cx| {
             let mut git_window = Self::new(cwd, cx);
@@ -365,6 +395,8 @@ impl GitWindow {
             self.refresh_branches(true, cx);
         } else if self.is_stash_page() {
             self.refresh_stashes(true, cx);
+        } else if self.is_remote_page() {
+            self.refresh_remotes(true, cx);
         } else {
             self.force_refresh_list(cx);
         }
@@ -395,6 +427,14 @@ impl GitWindow {
         cx.notify();
     }
 
+    pub(super) fn show_remotes(&mut self, cx: &mut Context<Self>) {
+        self.compact_page = CompactPage::Remotes;
+        if self.session.remote.entries.is_empty() && !self.session.remote.list_state.is_loading() {
+            self.refresh_remotes(false, cx);
+        }
+        cx.notify();
+    }
+
     pub(super) fn show_changes(&mut self, cx: &mut Context<Self>) {
         self.compact_page = CompactPage::Changes;
         cx.notify();
@@ -413,6 +453,10 @@ impl GitWindow {
 
     pub(super) fn is_stash_page(&self) -> bool {
         matches!(self.compact_page, CompactPage::Stashes)
+    }
+
+    pub(super) fn is_remote_page(&self) -> bool {
+        matches!(self.compact_page, CompactPage::Remotes)
     }
 
     pub(super) fn refresh_history(&mut self, force: bool, cx: &mut Context<Self>) {
@@ -512,6 +556,176 @@ impl GitWindow {
             });
         })
         .detach();
+    }
+
+    pub(super) fn refresh_remotes(&mut self, force: bool, cx: &mut Context<Self>) {
+        let Some(request) = self
+            .session
+            .remote
+            .begin_list(self.session.cwd.clone(), force)
+        else {
+            return;
+        };
+        let cwd = request.cwd.clone();
+        cx.spawn(async move |weak, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { list_remotes(&cwd) })
+                .await;
+            let _ = weak.update(cx, |this, cx| {
+                if this.session.remote.apply_list(request, result) {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn select_remote(&mut self, name: String, cx: &mut Context<Self>) {
+        if self.session.remote.select(name) {
+            cx.notify();
+        }
+    }
+
+    pub(super) fn move_remote_selection(&mut self, direction: i8, cx: &mut Context<Self>) {
+        if self.session.remote.entries.is_empty() {
+            return;
+        }
+        let current = self
+            .session
+            .remote
+            .selected
+            .as_ref()
+            .and_then(|name| {
+                self.session
+                    .remote
+                    .entries
+                    .iter()
+                    .position(|entry| &entry.name == name)
+            })
+            .unwrap_or(0);
+        let next = if direction < 0 {
+            current.saturating_sub(1)
+        } else {
+            (current + 1).min(self.session.remote.entries.len() - 1)
+        };
+        self.select_remote(self.session.remote.entries[next].name.clone(), cx);
+    }
+
+    pub(super) fn fetch_remote(&mut self, name: String, cx: &mut Context<Self>) {
+        if self
+            .session
+            .remote
+            .entries
+            .iter()
+            .all(|entry| entry.name != name)
+            || matches!(self.session.operation, OperationState::Running)
+        {
+            return;
+        }
+        self.session.remote.select(name.clone());
+        self.run_operation(
+            GitOperation::FetchRemote(name),
+            self.session.selected.clone(),
+            false,
+            cx,
+        );
+    }
+
+    pub(super) fn fetch_all_remotes(&mut self, cx: &mut Context<Self>) {
+        if self.session.remote.entries.is_empty()
+            || matches!(self.session.operation, OperationState::Running)
+        {
+            return;
+        }
+        self.run_operation(
+            GitOperation::FetchAllRemotes,
+            self.session.selected.clone(),
+            false,
+            cx,
+        );
+    }
+
+    pub(super) fn fetch_selected_remote(&mut self, cx: &mut Context<Self>) {
+        let Some(name) = self
+            .session
+            .remote
+            .selected_remote()
+            .map(|remote| remote.name.clone())
+        else {
+            return;
+        };
+        self.fetch_remote(name, cx);
+    }
+
+    pub(super) fn open_remote_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.remote_add_open = true;
+        self.remote_add_name = TextEditingState::new(String::new());
+        self.remote_add_url = TextEditingState::new(String::new());
+        window.focus(&self.remote_add_name_focus, cx);
+        cx.notify();
+    }
+
+    pub(super) fn close_remote_add(&mut self, cx: &mut Context<Self>) {
+        if self.remote_add_open {
+            self.remote_add_open = false;
+            cx.notify();
+        }
+    }
+
+    pub(super) fn can_submit_remote_add(&self) -> bool {
+        !self.remote_add_name.value.trim().is_empty()
+            && !self.remote_add_url.value.trim().is_empty()
+            && !matches!(self.session.operation, OperationState::Running)
+    }
+
+    pub(super) fn submit_remote_add(&mut self, cx: &mut Context<Self>) {
+        if !self.can_submit_remote_add() {
+            return;
+        }
+        let name = self.remote_add_name.value.trim().to_string();
+        let url = self.remote_add_url.value.trim().to_string();
+        self.run_operation(
+            GitOperation::AddRemote { name, url },
+            self.session.selected.clone(),
+            false,
+            cx,
+        );
+    }
+
+    pub(super) fn request_remove_remote(&mut self, name: String, cx: &mut Context<Self>) {
+        if self
+            .session
+            .remote
+            .entries
+            .iter()
+            .any(|entry| entry.name == name)
+            && !matches!(self.session.operation, OperationState::Running)
+        {
+            self.pending_remote_remove = Some(name);
+            cx.notify();
+        }
+    }
+
+    pub(super) fn cancel_remove_remote(&mut self, cx: &mut Context<Self>) {
+        if self.pending_remote_remove.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    pub(super) fn confirm_remove_remote(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.session.operation, OperationState::Running) {
+            return;
+        }
+        let Some(name) = self.pending_remote_remove.take() else {
+            return;
+        };
+        self.run_operation(
+            GitOperation::RemoveRemote(name),
+            self.session.selected.clone(),
+            false,
+            cx,
+        );
     }
 
     pub(super) fn select_history_commit(&mut self, id: String, cx: &mut Context<Self>) {
@@ -1070,7 +1284,17 @@ impl GitWindow {
         };
         let cwd = request.cwd.clone();
         let operation = request.operation.clone();
-        let refresh_branches = matches!(&operation, GitOperation::SwitchBranch(_));
+        let refresh_branches = matches!(
+            &operation,
+            GitOperation::SwitchBranch(_)
+                | GitOperation::FetchRemote(_)
+                | GitOperation::FetchAllRemotes
+                | GitOperation::RemoveRemote(_)
+        );
+        let refresh_remotes = matches!(
+            &operation,
+            GitOperation::AddRemote { .. } | GitOperation::RemoveRemote(_)
+        );
         let refresh_stashes = matches!(
             &operation,
             GitOperation::StashPush
@@ -1102,6 +1326,10 @@ impl GitWindow {
                         GitOperation::StashApply(selector) => apply_git_stash(&cwd, &selector),
                         GitOperation::StashPop(selector) => pop_git_stash(&cwd, &selector),
                         GitOperation::StashDrop(selector) => drop_git_stash(&cwd, &selector),
+                        GitOperation::FetchRemote(name) => fetch_git_remote(&cwd, &name),
+                        GitOperation::FetchAllRemotes => fetch_all_git_remotes(&cwd),
+                        GitOperation::AddRemote { name, url } => add_git_remote(&cwd, &name, &url),
+                        GitOperation::RemoveRemote(name) => remove_git_remote(&cwd, &name),
                         GitOperation::ResolveConflict { path, resolution } => {
                             resolve_conflict(&cwd, &path, resolution)
                         }
@@ -1109,6 +1337,7 @@ impl GitWindow {
                 })
                 .await;
             let _ = weak.update(cx, |this, cx| {
+                let is_add_operation = matches!(request.operation, GitOperation::AddRemote { .. });
                 let completion = this.session.apply_operation(request, result);
                 if !completion.accepted {
                     return;
@@ -1116,12 +1345,18 @@ impl GitWindow {
                 if completion.clear_message {
                     this.commit_editor.state.clear();
                 }
+                if is_add_operation && matches!(this.session.operation, OperationState::Idle) {
+                    this.close_remote_add(cx);
+                }
                 this.refresh_list(cx);
                 if refresh_branches {
                     this.refresh_branches(true, cx);
                 }
                 if refresh_stashes {
                     this.refresh_stashes(true, cx);
+                }
+                if refresh_remotes {
+                    this.refresh_remotes(true, cx);
                 }
                 cx.notify();
             });
@@ -1190,12 +1425,22 @@ impl GitWindow {
     }
 
     pub(super) fn back_to_changes(&mut self, cx: &mut Context<Self>) {
+        if self.pending_remote_remove.take().is_some() {
+            cx.notify();
+            return;
+        }
+        if self.remote_add_open {
+            self.remote_add_open = false;
+            cx.notify();
+            return;
+        }
         match self.compact_page {
             CompactPage::Diff => self.compact_page = CompactPage::Changes,
             CompactPage::HistoryDetail => self.compact_page = CompactPage::History,
             CompactPage::History => self.compact_page = CompactPage::Changes,
             CompactPage::Branches => self.compact_page = CompactPage::Changes,
             CompactPage::Stashes => self.compact_page = CompactPage::Changes,
+            CompactPage::Remotes => self.compact_page = CompactPage::Changes,
             CompactPage::Changes => return,
         }
         cx.notify();
@@ -1217,7 +1462,8 @@ pub fn open_git_window(cwd: PathBuf, cx: &mut App) {
                 this.context_menu = None;
                 this.pending_discard = None;
                 this.pending_stash_drop = None;
-                this.refresh_list(cx);
+                this.pending_remote_remove = None;
+                this.remote_add_open = false;
             }
             window.activate_window();
             cx.notify();

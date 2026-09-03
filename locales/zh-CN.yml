@@ -168,8 +168,10 @@ git:
   history_tab: 历史
   branches_tab: 分支
   stashes_tab: 暂存
+  remotes_tab: 远端
   branches: 分支
   stashes: 暂存
+  remotes: 远端
   staged_changes: 已暂存更改
   changes: 更改
   no_history: 暂无提交
@@ -177,6 +179,7 @@ git:
   history_no_matches: 没有匹配的提交
   no_branches: 暂无本地分支
   no_stashes: 暂无 Stash
+  no_remotes: 暂无远端
   current_branch: 当前
   switch_branch: 切换
   no_upstream: 未配置上游
@@ -219,6 +222,16 @@ git:
   pull_success: 拉取成功
   push_failed: 推送失败
   pull_failed: 拉取失败
+  fetch: 抓取
+  fetch_all: 全部抓取
+  add_remote: 添加远端
+  remove_remote: 删除
+  remote_name: 名称
+  remote_url: 地址
+  remote_name_placeholder: origin
+  remote_url_placeholder: git@github.com:org/repo.git
+  remote_remove_confirm: 确定删除这个远端？
+  remote_cancel: 取消
   stash_changes: 暂存当前修改
   apply_stash: 应用
   pop_stash: 应用并删除

@@ -168,8 +168,10 @@ git:
   history_tab: History
   branches_tab: Branches
   stashes_tab: Stash
+  remotes_tab: Remotes
   branches: Branches
   stashes: Stash
+  remotes: Remotes
   staged_changes: Staged Changes
   changes: Changes
   no_history: No commits yet
@@ -177,6 +179,7 @@ git:
   history_no_matches: No matching commits
   no_branches: No local branches
   no_stashes: No stashes
+  no_remotes: No remotes
   current_branch: Current
   switch_branch: Switch
   no_upstream: No upstream
@@ -219,6 +222,16 @@ git:
   pull_success: Pull succeeded
   push_failed: Push failed
   pull_failed: Pull failed
+  fetch: Fetch
+  fetch_all: Fetch all
+  add_remote: Add remote
+  remove_remote: Remove
+  remote_name: Name
+  remote_url: URL
+  remote_name_placeholder: origin
+  remote_url_placeholder: git@github.com:org/repo.git
+  remote_remove_confirm: Remove this remote?
+  remote_cancel: Cancel
   stash_changes: Stash changes
   apply_stash: Apply
   pop_stash: Pop
