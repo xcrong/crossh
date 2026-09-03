@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # 打包 Linux 产物：tar.gz 二进制包 + AppImage（AppDir 组装 + appimagetool）+ 配套 install.sh。
 #
-# 用法:  scripts/package-linux.sh <target> [version]
-#         target: x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu
+# 用法:  scripts/package-linux.sh [target] [version]
+#         target: x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu（默认按宿主 uname -m 推导）
 # 依赖:  rustup、curl、tar、rsvg-convert（Ubuntu 包: librsvg2-bin）
 # 输出:  dist/crossh-<version>-linux-<arch>.tar.gz、.AppImage、install.sh 与 -install.tar.gz（含 AppImage+install.sh）
 set -euo pipefail
@@ -10,7 +10,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 DIST="$(pwd)/dist"
 
-TARGET="${1:?usage: scripts/package-linux.sh <target> [version]}"
+TARGET="${1:-}"
+if [ -z "$TARGET" ]; then
+    case "$(uname -m)" in
+        x86_64) TARGET="x86_64-unknown-linux-gnu" ;;
+        aarch64|arm64) TARGET="aarch64-unknown-linux-gnu" ;;
+        *) echo "unsupported host arch: $(uname -m)" >&2; exit 1 ;;
+    esac
+fi
 VERSION="${2:-$(grep '^version' Cargo.toml | head -1 | sed 's/.*= *"\(.*\)".*/\1/')}"
 APP_NAME="crossh"
 APP_ID="me.xcrong.crossh"
