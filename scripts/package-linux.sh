@@ -124,6 +124,7 @@ for f in "$APP_LIB"/*.so*; do
             |*libwayland*|*libxkbcommon*|*libxcb*|*libX* \
             |*libffi*|*libglib*|*libgobject*|*libgio*|*libpcre*|*libz.so*|*libexpat*|*liblzma* \
             |*libxml2*|*libuuid*|*libselinux*|*libbsd*|*libmd*|*libzstd*)
+                continue ;;
         esac
         if [ ! -e "$APP_LIB/${dep##*/}" ]; then
             cp -L "$dep" "$APP_LIB/" || true
