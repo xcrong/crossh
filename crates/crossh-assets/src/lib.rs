@@ -28,14 +28,21 @@ impl AssetStore {
 
         let executable = std::env::current_exe().ok()?;
         let executable_dir = executable.parent()?;
-        let candidates = [
-            executable_dir.join("../Resources/crossh-assets"),
-            executable_dir.join("resources/crossh-assets"),
-        ];
-        candidates
+        Self::candidate_roots(executable_dir)
             .into_iter()
             .map(Self::new)
             .find(|store| store.is_valid())
+    }
+
+    /// 按优先级列出共享资源目录：exe 相对路径优先（tarball/AppImage/macOS），
+    /// 再回退发行版原生包（.deb/.rpm）的 FHS 系统路径（/usr/local 优先于 /usr）。
+    fn candidate_roots(executable_dir: &Path) -> Vec<PathBuf> {
+        vec![
+            executable_dir.join("../Resources/crossh-assets"),
+            executable_dir.join("resources/crossh-assets"),
+            PathBuf::from("/usr/local/share/crossh/crossh-assets"),
+            PathBuf::from("/usr/share/crossh/crossh-assets"),
+        ]
     }
 
     pub fn new(root: PathBuf) -> Self {
@@ -109,6 +116,21 @@ mod asset_store_tests {
         let store = AssetStore::new(std::env::temp_dir());
         assert!(store.load("/etc/passwd").is_none());
         assert!(store.load("fonts/../secret").is_none());
+    }
+
+    #[test]
+    fn candidate_roots_prefer_executable_relative_then_system_paths() {
+        let executable_dir = std::path::Path::new("/usr/bin");
+        let roots = AssetStore::candidate_roots(executable_dir);
+        assert_eq!(
+            roots,
+            vec![
+                std::path::PathBuf::from("/usr/bin/../Resources/crossh-assets"),
+                std::path::PathBuf::from("/usr/bin/resources/crossh-assets"),
+                std::path::PathBuf::from("/usr/local/share/crossh/crossh-assets"),
+                std::path::PathBuf::from("/usr/share/crossh/crossh-assets"),
+            ]
+        );
     }
 }
 

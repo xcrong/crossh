@@ -123,7 +123,7 @@ gh run view <run-id> --json jobs,conclusion,status
 3. `release`（`ubuntu-latest`）：
    - `Generate release notes`：优先 `cp docs/release-notes/v${VERSION}.md RELEASE_NOTES.md`，缺失则回退 `git log` 自动生成；若手写文件未含 `Full Changelog` 则自动追加 `compare/PREV...TAG` 链接（`release.yml:176`）。
    - `Generate checksums` + `Generate update manifest`（`scripts/generate-update-manifest.sh`）+ `Sign/Verify update manifest`（`CROSSH_UPDATE_SIGNING_KEY`，fail-closed，）。
-   - `softprops/action-gh-release@v3` 发布 `dist/*.{zip,tar.gz,AppImage}` + `sha256sums.txt` + `stable.json`，`body_path: RELEASE_NOTES.md`。
+   - `softprops/action-gh-release@v3` 发布 `dist/*.{zip,tar.gz,AppImage,deb,rpm}`（含 `*.AppImage.tar.gz` 一键安装包） + `sha256sums.txt` + `stable.json`，`body_path: RELEASE_NOTES.md`。
 
 失败回溯：`validate` 失败多为版本不一致；`build` 失败看对应平台日志；`sign` 失败为 manifest 签名密钥缺失（需 `secrets.CROSSH_UPDATE_SIGNING_KEY`）。
 

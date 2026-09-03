@@ -2,7 +2,8 @@ name: Release
 
 # 打 tag（v*）时自动构建并发布三平台、多架构产物：
 #   macOS:  aarch64 / x86_64 未签名 .app zip（暂不需要 Developer ID）
-#   Linux:  x86_64 / aarch64 tar.gz + AppImage
+#   Linux:  x86_64 / aarch64 tar.gz + AppImage + AppImage.tar.gz（AppImage+install.sh）
+#           + .deb + .rpm（dpkg-deb / rpmbuild 组装，FHS 布局）
 #   Windows: x86_64 zip + Inno Setup 安装程序 setup.exe（aarch64 实验性，编译失败不阻塞发布）
 # 本地等价命令:  scripts/package.sh / package-linux.sh / package-windows.ps1
 
@@ -70,13 +71,15 @@ jobs:
                 libxcb-render0-dev libxcb-shape0-dev libxcb-shm0-dev libxcb-xfixes0-dev \
                 libxcb-xkb-dev libxcb-util-dev libxcb-xinerama0-dev libxcb-xinput-dev \
                 libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev libwayland-dev wayland-protocols \
-                librsvg2-bin
+                librsvg2-bin rpm
             package: bash scripts/package-linux.sh x86_64-unknown-linux-gnu "$VERSION"
             artifact: crossh-linux-x86_64
             glob: |
               dist/*linux-x86_64.tar.gz
               dist/*linux-x86_64.AppImage
-
+              dist/*linux-x86_64.AppImage.tar.gz
+              dist/*linux-x86_64.deb
+              dist/*linux-x86_64.rpm
           - name: Linux aarch64
             os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
@@ -88,12 +91,15 @@ jobs:
                 libxcb-render0-dev libxcb-shape0-dev libxcb-shm0-dev libxcb-xfixes0-dev \
                 libxcb-xkb-dev libxcb-util-dev libxcb-xinerama0-dev libxcb-xinput-dev \
                 libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev libwayland-dev wayland-protocols \
-                librsvg2-bin
+                librsvg2-bin rpm
             package: bash scripts/package-linux.sh aarch64-unknown-linux-gnu "$VERSION"
             artifact: crossh-linux-aarch64
             glob: |
               dist/*linux-aarch64.tar.gz
               dist/*linux-aarch64.AppImage
+              dist/*linux-aarch64.AppImage.tar.gz
+              dist/*linux-aarch64.deb
+              dist/*linux-aarch64.rpm
 
           - name: Windows x86_64
             os: windows-latest
@@ -242,6 +248,8 @@ jobs:
             dist/*.zip
             dist/*.tar.gz
             dist/*.AppImage
+            dist/*.deb
+            dist/*.rpm
             dist/*-setup.exe
             dist/sha256sums.txt
             dist/stable.json
