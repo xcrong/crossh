@@ -136,14 +136,15 @@ mod tests {
             text_for("app_menu.check_for_updates", Locale::SimplifiedChinese),
             "检查更新…"
         );
-        assert_eq!(
-            text_for("toast.path_copied", Locale::English),
-            "Path copied"
-        );
+        assert_eq!(text_for("toast.path_copied", Locale::English), "Path copied");
         assert_eq!(
             text_for("toast.path_copied", Locale::SimplifiedChinese),
             "路径已复制"
         );
+        assert_eq!(text_for("toast.copied", Locale::English), "Copied");
+        assert_eq!(text_for("toast.copied", Locale::SimplifiedChinese), "已复制");
+        assert_eq!(text_for("toast.pasted", Locale::English), "Pasted");
+        assert_eq!(text_for("toast.pasted", Locale::SimplifiedChinese), "已粘贴");
         assert_eq!(
             rust_i18n::t!(
                 "git.selection_count",

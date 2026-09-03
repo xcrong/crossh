@@ -93,6 +93,10 @@ pub enum TerminalEvent {
     TitleChanged,
     /// The terminal produced a user-facing notification or bell.
     Notification,
+    /// Right-click copied the current selection to the clipboard.
+    ClipboardCopied,
+    /// Right-click pasted clipboard contents into the terminal.
+    ClipboardPasted,
     /// The shell or remote channel ended.
     Closed,
 }

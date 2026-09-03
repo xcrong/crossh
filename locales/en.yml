@@ -113,6 +113,8 @@ tooltip:
   note: Note
 toast:
   path_copied: Path copied
+  copied: Copied
+  pasted: Pasted
   editor_not_found: No editor detected. Configure one in Settings.
   editor_spawn_failed: Failed to launch editor
   search_no_match: No matching project

@@ -462,11 +462,11 @@ impl TerminalView {
     }
 
     fn paste(&mut self, _: &zed_terminal::Paste, _: &mut Window, cx: &mut Context<Self>) {
-        self.paste_clipboard(cx);
+        let _ = self.paste_clipboard(cx);
     }
 
     fn paste_text(&mut self, _: &zed_terminal::PasteText, _: &mut Window, cx: &mut Context<Self>) {
-        self.paste_text_clipboard(cx);
+        let _ = self.paste_text_clipboard(cx);
     }
 
     fn select_all(&mut self, _: &zed_terminal::SelectAll, _: &mut Window, cx: &mut Context<Self>) {
@@ -479,35 +479,38 @@ impl TerminalView {
             .update(cx, |terminal, _| terminal.copy(None));
     }
 
-    fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
+    fn paste_clipboard(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(clipboard) = cx.read_from_clipboard() else {
-            return;
+            return false;
         };
 
         match clipboard.entries().first() {
             Some(ClipboardEntry::Image(image)) if !image.bytes.is_empty() => {
                 self.forward_ctrl_v(cx);
+                true
             }
             Some(ClipboardEntry::ExternalPaths(paths)) => {
-                self.add_paths_to_terminal(paths.paths(), cx);
+                self.add_paths_to_terminal(paths.paths(), cx)
             }
-            _ => {
-                self.paste_text_clipboard(cx);
-            }
+            _ => self.paste_text_clipboard(cx),
         }
     }
 
     /// Pastes only the textual representation of the clipboard, mirroring
     /// Zed's `PasteText` action. Unlike `paste_clipboard`, images and
     /// external paths are ignored.
-    fn paste_text_clipboard(&mut self, cx: &mut Context<Self>) {
+    fn paste_text_clipboard(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(clipboard) = cx.read_from_clipboard() else {
-            return;
+            return false;
         };
-        if let Some(text) = clipboard.text() {
+        if let Some(text) = clipboard.text()
+            && !text.is_empty()
+        {
             self.zed_terminal
                 .update(cx, |terminal, _| terminal.paste(&text));
+            return true;
         }
+        false
     }
 
     /// Emits a raw Ctrl+V so TUI agents can read the OS clipboard directly
@@ -519,14 +522,18 @@ impl TerminalView {
 
     /// Pastes external file paths as shell-quoted arguments, mirroring Zed's
     /// terminal view behavior.
-    fn add_paths_to_terminal(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+    fn add_paths_to_terminal(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) -> bool {
         let mut text = paths
             .iter()
             .filter_map(|path| Some(format!(" {}", shlex::try_quote(path.to_str()?).ok()?)))
             .collect::<String>();
+        if text.is_empty() {
+            return false;
+        }
         text.push(' ');
         self.zed_terminal
             .update(cx, |terminal, _| terminal.paste(&text));
+        true
     }
 
     fn send_text(&mut self, text: &SendText, _: &mut Window, cx: &mut Context<Self>) {
@@ -807,8 +814,9 @@ impl TerminalView {
         };
         if has_selection {
             self.copy_selection(cx);
-        } else if self.state == ConnState::Connected {
-            self.paste_clipboard(cx);
+            cx.emit(TerminalEvent::ClipboardCopied);
+        } else if self.state == ConnState::Connected && self.paste_clipboard(cx) {
+            cx.emit(TerminalEvent::ClipboardPasted);
         }
         window.focus(&self.focus, cx);
         cx.notify();

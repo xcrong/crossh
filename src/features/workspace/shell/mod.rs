@@ -428,6 +428,18 @@ impl AppShell {
                     TerminalEvent::CommandFinished { status } => {
                         log::debug!("local terminal command finished with status {status:?}");
                     }
+                    TerminalEvent::ClipboardCopied => {
+                        this.show_toast(
+                            ToastNotice::new(i18n::text("toast.copied"), ToastTone::Success),
+                            cx,
+                        );
+                    }
+                    TerminalEvent::ClipboardPasted => {
+                        this.show_toast(
+                            ToastNotice::new(i18n::text("toast.pasted"), ToastTone::Success),
+                            cx,
+                        );
+                    }
                     TerminalEvent::TitleChanged | TerminalEvent::Notification => cx.notify(),
                 },
             );
