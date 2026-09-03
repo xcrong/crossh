@@ -1,0 +1,10 @@
+# 多平台换行一致：文本统一 LF，检出不转换。
+* text=auto eol=lf
+
+# 二进制资源不做换行转换。
+*.ico binary
+*.icns binary
+*.png binary
+*.ttf binary
+*.woff binary
+*.woff2 binary

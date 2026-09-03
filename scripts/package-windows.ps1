@@ -40,17 +40,51 @@ $ZedRevision = (Select-String -Path Cargo.toml -Pattern '^assets = .*rev = "([^"
 # 而不是完整 rev（见 copy-shared-assets.sh 同款前缀匹配），所以这里
 # 用前 7 位前缀匹配。
 $ZedPrefix = $ZedRevision.Substring(0, [Math]::Min(7, $ZedRevision.Length))
-$ZedRoot = Get-ChildItem (Join-Path $env:USERPROFILE ".cargo/git/checkouts") -Directory -Filter "zed-*" |
-    ForEach-Object { Get-ChildItem $_.FullName -Directory } |
-    Where-Object { $_.Name.StartsWith($ZedPrefix) } |
-    Where-Object { Test-Path (Join-Path $_.FullName "assets") } |
-    Select-Object -First 1
+# 兼容多 Cargo Home：优先 $CARGO_HOME，其次 $USERPROFILE/.cargo，兼容 scoop/localappdata 等
+$CargoHomes = @()
+if ($env:CARGO_HOME -and $env:CARGO_HOME.Trim() -ne "") { $CargoHomes += $env:CARGO_HOME }
+$CargoHomes += Join-Path $env:USERPROFILE ".cargo"
+if ($env:LOCALAPPDATA) { $CargoHomes += Join-Path $env:LOCALAPPDATA "cargo" }
+if ($env:APPDATA) { $CargoHomes += Join-Path $env:APPDATA "cargo" }
+$CargoHomes = $CargoHomes | Select-Object -Unique
+
+$ZedRoot = $null
+foreach ($CargoHome in $CargoHomes) {
+    $CheckoutsDir = Join-Path $CargoHome "git/checkouts"
+    if (-not (Test-Path $CheckoutsDir)) { continue }
+    $candidate = Get-ChildItem $CheckoutsDir -Directory -Filter "zed-*" -ErrorAction SilentlyContinue |
+        ForEach-Object { Get-ChildItem $_.FullName -Directory -ErrorAction SilentlyContinue } |
+        Where-Object { $_.Name.StartsWith($ZedPrefix) } |
+        Where-Object { Test-Path (Join-Path $_.FullName "assets") } |
+        Select-Object -First 1
+    if ($candidate) { $ZedRoot = $candidate; break }
+}
+# 回退：用 cargo metadata 直接定位 zed 的 manifest 路径（最可靠，不依赖目录约定）
 if (-not $ZedRoot) {
-    Write-Host "cached Zed checkouts:"
-    Get-ChildItem (Join-Path $env:USERPROFILE ".cargo/git/checkouts") -Directory -Filter "zed-*" |
-        ForEach-Object { Get-ChildItem $_.FullName -Directory } |
-        ForEach-Object { Write-Host "  $($_.Name)" }
-    throw "unable to locate cached Zed assets for revision $ZedRevision"
+    try {
+        $metaFull = cargo metadata --format-version 1 2>$null | ConvertFrom-Json
+        $zedPkg = $metaFull.packages | Where-Object { $_.name -eq "assets" -and $_.source -like "git+*zed*" } | Select-Object -First 1
+        if ($zedPkg -and $zedPkg.manifest_path) {
+            $maybeRoot = Split-Path (Split-Path $zedPkg.manifest_path)
+            if (Test-Path (Join-Path $maybeRoot "assets")) {
+                $ZedRoot = Get-Item $maybeRoot
+            }
+        }
+    } catch { }
+}
+if (-not $ZedRoot) {
+    Write-Host "cached Zed checkouts (searched CargoHomes: $($CargoHomes -join ', ')):"
+    foreach ($CargoHome in $CargoHomes) {
+        $CheckoutsDir = Join-Path $CargoHome "git/checkouts"
+        if (Test-Path $CheckoutsDir) {
+            Get-ChildItem $CheckoutsDir -Directory -Filter "zed-*" -ErrorAction SilentlyContinue |
+                ForEach-Object { Get-ChildItem $_.FullName -Directory -ErrorAction SilentlyContinue } |
+                ForEach-Object { Write-Host "  $($_.FullName)" }
+        } else {
+            Write-Host "  (missing) $CheckoutsDir"
+        }
+    }
+    throw "unable to locate cached Zed assets for revision $ZedRevision (prefix $ZedPrefix). Tried CargoHomes: $($CargoHomes -join ', ')"
 }
 $ZedRoot = $ZedRoot.FullName
 Copy-Item "crates/crossh-assets/assets/icons/*.svg" (Join-Path $AssetDestination "icons")

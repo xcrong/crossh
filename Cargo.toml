@@ -57,6 +57,9 @@ schemars = "1"
 unicode-width = "0.2"
 pulldown-cmark = "0.10"
 
+[build-dependencies]
+embed-resource = "3"
+
 [dev-dependencies]
 assets = { git = "https://github.com/zed-industries/zed", rev = "f66ed399cdde86092af8af3dc7b418abf45f37f8" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "f66ed399cdde86092af8af3dc7b418abf45f37f8", features = ["test-support"] }
