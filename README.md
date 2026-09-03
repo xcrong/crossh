@@ -38,8 +38,8 @@ scripts/package.sh x86_64-apple-darwin   # 指定架构（交叉编译）
 open dist/crossh.app
 ```
 
-三平台发布产物由 [.github/workflows/release.yml](.github/workflows/release.yml) 构建：macOS `.app` zip（aarch64/x86_64）、Linux `tar.gz` + AppImage（x86_64/aarch64）、Windows zip（x86_64，aarch64 为 optional experimental）。每个 release 同时生成 `stable.json`，由 [scripts/generate-update-manifest.sh](scripts/generate-update-manifest.sh) 根据实际产物的大小、SHA-256 与 Ed25519 签名自动生成。更新设计、平台替换策略与签名校验（v0.16.4 已落地）见 [docs/remote-update-plan.md](docs/remote-update-plan.md)。
-当前版本的 macOS 包不做 Apple 签名，不承诺绕过 Gatekeeper 或提供公证；远程更新负责验证 HTTPS、目标平台、版本、文件大小、SHA-256 与 manifest Ed25519 签名。
+三平台发布产物由 [.github/workflows/release.yml](.github/workflows/release.yml) 构建：macOS `.app` zip（aarch64/x86_64）、Linux `tar.gz` + AppImage（x86_64/aarch64）、Windows zip + Inno Setup 安装程序 `*-setup.exe`（x86_64，aarch64 为 optional experimental）。安装程序与 zip 内容一致，默认 per-user 安装到 `%LOCALAPPDATA%\Programs\crossh`（免 UAC，开始菜单 + 卸载器，可选加 PATH/桌面快捷方式）；后续自更新仍走 zip 通道原地替换 exe，无需重跑安装程序。每个 release 同时生成 `stable.json`，由 [scripts/generate-update-manifest.sh](scripts/generate-update-manifest.sh) 根据实际产物的大小、SHA-256 与 Ed25519 签名自动生成。更新设计、平台替换策略与签名校验（v0.16.4 已落地）见 [docs/remote-update-plan.md](docs/remote-update-plan.md)。
+当前版本的 macOS 包不做 Apple 签名，Windows 安装程序也不做代码签名，不承诺绕过 Gatekeeper / SmartScreen 或提供公证；远程更新负责验证 HTTPS、目标平台、版本、文件大小、SHA-256 与 manifest Ed25519 签名。
 
 ## 快捷键
 

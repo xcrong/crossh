@@ -3,7 +3,7 @@ name: Release
 # 打 tag（v*）时自动构建并发布三平台、多架构产物：
 #   macOS:  aarch64 / x86_64 未签名 .app zip（暂不需要 Developer ID）
 #   Linux:  x86_64 / aarch64 tar.gz + AppImage
-#   Windows: x86_64 zip（aarch64 实验性，编译失败不阻塞发布）
+#   Windows: x86_64 zip + Inno Setup 安装程序 setup.exe（aarch64 实验性，编译失败不阻塞发布）
 # 本地等价命令:  scripts/package.sh / package-linux.sh / package-windows.ps1
 
 on:
@@ -100,7 +100,9 @@ jobs:
             target: x86_64-pc-windows-msvc
             package: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows.ps1 -Target x86_64-pc-windows-msvc -Version "$VERSION"
             artifact: crossh-windows-x86_64
-            glob: dist/*windows-x86_64.zip
+            glob: |
+              dist/*windows-x86_64.zip
+              dist/*windows-x86_64-setup.exe
 
           - name: Windows aarch64 (experimental)
             os: windows-latest
@@ -108,7 +110,9 @@ jobs:
             continue_on_error: true
             package: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows.ps1 -Target aarch64-pc-windows-msvc -Version "$VERSION"
             artifact: crossh-windows-aarch64
-            glob: dist/*windows-aarch64.zip
+            glob: |
+              dist/*windows-aarch64.zip
+              dist/*windows-aarch64-setup.exe
 
     steps:
       - uses: actions/checkout@v6
@@ -135,6 +139,17 @@ jobs:
         if: matrix.setup != ''
         shell: bash
         run: ${{ matrix.setup }}
+
+      - name: Ensure Inno Setup (Windows)
+        if: contains(matrix.name, 'Windows')
+        shell: pwsh
+        run: |
+          $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue
+          $pf86 = ${env:ProgramFiles(x86)}
+          $found = $null -ne $iscc -or `
+            ($pf86 -and (Test-Path (Join-Path $pf86 'Inno Setup 6/ISCC.exe'))) -or `
+            ($env:ProgramFiles -and (Test-Path (Join-Path $env:ProgramFiles 'Inno Setup 6/ISCC.exe')))
+          if (-not $found) { choco install innosetup -y --no-progress }
 
       - name: Build & package
         shell: bash
@@ -227,6 +242,7 @@ jobs:
             dist/*.zip
             dist/*.tar.gz
             dist/*.AppImage
+            dist/*-setup.exe
             dist/sha256sums.txt
             dist/stable.json
           body_path: RELEASE_NOTES.md

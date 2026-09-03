@@ -70,6 +70,8 @@ AppImage 通过 `APPIMAGE` 环境变量定位当前文件，直接替换 AppImag
 
 updater 在主进程退出后替换 `crossh.exe`。Windows zip 中包含 `crossh-updater.exe`。当前 updater 不会覆盖正在运行的 updater 自身，因此下一次更新继续使用旧 updater 也是允许的；后续可以增加独立固定版本 bootstrapper。
 
+Inno Setup 安装程序（`scripts/crossh.iss`，见 `scripts/package-windows.ps1`）与 zip 内容一致，仅负责首次安装：默认 per-user 装到 `%LOCALAPPDATA%\Programs\crossh`，免 UAC；安装位置与版本无关，自更新继续走 zip 通道原地替换 exe，不重跑安装程序，不动卸载信息。安装包未做代码签名，SmartScreen 仍会提示。
+
 ## 安全边界
 
 当前实现提供：

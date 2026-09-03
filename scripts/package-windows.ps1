@@ -1,10 +1,13 @@
-# 打包 Windows 产物：crossh.exe、crossh-git.exe、crossh-note.exe、crossh-updater.exe + README + LICENSE 的 zip。
+# 打包 Windows 产物：crossh.exe、crossh-git.exe、crossh-note.exe、crossh-updater.exe + README + LICENSE 的 zip，
+# 以及同内容的 Inno Setup 安装程序 setup.exe（有 ISCC 时构建，缺失则只出 zip）。
 #
-# 用法:  powershell -File scripts/package-windows.ps1 [-Target <triple>] [-Version <ver>]
+# 用法:  powershell -File scripts/package-windows.ps1 [-Target <triple>] [-Version <ver>] [-SkipInstaller]
 # 输出:  dist\crossh-<version>-windows-<arch>.zip
+#         dist\crossh-<version>-windows-<arch>-setup.exe（需 Inno Setup 6）
 param(
     [string]$Target = "x86_64-pc-windows-msvc",
-    [string]$Version = ""
+    [string]$Version = "",
+    [switch]$SkipInstaller
 )
 
 $ErrorActionPreference = "Stop"
@@ -105,5 +108,69 @@ $Zip = Join-Path "dist" "crossh-$Version-windows-$Arch.zip"
 if (Test-Path $Zip) { Remove-Item $Zip }
 Compress-Archive -Path (Join-Path $Stage "*") -DestinationPath $Zip
 
-Write-Host "==> done:"
+Write-Host "==> zip done:"
 Write-Host "    $Zip"
+
+# --- Windows 安装程序（Inno Setup 6）-------------------------------------------
+# 与上面的 zip 共用 $Stage 暂存目录，保证 setup.exe 与便携 zip 内容一致。
+# 默认 per-user 安装到 %LOCALAPPDATA%\Programs\crossh（见 scripts/crossh.iss），
+# 免 UAC，自更新继续原地替换 exe，无需提权。未签名：SmartScreen 仍会提示。
+if (-not $SkipInstaller) {
+    # ISCC 查找顺序：PATH → where.exe → 默认安装目录（含 per-user）→ 卸载注册表。
+    # winget 可能装到当前用户作用域（HKCU / %LOCALAPPDATA%），且 InstallLocation
+    # 值不一定存在，因此同时从 UninstallString 所在目录反推。
+    $Iscc = $null
+    $IsccSearched = @()
+    try { $Iscc = (Get-Command iscc.exe -ErrorAction Stop).Source } catch { }
+    if (-not $Iscc) {
+        try { $w = where.exe ISCC.exe 2>$null | Select-Object -First 1 } catch { $w = $null }
+        if ($w -and (Test-Path $w)) { $Iscc = $w }
+    }
+    if (-not $Iscc) {
+        $IsccCandidates = @()
+        $Pf86 = ${env:ProgramFiles(x86)}
+        if ($Pf86) { $IsccCandidates += Join-Path $Pf86 "Inno Setup 6\ISCC.exe" }
+        if ($env:ProgramFiles) { $IsccCandidates += Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe" }
+        if ($env:LOCALAPPDATA) { $IsccCandidates += Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe" }
+        foreach ($RegKey in @(
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1",
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1",
+            "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1"
+        )) {
+            try {
+                $Props = Get-ItemProperty -Path $RegKey -ErrorAction Stop
+                if ($Props.InstallLocation) { $IsccCandidates += Join-Path $Props.InstallLocation "ISCC.exe" }
+                if ($Props.UninstallString) {
+                    $Unins = $Props.UninstallString.Trim()
+                    if ($Unins.StartsWith('"')) {
+                        $Unins = $Unins.Substring(1)
+                        $q = $Unins.IndexOf('"')
+                        if ($q -ge 0) { $Unins = $Unins.Substring(0, $q) }
+                    } else {
+                        $Unins = ($Unins -split '\s+')[0]
+                    }
+                    $UninsDir = Split-Path $Unins -Parent
+                    if ($UninsDir) { $IsccCandidates += Join-Path $UninsDir "ISCC.exe" }
+                }
+            } catch { }
+        }
+        $IsccSearched = $IsccCandidates | Select-Object -Unique
+        foreach ($Candidate in $IsccCandidates) {
+            if ($Candidate -and (Test-Path $Candidate)) { $Iscc = $Candidate; break }
+        }
+    }
+    if (-not $Iscc) {
+        Write-Warning "ISCC.exe not found; skipping Windows installer (zip only). Install Inno Setup 6 to build setup.exe."
+        if ($IsccSearched.Count -gt 0) {
+            Write-Warning ("searched: " + ($IsccSearched -join "; "))
+        }
+    } else {
+        Write-Host "==> building Windows installer with $Iscc"
+        $StageFull = (Resolve-Path $Stage).Path
+        $DistFull = (Resolve-Path "dist").Path
+        $SetupBase = "crossh-$Version-windows-$Arch-setup"
+        & $Iscc "/DMyAppVersion=$Version" "/DMyArch=$Arch" "/DMySrcDir=$StageFull" "/DMyOutputDir=$DistFull" "/DMySetupBase=$SetupBase" (Join-Path $PSScriptRoot "crossh.iss")
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        Write-Host "    dist\$SetupBase.exe"
+    }
+}
