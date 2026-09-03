@@ -10,7 +10,7 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/appicon/icon-master.svg");
 
     // 新版 embed-resource 3.x 要求处理 CompilationResult
-    let _ = embed_resource::compile("assets/appicon/app.rc", embed_resource::NONE)
+    embed_resource::compile("assets/appicon/app.rc", embed_resource::NONE)
         .manifest_optional()
         .unwrap();
 }
