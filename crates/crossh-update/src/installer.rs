@@ -64,8 +64,8 @@ pub fn spawn_updater(package: &Path, format: ArtifactFormat) -> Result<(), Insta
     }
     let (target, launch) = install_paths(&current_exe)?;
 
-    Command::new(&updater)
-        .arg("--package")
+    let mut cmd = Command::new(&updater);
+    cmd.arg("--package")
         .arg(package)
         .arg("--format")
         .arg(format.as_str())
@@ -77,8 +77,17 @@ pub fn spawn_updater(package: &Path, format: ArtifactFormat) -> Result<(), Insta
         .arg(&launch)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
+        .stderr(Stdio::null());
+    // updater 保持控制台子系统（手动运行时能看到报错），但从 GUI 自更新
+    // 启动时不能闪出黑色控制台窗口。stdout 已重定向到 null，结果落盘到
+    // UpdateResult，所以隐藏控制台没有信息损失。
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.spawn()?;
     Ok(())
 }
 

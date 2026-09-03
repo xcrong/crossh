@@ -47,6 +47,25 @@ pub fn detach(cmd: &mut std::process::Command) -> &mut std::process::Command {
     }
 }
 
+/// Windows GUI 入口在 `windows` 子系统下运行（无控制台），启动时调用此函数
+/// 尝试挂回父控制台，使终端里 `crossh --help` 等 CLI 输出仍然可见。
+/// 从资源管理器/开始菜单启动时没有父控制台，挂接失败是预期的，直接忽略。
+/// 非 Windows 上无操作。必须在任何打印输出之前调用。
+pub fn attach_parent_console() {
+    #[cfg(windows)]
+    {
+        const ATTACH_PARENT_PROCESS: u32 = 0xFFFF_FFFF;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            unsafe fn AttachConsole(process_id: u32) -> i32;
+        }
+        // 有父控制台时恢复 CLI 输出；无父控制台时返回 0，不创建任何窗口。
+        unsafe {
+            AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+    }
+}
+
 /// 构造一个分离的同伴进程命令：stdin/stdout/stderr 均重定向到 null，
 /// Unix 上脱离前台进程组，Windows 上以独立进程组/DETACHED 方式创建。
 pub fn sibling_command(name: &str) -> std::process::Command {
@@ -100,5 +119,11 @@ mod tests {
             sibling.display()
         );
         assert_eq!(sibling_executable(name), PathBuf::from(name));
+    }
+
+    #[test]
+    fn attach_parent_console_never_panics() {
+        // 无论有无父控制台（CI/本地通常都没有），调用必须直接返回。
+        attach_parent_console();
     }
 }

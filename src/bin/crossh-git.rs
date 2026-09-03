@@ -1,4 +1,5 @@
 //! Standalone Git Viewer entry point.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 #[path = "../shared/text_editing.rs"]
 pub mod text_editing;
@@ -24,6 +25,9 @@ mod git;
 use gpui::{App, QuitMode};
 
 fn main() {
+    // Windows GUI 子系统下无控制台：挂回父控制台，保证 --help/错误输出可见。
+    crossh_core::process::attach_parent_console();
+
     let args = std::env::args().skip(1);
     let command = match git_launcher::parse_cli(
         args,

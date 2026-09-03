@@ -5,6 +5,8 @@
 //! `crates/crossh-note` 仅承载存储层；编辑器已迁移至 `crates/crossh-editor` 的
 //! `TextareaState/InputState`，不再依赖 `src/shared/text_editing.rs`。
 
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 #[path = "../features/note_launcher.rs"]
 mod note_launcher;
 
@@ -19,6 +21,9 @@ use release_channel as zed_release_channel;
 use theme::LoadThemes;
 
 fn main() {
+    // Windows GUI 子系统下无控制台：挂回父控制台，保证 --help/错误输出可见。
+    crossh_core::process::attach_parent_console();
+
     let args = std::env::args().skip(1);
     let command = match note_launcher::parse_cli(args) {
         Ok(command) => command,

@@ -2,6 +2,8 @@
 //!
 //! 以项目目录组织多会话本地终端为核心，工作区内置终端与独立的
 //! `crossh-git` / `crossh-note` / `crossh-updater` 二进制共同组成应用。
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 mod app;
 mod features;
 mod infrastructure;
@@ -38,6 +40,9 @@ actions!(
 );
 
 fn main() {
+    // Windows GUI 子系统下无控制台：挂回父控制台，保证 --help/--version 等
+    // CLI 输出在终端里仍然可见；从资源管理器启动时此调用无操作。
+    crossh_core::process::attach_parent_console();
     let cli = app::cli::parse_cli(
         std::env::args().skip(1),
         std::env::current_dir().map_err(|error| error.to_string()),
