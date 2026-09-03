@@ -72,19 +72,11 @@ Categories=Development;
 StartupWMClass=me.xcrong.crossh
 Keywords=terminal;workspace;project;git;notes;
 EOF
-ln -s "usr/share/applications/me.xcrong.crossh.desktop" "$APPDIR/crossh.desktop"
-# 兼容旧路径：部分桌面环境仍通过 crossh.desktop / io.crossh.app.desktop 查找
-ln -s "me.xcrong.crossh.desktop" "$APPDIR/usr/share/applications/crossh.desktop"
-ln -s "me.xcrong.crossh.desktop" "$APPDIR/usr/share/applications/io.crossh.app.desktop"
+ln -s "usr/share/applications/me.xcrong.crossh.desktop" "$APPDIR/me.xcrong.crossh.desktop"
 
 rsvg-convert -w 512 -h 512 assets/appicon/icon-master.svg \
     -o "$APPDIR/usr/share/icons/hicolor/512x512/apps/me.xcrong.crossh.png"
-ln -s "usr/share/icons/hicolor/512x512/apps/me.xcrong.crossh.png" "$APPDIR/crossh.png"
 ln -s "usr/share/icons/hicolor/512x512/apps/me.xcrong.crossh.png" "$APPDIR/me.xcrong.crossh.png"
-ln -s "usr/share/icons/hicolor/512x512/apps/me.xcrong.crossh.png" "$APPDIR/io.crossh.app.png"
-# 兼容旧 Icon=crossh / io.crossh.app
-ln -s "me.xcrong.crossh.png" "$APPDIR/usr/share/icons/hicolor/512x512/apps/crossh.png"
-ln -s "me.xcrong.crossh.png" "$APPDIR/usr/share/icons/hicolor/512x512/apps/io.crossh.app.png"
 ln -sf "usr/share/icons/hicolor/512x512/apps/me.xcrong.crossh.png" "$APPDIR/.DirIcon"
 
 

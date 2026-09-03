@@ -56,8 +56,6 @@ TARGET_ICON="$ICON_DIR/${APP_ID}.png"
 do_uninstall() {
     echo "==> 卸载 $APP_ID ($MODE)"
     rm -f "$TARGET_BIN" "$TARGET_DESKTOP" "$TARGET_ICON"
-    rm -f "$DESKTOP_DIR/io.crossh.app.desktop" "$DESKTOP_DIR/crossh.desktop"
-    rm -f "$ICON_DIR/io.crossh.app.png" "$ICON_DIR/crossh.png"
     rm -f "$ICON_DIR/../scalable/apps/${APP_ID}.svg" 2>/dev/null || true
     if command -v update-desktop-database >/dev/null 2>&1; then
         update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
@@ -133,8 +131,6 @@ else
     # 回退：若用户是从源码 dist 直接运行，尝试 dist/*AppDir
     if [[ -f "$SCRIPT_DIR/me.xcrong.crossh.AppDir/$DESKTOP_SRC" ]]; then
         cp -f "$SCRIPT_DIR/me.xcrong.crossh.AppDir/$DESKTOP_SRC" "$TARGET_DESKTOP"
-    elif [[ -f "$SCRIPT_DIR/crossh.AppDir/$DESKTOP_SRC" ]]; then
-        cp -f "$SCRIPT_DIR/crossh.AppDir/$DESKTOP_SRC" "$TARGET_DESKTOP"
     else
         echo "错误：无法获取 desktop 文件" >&2
         exit 1
@@ -147,8 +143,6 @@ elif [[ -f "$TMPDIR/$ICON_SRC" ]]; then
 else
     if [[ -f "$SCRIPT_DIR/me.xcrong.crossh.AppDir/$ICON_SRC" ]]; then
         cp -f "$SCRIPT_DIR/me.xcrong.crossh.AppDir/$ICON_SRC" "$TARGET_ICON"
-    elif [[ -f "$SCRIPT_DIR/crossh.AppDir/$ICON_SRC" ]]; then
-        cp -f "$SCRIPT_DIR/crossh.AppDir/$ICON_SRC" "$TARGET_ICON"
     else
         # 最后回退：从 AppImage 解出的任意 icon
         FOUND_ICON="$(find "$TMPDIR" -name "${APP_ID}.png" 2>/dev/null | head -n 1 || true)"
@@ -172,13 +166,6 @@ if [[ -f "$TARGET_DESKTOP" ]]; then
     chmod 644 "$TARGET_DESKTOP"
 fi
 
-# 兼容旧 ID 的软链（已安装新版后，旧桌面文件仍能启动）
-ln -sf "${APP_ID}.desktop" "$DESKTOP_DIR/crossh.desktop" 2>/dev/null || true
-ln -sf "${APP_ID}.desktop" "$DESKTOP_DIR/io.crossh.app.desktop" 2>/dev/null || true
-if [[ -f "$TARGET_ICON" ]]; then
-    ln -sf "${APP_ID}.png" "$ICON_DIR/crossh.png" 2>/dev/null || true
-    ln -sf "${APP_ID}.png" "$ICON_DIR/io.crossh.app.png" 2>/dev/null || true
-fi
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
 fi
