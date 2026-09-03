@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 打包 Linux 产物：tar.gz 二进制包 + AppImage（AppDir 组装 + appimagetool）+ 配套 install.sh。
+# 打包 Linux 产物：tar.gz 二进制包 + AppImage（AppDir 组装 + linuxdeploy）+ 配套 install.sh。
 #
 # 用法:  scripts/package-linux.sh [target] [version]
 #         target: x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu（默认按宿主 uname -m 推导）
@@ -87,83 +87,46 @@ ln -s "usr/share/icons/hicolor/512x512/apps/me.xcrong.crossh.png" "$APPDIR/me.xc
 ln -sf "usr/share/icons/hicolor/512x512/apps/me.xcrong.crossh.png" "$APPDIR/.DirIcon"
 
 
-cat > "$APPDIR/AppRun" <<'EOF'
-#!/bin/sh
-SELF="$(readlink -f "$0")"
-HERE="${SELF%/*}"
-export LD_LIBRARY_PATH="${HERE}/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-exec "${HERE}/usr/bin/crossh" "$@"
-EOF
-chmod +x "$APPDIR/AppRun"
-
-# 携带运行时库，依赖深度递归收集
-collect_libs() {
-    local lib path
-    for lib in "$@"; do
-        path="$(ldconfig -p 2>/dev/null | awk -v l="$lib" '$1 == l { print $NF; exit }' || true)"
-        if [ -n "$path" ] && [ ! -e "$APP_LIB/${path##*/}" ]; then
-            cp -L "$path" "$APP_LIB/" || true
-        fi
-    done
-}
-
-# 只携带字体栈（fontconfig/freetype/harfbuzz，保证跨发行版字体渲染一致）。
-# 显示栈（wayland/xkbcommon/xcb/X 系列）与底层运行时库一律不打包，交由本机提供：
-# AppImage 内旧构建机（如 Ubuntu 22.04）的 libwayland/libxcb 会盖住本机 Mesa 所依赖的
-# 系统库，导致 EGL/Vulkan 后端全部初始化失败（空 backend 表，窗口建不起来）。
-# 注意 expat/lzma 也不打包——本机 Mesa 驱动同样链接它们，必须用系统自洽的一对。
-collect_libs \
-    libfontconfig.so.1 libfreetype.so.6 libharfbuzz.so.0
-for f in "$APP_LIB"/*.so*; do
-    [ -e "$f" ] || continue
-    # 使用系统库路径解析传递依赖，避免 LD_LIBRARY_PATH 指向未闭包的 AppLib 导致 ldd 挂起
-    while IFS= read -r dep; do
-        case "$dep" in
-            *ld-linux*|*libc.so.6|*/libm.so*|*/libdl.so*|*/librt.so*|*/libpthread.so* \
-            |*libgcc_s.so*|*libstdc++.so*|*libGL*|*libEGL*|*libvulkan*|*libdrm*|*libgbm* \
-            |*libwayland*|*libxkbcommon*|*libxcb*|*libX* \
-            |*libffi*|*libglib*|*libgobject*|*libgio*|*libpcre*|*libz.so*|*libexpat*|*liblzma* \
-            |*libxml2*|*libuuid*|*libselinux*|*libbsd*|*libmd*|*libzstd*)
-                continue ;;
-        esac
-        if [ ! -e "$APP_LIB/${dep##*/}" ]; then
-            cp -L "$dep" "$APP_LIB/" || true
-        fi
-    done < <(
-        ldd "$f" 2>/dev/null |
-            awk '/=> \// { for (i = 1; i <= NF; i++) if ($i == "=>") { print $(i + 1); break } }' |
-            sort -u || true
-    )
-done
-
-echo "==> appimagetool"
-APPIMAGETOOL="$DIST/appimagetool-$ARCH.AppImage"
-if [ ! -x "$APPIMAGETOOL" ]; then
-    curl -fL -o "$APPIMAGETOOL" \
-        "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$ARCH.AppImage"
-    chmod +x "$APPIMAGETOOL"
+# --- AppImage（linuxdeploy） --------------------------------------------------
+# 依赖组装交由上游 linuxdeploy：内置排除 libc/GL/EGL/Vulkan 等宿主库，
+# 另用 --exclude-library 排除显示栈（wayland/xkbcommon/xcb/X），全部走本机。
+# 背景：手写 collect_libs 两次翻车（0.31.0 显示栈冲突、0.31.1 丢 continue 把
+# libc 打进包），此后不再手写打包规则，见 docs/engineering-notes/appimage-bundled-libs-gpu.md。
+echo "==> linuxdeploy"
+LINUXDEPLOY="$DIST/linuxdeploy-$ARCH.AppImage"
+if [ ! -x "$LINUXDEPLOY" ]; then
+    curl -fL -o "$LINUXDEPLOY" \
+        "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-$ARCH.AppImage"
+    chmod +x "$LINUXDEPLOY"
 fi
-RUNTIME="$DIST/runtime-$ARCH"
-# appimagetool 内置的 runtime 下载偶发 302/0 状态失败，改为本地 curl 缓存并显式传入 --runtime-file
-if [ ! -f "$RUNTIME" ]; then
-    echo "==> downloading runtime $ARCH"
-    curl -fL --retry 3 --retry-delay 2 -o "$RUNTIME" \
-        "https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-$ARCH" || {
-        echo "警告：runtime 下载失败，尝试让 appimagetool 自行下载（可能再次失败）" >&2
-        RUNTIME=""
-    }
+LINUXDEPLOY_PLUGIN="$DIST/linuxdeploy-plugin-appimage-$ARCH.AppImage"
+if [ ! -x "$LINUXDEPLOY_PLUGIN" ]; then
+    curl -fL -o "$LINUXDEPLOY_PLUGIN" \
+        "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-$ARCH.AppImage"
+    chmod +x "$LINUXDEPLOY_PLUGIN"
 fi
+
 APPIMAGE="$DIST/$APP_NAME-$VERSION-linux-$ARCH.AppImage"
-rm -f "$APPIMAGE"
-if [ -n "${RUNTIME:-}" ] && [ -f "$RUNTIME" ]; then
-    APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" VERSION="$VERSION" \
-        "$APPIMAGETOOL" --runtime-file "$RUNTIME" "$APPDIR" "$APPIMAGE"
-else
-    APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" VERSION="$VERSION" \
-        "$APPIMAGETOOL" "$APPDIR" "$APPIMAGE"
-fi
+rm -f "$APPIMAGE" "$DIST/$APP_NAME-$VERSION-$ARCH.AppImage"
+pushd "$DIST" >/dev/null
+APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" VERSION="$VERSION" \
+    "$LINUXDEPLOY" --appdir "$APPDIR" \
+    -e "$APPDIR/usr/bin/$APP_NAME" \
+    -e "$APPDIR/usr/bin/crossh-git" \
+    -e "$APPDIR/usr/bin/crossh-note" \
+    -e "$APPDIR/usr/bin/crossh-updater" \
+    -d "$APPDIR/usr/share/applications/$APP_ID.desktop" \
+    -i "$APPDIR/usr/share/icons/hicolor/512x512/apps/$APP_ID.png" \
+    --exclude-library='libwayland*.so*' \
+    --exclude-library='libxkbcommon*.so*' \
+    --exclude-library='libxcb-*.so*' \
+    --exclude-library='libXau.so*' \
+    --exclude-library='libXdmcp.so*' \
+    --output appimage
+popd >/dev/null
+mv -f "$DIST/$APP_NAME-$VERSION-$ARCH.AppImage" "$APPIMAGE"
 if [ ! -f "$APPIMAGE" ]; then
-    echo "Error: AppImage 未生成: $APPIMAGE (appimagetool 可能返回了相对路径错误)" >&2
+    echo "Error: AppImage 未生成: $APPIMAGE" >&2
     exit 1
 fi
 
