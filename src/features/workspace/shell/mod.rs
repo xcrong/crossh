@@ -38,13 +38,13 @@ use crate::features::workspace::view::{
     render_rename_editor, render_workspace_status_bar,
 };
 use crate::shared::i18n::{self, LanguagePreference};
+use crate::shared::text_editing::{EditingKeystroke, TextEditingState, handle_text_editing_key};
 use crossh_core::git::{pull, push};
 use crossh_core::git_status::inspect;
 use crossh_core::system_stats::{SystemMonitorState, SystemSampler};
 use crossh_terminal::TerminalSettings;
 use crossh_ui::context_menu::ShellMenuAction;
 use crossh_ui::theme;
-use crossh_ui::widgets::printable_char;
 use crossh_ui_component::context_menu::{ContextMenuState, MenuEntry, render_context_menu};
 
 use super::local_paths::{current_local_cwd, normalize_local_cwd, normalize_recent_dirs};
@@ -129,9 +129,8 @@ pub(crate) enum GitSyncOperation {
 pub struct AppShell {
     pub(crate) workspace: WorkspaceState,
     pub(crate) status: Option<String>,
-    /// 侧栏搜索文本；用于项目搜索/过滤。
-    pub(crate) search_query: String,
-    pub(crate) search_ime_marked_text: String,
+    /// 侧栏搜索状态；与 Git/Note 筛选条同一编辑语义（`TextEditingState` + 共享分发）。
+    pub(crate) search_query: TextEditingState,
     pub(crate) search_focus: FocusHandle,
     /// 应用外壳根焦点；无任何终端/输入框聚焦时持有，保证窗口级动作
     /// （如 Cmd+Q → Quit）始终有合法的 dispatch 目标。
@@ -228,8 +227,7 @@ impl AppShell {
         let shell = cx.new(|cx| Self {
             workspace: WorkspaceState::new(local_dirs),
             status: None,
-            search_query: String::new(),
-            search_ime_marked_text: String::new(),
+            search_query: TextEditingState::new(String::new()),
             search_focus: cx.focus_handle(),
             shell_focus: cx.focus_handle(),
             _project_picker: None,
@@ -609,7 +607,7 @@ impl AppShell {
     }
 
     fn open_query(&mut self, cx: &mut Context<Self>) {
-        let query = self.search_query.trim().to_string();
+        let query = self.search_query.value.trim().to_string();
         if query.is_empty() {
             return;
         }
@@ -632,7 +630,6 @@ impl AppShell {
 
         // 历史主机别名匹配已移除
         self.search_query.clear();
-        self.search_ime_marked_text.clear();
         self.show_toast(
             ToastNotice::new(i18n::text("toast.search_no_match"), ToastTone::Info),
             cx,
@@ -656,16 +653,15 @@ impl AppShell {
             };
             let _ = weak.update(cx, |this, cx| {
                 this.search_query.clear();
-                this.search_ime_marked_text.clear();
                 this.activate_local_dir(path, cx);
             });
         });
         self._project_picker = Some(task);
     }
 
-    /// 搜索框保持 `String` 型编辑：该输入为单行过滤入口，
-    /// 无需选区/多光标等 `TextEditingState` 能力；`compose.rs`/`modal_editor.rs`
-    /// 的 `TextEditingState` 通用分发见 `shared::text_editing::handle_text_editing_key`。
+    /// 搜索框与 Git/Note 筛选条同一编辑语义：`TextEditingState` + 共享分发；
+    /// 侧栏仅保留提交语义（Enter 打开匹配项目、Tab 保持焦点、Esc 清空），
+    /// 其余按键走通用编辑分发（插入/删除/光标/选区/剪贴板），处理后截断冒泡。
     /// 唯一归属：仅侧栏搜索框的内层 `on_key_down` 注册，根节点不二次分发。
     pub(crate) fn handle_search_key(
         &mut self,
@@ -673,25 +669,42 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match ev.keystroke.key.as_str() {
+        let ks = &ev.keystroke;
+        match ks.key.as_str() {
             "enter" | "return" => self.open_query(cx),
             "escape" => {
                 self.search_query.clear();
-                self.search_ime_marked_text.clear();
                 cx.notify();
             }
-            "backspace" => {
-                self.search_query.pop();
-                self.search_ime_marked_text.clear();
-                cx.notify();
+            "tab" => {
+                self.search_focus.focus(window, cx);
             }
             _ => {
-                if let Some(ch) = printable_char(&ev.keystroke) {
-                    self.search_query.push(ch);
-                    self.search_ime_marked_text.clear();
+                let primary = ks.modifiers.control || ks.modifiers.platform;
+                let paste_text = if primary && ks.key == "v" {
+                    cx.read_from_clipboard()
+                        .and_then(|item| item.text().map(|s| s.to_string()))
+                } else {
+                    None
+                };
+                let editing_ks = EditingKeystroke {
+                    key: ks.key.clone(),
+                    key_char: ks.key_char.clone(),
+                    control: ks.modifiers.control,
+                    platform: ks.modifiers.platform,
+                    shift: ks.modifiers.shift,
+                };
+                let result = handle_text_editing_key(
+                    &mut self.search_query,
+                    &editing_ks,
+                    paste_text.as_deref(),
+                );
+                if let Some(text) = result.copy_text {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                }
+                if result.handled {
                     cx.notify();
-                } else if ev.keystroke.key == "tab" {
-                    self.search_focus.focus(window, cx);
+                    cx.stop_propagation();
                 }
             }
         }

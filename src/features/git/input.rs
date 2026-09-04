@@ -17,6 +17,8 @@ use super::window::GitWindow;
 use crate::shared::text_editing::selection_bounds;
 
 impl GitWindow {
+    /// 历史搜索与侧栏/Note 筛选条同一编辑语义：共享分发处理插入/删除/光标/选区/剪贴板；
+    /// Esc 清空并回列表；Up/Down 不进分发，直接冒泡到列表导航（`MoveHistoryUp/Down`）。
     pub(super) fn handle_history_search_key(
         &mut self,
         event: &KeyDownEvent,
@@ -24,69 +26,20 @@ impl GitWindow {
         cx: &mut Context<Self>,
     ) {
         let keystroke = &event.keystroke;
-        let primary = keystroke.modifiers.control || keystroke.modifiers.platform;
-        let extend = keystroke.modifiers.shift;
-        let mut handled = true;
-
         if keystroke.key == "escape" {
             self.history_query.clear();
             self.set_history_query(String::new(), cx);
             window.focus(&self.history_focus, cx);
-        } else if primary && keystroke.key == "a" {
-            self.history_query.select_all();
-        } else if primary && matches!(keystroke.key.as_str(), "c" | "x") {
-            if let Some(text) = self.history_query.selected_text() {
-                cx.write_to_clipboard(ClipboardItem::new_string(text));
-                if keystroke.key == "x" {
-                    self.history_query.clear_composition();
-                    self.history_query.replace_selection("");
-                }
-            }
-        } else if primary && keystroke.key == "v" {
-            let pasted = cx.read_from_clipboard().and_then(|item| {
-                item.into_entries().find_map(|entry| match entry {
-                    ClipboardEntry::String(value) => Some(value.text),
-                    _ => None,
-                })
-            });
-            if let Some(text) = pasted {
-                self.history_query.clear_composition();
-                self.history_query.replace_selection(&text);
-            }
-        } else {
-            match keystroke.key.as_str() {
-                "backspace" => {
-                    self.history_query.clear_composition();
-                    self.history_query.backspace();
-                }
-                "delete" => {
-                    self.history_query.clear_composition();
-                    self.history_query.delete();
-                }
-                "left" => {
-                    self.history_query.move_horizontal(-1, extend);
-                }
-                "right" => {
-                    self.history_query.move_horizontal(1, extend);
-                }
-                "home" => {
-                    self.history_query.move_to_boundary(false, extend);
-                }
-                "end" => {
-                    self.history_query.move_to_boundary(true, extend);
-                }
-                _ => {
-                    if let Some(character) = printable_char(keystroke) {
-                        self.history_query.clear_composition();
-                        self.history_query.replace_selection(&character.to_string());
-                    } else {
-                        handled = false;
-                    }
-                }
-            }
+            cx.stop_propagation();
+            return;
         }
-
-        if handled {
+        if matches!(
+            keystroke.key.to_lowercase().as_str(),
+            "up" | "down" | "arrowup" | "arrowdown"
+        ) {
+            return;
+        }
+        if dispatch_text_editing_key(&mut self.history_query, event, cx) {
             let query = self.history_query.value.clone();
             self.set_history_query(query, cx);
             cx.stop_propagation();

@@ -19,8 +19,8 @@ use crossh_ui::context_menu::ShellMenuAction;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::context_menu::{MenuEntry, MenuItem};
 use crossh_ui_component::{
-    Avatar, AvatarKind, Button, ButtonSize, ButtonVariant, Hint, Rail, SidePanel, TextInput,
-    Tooltip, rail_avatar, scroll_y,
+    Avatar, AvatarKind, Button, ButtonSize, ButtonVariant, Hint, Rail, SidePanel, Tooltip,
+    filter_row, filter_text_input, rail_avatar, scroll_y,
 };
 
 /// 侧栏整体布局：标题栏（含设置）+ 搜索框 + 分组列表 + 宽度拖拽。
@@ -29,9 +29,8 @@ pub fn render_sidebar(
     _window: &Window,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
-    let query = shell.search_query.trim().to_ascii_lowercase();
+    let query = shell.search_query.value.trim().to_ascii_lowercase();
     let search_focus = shell.search_focus.clone();
-    let search_ime = shell.search_ime_marked_text.clone();
     let mut project_dirs: Vec<&LocalDir> = shell
         .workspace
         .sessions
@@ -98,34 +97,19 @@ pub fn render_sidebar(
         list = list.child(project_list);
     }
 
-    let search = div()
-        .id("host-search-wrap")
-        .mx_2()
-        .mb_2()
-        .flex()
-        .items_center()
-        .gap_2()
-        .cursor_text()
-        .on_click({
-            let focus = search_focus.clone();
-            move |_ev, window, cx| window.focus(&focus, cx)
-        })
-        .child(icons::icon(icons::IconName::Search, 14.).text_color(theme::muted_text()))
-        .child(
-            TextInput::new("host-search", search_focus.clone())
-                .value(shell.search_query.clone())
-                .placeholder(i18n::text("sidebar.search_placeholder"))
-                .ime_marked_text(search_ime)
-                .text_color(if shell.search_query.is_empty() {
-                    theme::faint_text()
-                } else {
-                    theme::text()
-                })
-                .bg(theme::surface())
-                .flex_1()
-                .entity(cx.entity())
-                .on_key_down(cx.listener(AppShell::handle_search_key)),
-        );
+    let search = filter_row("host-search-wrap").child(
+        filter_text_input(
+            "host-search",
+            search_focus.clone(),
+            shell.search_query.value.clone(),
+            i18n::text("sidebar.search_placeholder"),
+            shell.search_query.ime_marked_text.clone(),
+            shell.search_query.selection(),
+            shell.search_query.cursor,
+        )
+        .entity(cx.entity())
+        .on_key_down(cx.listener(AppShell::handle_search_key)),
+    );
 
     let titlebar = div()
         .relative()

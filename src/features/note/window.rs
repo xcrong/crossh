@@ -1,21 +1,33 @@
-//! Note 窗口 — 基于 crossh-editor TextareaState/InputState
+//! Note 窗口 — 搜索框走 TextEditingState（与侧栏/Git 同一编辑语义），内容区基于 crossh-editor TextareaState。
 
+use std::ops::Range;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crossh_editor::input::{InputEvent, InputState, TextareaState};
-use crossh_editor::{Input, Textarea};
+use crate::shared::input_handler::{
+    editing_mark_text, editing_marked_range, editing_replace, editing_selected_range,
+    editing_unmark,
+};
+use crate::shared::text_editing::{
+    EditingKeystroke, TextEditingState, byte_index_for_utf16, handle_text_editing_key, utf16_len,
+    utf16_slice,
+};
+use crossh_editor::Textarea;
+use crossh_editor::input::{InputEvent, TextareaState};
 use crossh_note::{Note, NoteStore};
+use crossh_ui::widgets::ime_caret_bounds;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
     BadgeTone, Button, ButtonSize, ButtonVariant, StatusBar, StatusMetric,
     context_menu::{ContextMenuState, MenuEntry, MenuItem, render_context_menu},
+    filter_row, filter_text_input,
 };
 use gpui::{
-    AnyElement, App, AppContext, Bounds, Context, Entity, FocusHandle, Focusable, Hsla,
-    InteractiveElement, IntoElement, ParentElement, Pixels, Point, ScrollHandle, SharedString,
-    Size, StatefulInteractiveElement, Styled, Subscription, TitlebarOptions, Window, WindowBounds,
-    WindowOptions, div, point, px,
+    AnyElement, App, AppContext, Bounds, ClipboardItem, Context, Entity, EntityInputHandler,
+    FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, KeyDownEvent, ParentElement,
+    Pixels, Point, ScrollHandle, SharedString, Size, StatefulInteractiveElement, Styled,
+    Subscription, TitlebarOptions, UTF16Selection, Window, WindowBounds, WindowOptions, div, point,
+    px,
 };
 
 use super::markdown::render_markdown;
@@ -64,13 +76,14 @@ pub struct NoteWindow {
     preview: bool,
     // 删除二次确认：第一次点击只记录目标，第二次才真删。
     pending_delete_id: Option<i64>,
-    // 搜索防抖代际计数：每次 Change 加一，只有最新一代到期后才 reload。
+    // 搜索防抖代际计数：每次输入变更加一，只有最新一代到期后才 reload。
     search_generation: u64,
-    search_state: Entity<InputState>,
+    // 搜索状态；与侧栏/Git 筛选条同一编辑语义（`TextEditingState` + 共享分发）。
+    search_query: TextEditingState,
+    search_focus: FocusHandle,
     content_state: Entity<TextareaState>,
     list_scroll: ScrollHandle,
     window_focus: FocusHandle,
-    _search_sub: Subscription,
     _content_sub: Subscription,
     context_menu: Option<ContextMenuState<NoteMenuAction>>,
 }
@@ -87,7 +100,7 @@ impl NoteWindow {
             }
         };
 
-        let search_state = cx.new(|cx| InputState::new(window, cx).placeholder("搜索..."));
+        let search_focus = cx.focus_handle();
         let content_state = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .placeholder("输入笔记内容... (支持 Markdown)")
@@ -95,22 +108,6 @@ impl NoteWindow {
         });
 
         let note_entity = cx.entity().downgrade();
-        let search_handler = {
-            let note_entity = note_entity.clone();
-            Rc::new(
-                move |_menu: crossh_editor::input::NativeMenu,
-                      cap: crossh_editor::input::InputContextMenuCapabilities,
-                      pos: Point<Pixels>,
-                      _window: &mut Window,
-                      cx: &mut App| {
-                    if let Some(note) = note_entity.upgrade() {
-                        note.update(cx, |this, cx| {
-                            this.open_context_menu(pos, cap, cx);
-                        });
-                    }
-                },
-            )
-        };
         let content_handler = {
             let note_entity = note_entity.clone();
             Rc::new(
@@ -127,31 +124,8 @@ impl NoteWindow {
                 },
             )
         };
-        search_state.update(cx, |s, _| s.on_context_menu(search_handler));
         content_state.update(cx, |s, _| s.on_context_menu(content_handler));
 
-        let search_clone = search_state.clone();
-        let _search_sub = cx.subscribe(
-            &search_clone,
-            |this: &mut Self, _, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    // 防抖：只让最新一代到期后 reload 一次，输入过程中不查库。
-                    this.search_generation = this.search_generation.wrapping_add(1);
-                    let generation = this.search_generation;
-                    cx.spawn(async move |this, cx| {
-                        cx.background_executor().timer(SEARCH_DEBOUNCE).await;
-                        this.update(cx, |this, cx| {
-                            if this.search_generation != generation {
-                                return;
-                            }
-                            this.reload_notes(cx);
-                        })
-                        .ok();
-                    })
-                    .detach();
-                }
-            },
-        );
         let content_clone = content_state.clone();
         let _content_sub =
             cx.subscribe(&content_clone, |_: &mut Self, _, event: &InputEvent, cx| {
@@ -169,11 +143,11 @@ impl NoteWindow {
             preview: false,
             pending_delete_id: None,
             search_generation: 0,
-            search_state,
+            search_query: TextEditingState::new(String::new()),
+            search_focus,
             content_state,
             list_scroll: ScrollHandle::new(),
             window_focus: cx.focus_handle(),
-            _search_sub,
             _content_sub,
             context_menu: None,
         };
@@ -193,9 +167,9 @@ impl NoteWindow {
 
     /// 只刷新列表，不碰编辑器与选中（内部用，不做脏保护、无递归）。
     /// 查询失败记一条提示并保留旧列表，不再用 unwrap_or_default 吞掉。
-    fn refresh_list(&mut self, cx: &mut Context<Self>) {
+    fn refresh_list(&mut self) {
         let Some(store) = &self.store else { return };
-        let query = self.search_state.read(cx).value().trim().to_string();
+        let query = self.search_query.value.trim().to_string();
         let result = if query.is_empty() {
             store.list()
         } else {
@@ -210,6 +184,77 @@ impl NoteWindow {
                 log::warn!("note query failed: {e}");
                 self.list_error = Some("查询失败，显示旧数据".to_string());
             }
+        }
+    }
+
+    /// 搜索输入变更后的统一出口：防抖代际加一，只有最新一代到期后才查库。
+    /// 键盘输入与 IME 回调都走这里，输入过程中不查库。
+    fn on_search_changed(&mut self, cx: &mut Context<Self>) {
+        self.search_generation = self.search_generation.wrapping_add(1);
+        let generation = self.search_generation;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SEARCH_DEBOUNCE).await;
+            this.update(cx, |this, cx| {
+                if this.search_generation != generation {
+                    return;
+                }
+                this.reload_notes(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Esc 在搜索框的三家一致语义：有内容则清空并截断（不关窗口）；
+    /// 已空或焦点不在搜索框时返回 `false`，调用方放行冒泡（Note 即关窗口）。
+    fn clear_search_on_escape(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
+        if !self.search_focus.is_focused(window) || self.search_query.value.is_empty() {
+            return false;
+        }
+        self.search_query.clear();
+        self.on_search_changed(cx);
+        cx.notify();
+        true
+    }
+
+    /// 搜索框与侧栏/Git 同一编辑语义：Esc 先清空，其余走共享分发；
+    /// 处理后经防抖查库并截断冒泡，未处理（如 Up/Down 切列表）直接放行。
+    fn handle_search_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ks = &event.keystroke;
+        if ks.key == "escape" {
+            if self.clear_search_on_escape(window, cx) {
+                cx.stop_propagation();
+            }
+            return;
+        }
+        let primary = ks.modifiers.control || ks.modifiers.platform;
+        let paste_text = if primary && ks.key == "v" {
+            cx.read_from_clipboard()
+                .and_then(|item| item.text().map(|s| s.to_string()))
+        } else {
+            None
+        };
+        let editing_ks = EditingKeystroke {
+            key: ks.key.clone(),
+            key_char: ks.key_char.clone(),
+            control: ks.modifiers.control,
+            platform: ks.modifiers.platform,
+            shift: ks.modifiers.shift,
+        };
+        let result =
+            handle_text_editing_key(&mut self.search_query, &editing_ks, paste_text.as_deref());
+        if let Some(text) = result.copy_text {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+        if result.handled {
+            self.on_search_changed(cx);
+            cx.notify();
+            cx.stop_propagation();
         }
     }
 
@@ -259,14 +304,14 @@ impl NoteWindow {
     }
 
     fn reload_notes(&mut self, cx: &mut Context<Self>) {
-        self.refresh_list(cx);
+        self.refresh_list();
         // 脏保护：自动选中会覆盖编辑器，先落库；失败则放弃切换、保留草稿。
         if self.is_dirty(cx) && !self.persist_if_dirty(cx) {
             cx.notify();
             return;
         }
         // 落库可能产生新 id（create），再刷一次拿到最新列表。
-        self.refresh_list(cx);
+        self.refresh_list();
         let still_exists = self
             .selected_id
             .is_some_and(|id| self.notes.iter().any(|n| n.id == id));
@@ -338,7 +383,7 @@ impl NoteWindow {
             cx.notify();
             return;
         }
-        self.refresh_list(cx);
+        self.refresh_list();
         window.focus(&self.content_state.read(cx).focus_handle(cx), cx);
         cx.notify();
     }
@@ -354,7 +399,7 @@ impl NoteWindow {
             s.set_value_simple("", cx);
         });
         self.preview = false;
-        self.refresh_list(cx);
+        self.refresh_list();
         window.focus(&self.content_state.read(cx).focus_handle(cx), cx);
         cx.notify();
     }
@@ -763,6 +808,127 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m as u32, d as u32)
 }
 
+impl EntityInputHandler for NoteWindow {
+    fn text_for_range(
+        &mut self,
+        range: Range<usize>,
+        _adjusted_range: &mut Option<Range<usize>>,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        if !self.search_focus.is_focused(window) {
+            return None;
+        }
+        Some(utf16_slice(&self.search_query.value, range))
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        if !self.search_focus.is_focused(window) {
+            return None;
+        }
+        let selection = editing_selected_range(&self.search_query);
+        Some(UTF16Selection {
+            range: selection.range,
+            reversed: selection.reversed,
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
+        if !self.search_focus.is_focused(window) {
+            return None;
+        }
+        editing_marked_range(&self.search_query)
+    }
+
+    fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.search_focus.is_focused(window) {
+            editing_unmark(&mut self.search_query);
+            self.on_search_changed(cx);
+        }
+        window.invalidate_character_coordinates();
+        cx.notify();
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        replacement_range: Option<Range<usize>>,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.search_focus.is_focused(window) {
+            return;
+        }
+        editing_replace(&mut self.search_query, replacement_range, text);
+        self.on_search_changed(cx);
+        window.invalidate_character_coordinates();
+        cx.notify();
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _range: Option<Range<usize>>,
+        new_text: &str,
+        _new_selected_range: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.search_focus.is_focused(window) {
+            return;
+        }
+        editing_mark_text(&mut self.search_query, new_text);
+        self.on_search_changed(cx);
+        window.invalidate_character_coordinates();
+        cx.notify();
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        range: Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        if !self.search_focus.is_focused(window) {
+            return None;
+        }
+        let cursor = byte_index_for_utf16(&self.search_query.value, range.start);
+        Some(ime_caret_bounds(
+            window,
+            element_bounds,
+            &self.search_query.value[..cursor],
+            px(12.),
+            px(30.),
+            px(0.),
+        ))
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: Point<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        None
+    }
+
+    fn text_length_utf16(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> Option<usize> {
+        if !self.search_focus.is_focused(window) {
+            return None;
+        }
+        Some(utf16_len(&self.search_query.value))
+    }
+}
+
 impl Focusable for NoteWindow {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.window_focus.clone()
@@ -773,18 +939,6 @@ impl gpui::Render for NoteWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         sync_editor_theme(cx);
         let notes = self.notes.clone();
-
-        let header = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .p_2()
-            .border_b_1()
-            .border_color(theme::border())
-            .bg(theme::surface())
-            .text_color(theme::text())
-            .child(div().flex_1().child(Input::new(&self.search_state)));
 
         // 列表顶部错误行：store 打不开 / 查询失败时可见（store 字段保持 Option 不变）。
         let mut list_top: Vec<AnyElement> = Vec::new();
@@ -820,7 +974,7 @@ impl gpui::Render for NoteWindow {
         }
 
         // 空列表占位：区分“无笔记”与“搜索无匹配”，保持 260px 列宽不溢出。
-        let is_searching = !self.search_state.read(cx).value().trim().is_empty();
+        let is_searching = !self.search_query.value.trim().is_empty();
         let empty_hint = if is_searching {
             "无匹配，新建试试"
         } else {
@@ -942,6 +1096,20 @@ impl gpui::Render for NoteWindow {
                 .into_any_element()
         };
 
+        // 筛选条收敛到侧栏顶部：与侧栏/Git 同一样式（框内搜索图标 + 统一 m_2 边距）。
+        let search = filter_row("note-search-wrap").child(
+            filter_text_input(
+                "note-search",
+                self.search_focus.clone(),
+                self.search_query.value.clone(),
+                "搜索...",
+                self.search_query.ime_marked_text.clone(),
+                self.search_query.selection(),
+                self.search_query.cursor,
+            )
+            .entity(cx.entity())
+            .on_key_down(cx.listener(Self::handle_search_key)),
+        );
         let list = div()
             .w(px(260.))
             .min_w(px(180.))
@@ -953,6 +1121,7 @@ impl gpui::Render for NoteWindow {
             .border_r_1()
             .border_color(theme::border())
             .bg(theme::surface())
+            .child(search)
             .children(list_top)
             .child(list_body);
         let right: AnyElement = if self.preview {
@@ -1039,7 +1208,6 @@ impl gpui::Render for NoteWindow {
             }))
             .key_context(NOTE_WINDOW_CONTEXT)
             .children(linux_titlebar)
-            .child(header)
             .child(body)
             .child(self.render_status_bar(window, cx));
 
@@ -1423,35 +1591,20 @@ mod tests {
         let window = cx.add_window(NoteWindow::new);
         cx.run_until_parked();
         window
-            .update(cx, |note_window, _window, _cx| {
+            .update(cx, |note_window, window, cx| {
                 // 塞入哨兵：同步 reload 会立刻把它清掉。
                 note_window.notes.push(sample_note(-999, "哨兵"));
-            })
-            .unwrap();
-        // 真人输入路径：聚焦搜索框后退格（set_value_simple 是程序同步，不发 Change，
-        // 此处先铺值再用 Backspace 动作触发一次真实 Change）。
-        window
-            .update(cx, |note_window, window, cx| {
-                note_window.search_state.update(cx, |s, cx| {
-                    s.set_value_simple("zzz-无匹配x", cx);
-                });
-                window.focus(&note_window.search_state.read(cx).focus_handle(cx), cx);
-            })
-            .unwrap();
-        window
-            .update(cx, |_note_window, window, cx| {
-                window.dispatch_action(Box::new(crossh_editor::input::Backspace), cx);
+                note_window.search_query = TextEditingState::new("zzz-无匹配");
+                window.focus(&note_window.search_focus, cx);
+                note_window.on_search_changed(cx);
             })
             .unwrap();
         cx.run_until_parked();
         window
-            .update(cx, |note_window, _window, cx| {
-                // Change 已收到（代际推进），但防抖期内未查库：哨兵仍在。
+            .update(cx, |note_window, _window, _cx| {
+                // 代际已推进，但防抖期内未查库：哨兵仍在。
                 assert_eq!(note_window.search_generation, 1);
-                assert_eq!(
-                    note_window.search_state.read(cx).value().to_string(),
-                    "zzz-无匹配"
-                );
+                assert_eq!(note_window.search_query.value, "zzz-无匹配");
                 assert!(note_window.notes.iter().any(|n| n.id == -999));
             })
             .unwrap();
@@ -1463,6 +1616,23 @@ mod tests {
                 if note_window.store.is_some() {
                     assert!(!note_window.notes.iter().any(|n| n.id == -999));
                 }
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn note_search_escape_clears_before_close(cx: &mut TestAppContext) {
+        let window = cx.add_window(NoteWindow::new);
+        cx.run_until_parked();
+        window
+            .update(cx, |note_window, window, cx| {
+                note_window.search_query = TextEditingState::new("abc");
+                window.focus(&note_window.search_focus, cx);
+                // 有内容：清空并截断（不关窗口）。
+                assert!(note_window.clear_search_on_escape(window, cx));
+                assert!(note_window.search_query.value.is_empty());
+                // 已空：放行冒泡（关窗口逻辑不变）。
+                assert!(!note_window.clear_search_on_escape(window, cx));
             })
             .unwrap();
     }

@@ -11,6 +11,7 @@ pub mod banner;
 pub mod button;
 pub mod context_menu;
 pub mod count_badge;
+pub mod filter_bar;
 pub mod hint;
 pub mod labeled_field;
 pub mod layout;
@@ -47,6 +48,7 @@ pub use context_menu::{
     estimate_menu_height, render_context_menu,
 };
 pub use count_badge::CountBadge;
+pub use filter_bar::{filter_row, filter_text_color, filter_text_input};
 pub use hint::Hint;
 pub use labeled_field::{LABELED_FIELD_LABEL_WIDTH, labeled_field};
 pub use layout::{h_flex, scroll_y};

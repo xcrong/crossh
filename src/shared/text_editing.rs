@@ -44,6 +44,8 @@ pub fn utf16_slice(text: &str, range: Range<usize>) -> String {
     text[start..end].to_string()
 }
 
+/// 跨二进制共享：`crossh-git` 的 IME 回调在用；主二进制当前无直接调用方，保留以避免分叉。
+#[allow(dead_code)]
 pub fn replace_utf16_range(text: &mut String, range: Range<usize>, replacement: &str) -> usize {
     let start = byte_index_for_utf16(text, range.start.min(range.end));
     let end = byte_index_for_utf16(text, range.end.max(range.start));

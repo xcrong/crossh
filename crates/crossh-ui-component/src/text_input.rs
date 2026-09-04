@@ -2,6 +2,7 @@
 
 use std::rc::Rc;
 
+use crossh_ui::icons;
 use crossh_ui::widgets::{ime_input_canvas, marked_text_span, text_caret, text_span};
 use crossh_ui_base::{
     clamp_to_char_boundary, is_valid_selection, normalize_selection, should_highlight_selection,
@@ -46,6 +47,7 @@ pub struct TextInput<V> {
     focus_visible_accent: bool,
     flex_1: bool,
     full_width: bool,
+    suffix_icon: Option<icons::IconName>,
     entity: Option<Entity<V>>,
     on_key_down: Option<KeyHandler>,
 }
@@ -70,6 +72,7 @@ impl<V> TextInput<V> {
             focus_visible_accent: false,
             flex_1: false,
             full_width: false,
+            suffix_icon: None,
             entity: None,
             on_key_down: None,
         }
@@ -172,6 +175,11 @@ impl<V> TextInput<V> {
         self.full_width = true;
         self
     }
+    /// 框内后缀图标（如筛选框的放大镜）：固定在右侧，不挤占文本。
+    pub fn suffix_icon(mut self, icon: icons::IconName) -> Self {
+        self.suffix_icon = Some(icon);
+        self
+    }
 
     /// IME 输入目标;渲染时以该实体向平台输入系统注册输入处理。
     pub fn entity(mut self, entity: Entity<V>) -> Self {
@@ -223,6 +231,7 @@ impl<V: EntityInputHandler + 'static> RenderOnce for TextInput<V> {
             full_width,
             entity,
             on_key_down,
+            suffix_icon,
         } = self;
         let focused = focus.is_focused(window);
         let display_text = display.clone().unwrap_or_else(|| value.clone());
@@ -326,6 +335,17 @@ impl<V: EntityInputHandler + 'static> RenderOnce for TextInput<V> {
                 }
             }
         }
+        if let Some(icon) = suffix_icon {
+            children.push(
+                div()
+                    .ml_auto()
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .child(icons::icon(icon, 13.).text_color(theme::muted_text()))
+                    .into_any_element(),
+            );
+        }
 
         let click_focus = focus.clone();
         div()
@@ -403,6 +423,7 @@ mod tests {
         assert!(!input.focus_visible_accent);
         assert!(!input.flex_1);
         assert!(!input.full_width);
+        assert!(input.suffix_icon.is_none());
         assert!(input.entity.is_none());
         assert!(input.on_key_down.is_none());
     }
@@ -423,6 +444,7 @@ mod tests {
             .text_size(px(14.))
             .text_color(theme::accent())
             .bg(theme::surface())
+            .suffix_icon(crossh_ui::icons::IconName::Search)
             .focus_visible_accent()
             .on_key_down(|_, _, _| {});
 
@@ -439,6 +461,7 @@ mod tests {
         assert_eq!(input.text_color, theme::accent());
         assert_eq!(input.background, theme::surface());
         assert!(input.focus_visible_accent);
+        assert!(input.suffix_icon.is_some());
         assert!(input.on_key_down.is_some());
     }
 

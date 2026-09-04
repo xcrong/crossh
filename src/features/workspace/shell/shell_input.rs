@@ -9,7 +9,7 @@ use crossh_ui::widgets::ime_caret_bounds;
 
 use crate::shared::input_handler::{
     editing_mark_text, editing_marked_range, editing_replace, editing_selected_range,
-    editing_unmark, plain_mark, plain_marked_range, plain_replace, plain_selected_range,
+    editing_unmark,
 };
 use crate::shared::text_editing::TextEditingState;
 
@@ -58,35 +58,9 @@ impl AppShell {
         }
     }
 
-    fn plain_value(&self, field: AppShellInputField) -> Option<&String> {
-        match field {
-            AppShellInputField::HostSearch => Some(&self.search_query),
-            _ => None,
-        }
-    }
-
-    fn plain_marked(&self, field: AppShellInputField) -> Option<&String> {
-        match field {
-            AppShellInputField::HostSearch => Some(&self.search_ime_marked_text),
-            _ => None,
-        }
-    }
-
-    fn plain_value_and_marked_mut(
-        &mut self,
-        field: AppShellInputField,
-    ) -> Option<(&mut String, &mut String)> {
-        match field {
-            AppShellInputField::HostSearch => {
-                Some((&mut self.search_query, &mut self.search_ime_marked_text))
-            }
-            _ => None,
-        }
-    }
-
     fn editing_state(&self, field: AppShellInputField) -> Option<&TextEditingState> {
         match field {
-            AppShellInputField::HostSearch => None,
+            AppShellInputField::HostSearch => Some(&self.search_query),
             AppShellInputField::CommandPalette => {
                 self.command_palette.as_ref().map(|palette| &palette.query)
             }
@@ -104,7 +78,7 @@ impl AppShell {
 
     fn editing_state_mut(&mut self, field: AppShellInputField) -> Option<&mut TextEditingState> {
         match field {
-            AppShellInputField::HostSearch => None,
+            AppShellInputField::HostSearch => Some(&mut self.search_query),
             AppShellInputField::CommandPalette => self
                 .command_palette
                 .as_mut()
@@ -131,7 +105,7 @@ impl AppShell {
         field: AppShellInputField,
     ) -> Option<&mut TextEditingState> {
         match field {
-            AppShellInputField::HostSearch => None,
+            AppShellInputField::HostSearch => Some(&mut self.search_query),
             AppShellInputField::Compose => {
                 let view = self.workspace.focused_view()?;
                 Some(&mut self.workspace.compose_entry_mut(view).state)
@@ -141,9 +115,6 @@ impl AppShell {
     }
 
     fn value_for_field(&self, field: AppShellInputField) -> Option<&String> {
-        if let Some(value) = self.plain_value(field) {
-            return Some(value);
-        }
         self.editing_state(field).map(|state| &state.value)
     }
 
@@ -180,11 +151,8 @@ impl EntityInputHandler for AppShell {
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
         let field = self.active_input_field(window)?;
-        let selection = if let Some(state) = self.editing_state(field) {
-            editing_selected_range(state)
-        } else {
-            plain_selected_range(self.plain_value(field)?)
-        };
+        let state = self.editing_state(field)?;
+        let selection = editing_selected_range(state);
         Some(UTF16Selection {
             range: selection.range,
             reversed: selection.reversed,
@@ -197,22 +165,15 @@ impl EntityInputHandler for AppShell {
         _cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
         let field = self.active_input_field(window)?;
-        if let Some(state) = self.editing_state(field) {
-            editing_marked_range(state)
-        } else {
-            let value = self.plain_value(field)?;
-            let marked = self.plain_marked(field)?;
-            plain_marked_range(value, marked)
-        }
+        let state = self.editing_state(field)?;
+        editing_marked_range(state)
     }
 
     fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(field) = self.active_input_field(window) {
-            if let Some((_, marked)) = self.plain_value_and_marked_mut(field) {
-                marked.clear();
-            } else if let Some(state) = self.editing_state_mut(field) {
-                editing_unmark(state);
-            }
+        if let Some(field) = self.active_input_field(window)
+            && let Some(state) = self.editing_state_mut(field)
+        {
+            editing_unmark(state);
         }
         window.invalidate_character_coordinates();
         cx.notify();
@@ -225,18 +186,14 @@ impl EntityInputHandler for AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(field) = self.active_input_field(window) {
-            if let Some((value, marked)) = self.plain_value_and_marked_mut(field) {
-                plain_replace(value, marked, replacement_range, text);
-            } else if let Some(state) = self.editing_state_mut_for_replace(field) {
-                editing_replace(state, replacement_range, text);
-                if field == AppShellInputField::CommandPalette
-                    && let Some(palette) = self.command_palette.as_mut()
-                {
-                    palette.clamp_selection();
-                }
-            } else {
-                return;
+        if let Some(field) = self.active_input_field(window)
+            && let Some(state) = self.editing_state_mut_for_replace(field)
+        {
+            editing_replace(state, replacement_range, text);
+            if field == AppShellInputField::CommandPalette
+                && let Some(palette) = self.command_palette.as_mut()
+            {
+                palette.clamp_selection();
             }
         } else {
             return;
@@ -253,14 +210,10 @@ impl EntityInputHandler for AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(field) = self.active_input_field(window) {
-            if let Some((_, marked)) = self.plain_value_and_marked_mut(field) {
-                plain_mark(marked, new_text);
-            } else if let Some(state) = self.editing_state_mut_for_replace(field) {
-                editing_mark_text(state, new_text);
-            } else {
-                return;
-            }
+        if let Some(field) = self.active_input_field(window)
+            && let Some(state) = self.editing_state_mut_for_replace(field)
+        {
+            editing_mark_text(state, new_text);
         } else {
             return;
         }
@@ -278,11 +231,11 @@ impl EntityInputHandler for AppShell {
         let field = self.active_input_field(window)?;
         match field {
             AppShellInputField::HostSearch => {
-                let cursor = byte_index_for_utf16(&self.search_query, range.start);
+                let cursor = byte_index_for_utf16(&self.search_query.value, range.start);
                 Some(ime_caret_bounds(
                     window,
                     element_bounds,
-                    &self.search_query[..cursor],
+                    &self.search_query.value[..cursor],
                     px(12.),
                     px(30.),
                     px(0.),

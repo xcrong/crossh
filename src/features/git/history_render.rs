@@ -12,8 +12,8 @@ use crossh_core::git_history_graph::HistoryGraphRow;
 use crossh_editor::{Scrollbar, ScrollbarMode};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
-    Badge, BadgeTone, Button, ButtonSize, ButtonVariant, Hint, ListStatus, TextInput, list_pane,
-    list_state_body, pane_toolbar, scroll_y, selectable_row,
+    Badge, BadgeTone, Button, ButtonSize, ButtonVariant, Hint, ListStatus, filter_row,
+    filter_text_input, list_pane, list_state_body, scroll_y, selectable_row,
 };
 
 use super::history::{HistoryDetailState, HistoryFileDiffState, HistoryListState, HistoryRow};
@@ -133,42 +133,45 @@ impl GitWindow {
     fn render_history_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
         let search_focus = self.history_search_focus.clone();
         let search_focus_for_click = search_focus.clone();
-        pane_toolbar()
+        div()
             .id("git-history-toolbar")
+            .bg(theme::surface())
+            .border_b_1()
+            .border_color(theme::border())
             .on_click(move |_event, window, cx| {
                 window.focus(&search_focus_for_click, cx);
                 cx.stop_propagation();
             })
-            .child(icons::icon(icons::IconName::Search, 13.).text_color(theme::muted_text()))
             .child(
-                TextInput::new("git-history-filter", search_focus)
-                    .value(self.history_query.value.clone())
-                    .placeholder(i18n::text("git.history_filter"))
-                    .ime_marked_text(self.history_query.ime_marked_text.clone())
-                    .text_color(if self.history_query.value.is_empty() {
-                        theme::faint_text()
-                    } else {
-                        theme::text()
-                    })
-                    .bg(theme::surface())
-                    .flex_1()
-                    .entity(cx.entity())
-                    .on_key_down(cx.listener(Self::handle_history_search_key)),
-            )
-            .child(
-                Button::new("git-history-refresh")
-                    .size(ButtonSize::Icon(px(26.)))
-                    .variant(ButtonVariant::Ghost)
-                    .loading(self.session.history.list_state.is_loading())
-                    .tooltip(i18n::text("git.refresh"))
-                    .icon(
-                        icons::icon(icons::IconName::RefreshCw, 13.)
-                            .text_color(theme::muted_text()),
+                filter_row("git-history-filter-row")
+                    .child(
+                        filter_text_input(
+                            "git-history-filter",
+                            search_focus,
+                            self.history_query.value.clone(),
+                            i18n::text("git.history_filter"),
+                            self.history_query.ime_marked_text.clone(),
+                            self.history_query.selection(),
+                            self.history_query.cursor,
+                        )
+                        .entity(cx.entity())
+                        .on_key_down(cx.listener(Self::handle_history_search_key)),
                     )
-                    .on_click(cx.listener(|this, _event, _window, cx| {
-                        this.refresh_history(true, cx);
-                        cx.stop_propagation();
-                    })),
+                    .child(
+                        Button::new("git-history-refresh")
+                            .size(ButtonSize::Icon(px(26.)))
+                            .variant(ButtonVariant::Ghost)
+                            .loading(self.session.history.list_state.is_loading())
+                            .tooltip(i18n::text("git.refresh"))
+                            .icon(
+                                icons::icon(icons::IconName::RefreshCw, 13.)
+                                    .text_color(theme::muted_text()),
+                            )
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.refresh_history(true, cx);
+                                cx.stop_propagation();
+                            })),
+                    ),
             )
             .into_any_element()
     }
