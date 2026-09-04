@@ -220,6 +220,43 @@ impl AppShell {
         cx: &mut Context<Self>,
         keep_pinned: bool,
     ) {
+        // 分栏属主的 Tab 关闭 = 关闭整个 Tab（含所有 secondary）。
+        // 右窗格在标签栏隐藏，点击 Tab X / ⌘W 时用户意图是销毁整个分栏容器，
+        // 不能只关左侧让右侧晋升为新 Tab（否则出现“左侧关闭、右侧占满 tab1”）。
+        // 进程退出等隐式关闭仍走 close_local_session 的晋升路径，这里只拦截显式 Tab 关闭。
+        if let Some(split) = self
+            .workspace
+            .split_of(ActiveView::LocalSession(session_id))
+            && split.has_any_secondary()
+        {
+            if !self
+                .workspace
+                .sessions
+                .local_sessions
+                .contains_key(&session_id)
+            {
+                return;
+            }
+            let mut views = vec![ActiveView::LocalSession(session_id)];
+            views.extend(split.secondary_views());
+            let mut combined = TabCloseRisk::default();
+            for view in &views {
+                if let ActiveView::LocalSession(id) = view
+                    && let Some(risk) = self.local_session_close_risk(*id, cx)
+                {
+                    combined.command_running |= risk.command_running;
+                    combined.unsaved_editors += risk.unsaved_editors;
+                }
+            }
+            if !combined.needs_confirmation() {
+                self.close_split_owner_tab(&views, keep_pinned, cx);
+                return;
+            }
+            self.prompt_close_tab(combined, window, cx, move |this, cx| {
+                this.close_split_owner_tab(&views, keep_pinned, cx);
+            });
+            return;
+        }
         let Some(risk) = self.local_session_close_risk(session_id, cx) else {
             return;
         };
@@ -230,6 +267,24 @@ impl AppShell {
         self.prompt_close_tab(risk, window, cx, move |this, cx| {
             this.close_local_session_internal(session_id, keep_pinned, cx);
         });
+    }
+
+    /// 关闭分栏属主所在的整个 Tab：先拆除分栏再逐个关闭，避免属主关闭晋升 secondary 为新 Tab。
+    fn close_split_owner_tab(
+        &mut self,
+        views: &[ActiveView],
+        keep_pinned: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.detach_splits_for(views, cx);
+        for view in views {
+            if let ActiveView::LocalSession(id) = view
+                && self.workspace.sessions.local_sessions.contains_key(id)
+            {
+                // detach 后已无分栏，逐个关闭不会触发晋升。
+                self.close_local_session_internal(*id, keep_pinned, cx);
+            }
+        }
     }
 
     pub(crate) fn local_session_close_risk(
