@@ -1,5 +1,7 @@
 use gpui::{App, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div, px};
 
+use crossh_ui_base::toaster_bottom_offset;
+
 use crate::layout::h_flex;
 use crate::status_dot::StatusDot;
 use crate::theme;
@@ -88,7 +90,7 @@ impl RenderOnce for Toaster {
             .absolute()
             .left_0()
             .right_0()
-            .bottom(px(theme::STATUS_BAR_HEIGHT + 8.))
+            .bottom(px(toaster_bottom_offset(theme::STATUS_BAR_HEIGHT, 8.)))
             .flex()
             .justify_center()
             .px_3()

@@ -19,6 +19,7 @@ members = [
     "crates/crossh-terminal",
     "crates/crossh-update",
     "crates/crossh-ui",
+    "crates/crossh-ui-base",
     "crates/crossh-ui-component",
     "crates/crossh-note",
     "crates/crossh-editor",

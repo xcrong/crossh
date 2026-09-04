@@ -1,13 +1,18 @@
 [package]
-name = "crossh-ui-component"
+name = "crossh-ui-base"
 version = "0.31.2"
 edition = "2024"
-license = "GPL-3.0-or-later"
+license = "Apache-2.0 OR MIT"
+description = "Unstyled behavior and geometry foundation for Crossh GPUI components (no theme, no app state)"
+repository = "https://github.com/crossh/crossh"
+keywords = ["gpui", "ui", "accessibility"]
+categories = ["gui"]
 
 [dependencies]
-crossh-ui-base = { path = "../crossh-ui-base" }
-crossh-ui = { path = "../crossh-ui" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "f66ed399cdde86092af8af3dc7b418abf45f37f8" }
 
 [dev-dependencies]
 gpui = { git = "https://github.com/zed-industries/zed", rev = "f66ed399cdde86092af8af3dc7b418abf45f37f8", features = ["test-support"] }
+
+[lints.rust]
+missing_docs = "warn"

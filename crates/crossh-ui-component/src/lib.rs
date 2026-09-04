@@ -51,7 +51,7 @@ pub use hint::Hint;
 pub use labeled_field::{LABELED_FIELD_LABEL_WIDTH, labeled_field};
 pub use layout::{h_flex, scroll_y};
 pub use list_pane::{list_pane, pane_operation_error};
-pub use list_state::{ListState, list_state_body};
+pub use list_state::{ListStatus, list_state_body};
 pub use modal::ModalDialog;
 pub use modal_field::{ModalField, SharedTextState};
 pub use pane_toolbar::{PaneToolbar, pane_toolbar};

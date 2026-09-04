@@ -12,6 +12,7 @@ use gpui::{
 };
 
 use crossh_ui::icons;
+use crossh_ui_base::{StepDirection, next_index};
 
 use crate::theme;
 
@@ -115,19 +116,6 @@ impl Select {
     }
 }
 
-/// 计算下一个选中索引：全部选项可用，循环导航；`current` 为 `None` 时
-/// 向下取首项、向上取末项；越界或选项为空返回 `None`。
-fn next_index(len: usize, current: Option<usize>, direction: i32) -> Option<usize> {
-    if len == 0 {
-        return None;
-    }
-    match current {
-        None => (direction > 0).then_some(0).or(Some(len - 1)),
-        Some(current) if current >= len => None,
-        Some(current) => Some(((current as i32 + direction).rem_euclid(len as i32)) as usize),
-    }
-}
-
 impl RenderOnce for Select {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let is_open = self.is_open;
@@ -185,7 +173,8 @@ impl RenderOnce for Select {
                 }
             } else if key == "arrowdown" || key == "down" {
                 if is_open && let Some(handler) = &on_select_for_key {
-                    let next = next_index(options_for_key.len(), selected_index, 1);
+                    let next =
+                        next_index(options_for_key.len(), selected_index, StepDirection::Next);
                     if let Some(idx) = next {
                         handler(idx, window, cx);
                     }
@@ -194,7 +183,7 @@ impl RenderOnce for Select {
                 && is_open
                 && let Some(handler) = &on_select_for_key
             {
-                let next = next_index(options_for_key.len(), selected_index, -1);
+                let next = next_index(options_for_key.len(), selected_index, StepDirection::Prev);
                 if let Some(idx) = next {
                     handler(idx, window, cx);
                 }
@@ -335,7 +324,8 @@ impl RenderOnce for Select {
 
 #[cfg(test)]
 mod tests {
-    use super::{Select, SelectOption, next_index};
+    use super::{Select, SelectOption};
+    use crossh_ui_base::{StepDirection, next_index};
     use gpui::prelude::*;
     use gpui::{
         Context, InputEvent, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point,
@@ -346,19 +336,20 @@ mod tests {
 
     #[test]
     fn next_index_wraps_around() {
+        use StepDirection::{Next, Prev};
         let len = 3;
         // 1 向下到 2
-        assert_eq!(next_index(len, Some(1), 1), Some(2));
+        assert_eq!(next_index(len, Some(1), Next), Some(2));
         // 2 向下应回到 0（循环）
-        assert_eq!(next_index(len, Some(2), 1), Some(0));
+        assert_eq!(next_index(len, Some(2), Next), Some(0));
         // 0 向上应到 2
-        assert_eq!(next_index(len, Some(0), -1), Some(2));
+        assert_eq!(next_index(len, Some(0), Prev), Some(2));
         // 无选中时向下取首项、向上取末项
-        assert_eq!(next_index(len, None, 1), Some(0));
-        assert_eq!(next_index(len, None, -1), Some(2));
+        assert_eq!(next_index(len, None, Next), Some(0));
+        assert_eq!(next_index(len, None, Prev), Some(2));
         // 越界与空选项返回 None
-        assert_eq!(next_index(len, Some(5), 1), None);
-        assert_eq!(next_index(0, None, 1), None);
+        assert_eq!(next_index(len, Some(5), Next), None);
+        assert_eq!(next_index(0, None, Next), None);
     }
 
     // ── 行为契约 ──────────────────────────────────────────────────────────

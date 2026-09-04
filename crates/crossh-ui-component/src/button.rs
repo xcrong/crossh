@@ -6,6 +6,8 @@ use gpui::{
     Window, div, prelude::FluentBuilder, px, transparent_black,
 };
 
+use crossh_ui_base::BaseButton;
+
 use crate::layout::h_flex;
 use crate::theme;
 use crate::tooltip::Tooltip;
@@ -197,16 +199,22 @@ impl RenderOnce for Button {
         let hover_background = self
             .hover_background
             .unwrap_or(button_style.hover_background);
-        let focus = window
-            .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
-            .read(cx)
-            .clone();
+        // 行为归地基：id、keyed 焦点、disabled 门控、点击（含原生键盘合成）。
+        // 颜色 / 尺寸 / 变体逻辑原样保留在下方的样式链中。
+        let mut behavior = BaseButton::new(self.id.clone())
+            .selected(self.selected)
+            .disabled(self.disabled)
+            .loading(self.loading);
+        if let Some(on_click) = self.on_click.clone() {
+            behavior = behavior.on_click(move |event, window, cx| on_click(event, window, cx));
+        }
+        let focus = behavior.focus_handle(window, cx);
         let focused = focus.is_focused(window);
         let disabled = self.disabled || self.loading;
         let has_label = self.label.is_some();
 
-        let mut button = h_flex()
-            .id(self.id)
+        let mut button = behavior
+            .apply_to(h_flex(), &focus)
             .flex()
             .flex_shrink_0()
             .items_center()
@@ -233,9 +241,6 @@ impl RenderOnce for Button {
                 this.hover(|element| element.bg(hover_background))
                     .active(|element| element.bg(button_style.active_background))
             })
-            .when(!disabled, |this| {
-                this.track_focus(&focus.tab_stop(true).tab_index(0))
-            })
             .when(focused && !disabled, |this| {
                 this.border_color(theme::focus_ring())
             })
@@ -260,9 +265,6 @@ impl RenderOnce for Button {
         }
         if !has_label {
             button = button.gap_0();
-        }
-        if let Some(on_click) = self.on_click.filter(|_| !disabled) {
-            button = button.on_click(move |event, window, cx| on_click(event, window, cx));
         }
         if let Some(tooltip) = self.tooltip {
             button =

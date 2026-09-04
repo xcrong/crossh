@@ -9,40 +9,10 @@ use gpui::{
     Window, canvas, div, prelude::FluentBuilder, px,
 };
 
+pub use crossh_ui_base::{SplitAxis, SplitHandleSide};
+use crossh_ui_base::{clamp_size, drag_height, drag_width};
+
 use crate::theme;
-
-/// 拖拽手柄所在的面板边缘。
-/// 两侧都是真实契约：`Right`（默认）覆盖终端分栏、Git 变更/历史面板与
-/// 侧边栏；`Left` 由 `SidePanel::handle_side(SplitHandleSide::Left)` 显式
-/// 指定，用于手柄贴左边缘的面板。禁止按“单侧够用”收紧为单一
-/// 方向——新增侧向面板时直接选取变体即可，无需改动组件。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SplitHandleSide {
-    /// 手柄贴在面板右侧，宽度等于指针向左边缘的距离。
-    #[default]
-    Right,
-    /// 手柄贴在面板左侧，宽度等于指针向右边缘的距离。
-    Left,
-}
-
-/// 从面板 bounds 与指针位置换算当前宽度。
-fn drag_width(side: SplitHandleSide, bounds: &Bounds<Pixels>, pointer_x: Pixels) -> f32 {
-    match side {
-        SplitHandleSide::Left => bounds.right().as_f32() - pointer_x.as_f32(),
-        SplitHandleSide::Right => pointer_x.as_f32() - bounds.origin.x.as_f32(),
-    }
-}
-
-fn drag_height(bounds: &Bounds<Pixels>, pointer_y: Pixels) -> f32 {
-    pointer_y.as_f32() - bounds.origin.y.as_f32()
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SplitAxis {
-    #[default]
-    Horizontal,
-    Vertical,
-}
 
 /// 面板拖拽调宽组件：一个透明的 bounds 采集 canvas 加一个绝对定位的拖拽手柄。
 ///
@@ -138,12 +108,12 @@ impl RenderOnce for SplitResizer {
                             let Some(bounds) = bounds.get() else {
                                 return;
                             };
-                            let value = if is_vertical {
+                            let raw = if is_vertical {
                                 drag_height(&bounds, event.position.y)
                             } else {
                                 drag_width(self.handle_side, &bounds, event.position.x)
-                            }
-                            .clamp(self.min_size, self.max_size);
+                            };
+                            let value = clamp_size(raw, self.min_size, self.max_size);
                             value_cell.set(value);
                             window.refresh();
                         }
@@ -232,44 +202,5 @@ impl RenderOnce for SplitResizer {
         };
 
         div().absolute().size_full().child(backing).child(handle)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use gpui::{Bounds, Point, Size, px};
-
-    use super::{SplitHandleSide, drag_height, drag_width};
-
-    #[test]
-    fn right_handled_width_measures_from_left_edge() {
-        let bounds = Bounds::new(Point::new(px(100.), px(20.)), Size::new(px(300.), px(40.)));
-        assert_eq!(drag_width(SplitHandleSide::Right, &bounds, px(180.)), 80.);
-        assert_eq!(drag_width(SplitHandleSide::Right, &bounds, px(100.)), 0.);
-    }
-
-    #[test]
-    fn left_handled_width_measures_from_right_edge() {
-        let bounds = Bounds::new(Point::new(px(100.), px(20.)), Size::new(px(300.), px(40.)));
-        assert_eq!(drag_width(SplitHandleSide::Left, &bounds, px(180.)), 220.);
-        assert_eq!(drag_width(SplitHandleSide::Left, &bounds, px(400.)), 0.);
-    }
-
-    #[test]
-    fn vertical_drag_height_measures_from_top_edge() {
-        let bounds = Bounds::new(Point::new(px(10.), px(20.)), Size::new(px(100.), px(300.)));
-        assert_eq!(drag_height(&bounds, px(50.)), 30.);
-        assert_eq!(drag_height(&bounds, px(20.)), 0.);
-        assert_eq!(drag_height(&bounds, px(320.)), 300.);
-    }
-
-    #[test]
-    fn vertical_drag_height_clamps_within_min_max() {
-        // 模拟 SplitResizer 垂直钳制：value.clamp(min, max)
-        let min = 80.0;
-        let max = 600.0;
-        assert_eq!(30.0_f32.clamp(min, max), 80.0);
-        assert_eq!(700.0_f32.clamp(min, max), 600.0);
-        assert_eq!(200.0_f32.clamp(min, max), 200.0);
     }
 }

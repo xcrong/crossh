@@ -40,28 +40,9 @@ pub struct ModalField<V> {
 
 /// 供 `ModalField` 内部使用的 `TextEditingState` 快照。
 ///
-/// 为避免 `crossh-ui-component` 依赖上层 `shared::text_editing`，此处用
-/// 与 `TextEditingState` 字段一一对应的轻量拷贝；调用方通过 `From` / `new`
-/// 传入 `&TextEditingState` 即可，无需手写转换。
-#[derive(Clone, Debug)]
-pub struct SharedTextState {
-    pub value: String,
-    pub cursor: usize,
-    pub anchor: Option<usize>,
-    pub ime_marked_text: String,
-    pub ime_replacement: Option<(usize, usize)>,
-}
-
-impl SharedTextState {
-    pub fn selection(&self) -> Option<(usize, usize)> {
-        let anchor = self.anchor?;
-        (anchor != self.cursor).then_some(if anchor < self.cursor {
-            (anchor, self.cursor)
-        } else {
-            (self.cursor, anchor)
-        })
-    }
-}
+/// 为避免 `crossh-ui-component` 依赖上层 `shared::text_editing`，此处复用
+/// 地基层的同名字段快照；调用方通过 `new` / `with_*` 传入即可，无需手写转换。
+pub use crossh_ui_base::SharedTextState;
 
 impl<V> ModalField<V> {
     pub fn new(id: impl Into<ElementId>, focus: FocusHandle, state: &SharedTextState) -> Self {
@@ -131,9 +112,9 @@ impl<V: EntityInputHandler + 'static> RenderOnce for ModalField<V> {
         } = self;
         let focused = focus.is_focused(window);
         let selection = state.selection();
-        let (selection_start, selection_end) = selection.unwrap_or((state.cursor, state.cursor));
-        let value = state.value;
-        let ime_marked_text = state.ime_marked_text;
+        let (selection_start, selection_end) = state.selection_or_cursor();
+        let value = state.value().to_owned();
+        let ime_marked_text = state.ime_marked_text().to_owned();
 
         // 需要横向滚动的输入在渲染前调用 `scroll.scroll_to_item(1)` 以自动滚动到光标；
         // 此处在 render 阶段复现，保持调用点精简到一行链式调用。
@@ -231,13 +212,9 @@ mod tests {
     use super::SharedTextState;
 
     fn state(value: &str, cursor: usize, anchor: Option<usize>) -> SharedTextState {
-        SharedTextState {
-            value: value.to_string(),
-            cursor,
-            anchor,
-            ime_marked_text: String::new(),
-            ime_replacement: None,
-        }
+        SharedTextState::new(value)
+            .with_cursor(cursor)
+            .with_anchor(anchor)
     }
     #[test]
     fn shared_state_selection_bounds() {

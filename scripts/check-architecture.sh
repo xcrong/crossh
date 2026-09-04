@@ -76,6 +76,33 @@ check_absent \
     '#\[path' \
     "$repo_root/src/bin/crossh-updater.rs"
 
+check_absent \
+    "crossh-ui-base imports upper layers" \
+    'crossh_ui_component|crossh-ui-component|crossh_ui::|crate::features|crate::shared|crossh_core|crossh-note|crossh-editor' \
+    "$repo_root/crates/crossh-ui-base"
+
+check_absent \
+    "crossh-ui-base depends on themed or app crates (Cargo level)" \
+    'crossh-ui[ "=]|crossh_ui |crossh-core|crossh-terminal|crossh-update|crossh-assets|crossh-note|crossh-editor' \
+    "$repo_root/crates/crossh-ui-base/Cargo.toml"
+
+check_absent \
+    "crossh-ui-base exposes pub fields across the seam" \
+    '^[[:space:]]*pub [a-z_][a-zA-Z0-9_]*:' \
+    "$repo_root/crates/crossh-ui-base/src"
+
+check_absent \
+    "crossh-ui-base abbreviates context as ctx" \
+    '\bctx\b' \
+    "$repo_root/crates/crossh-ui-base/src"
+
+check_absent \
+    "upper UI layers bypass the base seam with private module paths" \
+    'crossh_ui_base::button::|crossh_ui_base::positioner::|crossh_ui_base::list_state::' \
+    "$repo_root/crates/crossh-ui-component" \
+    "$repo_root/crates/crossh-ui" \
+    "$repo_root/src"
+
 size_files=$(find "$repo_root/src" "$repo_root"/crates/*/src -type f -name '*.rs' -print 2>/dev/null || true)
 for file in $size_files; do
     line_count=$(wc -l < "$file")

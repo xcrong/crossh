@@ -3,6 +3,10 @@
 use std::rc::Rc;
 
 use crossh_ui::widgets::{ime_input_canvas, marked_text_span, text_caret, text_span};
+use crossh_ui_base::{
+    clamp_to_char_boundary, is_valid_selection, normalize_selection, should_highlight_selection,
+    use_cursor_split,
+};
 use gpui::{
     App, ElementId, Entity, EntityInputHandler, FocusHandle, InteractiveElement, IntoElement,
     KeyDownEvent, ParentElement, RenderOnce, Rgba, SharedString, StatefulInteractiveElement,
@@ -223,13 +227,9 @@ impl<V: EntityInputHandler + 'static> RenderOnce for TextInput<V> {
         let focused = focus.is_focused(window);
         let display_text = display.clone().unwrap_or_else(|| value.clone());
         // 仅非掩码（display 为空）时启用选区高亮，避免 value 与 display 长度不一致导致错位。
-        let has_selection = display.is_none() && selection.is_some_and(|(start, end)| start != end);
-        let (sel_start, sel_end) = if has_selection {
-            let (a, b) = selection.unwrap();
-            if a < b { (a, b) } else { (b, a) }
-        } else {
-            (0, 0)
-        };
+        let masked = display.is_some();
+        let has_selection = should_highlight_selection(selection, masked);
+        let (sel_start, sel_end) = normalize_selection(selection).unwrap_or((0, 0));
 
         let mut children: Vec<gpui::AnyElement> = Vec::new();
         if value.is_empty() {
@@ -255,7 +255,7 @@ impl<V: EntityInputHandler + 'static> RenderOnce for TextInput<V> {
             let s = sel_start.min(val.len());
             let e = sel_end.min(val.len());
             // 容错：若切片落在字符内部，回退到末尾 caret 渲染，避免 panic。
-            let valid = val.is_char_boundary(s) && val.is_char_boundary(e) && s <= e;
+            let valid = is_valid_selection(val, s, e);
             if valid {
                 if !val[..s].is_empty() {
                     children.push(text_span(val[..s].to_string()).into_any_element());
@@ -293,14 +293,9 @@ impl<V: EntityInputHandler + 'static> RenderOnce for TextInput<V> {
             }
         } else {
             let val = value.as_ref();
-            let cursor_pos = cursor.unwrap_or(val.len()).min(val.len());
-            let cursor_pos = if val.is_char_boundary(cursor_pos) {
-                cursor_pos
-            } else {
-                val.len()
-            };
+            let cursor_pos = clamp_to_char_boundary(val, cursor.unwrap_or(val.len()));
             // 有明确 cursor 位时按 before/caret/after 拆分，否则整体显示后置 caret。
-            let use_cursor_split = cursor.is_some() && display.is_none();
+            let use_cursor_split = use_cursor_split(cursor, masked);
             if use_cursor_split {
                 if !val[..cursor_pos].is_empty() {
                     children.push(text_span(val[..cursor_pos].to_string()).into_any_element());

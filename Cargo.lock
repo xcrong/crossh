@@ -1630,10 +1630,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossh-ui-base"
+version = "0.31.2"
+dependencies = [
+ "gpui",
+]
+
+[[package]]
 name = "crossh-ui-component"
 version = "0.31.2"
 dependencies = [
  "crossh-ui",
+ "crossh-ui-base",
  "gpui",
 ]
 

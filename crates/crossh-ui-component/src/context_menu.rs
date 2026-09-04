@@ -8,9 +8,10 @@
 use std::rc::Rc;
 
 use crossh_ui::theme;
+use crossh_ui_base::{PopupRequest, place_popup};
 use gpui::{
     AnyElement, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
-    Point, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
+    Point, SharedString, StatefulInteractiveElement, Styled, Window, div, px, size,
 };
 
 /// 菜单固定宽度；定位钳制时按此估算。
@@ -76,23 +77,13 @@ pub fn clamp_menu_position<A>(
     entries: &[MenuEntry<A>],
 ) -> Point<Pixels> {
     let viewport = window.viewport_size();
-    let mut x = position.x.as_f32();
-    let mut y = position.y.as_f32();
-    if x + CONTEXT_MENU_WIDTH > viewport.width.as_f32() {
-        x = (x - CONTEXT_MENU_WIDTH).max(0.0);
-        if x + CONTEXT_MENU_WIDTH > viewport.width.as_f32() {
-            x = (viewport.width.as_f32() - CONTEXT_MENU_WIDTH).max(0.0);
-        }
-    }
     let height = estimate_menu_height(entries)
         .min((viewport.height.as_f32() - MENU_PADDING * 2.0).max(ITEM_HEIGHT));
-    if y + height > viewport.height.as_f32() {
-        y = (y - height).max(0.0);
-        if y + height > viewport.height.as_f32() {
-            y = (viewport.height.as_f32() - height - MENU_PADDING).max(0.0);
-        }
-    }
-    Point::new(px(x.round()), px(y.round()))
+    place_popup(
+        &PopupRequest::new(position, size(px(CONTEXT_MENU_WIDTH), px(height)), viewport)
+            .with_margin(px(MENU_PADDING)),
+    )
+    .origin()
 }
 
 /// 渲染 scrim + 菜单。scrim 覆盖拥有者根 div，点击任意处（左/右键）关闭。

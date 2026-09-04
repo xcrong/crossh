@@ -5,6 +5,8 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, div, px,
 };
 
+use crossh_ui_base::next_state;
+
 use crate::theme;
 
 /// Handler invoked when the switch is clicked, carrying the new on/off state.
@@ -79,21 +81,5 @@ impl RenderOnce for ToggleSwitch {
             });
         }
         track
-    }
-}
-
-/// The state a click transitions to: a click on an on-switch turns it off.
-fn next_state(on: bool) -> bool {
-    !on
-}
-
-#[cfg(test)]
-mod tests {
-    use super::next_state;
-
-    #[test]
-    fn toggle_click_flips_state_both_ways() {
-        assert!(!next_state(true));
-        assert!(next_state(false));
     }
 }

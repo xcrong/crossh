@@ -82,3 +82,13 @@ Feather MIT notice documented in Lucide's official `LICENSE` file.
 app's graphite background) and is not a Lucide asset. Its source is
 `assets/appicon/icon-master.svg`; regenerate the iconset with
 `iconutil -c icns` after editing the master.
+
+## crossh-ui-base
+
+`crates/crossh-ui-base` is original Crossh code licensed `Apache-2.0 OR MIT`
+(see `crates/crossh-ui-base/LICENSE-APACHE` and `LICENSE-MIT`). Its behavior
+semantics were informed by the design ideas behind gpui-kit `gpui-base`; no
+third-party source was copied into it. It links the same pinned `gpui`
+revision as the rest of the workspace (licensing unchanged, see Core
+dependencies above). The GPL-3.0-or-later workspace `LICENSE` still governs
+the combined binaries.

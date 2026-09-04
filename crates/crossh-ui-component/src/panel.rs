@@ -11,25 +11,20 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, AppContext, ClickEvent, Div, ElementId, InteractiveElement, IntoElement,
-    ParentElement, Pixels, RenderOnce, SharedString, Stateful, StatefulInteractiveElement, Styled,
-    Window, div, px,
+    ParentElement, RenderOnce, SharedString, Stateful, StatefulInteractiveElement, Styled, Window,
+    div, px,
+};
+
+use crossh_ui_base::handle_side_for;
+pub use crossh_ui_base::{
+    PanelSide, RAIL_AVATAR_GAP, RAIL_AVATAR_SIZE, available_main_width, clamp_panel_width,
 };
 
 use crate::avatar::Avatar;
-use crate::split_resizer::{SplitHandleSide, SplitResizer};
+use crate::split_resizer::SplitResizer;
 use crate::theme;
 use crate::tooltip::Tooltip;
 
-/// 侧栏所在窗口边缘：决定边框与拖拽手柄方向。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PanelSide {
-    Left,
-    Right,
-}
-
-/// Rail 头像项尺寸与间距的公开常量，契约 8 要求 pitch = 30 + 4 = 34。
-pub const RAIL_AVATAR_SIZE: f32 = 30.0;
-pub const RAIL_AVATAR_GAP: f32 = 4.0;
 /// 透明占位色，用于未选中态的边框/背景。
 const TRANSPARENT: gpui::Rgba = gpui::Rgba {
     r: 0.0,
@@ -37,23 +32,6 @@ const TRANSPARENT: gpui::Rgba = gpui::Rgba {
     b: 0.0,
     a: 0.0,
 };
-
-/// 将原始宽度钳制到合法区间；NaN 回退到 `min`，保证不 panic 且不产生负可用宽度。
-pub fn clamp_panel_width(value: f32, min_width: f32, max_width: f32) -> f32 {
-    if value.is_nan() {
-        return min_width;
-    }
-    value.clamp(min_width, max_width)
-}
-
-/// 工作区主区可用宽度：`max(viewport - sidebar - other, 0)`。
-pub fn available_main_width(
-    viewport_width: Pixels,
-    sidebar_width: f32,
-    other_width: f32,
-) -> Pixels {
-    px((viewport_width.as_f32() - sidebar_width - other_width).max(0.0))
-}
 
 /// 可拖拽的展开态侧边面板。
 ///
@@ -171,14 +149,6 @@ impl RenderOnce for SidePanel {
             PanelSide::Right => outer.border_l_1(),
         };
         outer.children(self.children).child(resizer)
-    }
-}
-
-/// 手柄方向纯推导：Left 面板手柄贴右、Right 面板手柄贴左。
-fn handle_side_for(side: PanelSide) -> SplitHandleSide {
-    match side {
-        PanelSide::Left => SplitHandleSide::Right,
-        PanelSide::Right => SplitHandleSide::Left,
     }
 }
 
@@ -344,35 +314,4 @@ pub fn rail_status_badge(color: gpui::Rgba, border: gpui::Rgba) -> impl IntoElem
         .top(px(1.))
         .right(px(1.))
         .child(StatusDot::new(color).size(px(7.)).border(border))
-}
-
-#[cfg(test)]
-#[allow(non_snake_case)]
-mod tests {
-    use super::{available_main_width, clamp_panel_width};
-    use gpui::px;
-
-    #[test]
-    fn spec_20260820_side_panel_rail__clamp_panel_width_clamps_min_max() {
-        assert_eq!(clamp_panel_width(100., 216., 360.), 216.);
-        assert_eq!(clamp_panel_width(500., 216., 360.), 360.);
-        assert_eq!(clamp_panel_width(300., 216., 360.), 300.);
-    }
-
-    #[test]
-    fn spec_20260820_side_panel_rail__clamp_panel_width_handles_nan_negative_and_overflow() {
-        assert_eq!(clamp_panel_width(f32::NAN, 216., 360.), 216.);
-        assert_eq!(clamp_panel_width(f32::INFINITY, 216., 360.), 360.);
-        assert_eq!(clamp_panel_width(f32::NEG_INFINITY, 216., 360.), 216.);
-        assert_eq!(clamp_panel_width(-100., 216., 360.), 216.);
-        assert_eq!(clamp_panel_width(720., 216., 360.), 360.);
-    }
-
-    #[test]
-    fn spec_20260820_side_panel_rail__available_main_width_truncates_at_zero() {
-        assert_eq!(available_main_width(px(700.), 216., 240.), px(244.));
-        assert_eq!(available_main_width(px(700.), 44., 40.), px(616.));
-        assert_eq!(available_main_width(px(400.), 216., 240.), px(0.));
-        assert_eq!(available_main_width(px(300.), 200., 200.), px(0.));
-    }
 }
