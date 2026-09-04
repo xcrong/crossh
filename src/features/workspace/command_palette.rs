@@ -322,14 +322,17 @@ pub(crate) fn render_command_palette(
         .with_ime_marked_text(palette.query.ime_marked_text.clone())
         .with_ime_replacement(palette.query.ime_replacement);
 
-    // 搜索输入
+    // 搜索输入（焦点归属）：此处消费后必须截断冒泡，否则同一 KeyDownEvent
+    // 会继续冒泡到 shell 根节点的 handle_shell_key_down，被
+    // handle_command_palette_key 二次插入（`new` 变 `nneeww`）。
     let input = ModalField::new("command-palette-input", focus.clone(), &query_state)
         .placeholder("Type a command...".to_string())
         .entity(cx.entity())
         .scrollable(scroll)
-        .on_key_down(
-            cx.listener(|this, ev, window, cx| this.handle_command_palette_key(ev, window, cx)),
-        );
+        .on_key_down(cx.listener(|this, ev, window, cx| {
+            this.handle_command_palette_key(ev, window, cx);
+            cx.stop_propagation();
+        }));
 
     let list = if filtered.is_empty() {
         div()
