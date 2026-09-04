@@ -9,7 +9,7 @@ use crate::shared::i18n;
 use crossh_core::git_stash::StashSummary;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
-    Banner, BannerTone, Button, ButtonSize, ButtonVariant, ListState, PaneToolbar, list_pane,
+    Banner, BannerTone, Button, ButtonSize, ButtonVariant, ListStatus, PaneToolbar, list_pane,
     list_state_body, pane_operation_error, selectable_row,
 };
 
@@ -27,13 +27,13 @@ impl GitWindow {
         let focus = self.stash_focus.clone();
         let list_state = match &self.session.stash.list_state {
             StashListState::Idle | StashListState::Loading => {
-                ListState::Loading(i18n::text("git.loading").into())
+                ListStatus::Loading(i18n::text("git.loading").into())
             }
-            StashListState::Error(error) => ListState::Error(error.clone().into()),
+            StashListState::Error(error) => ListStatus::Error(error.clone().into()),
             StashListState::Ready if self.session.stash.entries.is_empty() => {
-                ListState::Empty(i18n::text("git.no_stashes").into())
+                ListStatus::Empty(i18n::text("git.no_stashes").into())
             }
-            StashListState::Ready => ListState::Ready,
+            StashListState::Ready => ListStatus::Ready,
         };
         let body = list_state_body(list_state, || {
             let entries = self.session.stash.entries.clone();

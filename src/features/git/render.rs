@@ -18,7 +18,7 @@ use crossh_ui::{icons, theme};
 use crossh_ui_component::context_menu::render_context_menu;
 use crossh_ui_component::{
     Badge, BadgeTone, Banner, BannerLayout, BannerTone, Button, ButtonSize, ButtonVariant, Hint,
-    ListState, SplitResizer, StatusBar, StatusMetric, TabItem, TabStrip, list_pane,
+    ListStatus, SplitResizer, StatusBar, StatusMetric, TabItem, TabStrip, list_pane,
     list_state_body, pane_toolbar, selectable_row,
 };
 
@@ -376,13 +376,13 @@ impl GitWindow {
     ) -> AnyElement {
         let focus = self.changes_focus.clone();
         let list_state = if self.session.initial_loading {
-            ListState::Loading(i18n::text("git.loading").into())
+            ListStatus::Loading(i18n::text("git.loading").into())
         } else if let Some(error) = &self.session.load_error {
-            ListState::Error(error.clone().into())
+            ListStatus::Error(error.clone().into())
         } else if self.session.changes.is_empty() {
-            ListState::Empty(i18n::text("git.no_changes").into())
+            ListStatus::Empty(i18n::text("git.no_changes").into())
         } else {
-            ListState::Ready
+            ListStatus::Ready
         };
         let changes_body = list_state_body(list_state, || {
             let items = change_list_items(

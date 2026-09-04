@@ -1031,13 +1031,11 @@ pub fn render_rename_editor(
     let Some(editor) = &shell.rename_editor else {
         return div().into_any_element();
     };
-    let state = SharedTextState {
-        value: editor.state.value.clone(),
-        cursor: editor.state.cursor,
-        anchor: editor.state.anchor,
-        ime_marked_text: editor.state.ime_marked_text.clone(),
-        ime_replacement: editor.state.ime_replacement,
-    };
+    let state = SharedTextState::new(editor.state.value.clone())
+        .with_cursor(editor.state.cursor)
+        .with_anchor(editor.state.anchor)
+        .with_ime_marked_text(editor.state.ime_marked_text.clone())
+        .with_ime_replacement(editor.state.ime_replacement);
     render_single_line_modal(
         editor.focus.clone(),
         state,
@@ -1067,13 +1065,11 @@ pub fn render_default_command_editor(
     let Some(editor) = &shell.default_command_editor else {
         return div().into_any_element();
     };
-    let state = SharedTextState {
-        value: editor.state.value.clone(),
-        cursor: editor.state.cursor,
-        anchor: editor.state.anchor,
-        ime_marked_text: editor.state.ime_marked_text.clone(),
-        ime_replacement: editor.state.ime_replacement,
-    };
+    let state = SharedTextState::new(editor.state.value.clone())
+        .with_cursor(editor.state.cursor)
+        .with_anchor(editor.state.anchor)
+        .with_ime_marked_text(editor.state.ime_marked_text.clone())
+        .with_ime_replacement(editor.state.ime_replacement);
     render_single_line_modal(
         editor.focus.clone(),
         state,

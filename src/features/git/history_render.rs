@@ -12,7 +12,7 @@ use crossh_core::git_history_graph::HistoryGraphRow;
 use crossh_editor::{Scrollbar, ScrollbarMode};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
-    Badge, BadgeTone, Button, ButtonSize, ButtonVariant, Hint, ListState, TextInput, list_pane,
+    Badge, BadgeTone, Button, ButtonSize, ButtonVariant, Hint, ListStatus, TextInput, list_pane,
     list_state_body, pane_toolbar, scroll_y, selectable_row,
 };
 
@@ -74,18 +74,18 @@ impl GitWindow {
         let rows = self.session.history.visible_rows();
         let list_state = match &self.session.history.list_state {
             HistoryListState::Idle | HistoryListState::Loading => {
-                ListState::Loading(i18n::text("git.loading").into())
+                ListStatus::Loading(i18n::text("git.loading").into())
             }
-            HistoryListState::Error(error) => ListState::Error(error.clone().into()),
+            HistoryListState::Error(error) => ListStatus::Error(error.clone().into()),
             HistoryListState::Ready if rows.is_empty() => {
                 let message = if self.session.history.query.is_empty() {
                     i18n::text("git.no_history")
                 } else {
                     i18n::text("git.history_no_matches")
                 };
-                ListState::Empty(message.into())
+                ListStatus::Empty(message.into())
             }
-            HistoryListState::Ready => ListState::Ready,
+            HistoryListState::Ready => ListStatus::Ready,
         };
         let body = list_state_body(list_state, || {
             let count = rows.len();

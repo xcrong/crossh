@@ -10,7 +10,7 @@ use crate::shared::i18n;
 use crossh_core::git_remote::RemoteSummary;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
-    Banner, BannerTone, Button, ButtonSize, ButtonVariant, ListState, PaneToolbar, TextInput,
+    Banner, BannerTone, Button, ButtonSize, ButtonVariant, ListStatus, PaneToolbar, TextInput,
     labeled_field, list_pane, list_state_body, pane_operation_error, selectable_row,
 };
 
@@ -28,13 +28,13 @@ impl GitWindow {
         let focus = self.remote_focus.clone();
         let list_state = match &self.session.remote.list_state {
             RemoteListState::Idle | RemoteListState::Loading => {
-                ListState::Loading(i18n::text("git.loading").into())
+                ListStatus::Loading(i18n::text("git.loading").into())
             }
-            RemoteListState::Error(error) => ListState::Error(error.clone().into()),
+            RemoteListState::Error(error) => ListStatus::Error(error.clone().into()),
             RemoteListState::Ready if self.session.remote.entries.is_empty() => {
-                ListState::Empty(i18n::text("git.no_remotes").into())
+                ListStatus::Empty(i18n::text("git.no_remotes").into())
             }
-            RemoteListState::Ready => ListState::Ready,
+            RemoteListState::Ready => ListStatus::Ready,
         };
         let body = list_state_body(list_state, || {
             let entries = self.session.remote.entries.clone();

@@ -10,7 +10,7 @@ use crate::shared::i18n;
 use crossh_core::git_branch::BranchSummary;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
-    Badge, BadgeTone, Button, ButtonSize, ButtonVariant, ListState, PaneToolbar, list_pane,
+    Badge, BadgeTone, Button, ButtonSize, ButtonVariant, ListStatus, PaneToolbar, list_pane,
     list_state_body, pane_operation_error, selectable_row,
 };
 
@@ -28,13 +28,13 @@ impl GitWindow {
         let focus = self.branch_focus.clone();
         let list_state = match &self.session.branch.list_state {
             BranchListState::Idle | BranchListState::Loading => {
-                ListState::Loading(i18n::text("git.loading").into())
+                ListStatus::Loading(i18n::text("git.loading").into())
             }
-            BranchListState::Error(error) => ListState::Error(error.clone().into()),
+            BranchListState::Error(error) => ListStatus::Error(error.clone().into()),
             BranchListState::Ready if self.session.branch.entries.is_empty() => {
-                ListState::Empty(i18n::text("git.no_branches").into())
+                ListStatus::Empty(i18n::text("git.no_branches").into())
             }
-            BranchListState::Ready => ListState::Ready,
+            BranchListState::Ready => ListStatus::Ready,
         };
         let body = list_state_body(list_state, || {
             let entries = self.session.branch.entries.clone();

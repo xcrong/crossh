@@ -316,13 +316,11 @@ pub(crate) fn render_command_palette(
     let selected = palette.selected;
     let focus = palette.focus.clone();
     let scroll = palette.scroll.clone();
-    let query_state = SharedTextState {
-        value: palette.query.value.clone(),
-        cursor: palette.query.cursor,
-        anchor: palette.query.anchor,
-        ime_marked_text: palette.query.ime_marked_text.clone(),
-        ime_replacement: palette.query.ime_replacement,
-    };
+    let query_state = SharedTextState::new(palette.query.value.clone())
+        .with_cursor(palette.query.cursor)
+        .with_anchor(palette.query.anchor)
+        .with_ime_marked_text(palette.query.ime_marked_text.clone())
+        .with_ime_replacement(palette.query.ime_replacement);
 
     // 搜索输入
     let input = ModalField::new("command-palette-input", focus.clone(), &query_state)
