@@ -4,6 +4,7 @@
 //! rendering helpers, icons, menus, and the application asset source only.
 
 pub mod assets;
+pub mod client_decorations;
 pub mod context_menu;
 pub mod icons;
 pub mod linux_titlebar;

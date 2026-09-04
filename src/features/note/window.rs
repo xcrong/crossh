@@ -1056,7 +1056,7 @@ impl gpui::Render for NoteWindow {
             ));
         }
 
-        root
+        crossh_ui::client_decorations::client_side_decorations(root, window, cx)
     }
 }
 

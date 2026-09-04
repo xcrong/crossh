@@ -129,6 +129,6 @@ impl Render for SettingsWindow {
             .bg(theme::canvas())
             .children(linux_titlebar)
             .child(main);
-        root.into_any_element()
+        crossh_ui::client_decorations::client_side_decorations(root, window, cx)
     }
 }

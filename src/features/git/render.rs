@@ -158,7 +158,7 @@ impl Render for GitWindow {
                 |this, cx| this.close_context_menu(cx),
             ));
         }
-        root
+        crossh_ui::client_decorations::client_side_decorations(root, window, cx)
     }
 }
 

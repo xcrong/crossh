@@ -13,6 +13,7 @@ mod imp {
     };
     use gpui::{InteractiveElement as _, StatefulInteractiveElement as _};
 
+    use crate::client_decorations::CLIENT_SIDE_DECORATION_ROUNDING;
     use crate::{icons, theme};
 
     pub fn render_linux_titlebar(
@@ -63,8 +64,12 @@ mod imp {
             .border_color(theme::border())
             .map(|el| match decorations {
                 Decorations::Client { tiling } => el
-                    .when(!tiling.top && !tiling.right, |e| e.rounded_tr(px(8.)))
-                    .when(!tiling.top && !tiling.left, |e| e.rounded_tl(px(8.))),
+                    .when(!tiling.top && !tiling.right, |e| {
+                        e.rounded_tr(CLIENT_SIDE_DECORATION_ROUNDING)
+                    })
+                    .when(!tiling.top && !tiling.left, |e| {
+                        e.rounded_tl(CLIENT_SIDE_DECORATION_ROUNDING)
+                    }),
                 _ => el,
             })
             .on_mouse_down(gpui::MouseButton::Left, move |_, window: &mut Window, _| {
