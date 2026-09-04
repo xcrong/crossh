@@ -47,6 +47,9 @@ fn main() {
         std::env::args().skip(1),
         std::env::current_dir().map_err(|error| error.to_string()),
     );
+    // `crossh [PATH]` 的启动目录：有运行实例时已在上游转发，本变量只服务于
+    // 主实例启动（首屏激活）与前台投递循环。
+    let mut initial_dir: Option<std::path::PathBuf> = None;
     match cli {
         app::cli::CliCommand::Help => {
             app::cli::print_help();
@@ -97,7 +100,37 @@ fn main() {
             app::cli::print_help();
             std::process::exit(2);
         }
-        app::cli::CliCommand::Main => {}
+        app::cli::CliCommand::Main { path } => {
+            if let Some(raw) = path {
+                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
+                match app::single_instance::resolve_open_path(&raw, &cwd) {
+                    Ok(directory) => initial_dir = Some(directory),
+                    Err(error) => {
+                        eprintln!("crossh: {error}");
+                        std::process::exit(2);
+                    }
+                }
+            }
+            // 运行中实例优先：在 crossh 内置终端里 `crossh ../other`
+            // 直接复用当前窗口；无实例时落空继续走主实例启动。
+            match app::single_instance::try_forward(initial_dir.as_deref()) {
+                app::single_instance::ForwardOutcome::Forwarded => {
+                    match &initial_dir {
+                        Some(directory) => println!(
+                            "crossh: opened {} in the running instance",
+                            directory.display()
+                        ),
+                        None => println!("crossh is already running"),
+                    }
+                    return;
+                }
+                app::single_instance::ForwardOutcome::Rejected(error) => {
+                    eprintln!("crossh: {error}");
+                    std::process::exit(2);
+                }
+                app::single_instance::ForwardOutcome::NoInstance => {}
+            }
+        }
     };
     app::bootstrap::init();
 
@@ -132,6 +165,18 @@ fn main() {
             gpui::KeyBinding::new("cmd-j", ToggleScratchTerminal, Some("AppShell")),
         ]);
         infrastructure::app_menu::install(cx);
+        // 单实例投递桥：监听线程只做阻塞收包（serve），前台消费与项目激活
+        // 收敛在 app_menu，main 只做装配。
+        let (open_tx, open_rx) =
+            tokio::sync::mpsc::unbounded_channel::<Option<std::path::PathBuf>>();
+        if let Err(error) = app::single_instance::serve(move |request| {
+            let _ = open_tx.send(request);
+        }) {
+            // 监听失败不阻断启动：退化为无复用，新窗口照常打开。
+            log::warn!("single-instance listener unavailable: {error}");
+        }
         crate::features::workspace::open_main_window(cx);
+        infrastructure::app_menu::activate_project(cx, initial_dir);
+        infrastructure::app_menu::serve_project_requests(cx, open_rx);
     });
 }
