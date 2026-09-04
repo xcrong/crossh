@@ -23,3 +23,4 @@
 | target 快速膨胀到 100G；`wasmtime/cranelift` 占 633M/变体；`cargo tree --invert wasmtime` 经 `migrator/settings_json -> tree-sitter[wasm]` | `wasmtime, cranelift, wasm, migrator, settings_json, tree-sitter, target 膨胀, patch, 定向复制` | [Zed migrator 引入 wasmtime 导致 target 膨胀](zed-migrator-wasmtime-bloat.md) |
 | Windows 控制台黑窗口 | 启动多一个常驻黑窗口；工作中不定时闪黑窗，Git 轮询/自更新时尤其明显 | `windows_subsystem`, `CREATE_NO_WINDOW`, `AttachConsole`, `no_window`, conhost, 闪 | [Windows 控制台黑窗口](windows-console-flash.md) |
 | 命令面板输入翻倍（`new` 变 `nneeww`）；同一按键被两处监听各插入一次 | `nneeww`, `stop_propagation`, `on_key_down`, 冒泡, 双倍输入, 消费即截断, `handle_command_palette_key` | [GPUI 按键事件双重分发](gpui-key-event-double-dispatch.md) |
+| dev 构建终端字符间距被拉宽；`list("fonts")` 为空、终端回退系统字体 | `fs_embed`, `dev_repo_root`, `list("fonts")`, `load_fonts`, `Lilex`, 字符间距, 拉宽, `CROSSH_ZED_CHECKOUT` | [Zed fs_embed dev 资源误定位](zed-fs-embed-dev-misroot.md) |
