@@ -47,13 +47,13 @@ pub fn abbreviation(value: &str) -> String {
         .split(|character| delimiters.contains(&character))
         .filter(|segment| !segment.is_empty())
         .collect();
-    if segments.len() >= 2 {
-        if let (Some(first), Some(last)) = (
+    if segments.len() >= 2
+        && let (Some(first), Some(last)) = (
             segments[0].chars().next(),
             segments.last().and_then(|segment| segment.chars().next()),
-        ) {
-            return format!("{first}{last}");
-        }
+        )
+    {
+        return format!("{first}{last}");
     }
     let mut chars = token.chars().filter(|character| !character.is_whitespace());
     let label: String = chars.by_ref().take(2).collect();

@@ -22,7 +22,7 @@ mod tests {
 
     #[test]
     fn double_click_returns_to_start() {
-        assert_eq!(next_state(next_state(true)), true);
-        assert_eq!(next_state(next_state(false)), false);
+        assert!(next_state(next_state(true)));
+        assert!(!next_state(next_state(false)));
     }
 }

@@ -228,7 +228,7 @@ mod tests {
         assert!(
             loading
                 .message()
-                .is_some_and(|message| message.to_string() == "loading")
+                .is_some_and(|message| message == "loading")
         );
     }
 }

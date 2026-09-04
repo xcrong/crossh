@@ -165,7 +165,8 @@ fn apply_hunk(
     })?;
 
     let mut command = git_command(cwd);
-    command.args(["apply", "--cached", "--recount"])
+    command
+        .args(["apply", "--cached", "--recount"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
