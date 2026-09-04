@@ -13,6 +13,7 @@ use crossh_ui::{icons, theme};
 use crossh_ui_component::{ModalField, SharedTextState};
 
 use super::AppShell;
+use super::state::ActiveView;
 
 /// 面板内单条命令的静态定义。
 #[derive(Clone, Debug)]
@@ -22,6 +23,8 @@ pub(crate) struct PaletteCommand {
     pub icon: icons::IconName,
     pub kind: PaletteCommandKind,
     pub shortcut: Option<String>,
+    /// 额外的英文搜索关键词（如 `zoom` 的 `maximize`）；过滤时与标签/id 同权。
+    pub keywords: &'static [&'static str],
 }
 
 /// 面板可执行的最小命令集（MVP）。
@@ -34,6 +37,11 @@ pub(crate) enum PaletteCommandKind {
     ToggleTimestamps,
     ToggleScratchTerminal,
     OpenSettings,
+    SplitHorizontal,
+    SplitVertical,
+    OpenInEditor,
+    QuitApp,
+    ZoomWindow,
 }
 
 /// 面板状态：输入 + 选中 + 焦点。
@@ -62,9 +70,7 @@ impl CommandPaletteState {
             return all;
         }
         all.into_iter()
-            .filter(|cmd| {
-                cmd.label.to_lowercase().contains(&query) || cmd.id.to_lowercase().contains(&query)
-            })
+            .filter(|cmd| cmd.matches_query(&query))
             .collect()
     }
 
@@ -88,6 +94,22 @@ impl CommandPaletteState {
     }
 }
 
+impl PaletteCommand {
+    /// 大小写不敏感的子串匹配：标签、id 与关键词任一命中即保留；空查询全保留。
+    pub(crate) fn matches_query(&self, query: &str) -> bool {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return true;
+        }
+        self.label.to_lowercase().contains(&query)
+            || self.id.to_lowercase().contains(&query)
+            || self
+                .keywords
+                .iter()
+                .any(|k| k.to_lowercase().contains(&query))
+    }
+}
+
 /// 静态命令列表（MVP）。
 pub(crate) fn palette_commands() -> Vec<PaletteCommand> {
     vec![
@@ -97,6 +119,7 @@ pub(crate) fn palette_commands() -> Vec<PaletteCommand> {
             icon: icons::IconName::Terminal,
             kind: PaletteCommandKind::NewTerminal,
             shortcut: Some("⌘T".into()),
+            keywords: &[],
         },
         PaletteCommand {
             id: "open_project",
@@ -104,6 +127,7 @@ pub(crate) fn palette_commands() -> Vec<PaletteCommand> {
             icon: icons::IconName::FolderOpen,
             kind: PaletteCommandKind::OpenProject,
             shortcut: Some("⌘O".into()),
+            keywords: &[],
         },
         PaletteCommand {
             id: "close_tab",
@@ -111,6 +135,7 @@ pub(crate) fn palette_commands() -> Vec<PaletteCommand> {
             icon: icons::IconName::X,
             kind: PaletteCommandKind::CloseActiveTab,
             shortcut: Some("⌘W".into()),
+            keywords: &[],
         },
         PaletteCommand {
             id: "toggle_host_sidebar",
@@ -118,6 +143,7 @@ pub(crate) fn palette_commands() -> Vec<PaletteCommand> {
             icon: icons::IconName::PanelLeft,
             kind: PaletteCommandKind::ToggleHostSidebar,
             shortcut: None,
+            keywords: &[],
         },
         PaletteCommand {
             id: "toggle_timestamps",
@@ -125,6 +151,7 @@ pub(crate) fn palette_commands() -> Vec<PaletteCommand> {
             icon: icons::IconName::Clock,
             kind: PaletteCommandKind::ToggleTimestamps,
             shortcut: None,
+            keywords: &[],
         },
         PaletteCommand {
             id: "toggle_scratch_terminal",
@@ -132,6 +159,7 @@ pub(crate) fn palette_commands() -> Vec<PaletteCommand> {
             icon: icons::IconName::Terminal,
             kind: PaletteCommandKind::ToggleScratchTerminal,
             shortcut: None,
+            keywords: &[],
         },
         PaletteCommand {
             id: "open_settings",
@@ -139,6 +167,47 @@ pub(crate) fn palette_commands() -> Vec<PaletteCommand> {
             icon: icons::IconName::Settings,
             kind: PaletteCommandKind::OpenSettings,
             shortcut: Some("⌘,".into()),
+            keywords: &[],
+        },
+        PaletteCommand {
+            id: "split_horizontal",
+            label: i18n::text("palette.split_horizontal"),
+            icon: icons::IconName::Columns2,
+            kind: PaletteCommandKind::SplitHorizontal,
+            shortcut: None,
+            keywords: &["left", "right"],
+        },
+        PaletteCommand {
+            id: "split_vertical",
+            label: i18n::text("palette.split_vertical"),
+            icon: icons::IconName::Rows2,
+            kind: PaletteCommandKind::SplitVertical,
+            shortcut: None,
+            keywords: &["up", "down"],
+        },
+        PaletteCommand {
+            id: "open_in_editor",
+            label: i18n::text("palette.open_in_editor"),
+            icon: icons::IconName::SquarePen,
+            kind: PaletteCommandKind::OpenInEditor,
+            shortcut: None,
+            keywords: &[],
+        },
+        PaletteCommand {
+            id: "quit_app",
+            label: i18n::text("quit.menu"),
+            icon: icons::IconName::CircleX,
+            kind: PaletteCommandKind::QuitApp,
+            shortcut: Some("⌘Q".into()),
+            keywords: &[],
+        },
+        PaletteCommand {
+            id: "zoom_window",
+            label: i18n::text("palette.zoom_window"),
+            icon: icons::IconName::Square,
+            kind: PaletteCommandKind::ZoomWindow,
+            shortcut: None,
+            keywords: &["maximize", "zoom"],
         },
     ]
 }
@@ -211,7 +280,39 @@ impl AppShell {
             PaletteCommandKind::OpenSettings => {
                 self.toggle_settings(cx);
             }
+            PaletteCommandKind::SplitHorizontal => {
+                self.toggle_terminal_split(window, cx);
+            }
+            PaletteCommandKind::SplitVertical => {
+                self.toggle_vertical_split(window, cx);
+            }
+            PaletteCommandKind::OpenInEditor => {
+                self.open_focused_project_in_editor(cx);
+            }
+            PaletteCommandKind::QuitApp => {
+                self.request_app_quit(window, cx);
+            }
+            PaletteCommandKind::ZoomWindow => {
+                window.zoom_window();
+            }
         }
+    }
+
+    /// 在外部编辑器中打开当前聚焦会话所属的项目；无聚焦会话时空操作。
+    fn open_focused_project_in_editor(&mut self, cx: &mut Context<Self>) {
+        let Some(ActiveView::LocalSession(session_id)) = self.workspace.focused_view() else {
+            return;
+        };
+        let Some(directory) = self
+            .workspace
+            .sessions
+            .local_sessions
+            .get(&session_id)
+            .map(|session| session.project_dir.clone())
+        else {
+            return;
+        };
+        self.open_project_in_editor(&directory, cx);
     }
 
     pub(crate) fn handle_command_palette_key(
@@ -447,4 +548,103 @@ pub(crate) fn render_command_palette(
                 .child(card),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn palette_exposes_split_and_editor_commands() {
+        let kinds: Vec<PaletteCommandKind> =
+            palette_commands().iter().map(|cmd| cmd.kind).collect();
+        for kind in [
+            PaletteCommandKind::SplitHorizontal,
+            PaletteCommandKind::SplitVertical,
+            PaletteCommandKind::OpenInEditor,
+            PaletteCommandKind::QuitApp,
+            PaletteCommandKind::ZoomWindow,
+        ] {
+            assert!(kinds.contains(&kind), "missing palette command {kind:?}");
+        }
+    }
+
+    #[test]
+    fn palette_labels_resolve_in_both_locales() {
+        for locale in ["en", "zh-CN"] {
+            for key in [
+                "palette.split_horizontal",
+                "palette.split_vertical",
+                "palette.open_in_editor",
+                "palette.zoom_window",
+                "quit.menu",
+            ] {
+                let label = rust_i18n::t!(key, locale = locale).to_string();
+                assert_ne!(label, key, "missing locale entry {key} for {locale}");
+            }
+        }
+    }
+
+    #[test]
+    fn palette_max_matches_zoom_window() {
+        let zoom = palette_commands()
+            .into_iter()
+            .find(|cmd| cmd.kind == PaletteCommandKind::ZoomWindow)
+            .expect("zoom command should exist");
+        // 英文关键词接线：中文环境下输入 max/zoom 也能命中。
+        assert_eq!(zoom.keywords, &["maximize", "zoom"]);
+        for query in ["max", "MAX", "zoom", "window"] {
+            assert!(
+                zoom.matches_query(query),
+                "query {query:?} should match zoom"
+            );
+        }
+        assert!(!zoom.matches_query("退出"));
+        assert!(zoom.matches_query(""));
+        // 中文标签命中逻辑：运行时 locale 为 zh-CN 时 label 即此文案。
+        let zh = PaletteCommand {
+            id: "zoom_window",
+            label: "最大化窗口".to_string(),
+            icon: icons::IconName::Square,
+            kind: PaletteCommandKind::ZoomWindow,
+            shortcut: None,
+            keywords: &["maximize", "zoom"],
+        };
+        for query in ["最大化", "窗口", "max"] {
+            assert!(zh.matches_query(query), "query {query:?} should match zoom");
+        }
+    }
+
+    #[test]
+    fn palette_directions_match_split_commands() {
+        let commands = palette_commands();
+        let find = |kind| {
+            commands
+                .iter()
+                .find(|cmd| cmd.kind == kind)
+                .unwrap_or_else(|| panic!("missing palette command {kind:?}"))
+        };
+        let horizontal = find(PaletteCommandKind::SplitHorizontal);
+        let vertical = find(PaletteCommandKind::SplitVertical);
+        for query in ["left", "right", "LEFT"] {
+            assert!(
+                horizontal.matches_query(query),
+                "query {query:?} should match split_horizontal"
+            );
+            assert!(
+                !vertical.matches_query(query),
+                "query {query:?} should not match split_vertical"
+            );
+        }
+        for query in ["up", "down"] {
+            assert!(
+                vertical.matches_query(query),
+                "query {query:?} should match split_vertical"
+            );
+            assert!(
+                !horizontal.matches_query(query),
+                "query {query:?} should not match split_horizontal"
+            );
+        }
+    }
 }

@@ -31,6 +31,12 @@ app_menu:
   zoom: Zoom
   toggle_full_screen: Enter Full Screen
 
+palette:
+  split_horizontal: Split terminal left/right
+  split_vertical: Split terminal up/down
+  open_in_editor: Open current project in editor
+  zoom_window: Maximize Window
+
 settings:
   title: Settings
   general: General

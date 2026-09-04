@@ -31,6 +31,12 @@ app_menu:
   zoom: 缩放
   toggle_full_screen: 进入全屏幕
 
+palette:
+  split_horizontal: 左右分栏
+  split_vertical: 上下分栏
+  open_in_editor: 在编辑器中打开当前项目
+  zoom_window: 最大化窗口
+
 settings:
   title: 设置
   general: 通用
