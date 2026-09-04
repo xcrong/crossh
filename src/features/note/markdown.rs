@@ -97,14 +97,14 @@ pub fn render_markdown(md: &str) -> AnyElement {
                     blocks.push(render_code_block(code, list_depth));
                 }
             }
-            Event::Start(Tag::BlockQuote) => {
+            Event::Start(Tag::BlockQuote(_)) => {
                 if !in_code_block && !inline.is_empty() {
                     blocks.push(render_line(std::mem::take(&mut inline), false, list_depth));
                 }
                 // 引用用缩进表示
                 list_depth = list_depth.saturating_add(1);
             }
-            Event::End(TagEnd::BlockQuote) => {
+            Event::End(TagEnd::BlockQuote(_)) => {
                 if !in_code_block && !inline.is_empty() {
                     blocks.push(render_line(std::mem::take(&mut inline), false, list_depth));
                 }
