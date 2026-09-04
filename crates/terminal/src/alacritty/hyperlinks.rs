@@ -19,7 +19,11 @@ use util::paths::{PathStyle, UrlExt};
 
 use crate::Range;
 
-const URL_REGEX: &str = r#"(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https://|http://|news:|file://|git://|ssh:|ftp://|zed://)[^\u{0000}-\u{001F}\u{007F}-\u{009F}<>"\s{-}\^⟨⟩`']+"#;
+// 中文标点（，。；：？！“”‘’【】「」等）是正文分隔符而非 URL 的一部分，
+// 必须截断 URL；但全角括号（）保留，交由 sanitize 按平衡处理，
+// 以支持中文维基式标题（如 …/範例_（消歧義））。
+// 中圆点 ·（U+00B7）/･（U+FF65）可出现在标题中（如 …/哈利·波特），只去尾不断腰。
+const URL_REGEX: &str = r#"(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https://|http://|news:|file://|git://|ssh:|ftp://|zed://)[^\u{0000}-\u{001F}\u{007F}-\u{009F}<>"\s{-}\^⟨⟩`'\u{2014}\u{2018}\u{2019}\u{201C}\u{201D}\u{2026}\u{3000}-\u{3003}\u{3008}-\u{3011}\u{3014}\u{3015}\u{FF01}\u{FF02}\u{FF07}\u{FF0C}\u{FF0E}\u{FF1A}\u{FF1B}\u{FF1C}\u{FF1E}\u{FF1F}]+"#;
 const WIDE_CHAR_SPACERS: Flags =
     Flags::from_bits(Flags::LEADING_WIDE_CHAR_SPACER.bits() | Flags::WIDE_CHAR_SPACER.bits())
         .unwrap();
@@ -240,17 +244,20 @@ fn sanitize_url_punctuation<T: EventListener>(
     term: &Term<T>,
 ) -> (String, Match) {
     let mut sanitized_url = url;
-    let mut chars_trimmed = 0;
+    let original_len = sanitized_url.len();
 
     // Count parentheses in the URL
-    let (open_parens, mut close_parens) =
-        sanitized_url
-            .chars()
-            .fold((0, 0), |(opens, closes), c| match c {
-                '(' => (opens + 1, closes),
-                ')' => (opens, closes + 1),
-                _ => (opens, closes),
-            });
+    let (open_parens, mut close_parens, open_fw_parens, mut close_fw_parens) =
+        sanitized_url.chars().fold(
+            (0, 0, 0, 0),
+            |(opens, closes, fw_opens, fw_closes), c| match c {
+                '(' => (opens + 1, closes, fw_opens, fw_closes),
+                ')' => (opens, closes + 1, fw_opens, fw_closes),
+                '（' => (opens, closes, fw_opens + 1, fw_closes),
+                '）' => (opens, closes, fw_opens, fw_closes + 1),
+                _ => (opens, closes, fw_opens, fw_closes),
+            },
+        );
 
     // Remove trailing characters that shouldn't be at the end of URLs
     while let Some(last_char) = sanitized_url.chars().last() {
@@ -259,9 +266,19 @@ fn sanitize_url_punctuation<T: EventListener>(
             // doesn't allow them, but they are frequently used in plain text as delimiters
             // where they're not meant to be part of the URL.
             '.' | ',' | ':' | ';' => true,
-            '(' => true,
+            // 中文正文分隔符：URL 正则已截断，这里是纵深防御。
+            // 中圆点 ·/･ 只去尾（…/哈利·波特 须保留）。
+            '。' | '．' | '，' | '、' | '；' | '：' | '？' | '！' | '…' | '—' | '·' | '･'
+            | '　' | '＂' | '＇' | '＜' | '＞' | '“' | '”' | '‘' | '’' | '「' | '」' | '『'
+            | '』' | '【' | '】' | '〔' | '〕' | '〈' | '〉' | '《' | '》' => true,
+            '(' | '（' => true,
             ')' if close_parens > open_parens => {
                 close_parens -= 1;
+
+                true
+            }
+            '）' if close_fw_parens > open_fw_parens => {
+                close_fw_parens -= 1;
 
                 true
             }
@@ -270,18 +287,76 @@ fn sanitize_url_punctuation<T: EventListener>(
 
         if should_remove {
             sanitized_url.pop();
-            chars_trimmed += 1;
         } else {
             break;
         }
     }
 
-    if chars_trimmed > 0 {
-        let new_end = url_match.end().sub(term, Boundary::Grid, chars_trimmed);
+    // 截断不平衡的 `(` / `（` 之后缀上的正文，如 `…/issues/7（bug 标签…`；
+    // 平衡的维基式标题（如 `…/Example_(disambiguation)`、`…/範例_（消歧義）`）保留。
+    if let Some(cut) = first_unbalanced_open_paren_url(&sanitized_url) {
+        sanitized_url.truncate(cut);
+    }
+
+    if sanitized_url.len() == original_len {
+        (sanitized_url, url_match)
+    } else {
+        // 按字符前向重走定位新末端：全角字符占两格，不能按字符数 sub。
+        let mut end = *url_match.start();
+        for _ in sanitized_url.chars() {
+            end = term
+                .expand_wide(end, AlacDirection::Right)
+                .add(term, Boundary::Grid, 1);
+        }
+        let new_end = term
+            .expand_wide(end, AlacDirection::Left)
+            .sub(term, Boundary::Grid, 1);
         let sanitized_match = Match::new(*url_match.start(), new_end);
         (sanitized_url, sanitized_match)
-    } else {
-        (sanitized_url, url_match)
+    }
+}
+
+/// 返回首个不平衡的 `(` / `（` 的字节下标；平衡时返回 `None`。
+/// 半角与全角括号分别计数，混用未闭合视为不平衡（如 `…/7（bug`）。
+fn first_unbalanced_open_paren_url(s: &str) -> Option<usize> {
+    let (mut balance, mut fw_balance) = (0i32, 0i32);
+    let (mut first_unmatched, mut fw_first_unmatched) = (None, None);
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' => {
+                if balance == 0 {
+                    first_unmatched = Some(i);
+                }
+                balance += 1;
+            }
+            ')' => {
+                balance -= 1;
+                if balance <= 0 {
+                    balance = 0;
+                    first_unmatched = None;
+                }
+            }
+            '（' => {
+                if fw_balance == 0 {
+                    fw_first_unmatched = Some(i);
+                }
+                fw_balance += 1;
+            }
+            '）' => {
+                fw_balance -= 1;
+                if fw_balance <= 0 {
+                    fw_balance = 0;
+                    fw_first_unmatched = None;
+                }
+            }
+            _ => {}
+        }
+    }
+    match (balance > 0, fw_balance > 0) {
+        (true, true) => first_unmatched.min(fw_first_unmatched),
+        (true, false) => first_unmatched,
+        (false, true) => fw_first_unmatched,
+        (false, false) => None,
     }
 }
 
@@ -524,6 +599,26 @@ mod tests {
             "open zed://channel/the-channel and zed://settings/theme now",
             vec!["zed://channel/the-channel", "zed://settings/theme"],
         );
+        // 中文标点截断 URL（全角括号除外，见 sanitize）。
+        re_test(
+            URL_REGEX,
+            "已创建：https://github.com/xcrong/crossh/issues/7，详情见https://example.com/docs。结束",
+            vec![
+                "https://github.com/xcrong/crossh/issues/7",
+                "https://example.com/docs",
+            ],
+        );
+        re_test(
+            URL_REGEX,
+            "“https://example.com”「https://example.org」",
+            vec!["https://example.com", "https://example.org"],
+        );
+        // 中圆点不断腰（标题内保留），句末由 sanitize 去尾。
+        re_test(
+            URL_REGEX,
+            "见 https://zh.wikipedia.org/wiki/哈利·波特 词条",
+            vec!["https://zh.wikipedia.org/wiki/哈利·波特"],
+        );
     }
 
     #[test]
@@ -632,6 +727,70 @@ mod tests {
 
             let (result, _) = sanitize_url_punctuation(input.to_string(), dummy_match, &term);
             assert_eq!(result, expected, "Failed for input: {}", input);
+        }
+    }
+
+    #[test]
+    fn test_url_cjk_punctuation_sanitization() {
+        // 中文语境：全角标点截断、不平衡全角括号截断、平衡全角括号保留。
+        let test_cases = vec![
+            // 上报 case：URL 后紧跟全角括号正文
+            (
+                "https://github.com/xcrong/crossh/issues/7（bug",
+                "https://github.com/xcrong/crossh/issues/7",
+            ),
+            // 句末全角标点（正则已截断，这里是纵深防御）
+            ("https://example.com。", "https://example.com"),
+            ("https://example.com，", "https://example.com"),
+            ("https://example.com；", "https://example.com"),
+            ("https://example.com：", "https://example.com"),
+            ("https://example.com？", "https://example.com"),
+            ("https://example.com！", "https://example.com"),
+            ("https://example.com）", "https://example.com"),
+            // 中圆点只去尾：标题内的保留
+            (
+                "https://zh.wikipedia.org/wiki/哈利·波特",
+                "https://zh.wikipedia.org/wiki/哈利·波特",
+            ),
+            ("https://example.com·", "https://example.com"),
+            ("https://example.com･", "https://example.com"),
+            // 不平衡半角括号缀正文同样截断
+            ("https://example.com/7(foo", "https://example.com/7"),
+            // 平衡括号（中英文维基式标题）保留
+            (
+                "https://zh.wikipedia.org/wiki/範例_（消歧義）",
+                "https://zh.wikipedia.org/wiki/範例_（消歧義）",
+            ),
+            (
+                "https://en.wikipedia.org/wiki/Example_(disambiguation)",
+                "https://en.wikipedia.org/wiki/Example_(disambiguation)",
+            ),
+        ];
+
+        for (input, expected) in test_cases {
+            // 200 列保证最长用例单行容纳、无折行。
+            let term = Term::new(Config::default(), &TermSize::new(200, 24), VoidListener);
+
+            // Column 计格数而非字节数；inclusive end 落在末字符首格。
+            // dummy 终端为空，前向重走按 1 字符 1 格推进——本表 sanitize 后的
+            // 输出均为 ASCII（宽字符输出只出现在原样返回的用例），故精确；
+            // 真实网格上的宽字符范围由 cjk_prose 端到端覆盖。
+            let start_point = AlacPoint::new(Line(0), Column(0));
+            let end_point = AlacPoint::new(Line(0), Column(line_cells_count(input) - 1));
+            let dummy_match = Match::new(start_point, end_point);
+
+            let (result, sanitized_match) =
+                sanitize_url_punctuation(input.to_string(), dummy_match, &term);
+            assert_eq!(result, expected, "Failed for input: {}", input);
+            let expected_match = Match::new(
+                start_point,
+                AlacPoint::new(Line(0), Column(line_cells_count(expected) - 1)),
+            );
+            assert_eq!(
+                sanitized_match, expected_match,
+                "Range failed for input: {}",
+                input
+            );
         }
     }
 
@@ -1491,6 +1650,16 @@ mod tests {
         }
 
         #[test]
+        fn cjk_prose() {
+            // URL 后紧跟中文正文：链接止于 URL，不吞掉全角括号后的文字。
+            test_hyperlink!("已创建：‹«👉https://github.com/xcrong/crossh/issues/7»›（bug 标签）。"; Iri);
+            test_hyperlink!("详情见‹«👉https://example.com/docs»›，完。"; Iri);
+            test_hyperlink!("“‹«👉https://example.com»›”"; Iri);
+            // 平衡全角括号的中文维基式标题保留为链接一部分。
+            test_iri!("https://zh.wikipedia.org/wiki/範例_（消歧義）");
+        }
+
+        #[test]
         #[should_panic(expected = "Expected a path, but was a iri")]
         fn file_is_a_path() {
             test_iri!("file://test/cool/index.rs");
@@ -1736,6 +1905,19 @@ mod tests {
                 // Fullwidth unicode characters used in tests
                 '例' | '🏃' | '🦀' | '🔥' => 2,
                 '\t' => 8, // it's really 0-8, use the max always
+                // 中日韩宽字符与全角标点占两格：少算会导致小宽度用例终端高度不足、
+                // 内容滚入历史区、‹›«» 标记错位；多算只会多出空行，无害。
+                '\u{1100}'..='\u{115F}'
+                | '\u{2E80}'..='\u{A4CF}'
+                | '\u{AC00}'..='\u{D7A7}'
+                | '\u{F900}'..='\u{FAFF}'
+                | '\u{FE30}'..='\u{FE4F}'
+                | '\u{FF01}'..='\u{FF60}'
+                | '\u{FFE0}'..='\u{FFE6}'
+                | '\u{20000}'..='\u{3FFFD}'
+                | '\u{2018}'..='\u{201D}'
+                | '\u{2026}'
+                | '\u{3000}'..='\u{303F}' => 2,
                 _ => 1,
             }
         }
@@ -1940,7 +2122,6 @@ mod tests {
                     PATH_HYPERLINK_TIMEOUT)
                 });
         }
-
         let term_size = TermSize::new(columns, total_cells / columns + 2);
         let (term, expected_hyperlink) =
             build_term_from_test_lines(hyperlink_kind, term_size, test_lines);

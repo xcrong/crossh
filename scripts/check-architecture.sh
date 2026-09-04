@@ -10,6 +10,7 @@ failure=0
 # as upstream-derived code and remain unsplit to preserve diffability.
 size_whitelist='src/features/terminal/zed_view/terminal_element.rs
 crates/terminal/src/terminal.rs
+crates/terminal/src/alacritty/hyperlinks.rs
 crates/crossh-editor/src/input/base/state.rs
 crates/crossh-editor/src/input/base/element.rs
 crates/crossh-editor/src/dock/dock_area.rs
