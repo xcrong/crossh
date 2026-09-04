@@ -335,6 +335,9 @@ impl AppShell {
             return;
         }
         if self.command_palette.is_some() {
+            // 失焦兜底：焦点在输入框时内层已消费并截断（消费即截断归 handler 所有），
+            // 此处只处理焦点异常；未处理键在此统一屏蔽，避免终端/全局误触。
+            // 不得在此之外再注册第二个编辑分发——同一事件两次插入即 `nneeww`。
             self.handle_command_palette_key(ev, window, cx);
             cx.stop_propagation();
             return;
@@ -663,6 +666,7 @@ impl AppShell {
     /// 搜索框保持 `String` 型编辑：该输入为单行过滤入口，
     /// 无需选区/多光标等 `TextEditingState` 能力；`compose.rs`/`modal_editor.rs`
     /// 的 `TextEditingState` 通用分发见 `shared::text_editing::handle_text_editing_key`。
+    /// 唯一归属：仅侧栏搜索框的内层 `on_key_down` 注册，根节点不二次分发。
     pub(crate) fn handle_search_key(
         &mut self,
         ev: &KeyDownEvent,

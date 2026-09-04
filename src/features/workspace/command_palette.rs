@@ -315,6 +315,9 @@ impl AppShell {
         self.open_project_in_editor(&directory, cx);
     }
 
+    /// 命令面板键盘处理的唯一归属：消费即截断，所有已处理分支在内部
+    /// `stop_propagation`，调用点不得重复分发同一事件（曾因此出现 `new` 变
+    /// `nneeww` 的双倍插入）。根节点的同名调用仅作失焦兜底。
     pub(crate) fn handle_command_palette_key(
         &mut self,
         ev: &KeyDownEvent,
@@ -328,6 +331,7 @@ impl AppShell {
         match key {
             "escape" => {
                 self.close_command_palette(cx);
+                cx.stop_propagation();
                 return;
             }
             "enter" | "return" => {
@@ -342,6 +346,7 @@ impl AppShell {
                 if has_selection {
                     self.execute_palette_selected(window, cx);
                 }
+                cx.stop_propagation();
                 return;
             }
             "arrowup" | "up" => {
@@ -349,6 +354,7 @@ impl AppShell {
                     p.move_selection(-1);
                 }
                 cx.notify();
+                cx.stop_propagation();
                 return;
             }
             "arrowdown" | "down" => {
@@ -356,6 +362,7 @@ impl AppShell {
                     p.move_selection(1);
                 }
                 cx.notify();
+                cx.stop_propagation();
                 return;
             }
             _ => {}
@@ -400,6 +407,7 @@ impl AppShell {
                 }
                 palette.clamp_selection();
                 cx.notify();
+                cx.stop_propagation();
             }
         }
     }
@@ -423,16 +431,14 @@ pub(crate) fn render_command_palette(
         .with_ime_marked_text(palette.query.ime_marked_text.clone())
         .with_ime_replacement(palette.query.ime_replacement);
 
-    // 搜索输入（焦点归属）：此处消费后必须截断冒泡，否则同一 KeyDownEvent
-    // 会继续冒泡到 shell 根节点的 handle_shell_key_down，被
-    // handle_command_palette_key 二次插入（`new` 变 `nneeww`）。
+    // 搜索输入（焦点归属）：截断由 handle_command_palette_key 内部保证，
+    // 此处不再重复 stop；未处理键继续冒泡到 shell 根节点作失焦兜底与屏蔽。
     let input = ModalField::new("command-palette-input", focus.clone(), &query_state)
         .placeholder("Type a command...".to_string())
         .entity(cx.entity())
         .scrollable(scroll)
         .on_key_down(cx.listener(|this, ev, window, cx| {
             this.handle_command_palette_key(ev, window, cx);
-            cx.stop_propagation();
         }));
 
     let list = if filtered.is_empty() {

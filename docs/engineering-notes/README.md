@@ -22,3 +22,4 @@
 | 终端里 ②③ 等带圈数字与后续字符叠印、粘在一起 | `歧义宽度`, `②③`, `粘在一起`, `叠印`, `force_width`, `cell_width`, `Lilex`, `PingFang`, `Alacritty`, `unicode_width` | [终端歧义宽度字符叠印](terminal-ambiguous-width-overlap.md) |
 | target 快速膨胀到 100G；`wasmtime/cranelift` 占 633M/变体；`cargo tree --invert wasmtime` 经 `migrator/settings_json -> tree-sitter[wasm]` | `wasmtime, cranelift, wasm, migrator, settings_json, tree-sitter, target 膨胀, patch, 定向复制` | [Zed migrator 引入 wasmtime 导致 target 膨胀](zed-migrator-wasmtime-bloat.md) |
 | Windows 控制台黑窗口 | 启动多一个常驻黑窗口；工作中不定时闪黑窗，Git 轮询/自更新时尤其明显 | `windows_subsystem`, `CREATE_NO_WINDOW`, `AttachConsole`, `no_window`, conhost, 闪 | [Windows 控制台黑窗口](windows-console-flash.md) |
+| 命令面板输入翻倍（`new` 变 `nneeww`）；同一按键被两处监听各插入一次 | `nneeww`, `stop_propagation`, `on_key_down`, 冒泡, 双倍输入, 消费即截断, `handle_command_palette_key` | [GPUI 按键事件双重分发](gpui-key-event-double-dispatch.md) |

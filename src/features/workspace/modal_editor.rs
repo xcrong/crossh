@@ -30,6 +30,8 @@ pub(crate) type DefaultCommandEditor = PinnedTabEditor;
 
 impl AppShell {
     /// 模态文本编辑器的统一键盘处理：固定标签重命名弹窗与默认命令编辑器共用（两者互斥，最多只有一个打开）。
+    /// 唯一归属：仅 `render_single_line_modal` 的内层 `on_key_down` 注册，
+    /// shell 根节点直接 `return`，保证一次按键只走一次编辑（见命令面板 `nneeww` 教训）。
     pub(crate) fn handle_modal_editor_key(
         &mut self,
         ev: &KeyDownEvent,
