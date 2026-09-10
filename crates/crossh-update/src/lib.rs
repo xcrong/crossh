@@ -15,7 +15,7 @@ pub const DEFAULT_MANIFEST_URL: &str =
 /// 加速通道不可达时回退 GitHub 原站。
 pub(crate) const DEFAULT_ACCELERATE_PREFIX: &str = "https://gh-proxy.com/";
 
-pub use client::{UpdateError, download_artifact, fetch_manifest};
+pub use client::{UpdateError, download_artifact, download_artifact_with_progress, fetch_manifest};
 pub use installer::{InstallerError, run_from_args, spawn_updater};
 pub use model::{
     ArtifactFormat, ManifestError, UpdateArtifact, UpdateCandidate, UpdateManifest, UpdateResult,

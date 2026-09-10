@@ -118,6 +118,16 @@ pub async fn download_artifact(
     version: &str,
     target: &str,
 ) -> Result<PathBuf, UpdateError> {
+    download_artifact_with_progress(artifact, version, target, |_, _| {}).await
+}
+
+/// 下载 artifact 并按 chunk 上报 `(downloaded, total)`；total 取 manifest 声明的 `artifact.size`。
+pub async fn download_artifact_with_progress(
+    artifact: &UpdateArtifact,
+    version: &str,
+    target: &str,
+    on_progress: impl Fn(u64, u64) + Send + Sync,
+) -> Result<PathBuf, UpdateError> {
     artifact.validate()?;
     let cache_dir = dirs::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
@@ -135,7 +145,7 @@ pub async fn download_artifact(
     // 校验类错误（checksum/size 不匹配等）直接返回，不换通道重试。
     let mut last_error = None;
     for url in candidate_urls(&artifact.url) {
-        match download_from(&url, artifact, &temporary).await {
+        match download_from(&url, artifact, &temporary, &on_progress).await {
             Ok(()) => {
                 if let Err(error) = tokio::fs::rename(&temporary, &destination).await {
                     let _ = tokio::fs::remove_file(&temporary).await;
@@ -160,6 +170,7 @@ async fn download_from(
     url: &str,
     artifact: &UpdateArtifact,
     temporary: &Path,
+    on_progress: &(impl Fn(u64, u64) + Send + Sync),
 ) -> Result<(), UpdateError> {
     let response = client()?.get(url).send().await?;
     if !response.status().is_success() {
@@ -177,7 +188,14 @@ async fn download_from(
             });
         }
     }
-    write_and_verify(response, temporary, &artifact.sha256, artifact.size).await
+    write_and_verify(
+        response,
+        temporary,
+        &artifact.sha256,
+        artifact.size,
+        on_progress,
+    )
+    .await
 }
 
 async fn write_and_verify(
@@ -185,6 +203,7 @@ async fn write_and_verify(
     temporary: &Path,
     expected_checksum: &str,
     expected_size: u64,
+    on_progress: &(impl Fn(u64, u64) + Send + Sync),
 ) -> Result<(), UpdateError> {
     let mut file = tokio::fs::File::create(temporary).await?;
     let mut verifier = DownloadVerifier::new(expected_checksum, expected_size);
@@ -192,6 +211,7 @@ async fn write_and_verify(
     while let Some(chunk) = response.chunk().await? {
         verifier.push(&chunk)?;
         file.write_all(&chunk).await?;
+        on_progress(verifier.downloaded(), expected_size);
     }
     file.flush().await?;
     file.sync_all().await?;
@@ -213,6 +233,10 @@ impl<'a> DownloadVerifier<'a> {
             expected_checksum,
             expected_size,
         }
+    }
+
+    fn downloaded(&self) -> u64 {
+        self.downloaded
     }
 
     fn push(&mut self, chunk: &[u8]) -> Result<(), UpdateError> {

@@ -8,7 +8,7 @@ use gpui::{
     AnyElement, App, AppContext, Bounds, ClickEvent, Context, Entity, FontWeight,
     InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString, Size,
     StatefulInteractiveElement, Styled, Subscription, TitlebarOptions, WeakEntity, Window,
-    WindowBounds, WindowOptions, div, px,
+    WindowBounds, WindowOptions, div, px, relative,
 };
 
 use crate::features::editor_launcher;
@@ -16,6 +16,7 @@ use crate::features::settings::{self, SettingsSnapshot};
 use crate::features::updates::{UpdateController, UpdateStatus};
 use crate::features::workspace::AppShell;
 use crate::shared::i18n::{self, LanguagePreference};
+use crossh_editor::{Progress, ProgressIndicator, ProgressTrack};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
     Button, ButtonSize, ButtonVariant, Select, SelectOption, Stepper, ToggleSwitch, scroll_y,
@@ -485,15 +486,61 @@ impl SettingsWindow {
                     compact_layout,
                 ));
             }
-            UpdateStatus::Downloading(candidate) => {
+            UpdateStatus::Downloading {
+                candidate,
+                downloaded,
+                total,
+            } => {
+                let fraction = if total == 0 {
+                    0.
+                } else {
+                    (downloaded as f32 / total as f32).clamp(0., 1.)
+                };
+                let title = rust_i18n::t!(
+                    "settings.updates_downloading",
+                    version = candidate.version.to_string()
+                )
+                .to_string();
+                let bar = Progress::new("settings-updates-progress")
+                    .value(fraction * 100.)
+                    .accessibility_label(title.clone())
+                    .w_full()
+                    .child(
+                        ProgressTrack::new()
+                            .w_full()
+                            .h(px(6.))
+                            .rounded_full()
+                            .bg(theme::border())
+                            .child(
+                                ProgressIndicator::new()
+                                    .h_full()
+                                    .w(relative(fraction))
+                                    .rounded_full()
+                                    .bg(theme::accent()),
+                            ),
+                    );
+                let numbers = format!(
+                    "{} / {} · {:.0}%",
+                    format_update_bytes(downloaded),
+                    format_update_bytes(total),
+                    fraction * 100.
+                );
                 content = content.child(responsive_settings_row(
-                    rust_i18n::t!(
-                        "settings.updates_downloading",
-                        version = candidate.version.to_string()
-                    )
-                    .to_string(),
+                    title,
                     i18n::text("settings.updates_downloading_description"),
-                    div().into_any_element(),
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(bar)
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::muted_text())
+                                .child(SharedString::from(numbers)),
+                        )
+                        .into_any_element(),
                     compact_layout,
                 ));
             }
@@ -773,6 +820,19 @@ fn settings_link_button(
         .into_any_element()
 }
 
+fn format_update_bytes(bytes: u64) -> String {
+    const MB: f64 = 1024. * 1024.;
+    const KB: f64 = 1024.;
+    let value = bytes as f64;
+    if value >= MB {
+        format!("{:.1} MB", value / MB)
+    } else if value >= KB {
+        format!("{:.0} KB", value / KB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 fn update_status_presentation(status: &UpdateStatus) -> (String, gpui::Rgba) {
     match status {
         UpdateStatus::Idle => (
@@ -789,7 +849,7 @@ fn update_status_presentation(status: &UpdateStatus) -> (String, gpui::Rgba) {
             .to_string(),
             theme::info(),
         ),
-        UpdateStatus::Downloading(candidate) => (
+        UpdateStatus::Downloading { candidate, .. } => (
             rust_i18n::t!(
                 "settings.updates_downloading_short",
                 version = candidate.version.to_string()
@@ -908,6 +968,14 @@ mod tests {
     fn settings_layout_switches_at_compact_width() {
         assert!(uses_compact_settings_layout(px(639.)));
         assert!(!uses_compact_settings_layout(px(640.)));
+    }
+
+    #[test]
+    fn update_bytes_format() {
+        assert_eq!(format_update_bytes(0), "0 B");
+        assert_eq!(format_update_bytes(512), "512 B");
+        assert_eq!(format_update_bytes(2048), "2 KB");
+        assert_eq!(format_update_bytes(7 * 1024 * 1024), "7.0 MB");
     }
 
     #[gpui::test]

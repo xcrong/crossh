@@ -1,6 +1,11 @@
 //! Crossh self-update feature: state, settings, and user actions.
 
 use std::path::PathBuf;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+use std::time::Duration;
 
 use gpui::{Context, Task};
 use semver::Version;
@@ -8,8 +13,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::bootstrap::runtime;
 use crossh_update::{
-    DEFAULT_MANIFEST_URL, UpdateCandidate, UpdateError, UpdateTarget, download_artifact,
-    fetch_manifest, spawn_updater, take_update_result,
+    DEFAULT_MANIFEST_URL, UpdateCandidate, UpdateError, UpdateTarget,
+    download_artifact_with_progress, fetch_manifest, spawn_updater, take_update_result,
 };
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct UpdateSettings {
@@ -35,7 +40,11 @@ pub(crate) enum UpdateStatus {
     Checking,
     UpToDate,
     Available(UpdateCandidate),
-    Downloading(UpdateCandidate),
+    Downloading {
+        candidate: UpdateCandidate,
+        downloaded: u64,
+        total: u64,
+    },
     Ready {
         candidate: UpdateCandidate,
         package: PathBuf,
@@ -103,7 +112,7 @@ impl UpdateController {
     pub(crate) fn check(&mut self, cx: &mut Context<Self>) {
         if matches!(
             self.status,
-            UpdateStatus::Checking | UpdateStatus::Downloading(_)
+            UpdateStatus::Checking | UpdateStatus::Downloading { .. }
         ) {
             return;
         }
@@ -154,13 +163,45 @@ impl UpdateController {
         let artifact = candidate.artifact.clone();
         let version = candidate.version.to_string();
         let target = candidate.target.key().to_owned();
-        self.status = UpdateStatus::Downloading(candidate.clone());
+        let total = artifact.size;
+        // tokio 下载任务只写原子计数，GPUI 任务轮询读并 notify；回调不碰 GPUI（AsyncApp 非 Send）。
+        // ponytail: 120ms 轮询而非 watch 通道，进度粒度 120ms；觉得卡再换事件驱动。
+        let downloaded = Arc::new(AtomicU64::new(0));
+        let downloaded_for_task = downloaded.clone();
+        self.status = UpdateStatus::Downloading {
+            candidate: candidate.clone(),
+            downloaded: 0,
+            total,
+        };
         cx.notify();
         let task = cx.spawn(async move |weak, cx| {
-            let result = runtime()
-                .spawn(async move { download_artifact(&artifact, &version, &target).await })
-                .await;
-            let result = match result {
+            let join = runtime().spawn(async move {
+                download_artifact_with_progress(&artifact, &version, &target, |got, _| {
+                    downloaded_for_task.store(got, Ordering::Relaxed);
+                })
+                .await
+            });
+            loop {
+                if join.is_finished() {
+                    break;
+                }
+                let got = downloaded.load(Ordering::Relaxed);
+                let _ = weak.update(cx, |this, cx| {
+                    if let UpdateStatus::Downloading {
+                        downloaded: current,
+                        ..
+                    } = &mut this.status
+                        && *current != got
+                    {
+                        *current = got;
+                        cx.notify();
+                    }
+                });
+                cx.background_executor()
+                    .timer(Duration::from_millis(120))
+                    .await;
+            }
+            let result = match join.await {
                 Ok(Ok(package)) => Ok(package),
                 Ok(Err(error)) => Err(error.to_string()),
                 Err(error) => Err(format!("download task failed: {error}")),
