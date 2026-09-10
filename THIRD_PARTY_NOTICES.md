@@ -92,3 +92,12 @@ third-party source was copied into it. It links the same pinned `gpui`
 revision as the rest of the workspace (licensing unchanged, see Core
 dependencies above). The GPL-3.0-or-later workspace `LICENSE` still governs
 the combined binaries.
+
+## Ponytail skill
+
+`.agents/skills/ponytail/SKILL.md` is vendored verbatim from upstream
+(never hand-edited; refresh via `scripts/update-ponytail-skill.sh`):
+
+- Source: https://github.com/DietrichGebert/ponytail/blob/356918eba965ee1eac64bd3a7f0dd02108350de5/skills/ponytail/SKILL.md
+- Upstream commit: `356918eba965ee1eac64bd3a7f0dd02108350de5` (vendored 2026-09-10)
+- License: MIT (see upstream `LICENSE`)

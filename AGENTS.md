@@ -36,6 +36,13 @@
 - **Depend on abstractions, not concrete panes.** A workspace/container should consume traits or common interfaces (mirrors Zed's `item.rs` / `pane.rs`), not `match` over an enum of concrete view types.
 - **No backward-compatibility bloat.** This project evolves fast and has no historical baggage — do not write redundant shims, deprecated paths, or compatibility code "just in case" older APIs are still used. Keep every layer behind the current, intended contract only.
 
+## Minimal Diffs (ponytail full)
+
+- Default to the laziest solution that works on every coding task: YAGNI first, then reuse existing code, stdlib, native platform features, and already-installed dependencies — new code and new dependencies are the last resort. Full rules: `.agents/skills/ponytail/SKILL.md`.
+- No unrequested abstractions, no scaffolding "for later", fewest files possible; shortest working diff wins once the problem is understood. Bug fixes target the root cause, not the symptom.
+- Never simplify away: trust-boundary validation, data-loss error handling, security, accessibility, or anything explicitly requested.
+- Deliberate simplifications with a known ceiling get a `ponytail:` comment naming the ceiling and upgrade path.
+
 ## Size and Language Discipline
 
 - **Keep source files under 2000 lines.** `scripts/check-architecture.sh` rejects Rust files above this limit under `src/` and `crates/*/src/`. Keep any exception explicit in that script's whitelist and document why it is maintained.
