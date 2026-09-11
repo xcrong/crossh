@@ -9,7 +9,7 @@
 //! `settings`（设置页）、`prompt`（模态弹窗）。本模块只保留状态与行为。
 
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
@@ -40,6 +40,7 @@ use crate::features::workspace::view::{
 use crate::shared::i18n::{self, LanguagePreference};
 use crate::shared::text_editing::{EditingKeystroke, TextEditingState, handle_text_editing_key};
 use crossh_core::git::{pull, push};
+use crossh_core::git_remote::fetch_all_remotes;
 use crossh_core::git_status::inspect;
 use crossh_core::system_stats::{SystemMonitorState, SystemSampler};
 use crossh_terminal::TerminalSettings;
@@ -110,6 +111,8 @@ pub(crate) fn init(cx: &mut App) {
 }
 
 const GIT_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+/// 后台 fetch 节拍：5s 轮询 × 60 = 约 5min fetch 一次，更新 behind 计数。
+const GIT_FETCH_EVERY_TICKS: u64 = 60;
 
 /// 状态栏 Git 同步操作（push/pull）的一次进行/错误状态；按会话独立记录，
 /// 避免一个会话的在途结果被另一个会话覆盖。
@@ -168,6 +171,8 @@ pub struct AppShell {
     _git_status_refresh_task: Option<Task<()>>,
     /// 最近一次状态栏 Git 同步操作的进行/错误状态，按会话独立记录。
     pub(crate) git_sync: BTreeMap<LocalSessionId, GitSyncState>,
+    /// 正在后台 fetch 的会话；网络卡住时阻止每 5min 叠加 fetch 进程。
+    git_fetching: HashSet<LocalSessionId>,
     pub(crate) system_monitor: SystemMonitorState,
     system_sampler: Option<SystemSampler>,
     _system_monitor_task: Option<Task<()>>,
@@ -251,6 +256,7 @@ impl AppShell {
             compose_scroll: gpui::ScrollHandle::new(),
             _git_status_refresh_task: None,
             git_sync: BTreeMap::new(),
+            git_fetching: HashSet::new(),
             system_monitor: SystemMonitorState::new(),
             system_sampler: None,
             _system_monitor_task: None,
@@ -967,6 +973,44 @@ impl AppShell {
             self.git_sync.remove(&session_id);
         }
     }
+    /// 后台 `git fetch --all` 后刷新状态；失败只记日志、不弹 toast，避免定时任务打扰。
+    fn fetch_then_refresh_git_status(
+        &mut self,
+        session_id: LocalSessionId,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .git_sync
+            .get(&session_id)
+            .is_some_and(|state| state.running)
+        {
+            self.refresh_git_status(session_id, false, cx);
+            return;
+        }
+        if !self.git_fetching.insert(session_id) {
+            self.refresh_git_status(session_id, false, cx);
+            return;
+        }
+        let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) else {
+            return;
+        };
+        let cwd = session.cwd.clone();
+        // ponytail: 只轮询聚焦会话，切回来再刷其余会话，避免多项目同时 fetch 惊群。
+        cx.spawn(async move |weak, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { fetch_all_remotes(&cwd) })
+                .await;
+            let _ = weak.update(cx, |this, cx| {
+                this.git_fetching.remove(&session_id);
+                if let Err(error) = result {
+                    log::debug!("background git fetch failed: {error}");
+                }
+                this.refresh_git_status(session_id, false, cx);
+            });
+        })
+        .detach();
+    }
 
     fn ensure_git_status_refresh_task(&mut self, cx: &mut Context<Self>) {
         if self._git_status_refresh_task.is_some() {
@@ -980,7 +1024,7 @@ impl AppShell {
                     .timer(GIT_STATUS_REFRESH_INTERVAL)
                     .await;
                 tick += 1;
-                if tick.is_multiple_of(60) {
+                if tick.is_multiple_of(GIT_FETCH_EVERY_TICKS) {
                     log::info!("git status refresh loop alive (tick {tick})");
                 }
 
@@ -989,7 +1033,11 @@ impl AppShell {
                         if let Some(ActiveView::LocalSession(session_id)) =
                             this.workspace.focused_view()
                         {
-                            this.refresh_git_status(session_id, false, cx);
+                            if tick.is_multiple_of(GIT_FETCH_EVERY_TICKS) {
+                                this.fetch_then_refresh_git_status(session_id, cx);
+                            } else {
+                                this.refresh_git_status(session_id, false, cx);
+                            }
                         }
                     })
                     .is_err()

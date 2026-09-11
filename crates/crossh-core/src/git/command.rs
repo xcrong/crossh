@@ -45,6 +45,8 @@ pub fn run_git_output(cwd: &Path, args: &[String]) -> Result<Vec<u8>, GitError> 
     let output = git_command(cwd)
         .args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
+        // 后台调用无 TTY：禁止鉴权弹窗，否则需密码的远端会挂住线程。
+        .env("GIT_TERMINAL_PROMPT", "0")
         .output()?;
     if output.status.success() {
         Ok(output.stdout)
