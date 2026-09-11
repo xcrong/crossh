@@ -5,15 +5,16 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, AppContext, Context, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
+    AnyElement, App, AppContext, Context, DispatchPhase, InteractiveElement, IntoElement,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, SharedString,
+    StatefulInteractiveElement, Styled, Window, canvas, div, px,
 };
 
 use crate::features::editor_launcher;
 use crate::features::settings::is_settings_window_open;
 use crate::features::workspace::empty_state;
 use crate::features::workspace::registry::{SplitSide, TerminalSplitState};
-use crate::features::workspace::shell::{AppShell, GitSyncOperation, GitSyncState};
+use crate::features::workspace::shell::{AppShell, CrossDragState, GitSyncOperation, GitSyncState};
 pub use crate::features::workspace::state::{ActiveView, LocalDir, LocalSession, LocalSessionId};
 use crate::features::workspace::tab_strip;
 use crate::features::workspace::toaster::{ToastNotice, ToastTone};
@@ -221,7 +222,7 @@ fn render_terminal_split(
     let left_col = render_split_column(
         shell,
         left_width,
-        split_height_left,
+        split_height_left.clone(),
         left_top_height,
         pane_min_height,
         max_top_height,
@@ -241,7 +242,7 @@ fn render_terminal_split(
     let right_col = render_split_column(
         shell,
         0.0, // flex_1 宽度由父 flex 决定，这里传 0 仅占位，内部按 flex_1 处理
-        split_height_right,
+        split_height_right.clone(),
         right_top_height,
         pane_min_height,
         max_top_height,
@@ -259,7 +260,7 @@ fn render_terminal_split(
         false,
     );
 
-    div()
+    let mut layout = div()
         .id("terminal-split")
         .size_full()
         .relative()
@@ -272,12 +273,45 @@ fn render_terminal_split(
         .child(right_col)
         .child(render_terminal_split_resizer(
             shell,
-            split_width,
+            split_width.clone(),
             left_width,
             pane_min_width,
             max_left_width,
-        ))
-        .into_any_element()
+        ));
+    // 该列有横向分隔线时，竖线与横线的交叉点盖一个 8×8 双向热区：
+    // 悬停为 move 光标，一次拖拽同时调整列宽与行高。最后挂载以盖住两条单向手柄。
+    // ponytail: GPUI 在 macOS 上没有四向箭头光标，cursor_move（抓手）是框架内最接近的 move 语义。
+    if split.bottom_left.is_some() {
+        layout = layout.child(render_split_cross_handle(
+            "terminal-split-cross-left",
+            shell.terminal_split_cross_drag.clone(),
+            split_width.clone(),
+            split_height_left.clone(),
+            left_width,
+            left_top_height,
+            pane_min_width,
+            max_left_width,
+            pane_min_height,
+            max_top_height,
+            false,
+        ));
+    }
+    if split.bottom_right.is_some() {
+        layout = layout.child(render_split_cross_handle(
+            "terminal-split-cross-right",
+            shell.terminal_split_cross_drag.clone(),
+            split_width.clone(),
+            split_height_right.clone(),
+            left_width,
+            right_top_height,
+            pane_min_width,
+            max_left_width,
+            pane_min_height,
+            max_top_height,
+            true,
+        ));
+    }
+    layout.into_any_element()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -434,6 +468,94 @@ fn render_vertical_split_resizer(
                 .vertical()
                 .line(),
         )
+}
+
+/// 竖线与横线交叉点的 8×8 双向拖拽热区：悬停为 move 光标，一次拖拽同时改列宽与归属列的行高。
+/// 全局 move/up 监听仿 `SplitResizer`（拖拽中指针会离开热区）；单向手柄的 `dragging` 位不动，
+/// 故交叉拖拽不会误触单向逻辑。
+#[allow(clippy::too_many_arguments)]
+fn render_split_cross_handle(
+    id: &'static str,
+    cross_drag: Rc<Cell<Option<CrossDragState>>>,
+    split_width: Rc<Cell<f32>>,
+    split_height: Rc<Cell<f32>>,
+    cross_x: f32,
+    cross_y: f32,
+    min_width: f32,
+    max_width: f32,
+    min_height: f32,
+    max_height: f32,
+    right_column: bool,
+) -> AnyElement {
+    let backing = canvas(|_, _, _| {}, {
+        let cross_drag = cross_drag.clone();
+        let split_width = split_width.clone();
+        let split_height = split_height.clone();
+        move |_, _, window: &mut Window, _| {
+            window.on_mouse_event({
+                let cross_drag = cross_drag.clone();
+                let split_width = split_width.clone();
+                let split_height = split_height.clone();
+                move |event: &MouseMoveEvent, phase, window, _cx| {
+                    if !matches!(phase, DispatchPhase::Bubble) {
+                        return;
+                    }
+                    let Some(drag) = cross_drag.get() else {
+                        return;
+                    };
+                    if drag.right_column != right_column {
+                        return;
+                    }
+                    split_width.set(crossh_ui_component::clamp_panel_width(
+                        drag.start_width + (event.position.x.as_f32() - drag.start_x),
+                        min_width,
+                        max_width,
+                    ));
+                    split_height.set(crossh_ui_component::clamp_panel_width(
+                        drag.start_height + (event.position.y.as_f32() - drag.start_y),
+                        min_height,
+                        max_height,
+                    ));
+                    window.refresh();
+                }
+            });
+            window.on_mouse_event({
+                let cross_drag = cross_drag.clone();
+                move |_event: &MouseUpEvent, phase, window, _cx| {
+                    if !matches!(phase, DispatchPhase::Bubble) {
+                        return;
+                    }
+                    if cross_drag.take().is_some() {
+                        window.refresh();
+                    }
+                }
+            });
+        }
+    })
+    .size_full();
+    div()
+        .id(id)
+        .absolute()
+        .left(px(cross_x - 4.))
+        .top(px(cross_y - 4.))
+        .w(px(8.))
+        .h(px(8.))
+        .cursor_move()
+        .on_mouse_down(MouseButton::Left, {
+            let cross_drag = cross_drag.clone();
+            move |event: &MouseDownEvent, window, _cx| {
+                cross_drag.set(Some(CrossDragState {
+                    start_x: event.position.x.as_f32(),
+                    start_y: event.position.y.as_f32(),
+                    start_width: split_width.get(),
+                    start_height: split_height.get(),
+                    right_column,
+                }));
+                window.refresh();
+            }
+        })
+        .child(backing)
+        .into_any_element()
 }
 
 fn render_split_pane(

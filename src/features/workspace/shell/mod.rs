@@ -55,6 +55,7 @@ mod notifications;
 mod quit;
 pub(crate) mod scratch;
 mod settings_actions;
+pub(crate) use split::CrossDragState;
 mod shell_input;
 mod shell_render;
 mod split;
@@ -161,6 +162,8 @@ pub struct AppShell {
     pub(crate) terminal_split_dragging: Rc<Cell<bool>>,
     pub(crate) terminal_split_vertical_dragging: Rc<Cell<bool>>,
     pub(crate) terminal_split_vertical_right_dragging: Rc<Cell<bool>>,
+    /// 交叉点双向拖拽快照（`None` 即空闲）；详见 `split::CrossDragState`。
+    pub(crate) terminal_split_cross_drag: Rc<Cell<Option<CrossDragState>>>,
     /// 固定标签重命名弹窗状态；与 default command 编辑器互斥（都是模态弹窗）。
     pub(crate) rename_editor: Option<RenameEditor>,
     pub(crate) default_command_editor: Option<DefaultCommandEditor>,
@@ -249,6 +252,7 @@ impl AppShell {
             terminal_split_dragging: Rc::new(Cell::new(false)),
             terminal_split_vertical_dragging: Rc::new(Cell::new(false)),
             terminal_split_vertical_right_dragging: Rc::new(Cell::new(false)),
+            terminal_split_cross_drag: Rc::new(Cell::new(None)),
             rename_editor: None,
             default_command_editor: None,
             command_palette: None,

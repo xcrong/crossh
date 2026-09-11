@@ -10,6 +10,17 @@ use super::tabs::{SplitPaneRetirement, TabCloseRisk, split_pane_retirement};
 
 use super::{ActiveView, AppShell};
 
+/// 竖线与横线交叉点的拖拽快照：落点坐标 + 起始尺寸；`None` 即空闲。
+/// 左右两列的交叉热区共用一个 cell（单次手势只可能拖一个点），以 `right_column` 区分归属列。
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CrossDragState {
+    pub(crate) start_x: f32,
+    pub(crate) start_y: f32,
+    pub(crate) start_width: f32,
+    pub(crate) start_height: f32,
+    pub(crate) right_column: bool,
+}
+
 impl AppShell {
     pub(crate) fn open_local_session_for_split(
         &mut self,
