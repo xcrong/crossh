@@ -16,24 +16,24 @@ doctest = false
 async-channel = "2.5.0"
 alacritty_terminal = { git = "https://github.com/zed-industries/alacritty", rev = "4c129667ce56611becdc82de6e28218c80e2e88f" }
 anyhow = "1.0.86"
-collections = { git = "https://github.com/zed-industries/zed", rev = "1057c2cf3d5b4aefd04755e1387c7826a4d7fba6" }
+collections = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557" }
 crossh-terminal = { path = "../crossh-terminal" }
 futures = "0.3.32"
 futures-lite = "2"
-gpui = { git = "https://github.com/zed-industries/zed", rev = "1057c2cf3d5b4aefd04755e1387c7826a4d7fba6" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557" }
 itertools = "0.15"
 libc = "0.2"
 log = "0.4.16"
 regex = "1.5"
-release_channel = { git = "https://github.com/zed-industries/zed", rev = "1057c2cf3d5b4aefd04755e1387c7826a4d7fba6" }
+release_channel = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557" }
 schemars = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 sysinfo = "0.39"
-task = { git = "https://github.com/zed-industries/zed", rev = "1057c2cf3d5b4aefd04755e1387c7826a4d7fba6" }
-theme = { git = "https://github.com/zed-industries/zed", rev = "1057c2cf3d5b4aefd04755e1387c7826a4d7fba6" }
+task = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557" }
+theme = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557" }
 thiserror = "2.0.12"
 url = "2.2"
-util = { git = "https://github.com/zed-industries/zed", rev = "1057c2cf3d5b4aefd04755e1387c7826a4d7fba6" }
+util = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557" }
 urlencoding = "2.1.2"
 vte = { version = "0.15.0", features = ["ansi"] }
 parking_lot = "0.12.1"
@@ -43,6 +43,6 @@ percent-encoding = "2.3.2"
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "1057c2cf3d5b4aefd04755e1387c7826a4d7fba6", features = ["test-support"] }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557", features = ["test-support"] }
 rand = "0.10"
-util_macros = { git = "https://github.com/zed-industries/zed", rev = "1057c2cf3d5b4aefd04755e1387c7826a4d7fba6" }
+util_macros = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557" }

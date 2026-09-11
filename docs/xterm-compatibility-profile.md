@@ -14,7 +14,7 @@ and were removed when Crossh adopted the Zed terminal core (2026-08-08).
 - [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/)
 
 The screen emulator is the Zed `terminal` crate at the revision pinned in
-`Cargo.toml` (`1057c2cf3d5b4aefd04755e1387c7826a4d7fba6`). That crate uses
+`Cargo.toml` (`251854020a9dbea1a388bf392c9bd04fd136a557`). That crate uses
 `alacritty_terminal` and `vte` internally. Crossh must not duplicate that
 screen state.
 

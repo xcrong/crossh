@@ -34,14 +34,14 @@ crossh-update = { path = "crates/crossh-update" }
 crossh-ui = { path = "crates/crossh-ui" }
 crossh-ui-component = { path = "crates/crossh-ui-component" }
 crossh-editor = { path = "crates/crossh-editor" }
-gpui = { git = "https://github.com/zed-industries/zed", rev = "1057c2cf3d5b4aefd04755e1387c7826a4d7fba6" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1057c2cf3d5b4aefd04755e1387c7826a4d7fba6", features = ["font-kit", "wayland", "x11"] }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557", features = ["font-kit", "wayland", "x11"] }
 itertools = "0.15"
-terminal = { git = "https://github.com/zed-industries/zed", rev = "1057c2cf3d5b4aefd04755e1387c7826a4d7fba6" }
-task = { git = "https://github.com/zed-industries/zed", rev = "1057c2cf3d5b4aefd04755e1387c7826a4d7fba6" }
-theme = { git = "https://github.com/zed-industries/zed", rev = "1057c2cf3d5b4aefd04755e1387c7826a4d7fba6" }
-util = { git = "https://github.com/zed-industries/zed", rev = "1057c2cf3d5b4aefd04755e1387c7826a4d7fba6" }
-release_channel = { git = "https://github.com/zed-industries/zed", rev = "1057c2cf3d5b4aefd04755e1387c7826a4d7fba6" }
+terminal = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557" }
+task = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557" }
+theme = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557" }
+util = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557" }
+release_channel = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557" }
 semver = "1"
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time", "fs"] }
@@ -62,9 +62,9 @@ pulldown-cmark = "0.13"
 embed-resource = "3"
 
 [dev-dependencies]
-assets = { git = "https://github.com/zed-industries/zed", rev = "1057c2cf3d5b4aefd04755e1387c7826a4d7fba6" }
-gpui = { git = "https://github.com/zed-industries/zed", rev = "1057c2cf3d5b4aefd04755e1387c7826a4d7fba6", features = ["test-support"] }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1057c2cf3d5b4aefd04755e1387c7826a4d7fba6", features = ["font-kit", "test-support", "wayland", "x11"] }
+assets = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557", features = ["test-support"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557", features = ["font-kit", "test-support", "wayland", "x11"] }
 
 [profile.dev]
 incremental = true

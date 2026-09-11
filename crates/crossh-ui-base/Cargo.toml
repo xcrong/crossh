@@ -9,10 +9,10 @@ keywords = ["gpui", "ui", "accessibility"]
 categories = ["gui"]
 
 [dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "1057c2cf3d5b4aefd04755e1387c7826a4d7fba6" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557" }
 
 [dev-dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "1057c2cf3d5b4aefd04755e1387c7826a4d7fba6", features = ["test-support"] }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557", features = ["test-support"] }
 
 [lints.rust]
 missing_docs = "warn"
