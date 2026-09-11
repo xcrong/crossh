@@ -770,7 +770,7 @@ impl TerminalView {
         }
         self.ime_marked_text.clear();
         self.send_input(format!("{command}\r").into_bytes(), cx);
-        // 不请求焦点，保持外层输入框（compose 等批量输入）持有焦点
+        // 不请求焦点，保持独立输入栏持有焦点
     }
 
     pub(crate) fn request_close(&mut self, cx: &mut Context<Self>) {

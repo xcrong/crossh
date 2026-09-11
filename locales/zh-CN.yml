@@ -35,6 +35,8 @@ palette:
   split_horizontal: 左右分栏
   split_vertical: 上下分栏
   open_in_editor: 在编辑器中打开当前项目
+  open_git_viewer: 为当前项目打开 Git Viewer
+  open_notes: 打开笔记
   zoom_window: 最大化窗口
 
 settings:
@@ -113,7 +115,7 @@ tooltip:
   split_terminal_vertical_full: 已达到最多四块终端
   open_in_editor_with: 在 %{editor} 中打开当前目录
   open_in_editor: 在外部编辑器中打开当前目录
-  compose_bar: 切换批量输入条
+  compose_bar: 切换独立输入栏
   system_monitor: 系统监视器
   scratch_terminal: 临时终端
   note: 笔记

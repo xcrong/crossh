@@ -40,6 +40,8 @@ pub(crate) enum PaletteCommandKind {
     SplitHorizontal,
     SplitVertical,
     OpenInEditor,
+    OpenGitViewer,
+    OpenNotes,
     QuitApp,
     ZoomWindow,
 }
@@ -194,6 +196,22 @@ pub(crate) fn palette_commands() -> Vec<PaletteCommand> {
             keywords: &[],
         },
         PaletteCommand {
+            id: "open_git_viewer",
+            label: i18n::text("palette.open_git_viewer"),
+            icon: icons::IconName::GitBranch,
+            kind: PaletteCommandKind::OpenGitViewer,
+            shortcut: None,
+            keywords: &["git", "viewer"],
+        },
+        PaletteCommand {
+            id: "open_notes",
+            label: i18n::text("palette.open_notes"),
+            icon: icons::IconName::FileText,
+            kind: PaletteCommandKind::OpenNotes,
+            shortcut: None,
+            keywords: &["note", "notes"],
+        },
+        PaletteCommand {
             id: "quit_app",
             label: i18n::text("quit.menu"),
             icon: icons::IconName::CircleX,
@@ -289,6 +307,14 @@ impl AppShell {
             PaletteCommandKind::OpenInEditor => {
                 self.open_focused_project_in_editor(cx);
             }
+            PaletteCommandKind::OpenGitViewer => {
+                self.open_focused_project_git_viewer();
+            }
+            PaletteCommandKind::OpenNotes => {
+                if let Err(error) = crate::features::note_launcher::spawn_note_process() {
+                    log::warn!("spawn note failed: {error}");
+                }
+            }
             PaletteCommandKind::QuitApp => {
                 self.request_app_quit(window, cx);
             }
@@ -313,6 +339,24 @@ impl AppShell {
             return;
         };
         self.open_project_in_editor(&directory, cx);
+    }
+    /// 在聚焦会话的 cwd 打开 Git Viewer；无聚焦会话时空操作（复用状态栏 Git 按钮逻辑）。
+    fn open_focused_project_git_viewer(&mut self) {
+        let Some(ActiveView::LocalSession(session_id)) = self.workspace.focused_view() else {
+            return;
+        };
+        let Some(cwd) = self
+            .workspace
+            .sessions
+            .local_sessions
+            .get(&session_id)
+            .map(|session| session.cwd.clone())
+        else {
+            return;
+        };
+        if let Err(error) = crate::features::git_launcher::spawn_git_process(&cwd) {
+            log::error!("failed to start crossh-git for {}: {error}", cwd.display());
+        }
     }
 
     /// 命令面板键盘处理的唯一归属：消费即截断，所有已处理分支在内部
@@ -568,6 +612,8 @@ mod tests {
             PaletteCommandKind::SplitHorizontal,
             PaletteCommandKind::SplitVertical,
             PaletteCommandKind::OpenInEditor,
+            PaletteCommandKind::OpenGitViewer,
+            PaletteCommandKind::OpenNotes,
             PaletteCommandKind::QuitApp,
             PaletteCommandKind::ZoomWindow,
         ] {
@@ -582,6 +628,8 @@ mod tests {
                 "palette.split_horizontal",
                 "palette.split_vertical",
                 "palette.open_in_editor",
+                "palette.open_git_viewer",
+                "palette.open_notes",
                 "palette.zoom_window",
                 "quit.menu",
             ] {
@@ -652,5 +700,35 @@ mod tests {
                 "query {query:?} should not match split_horizontal"
             );
         }
+    }
+
+    #[test]
+    fn palette_git_and_notes_match_keywords() {
+        let commands = palette_commands();
+        let find = |kind| {
+            commands
+                .iter()
+                .find(|cmd| cmd.kind == kind)
+                .unwrap_or_else(|| panic!("missing palette command {kind:?}"))
+        };
+        // 英文关键词接线：中文环境下输入 git/note 也能命中。
+        let git = find(PaletteCommandKind::OpenGitViewer);
+        assert_eq!(git.keywords, &["git", "viewer"]);
+        for query in ["git", "GIT", "viewer"] {
+            assert!(
+                git.matches_query(query),
+                "query {query:?} should match git viewer"
+            );
+        }
+        let notes = find(PaletteCommandKind::OpenNotes);
+        assert_eq!(notes.keywords, &["note", "notes"]);
+        for query in ["note", "NOTES"] {
+            assert!(
+                notes.matches_query(query),
+                "query {query:?} should match notes"
+            );
+        }
+        assert!(!notes.matches_query("git"));
+        assert!(!git.matches_query("笔记"));
     }
 }

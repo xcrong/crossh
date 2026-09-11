@@ -1,4 +1,4 @@
-//! 批量输入条的终端级状态与交互（与分栏同为终端级）。
+//! 独立输入栏的终端级状态与交互（与分栏同为终端级）。
 //! 逻辑与渲染分离：本模块负责可见性、草稿、发送与按键；渲染在 `compose_bar.rs`。
 
 use gpui::{ClipboardItem, Context, KeyDownEvent, Window};
