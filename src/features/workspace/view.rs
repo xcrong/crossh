@@ -989,6 +989,14 @@ fn render_git_status(
                 );
             }
         }));
+    if !status.commit.is_empty() {
+        git = git.child(
+            div()
+                .flex_shrink_0()
+                .text_color(theme::muted_text())
+                .child(SharedString::from(status.commit.clone())),
+        );
+    }
 
     if status.ahead > 0 {
         git = git.child(StatusMetric::new(format!("↑{}", status.ahead)).tone(BadgeTone::Info));

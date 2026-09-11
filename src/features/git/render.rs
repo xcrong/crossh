@@ -270,6 +270,14 @@ impl GitWindow {
             }));
 
         if let Some(status) = &self.session.status {
+            if !status.commit.is_empty() {
+                branch = branch.child(
+                    div()
+                        .flex_shrink_0()
+                        .text_color(theme::muted_text())
+                        .child(SharedString::from(status.commit.clone())),
+                );
+            }
             if status.ahead > 0 {
                 branch = branch
                     .child(StatusMetric::new(format!("↑{}", status.ahead)).tone(BadgeTone::Info));

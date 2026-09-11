@@ -10,6 +10,8 @@ use crate::git::command::try_git_output;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GitStatus {
     pub branch: String,
+    /// HEAD commit 短 hash（7 位）；空仓库等取不到时为空。
+    pub commit: String,
     pub ahead: usize,
     pub behind: usize,
     pub staged: usize,
@@ -36,6 +38,11 @@ pub fn inspect(cwd: &Path) -> Option<GitStatus> {
         ],
     )?;
     parse_status(&output)
+}
+
+/// 取短 hash：仅接受十六进制 oid，`(initial)` 等占位直接丢弃。
+fn short_oid(oid: &str) -> Option<&str> {
+    (oid.len() >= 7 && oid.bytes().all(|byte| byte.is_ascii_hexdigit())).then(|| &oid[..7])
 }
 
 /// 解析 `git status --porcelain=v2 --branch -z` 输出。
@@ -78,8 +85,15 @@ pub fn parse_status(output: &[u8]) -> Option<GitStatus> {
     }
 
     if status.branch.is_empty() {
-        let oid = oid?;
-        status.branch = format!("detached@{}", &oid[..oid.len().min(7)]);
+        let oid = oid.as_deref()?;
+        status.branch = "detached".to_string();
+        status.commit = short_oid(oid).unwrap_or_default().to_string();
+    } else {
+        status.commit = oid
+            .as_deref()
+            .and_then(short_oid)
+            .unwrap_or_default()
+            .to_string();
     }
     Some(status)
 }
@@ -111,6 +125,7 @@ u UU N... 100644 100644 100644 100644 aaa bbb ccc conflict.txt\0\
         let status = parse_status(output).unwrap();
 
         assert_eq!(status.branch, "feature/status");
+        assert_eq!(status.commit, "abcdef1");
         assert_eq!(status.ahead, 2);
         assert_eq!(status.behind, 3);
         assert_eq!(status.staged, 2);
@@ -124,7 +139,17 @@ u UU N... 100644 100644 100644 100644 aaa bbb ccc conflict.txt\0\
     fn labels_detached_head_with_short_oid() {
         let output = b"# branch.oid abcdef123456\0# branch.head (detached)\0";
         let status = parse_status(output).unwrap();
-        assert_eq!(status.branch, "detached@abcdef1");
+        assert_eq!(status.branch, "detached");
+        assert_eq!(status.commit, "abcdef1");
+        assert!(status.is_clean());
+    }
+
+    #[test]
+    fn unborn_head_leaves_commit_empty() {
+        let output = b"# branch.oid (initial)\0# branch.head main\0";
+        let status = parse_status(output).unwrap();
+        assert_eq!(status.branch, "main");
+        assert!(status.commit.is_empty());
         assert!(status.is_clean());
     }
 }
