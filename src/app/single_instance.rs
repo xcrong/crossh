@@ -46,9 +46,11 @@ pub(crate) fn port_file_path() -> PathBuf {
 }
 
 fn port_dir() -> PathBuf {
+    // ponytail: debug/release 共用端口文件会导致开发版无法与运行中的正式版并存；用 -dev 后缀隔离，够用，独立多开再加 flag。
+    let suffix = if cfg!(debug_assertions) { "-dev" } else { "" };
     dirs::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join("crossh")
+        .join(format!("crossh{suffix}"))
 }
 
 /// 把 CLI 原始路径解析为可打开的项目目录：相对路径相对 `cwd`，
