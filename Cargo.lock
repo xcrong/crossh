@@ -1540,6 +1540,7 @@ version = "0.34.0"
 dependencies = [
  "base64 0.23.1",
  "dirs",
+ "dunce",
  "pretty_assertions",
  "shlex 2.0.1",
  "sys-locale",

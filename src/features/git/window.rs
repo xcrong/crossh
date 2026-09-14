@@ -1457,7 +1457,10 @@ pub fn open_git_window(cwd: PathBuf, cx: &mut App) {
         let _ = window.update(cx, |this, window, cx| {
             if this.session.cwd != cwd {
                 this.session = GitSession::new(cwd);
+                // 切换目录回到 Changes 页：compact_page 在宽布局也决定 is_*_page，
+                // 不重置会命中 stale 分支、漏刷当前页。
                 this.compact_page = CompactPage::Changes;
+                this.refresh_current_page(cx);
                 this.commit_editor.state.clear();
                 this.context_menu = None;
                 this.pending_discard = None;

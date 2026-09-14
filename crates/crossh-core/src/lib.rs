@@ -16,5 +16,6 @@ pub mod git_stash;
 pub mod git_status;
 pub mod locale;
 pub mod process;
+pub mod single_instance;
 pub mod system_stats;
 pub mod terminal;
