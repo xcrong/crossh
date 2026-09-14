@@ -68,6 +68,19 @@ pub struct LocalDir {
     pub active_session: Option<LocalSessionId>,
 }
 
+/// 把 `from` 处的元素移到 `to` 之前；同位/越界不动，调用方先定位下标。
+/// 标签拖拽落点语义：落到哪个标签上就排到它之前。
+// ponytail: drop-onto 语义；要左右半区精确插入时再加几何判断。
+pub fn move_before<T>(items: &mut Vec<T>, from: usize, to: usize) {
+    if from == to || from >= items.len() || to >= items.len() {
+        return;
+    }
+    let item = items.remove(from);
+    // `remove` 让后方前移：`from` 在前时 `to` 回退一位，保证落在 target 之前。
+    let to = if from < to { to - 1 } else { to };
+    items.insert(to, item);
+}
+
 /// 把会话按项目归属目录重建目录视图：同一项目的会话合并，保留上一次的活动会话。
 /// `remembered` 是最近打开过的本地目录（无活动会话），合并进来后仍显示在侧栏。
 pub fn rebuild_local_dirs(
@@ -99,6 +112,23 @@ pub fn rebuild_local_dirs(
     }
 
     for (project_dir, dir) in &mut next {
+        // 拖拽排序后 `sessions` 自身即顺序：保留上一次的相对顺序，新会话追加末尾，
+        // 否则打开/关闭/`cd` 触发的重建会打乱拖拽结果。
+        // ponytail: O(n²) contains，标签数极小；量大再换索引集。
+        if let Some(old) = previous.get(project_dir) {
+            let mut ordered: Vec<LocalSessionId> = old
+                .sessions
+                .iter()
+                .filter(|id| dir.sessions.contains(id))
+                .copied()
+                .collect();
+            for id in dir.sessions.iter() {
+                if !ordered.contains(id) {
+                    ordered.push(*id);
+                }
+            }
+            dir.sessions = ordered;
+        }
         let previous_active = previous.get(project_dir).and_then(|old| old.active_session);
         dir.active_session = active_local_session
             .filter(|id| dir.sessions.contains(id))
@@ -173,11 +203,47 @@ mod tests {
             dirs[&PathBuf::from("/Users/me/one")].active_session,
             Some(1)
         );
-        assert_eq!(dirs[&PathBuf::from("/Users/me/two")].sessions, vec![2, 3]);
+        // 新来者（2）追加到存量（3）之后：重建保留上一次的相对顺序。
+        assert_eq!(dirs[&PathBuf::from("/Users/me/two")].sessions, vec![3, 2]);
         assert_eq!(
             dirs[&PathBuf::from("/Users/me/two")].active_session,
             Some(2)
         );
+    }
+    #[test]
+    fn move_before_drops_onto_target_and_ignores_bad_positions() {
+        let mut ids = vec![1, 2, 3, 4];
+        move_before(&mut ids, 0, 2);
+        assert_eq!(ids, vec![2, 1, 3, 4]);
+        move_before(&mut ids, 3, 1);
+        assert_eq!(ids, vec![2, 4, 1, 3]);
+        move_before(&mut ids, 1, 1);
+        move_before(&mut ids, 0, 9);
+        assert_eq!(ids, vec![2, 4, 1, 3]);
+    }
+
+    #[test]
+    fn rebuild_keeps_drag_order_for_surviving_sessions() {
+        let previous = BTreeMap::from([(
+            PathBuf::from("/p"),
+            LocalDir {
+                project_dir: PathBuf::from("/p"),
+                sessions: vec![3, 1, 2],
+                active_session: Some(1),
+            },
+        )]);
+        let dirs = rebuild_local_dirs(
+            &previous,
+            vec![
+                (1, PathBuf::from("/p")),
+                (2, PathBuf::from("/p")),
+                (3, PathBuf::from("/p")),
+                (4, PathBuf::from("/p")),
+            ],
+            Vec::new(),
+            Some(1),
+        );
+        assert_eq!(dirs[&PathBuf::from("/p")].sessions, vec![3, 1, 2, 4]);
     }
 
     #[test]

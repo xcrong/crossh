@@ -2,8 +2,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, ClickEvent, ElementId, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, ParentElement, Pixels, RenderOnce, Rgba, SharedString,
+    AnyElement, App, AppContext, ClickEvent, Context, ElementId, InteractiveElement, IntoElement,
+    MouseButton, MouseDownEvent, ParentElement, Pixels, Render, RenderOnce, Rgba, SharedString,
     StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
 };
 
@@ -73,6 +73,44 @@ impl RenderOnce for TabStrip {
     }
 }
 
+/// 标签拖拽负载：`session_id` 即工作区会话 id（用 `u64` 避免组件反向依赖工作区类型），
+/// `pinned` 区分固定/普通两组（只允许组内排序），`label` 仅用于拖拽预览。
+#[derive(Clone)]
+pub struct DragLocalTab {
+    session_id: u64,
+    pinned: bool,
+    label: SharedString,
+}
+
+impl DragLocalTab {
+    pub fn new(session_id: u64, pinned: bool, label: impl Into<SharedString>) -> Self {
+        Self {
+            session_id,
+            pinned,
+            label: label.into(),
+        }
+    }
+
+    pub fn session_id(&self) -> u64 {
+        self.session_id
+    }
+}
+
+type DropTabHandler = Rc<dyn Fn(&DragLocalTab, &mut Window, &mut App)>;
+
+impl Render for DragLocalTab {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded(px(theme::RADIUS_SM))
+            .bg(theme::raised())
+            .text_xs()
+            .text_color(theme::text())
+            .child(self.label.clone())
+    }
+}
+
 /// A tab item with shared active, hover, label, and optional status-dot styling.
 #[derive(IntoElement)]
 pub struct TabItem {
@@ -86,6 +124,8 @@ pub struct TabItem {
     children: Vec<AnyElement>,
     on_select: Option<ClickHandler>,
     on_mouse_down: Option<(MouseButton, MouseDownHandler)>,
+    drag: Option<DragLocalTab>,
+    on_drop_tab: Option<DropTabHandler>,
 }
 
 impl TabItem {
@@ -102,6 +142,8 @@ impl TabItem {
             children: Vec::new(),
             on_select: None,
             on_mouse_down: None,
+            drag: None,
+            on_drop_tab: None,
         }
     }
 
@@ -147,6 +189,20 @@ impl TabItem {
         self.on_mouse_down = Some((button, Rc::new(on_mouse_down)));
         self
     }
+    /// 拖拽源：按住拖动即带起该标签，预览为标题小 pill。
+    pub fn drag_tab(mut self, drag: DragLocalTab) -> Self {
+        self.drag = Some(drag);
+        self
+    }
+
+    /// 拖拽落点：其他标签落到本标签上时触发，调用方做同组排序。
+    pub fn on_drop_tab(
+        mut self,
+        on_drop: impl Fn(&DragLocalTab, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_drop_tab = Some(Rc::new(on_drop));
+        self
+    }
 }
 
 impl RenderOnce for TabItem {
@@ -162,6 +218,8 @@ impl RenderOnce for TabItem {
             children,
             on_select,
             on_mouse_down,
+            drag,
+            on_drop_tab,
         } = self;
 
         let label_view = h_flex()
@@ -211,6 +269,23 @@ impl RenderOnce for TabItem {
         if let Some((button, on_mouse_down)) = on_mouse_down {
             tab = tab.on_mouse_down(button, move |event, window, cx| {
                 on_mouse_down(event, window, cx);
+            });
+        }
+        if let Some(drag) = drag {
+            let pinned = drag.pinned;
+            tab = tab
+                .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
+                .drag_over(move |style, incoming: &DragLocalTab, _, _| {
+                    if incoming.pinned == pinned {
+                        style.bg(theme::accent_soft())
+                    } else {
+                        style
+                    }
+                });
+        }
+        if let Some(on_drop) = on_drop_tab {
+            tab = tab.on_drop(move |drag: &DragLocalTab, window, cx| {
+                on_drop(drag, window, cx);
             });
         }
         tab

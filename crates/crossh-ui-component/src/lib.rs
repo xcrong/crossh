@@ -69,7 +69,7 @@ pub use status_bar::StatusBar;
 pub use status_dot::StatusDot;
 pub use status_metric::StatusMetric;
 pub use stepper::Stepper;
-pub use tab::{TabItem, TabStrip};
+pub use tab::{DragLocalTab, TabItem, TabStrip};
 pub use text_input::TextInput;
 pub use toast::{Toast, ToastTone, Toaster};
 pub use toggle::ToggleSwitch;

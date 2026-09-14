@@ -12,6 +12,7 @@ use crate::features::workspace::local_paths::{current_local_cwd, normalize_local
 use crate::features::workspace::modal_editor::{DefaultCommandEditor, RenameEditor};
 use crate::features::workspace::pinned::{next_pin_id, pinned_tabs_for_project};
 use crate::features::workspace::settings::PinnedLocalTab;
+use crate::features::workspace::state::move_before;
 
 /// 单个标签页关闭时可能被打断的活动；任何一项存在都需要确认。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -518,6 +519,61 @@ impl AppShell {
             .pinned_local_tabs
             .retain(|tab| tab.pin_id != pin_id);
         self.persist_settings();
+        cx.notify();
+    }
+
+    /// 拖拽排序：同组内把 `dragged` 移到 `target` 之前；跨组/相同/缺失直接忽略。
+    /// 普通标签顺序即 `LocalDir.sessions`，固定标签顺序即 `pinned_local_tabs`（持久化）。
+    pub(crate) fn reorder_local_tab(
+        &mut self,
+        dragged: LocalSessionId,
+        target: LocalSessionId,
+        pinned: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if dragged == target {
+            return;
+        }
+        let sessions = &self.workspace.sessions.local_sessions;
+        let dragged_pin = sessions.get(&dragged).and_then(|s| s.pin_id);
+        let target_pin = sessions.get(&target).and_then(|s| s.pin_id);
+        if dragged_pin.is_some() != pinned || target_pin.is_some() != pinned {
+            return;
+        }
+        if pinned {
+            let (Some(dragged_pin), Some(target_pin)) = (dragged_pin, target_pin) else {
+                return;
+            };
+            let tabs = &mut self.workspace_settings.pinned_local_tabs;
+            let (Some(from), Some(to)) = (
+                tabs.iter().position(|t| t.pin_id == dragged_pin),
+                tabs.iter().position(|t| t.pin_id == target_pin),
+            ) else {
+                return;
+            };
+            move_before(tabs, from, to);
+            self.persist_settings();
+        } else {
+            let Some(dir_key) = self
+                .workspace
+                .sessions
+                .local_dirs
+                .iter()
+                .find_map(|(key, dir)| dir.sessions.contains(&target).then(|| key.clone()))
+            else {
+                return;
+            };
+            let Some(dir) = self.workspace.sessions.local_dirs.get_mut(&dir_key) else {
+                return;
+            };
+            let (Some(from), Some(to)) = (
+                dir.sessions.iter().position(|id| *id == dragged),
+                dir.sessions.iter().position(|id| *id == target),
+            ) else {
+                return;
+            };
+            move_before(&mut dir.sessions, from, to);
+        }
         cx.notify();
     }
 

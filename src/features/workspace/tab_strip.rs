@@ -21,7 +21,9 @@ use crate::shared::i18n;
 use crossh_ui::context_menu::ShellMenuAction;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::context_menu::{MenuEntry, MenuItem};
-use crossh_ui_component::{Button, ButtonSize, ButtonVariant, TabItem, TabStrip, Tooltip};
+use crossh_ui_component::{
+    Button, ButtonSize, ButtonVariant, DragLocalTab, TabItem, TabStrip, Tooltip,
+};
 
 // 容器不绑定 click；标签名与关闭按钮分别绑定，避免事件叠加。
 #[allow(clippy::too_many_arguments)]
@@ -37,14 +39,21 @@ fn render_tab_chip<M, S, C>(
     on_select: S,
     close_id: impl Into<gpui::ElementId>,
     on_close: C,
+    session_id: LocalSessionId,
+    pinned: bool,
 ) -> AnyElement
 where
     M: Fn(&MouseDownEvent, &mut AppShell, &mut Window, &mut Context<AppShell>) + 'static,
     S: Fn(&ClickEvent, &mut AppShell, &mut Window, &mut Context<AppShell>) + 'static,
     C: Fn(&ClickEvent, &mut AppShell, &mut Window, &mut Context<AppShell>) + 'static,
 {
-    let mut tab = TabItem::new(container_id, label);
+    let label: SharedString = label.into();
+    let mut tab = TabItem::new(container_id, label.clone());
     tab = tab
+        .drag_tab(DragLocalTab::new(session_id, pinned, label))
+        .on_drop_tab(cx.listener(move |this, drag: &DragLocalTab, _window, cx| {
+            this.reorder_local_tab(drag.session_id(), session_id, pinned, cx);
+        }))
         .label_id(label_id)
         .active(is_active)
         .dot_color(dot_color)
@@ -275,6 +284,8 @@ pub(super) fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> 
                     move |_ev: &ClickEvent, this, w, cx| {
                         this.request_close_local_session(session_id, w, cx);
                     },
+                    session_id,
+                    true,
                 ));
             }
 
@@ -344,6 +355,8 @@ pub(super) fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> 
                     move |_ev: &ClickEvent, this, w, cx| {
                         this.request_close_local_session(session_id, w, cx);
                     },
+                    session_id,
+                    false,
                 ));
             }
         }
