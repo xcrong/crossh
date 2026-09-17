@@ -68,7 +68,11 @@ AppImage 通过 `APPIMAGE` 环境变量定位当前文件，直接替换 AppImag
 
 ### Windows
 
-updater 在主进程退出后替换 `crossh.exe`。Windows zip 中包含 `crossh-updater.exe`。当前 updater 不会覆盖正在运行的 updater 自身，因此下一次更新继续使用旧 updater 也是允许的；后续可以增加独立固定版本 bootstrapper。
+updater 在主进程退出后，把 zip 的顶层载荷合并进 `crossh.exe` 所在目录：主程序、`crossh-git.exe`、`crossh-note.exe`、`crossh-updater.exe` 与 `resources/` 一起替换。这和 Inno 安装的目录布局（`scripts/crossh.iss` 的 `[Files]`）一一对应；只换主程序会让附属二进制和 resources 停在旧版本，所以不再只替换 `crossh.exe`。
+
+替换 updater 自身走同一条替换路径：Windows 允许 rename 正在运行的镜像，所以旧 `crossh-updater.exe` 先被改名为 `.crossh-updater.exe.crossh-old`，新文件落到原路径。运行中的旧备份删不掉（文件锁），会残留到下一次更新开头被清理。
+
+zip 条目分隔符在打包与解压两侧都做了处理：`scripts/package-windows.ps1` 手工写条目统一用 `/`，`extract_zip` 也会把反斜杠归一化后再做安全校验，避免 Windows 打包工具（Windows PowerShell 5.1 的 `Compress-Archive`、.NET `ZipFile.CreateFromDirectory`）产出的 zip 被当成路径穿越拒绝。详见 `docs/engineering-notes/windows-zip-backslash-separators.md`。
 
 Inno Setup 安装程序（`scripts/crossh.iss`，见 `scripts/package-windows.ps1`）与 zip 内容一致，仅负责首次安装：默认 per-user 装到 `%LOCALAPPDATA%\Programs\crossh`，免 UAC；安装位置与版本无关，自更新继续走 zip 通道原地替换 exe，不重跑安装程序，不动卸载信息。安装包未做代码签名，SmartScreen 仍会提示。
 

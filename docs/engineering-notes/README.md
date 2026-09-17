@@ -25,3 +25,4 @@
 | 命令面板输入翻倍（`new` 变 `nneeww`）；同一按键被两处监听各插入一次 | `nneeww`, `stop_propagation`, `on_key_down`, 冒泡, 双倍输入, 消费即截断, `handle_command_palette_key` | [GPUI 按键事件双重分发](gpui-key-event-double-dispatch.md) |
 | dev 构建终端字符间距被拉宽；`list("fonts")` 为空、终端回退系统字体 | `fs_embed`, `dev_repo_root`, `list("fonts")`, `load_fonts`, `Lilex`, 字符间距, 拉宽, `CROSSH_ZED_CHECKOUT` | [Zed fs_embed dev 资源误定位](zed-fs-embed-dev-misroot.md) |
 | 状态栏 Git 段整体消失但终端 git 正常；run.log 无 Git 错误 | `Xcode license`, `xcodebuild -license`, `exit 69`, `/usr/bin/git`, CLT shim, Homebrew git, GUI PATH, launchd, 状态栏, `try_git_output`, 静默 None | [macOS GUI 最小 PATH 下 git shim 因 Xcode license 失效](macos-gui-git-shim-xcode-license.md) |
+| Windows 自更新报 `update archive contains an unsafe path: resources\...`；zip 下载校验都通过但解压失败 | `反斜杠`, `Compress-Archive`, `PS 5.1`, `UTF-8 BOM`, `unsafe path`, `zip 分隔符`, `rename 运行中的 exe`, `resources 未更新` | [Windows 打包 zip 的反斜杠条目与自更新失败](windows-zip-backslash-separators.md) |

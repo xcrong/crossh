@@ -293,18 +293,21 @@ fn extract_zip(package: &Path, destination: &Path) -> Result<(), InstallerError>
     let mut extracted = 0u64;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
-        let entry_name = entry.name().to_owned();
-        if entry_name.contains('\\') {
-            return Err(InstallerError::UnsafeArchivePath(entry_name));
-        }
-        let Some(relative) = entry.enclosed_name() else {
-            return Err(InstallerError::UnsafeArchivePath(entry_name));
-        };
-        if !is_safe_relative_path(&relative) {
+        // zip 规范要求分隔符是 '/'，但 Windows 打包工具（Windows PowerShell 5.1
+        // 的 Compress-Archive、.NET ZipFile.CreateFromDirectory）会写 '\'。先归一化
+        // 再做安全校验：'..\..\evil' 归一化后仍会被 is_safe_relative_path 拒绝，
+        // 路径穿越防护不降级。
+        let entry_name = entry.name().replace('\\', "/");
+        // 目录判定必须基于归一化后的名字：Windows 产物写成
+        // "resources\crossh-assets\"，用原始名字判断会被当成普通文件，
+        // 同名目录下后续的条目就再也写不进去。
+        let is_directory = entry_name.ends_with('/');
+        let relative = Path::new(&entry_name);
+        if !is_safe_relative_path(relative) {
             return Err(InstallerError::UnsafeArchivePath(entry_name));
         }
         let path = destination.join(relative);
-        if entry.is_dir() {
+        if is_directory {
             fs::create_dir_all(path)?;
             continue;
         }
@@ -364,12 +367,33 @@ fn install_zip_payload(staging: &Path, target: &Path) -> Result<(), InstallerErr
         let source = find_named_path(staging, "crossh.app")?;
         replace_directory(&source, target)
     } else {
-        let name = target
-            .file_name()
-            .ok_or_else(|| InstallerError::MissingPayload(target.display().to_string()))?;
-        let source = find_named_path(staging, name)?;
-        replace_file(&source, target)
+        replace_payload_directory(staging, target)
     }
+}
+
+/// Windows zip 的顶层结构（`crossh.exe`、`crossh-git.exe`、`crossh-note.exe`、
+/// `crossh-updater.exe`、`resources/`、README、LICENSE）与安装目录一一对应，
+/// 见 `scripts/crossh.iss` 的 `[Files]`。只换主程序会让附属二进制和 resources
+/// 停在旧版本，因此这里把整个顶层载荷合并进安装目录。
+fn replace_payload_directory(staging: &Path, target: &Path) -> Result<(), InstallerError> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| InstallerError::MissingPayload(target.display().to_string()))?;
+    let name = target
+        .file_name()
+        .ok_or_else(|| InstallerError::MissingPayload(target.display().to_string()))?;
+    // 先确认主程序在包里，否则结构异常的载荷会动到安装目录却没人能启动。
+    find_named_path(staging, name)?;
+    for entry in fs::read_dir(staging)? {
+        let entry = entry?;
+        let destination = parent.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            replace_directory(&entry.path(), &destination)?;
+        } else {
+            replace_file(&entry.path(), &destination)?;
+        }
+    }
+    Ok(())
 }
 
 fn install_tar_payload(staging: &Path, target: &Path) -> Result<(), InstallerError> {
@@ -399,25 +423,11 @@ fn find_named_path(root: &Path, name: impl AsRef<Path>) -> Result<PathBuf, Insta
 }
 
 fn replace_file(source: &Path, target: &Path) -> Result<(), InstallerError> {
-    let parent = target
-        .parent()
-        .ok_or_else(|| InstallerError::MissingPayload(target.display().to_string()))?;
-    fs::create_dir_all(parent)?;
-    let replacement = parent.join(format!(
-        ".{}.crossh-new-{}",
-        target
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("app"),
-        std::process::id()
-    ));
-    let backup = parent.join(format!(
-        ".{}.crossh-old",
-        target
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("app")
-    ));
+    let replacement = staging_path(target, "crossh-new")?;
+    let backup = staging_path(target, "crossh-old")?;
+    if let Some(parent) = replacement.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let _ = fs::remove_file(&replacement);
     let _ = fs::remove_file(&backup);
     fs::copy(source, &replacement)?;
@@ -436,12 +446,11 @@ fn replace_file(source: &Path, target: &Path) -> Result<(), InstallerError> {
 }
 
 fn replace_directory(source: &Path, target: &Path) -> Result<(), InstallerError> {
-    let parent = target
-        .parent()
-        .ok_or_else(|| InstallerError::MissingPayload(target.display().to_string()))?;
-    fs::create_dir_all(parent)?;
-    let replacement = parent.join(format!(".crossh-new-{}.app", std::process::id()));
-    let backup = parent.join(".crossh-old.app");
+    let replacement = staging_path(target, "crossh-new")?;
+    let backup = staging_path(target, "crossh-old")?;
+    if let Some(parent) = replacement.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let _ = fs::remove_dir_all(&replacement);
     let _ = fs::remove_dir_all(&backup);
     copy_directory(source, &replacement)?;
@@ -456,6 +465,22 @@ fn replace_directory(source: &Path, target: &Path) -> Result<(), InstallerError>
     }
     let _ = fs::remove_dir_all(backup);
     Ok(())
+}
+
+/// 替换用的临时/备份路径：与目标同目录（同卷 rename 才原子生效），以 `.` 开头
+/// 并带走目标的文件名，避免和安装内容或同时替换的其他目标撞名。
+///
+/// 替换运行中的文件时（Windows 上的 `crossh-updater.exe` 替换自身）旧名可以
+/// rename 但删不掉，备份会残留；下次替换开头的清理会顺手收掉。
+fn staging_path(target: &Path, suffix: &str) -> Result<PathBuf, InstallerError> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| InstallerError::MissingPayload(target.display().to_string()))?;
+    let name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| InstallerError::MissingPayload(target.display().to_string()))?;
+    Ok(parent.join(format!(".{name}.{suffix}")))
 }
 
 fn copy_directory(source: &Path, destination: &Path) -> Result<(), InstallerError> {
@@ -538,12 +563,20 @@ mod tests {
     }
 
     fn create_zip(path: &Path, name: &str, contents: &[u8]) {
+        create_zip_entries(path, &[(name, contents)]);
+    }
+
+    /// 条目名原样写入（`zip` 的写入器不做分隔符归一化），用于构造 Windows
+    /// 打包工具产出的反斜杠条目。
+    fn create_zip_entries(path: &Path, entries: &[(&str, &[u8])]) {
         let file = File::create(path).unwrap();
         let mut archive = zip::ZipWriter::new(file);
-        archive
-            .start_file(name, zip::write::SimpleFileOptions::default())
-            .unwrap();
-        archive.write_all(contents).unwrap();
+        for (name, contents) in entries {
+            archive
+                .start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            archive.write_all(contents).unwrap();
+        }
         archive.finish().unwrap();
     }
 
@@ -647,11 +680,117 @@ mod tests {
         replace_file(&source, &target).unwrap();
         assert_eq!(fs::read(&target).unwrap(), b"new-version");
         assert!(!root.0.join(".crossh.crossh-old").exists());
+        assert!(!root.0.join(".crossh.crossh-new").exists());
+    }
+
+    // ── Windows PowerShell 5.1 的 Compress-Archive 写出反斜杠条目 ────────────
+
+    #[test]
+    fn backslash_zip_entries_extract_into_staging() {
+        let root = TestDir::new("backslash-extract");
+        let package = root.0.join("windows.zip");
+        // 目录条目以 '\' 结尾：既不是合法目录条目，也不是合法文件名。
+        create_zip_entries(
+            &package,
+            &[
+                ("resources\\crossh-assets\\", b""),
+                ("resources\\crossh-assets\\fonts\\lilex.ttf", b"font"),
+                ("crossh.exe", b"app"),
+                ("crossh-updater.exe", b"updater"),
+            ],
+        );
+        let staging = root.0.join("staging");
+        fs::create_dir_all(&staging).unwrap();
+
+        extract_zip(&package, &staging).expect("windows-produced zip must be installable");
+
+        assert_eq!(
+            fs::read(staging.join("resources/crossh-assets/fonts/lilex.ttf")).unwrap(),
+            b"font"
+        );
+        assert_eq!(fs::read(staging.join("crossh.exe")).unwrap(), b"app");
+        assert_eq!(
+            fs::read(staging.join("crossh-updater.exe")).unwrap(),
+            b"updater"
+        );
+    }
+
+    #[test]
+    fn backslash_zip_traversal_is_still_rejected() {
+        let root = TestDir::new("backslash-slip");
+        let package = root.0.join("unsafe.zip");
+        create_zip_entries(&package, &[("..\\escaped", b"bad")]);
+        let staging = root.0.join("staging");
+        fs::create_dir_all(&staging).unwrap();
+
+        assert!(matches!(
+            extract_zip(&package, &staging),
+            Err(InstallerError::UnsafeArchivePath(_))
+        ));
+        assert!(!root.0.join("escaped").exists());
+    }
+
+    #[test]
+    fn windows_zip_payload_replaces_every_top_level_entry() {
+        let root = TestDir::new("payload");
+        let install = root.0.join("install");
+        fs::create_dir_all(install.join("resources")).unwrap();
+        fs::write(install.join("crossh.exe"), b"old-app").unwrap();
+        fs::write(install.join("crossh-git.exe"), b"old-git").unwrap();
+        fs::write(install.join("crossh-updater.exe"), b"old-updater").unwrap();
+        fs::write(install.join("resources/old.svg"), b"old-icon").unwrap();
+
+        let staging = root.0.join("staging");
+        fs::create_dir_all(staging.join("resources")).unwrap();
+        fs::write(staging.join("crossh.exe"), b"new-app").unwrap();
+        fs::write(staging.join("crossh-git.exe"), b"new-git").unwrap();
+        fs::write(staging.join("crossh-updater.exe"), b"new-updater").unwrap();
+        fs::write(staging.join("resources/new.svg"), b"new-icon").unwrap();
+
+        install_zip_payload(&staging, &install.join("crossh.exe")).unwrap();
+
+        assert_eq!(fs::read(install.join("crossh.exe")).unwrap(), b"new-app");
+        assert_eq!(
+            fs::read(install.join("crossh-git.exe")).unwrap(),
+            b"new-git"
+        );
+        assert_eq!(
+            fs::read(install.join("crossh-updater.exe")).unwrap(),
+            b"new-updater"
+        );
+        assert_eq!(
+            fs::read(install.join("resources/new.svg")).unwrap(),
+            b"new-icon"
+        );
         assert!(
-            !root
-                .0
-                .join(format!(".crossh.crossh-new-{}", std::process::id()))
-                .exists()
+            !install.join("resources/old.svg").exists(),
+            "replaced resources must not keep the previous tree"
+        );
+        assert!(!install.join(".resources.crossh-old").exists());
+    }
+
+    #[test]
+    fn windows_zip_payload_without_main_binary_is_rejected() {
+        let root = TestDir::new("payload-missing");
+        let install = root.0.join("install");
+        fs::create_dir_all(&install).unwrap();
+        fs::write(install.join("crossh.exe"), b"old-app").unwrap();
+        let staging = root.0.join("staging");
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("crossh-git.exe"), b"new-git").unwrap();
+
+        assert!(matches!(
+            install_zip_payload(&staging, &install.join("crossh.exe")),
+            Err(InstallerError::MissingPayload(_))
+        ));
+        assert_eq!(
+            fs::read(install.join("crossh.exe")).unwrap(),
+            b"old-app",
+            "a payload without the main binary must leave the install untouched"
+        );
+        assert!(
+            !install.join("crossh-git.exe").exists(),
+            "nothing may be written before the payload is validated"
         );
     }
 }

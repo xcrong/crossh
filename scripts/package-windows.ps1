@@ -1,4 +1,4 @@
-# 打包 Windows 产物：crossh.exe、crossh-git.exe、crossh-note.exe、crossh-updater.exe + README + LICENSE 的 zip，
+﻿# 打包 Windows 产物：crossh.exe、crossh-git.exe、crossh-note.exe、crossh-updater.exe + README + LICENSE 的 zip，
 # 以及同内容的 Inno Setup 安装程序 setup.exe（有 ISCC 时构建，缺失则只出 zip）。
 #
 # 用法:  powershell -File scripts/package-windows.ps1 [-Target <triple>] [-Version <ver>] [-SkipInstaller]
@@ -104,9 +104,28 @@ Copy-Item (Join-Path $BinDir "crossh-updater.exe") $Stage
 Copy-Item "README.md" $Stage
 Copy-Item "LICENSE" $Stage
 
-$Zip = Join-Path "dist" "crossh-$Version-windows-$Arch.zip"
+$Zip = Join-Path (Resolve-Path "dist").Path "crossh-$Version-windows-$Arch.zip"
 if (Test-Path $Zip) { Remove-Item $Zip }
-Compress-Archive -Path (Join-Path $Stage "*") -DestinationPath $Zip
+# zip 规范要求条目分隔符是 '/'，但 Windows PowerShell 5.1 的 Compress-Archive
+# 会写 '\'（.NET ZipFile::CreateFromDirectory 同样如此），而客户端解压会把
+# 反斜杠条目当不安全路径拒绝（见 crates/crossh-update/src/installer.rs）。
+# 这里手工写条目并统一分隔符，PS 5.1 与 PS 7 产出保持一致。
+# 注意：.NET 的 ZipFile 按进程工作目录解析相对路径（PowerShell cmdlet 才按
+# location），所以 $Zip / $Stage 都先解析成绝对路径再交给它。
+Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+$StageFull = (Resolve-Path $Stage).Path
+$Archive = [System.IO.Compression.ZipFile]::Open($Zip, [System.IO.Compression.ZipArchiveMode]::Create)
+try {
+    Get-ChildItem -Path $StageFull -Recurse -File | ForEach-Object {
+        $EntryName = $_.FullName.Substring($StageFull.Length + 1).Replace('\', '/')
+        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+            $Archive, $_.FullName, $EntryName,
+            [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null
+    }
+} finally {
+    $Archive.Dispose()
+}
 
 Write-Host "==> zip done:"
 Write-Host "    $Zip"
