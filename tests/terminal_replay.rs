@@ -1,6 +1,4 @@
 use gpui::{AppContext, Context, IntoElement, Render, TestAppContext, Window, WindowOptions, div};
-#[cfg(windows)]
-use task::Shell;
 use terminal::terminal_settings::{AlternateScroll, CursorShape};
 use terminal::{Modes, Terminal, TerminalBuilder};
 
