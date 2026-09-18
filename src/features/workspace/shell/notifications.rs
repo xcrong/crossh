@@ -10,6 +10,7 @@
 use super::AppShell;
 use crate::features::workspace::registry::SplitSide;
 use crate::features::workspace::view::ActiveView;
+use crossh_terminal_view::TerminalItem as _;
 use gpui::{Context, SystemNotificationResponse};
 
 impl AppShell {
@@ -33,17 +34,15 @@ impl AppShell {
         let mut handled_local = false;
         let mut local_focus = None;
         for (&session_id, session) in &self.workspace.sessions.local_sessions {
-            let handled = session.terminal.update(cx, |terminal, cx| {
-                terminal.handle_system_notification_response(&response, cx)
-            });
+            let handled = session
+                .terminal
+                .handle_system_notification_response(&response, cx);
             let Some(focus) = handled else {
                 continue;
             };
             handled_local = true;
             if focus {
-                session
-                    .terminal
-                    .update(cx, |terminal, _cx| terminal.request_focus());
+                session.terminal.request_focus(cx);
                 local_focus = Some(ActiveView::LocalSession(session_id));
             }
             break;

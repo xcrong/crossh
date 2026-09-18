@@ -15,6 +15,7 @@ use crate::features::workspace::view::{ActiveView, LocalDir};
 use crate::shared::i18n::{self};
 use crossh_core::terminal::path_display_name;
 use crossh_terminal::ConnState;
+use crossh_terminal_view::TerminalItem as _;
 use crossh_ui::context_menu::ShellMenuAction;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::context_menu::{MenuEntry, MenuItem};
@@ -410,7 +411,7 @@ fn local_dir_state(shell: &AppShell, dir: &LocalDir, cx: &Context<AppShell>) -> 
     dir.sessions
         .iter()
         .filter_map(|id| shell.workspace.sessions.local_sessions.get(id))
-        .map(|session| session.terminal.read(cx).state.clone())
+        .map(|session| session.terminal.state(cx))
         .reduce(preferred_state)
 }
 

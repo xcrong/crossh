@@ -5,10 +5,12 @@
 //! application injects the localization resolver at boot
 //! ([`set_text_resolver`]).
 
+pub mod item;
 mod text;
 pub mod view;
 
 pub use crossh_terminal::{ConnState, TerminalEvent};
+pub use item::TerminalItem;
 pub use text::set_text_resolver;
 pub use view::TerminalView;
 

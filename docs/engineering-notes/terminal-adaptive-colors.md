@@ -39,7 +39,7 @@
 
 - `crates/crossh-theme/src/lib.rs`:`canvas()` 等暗面 token(当前 `canvas = 0x23272e`,对齐 Zed)
 - `src/infrastructure/theme.rs`:`terminal_background = canvas`、`terminal_ansi_background = canvas`(OSC 11 应答来源)
-- `src/features/terminal/zed_view/terminal_element.rs`:真彩 `Color::Spec` → `rgba_color`;dim 用 `fg.a *= 0.7`(Crossh 特色,参考终端用亮度或调色板 dim 色)
+- `crates/crossh-terminal-view/src/zed_view/terminal_element_layout.rs`:`convert_color`,真彩 `Color::Spec` → `rgba_color`;dim 用 `fg.a *= 0.7`(Crossh 特色,参考终端用亮度或调色板 dim 色)
 
 ## 关键词
 

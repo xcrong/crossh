@@ -43,7 +43,7 @@ use crossh_core::git_remote::fetch_all_remotes;
 use crossh_core::git_status::inspect;
 use crossh_core::system_stats::{SystemMonitorState, SystemSampler};
 use crossh_terminal::TerminalSettings;
-use crossh_terminal_view::{TerminalEvent, TerminalView};
+use crossh_terminal_view::{TerminalEvent, TerminalItem as _, TerminalView};
 use crossh_ui::context_menu::ShellMenuAction;
 use crossh_ui::theme;
 use crossh_ui_component::context_menu::{ContextMenuState, MenuEntry, render_context_menu};
@@ -788,7 +788,7 @@ impl AppShell {
             .local_sessions
             .iter_mut()
             .map(|(&session_id, session)| {
-                if let Some(cwd) = session.terminal.read(cx).cwd.as_deref()
+                if let Some(cwd) = session.terminal.cwd(cx)
                     && let Some(cwd) = normalize_local_cwd(PathBuf::from(cwd))
                 {
                     session.cwd = cwd;

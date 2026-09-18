@@ -125,7 +125,7 @@ impl AppShell {
     fn quit_risks(&self, cx: &Context<Self>) -> QuitRiskSummary {
         let mut risks = QuitRiskSummary::default();
         for session in self.workspace.sessions.local_sessions.values() {
-            if session.terminal.read(cx).is_command_running(cx) {
+            if session.terminal.is_command_running(cx) {
                 risks.running_commands += 1;
             }
         }
@@ -148,9 +148,7 @@ impl AppShell {
             .collect::<Vec<_>>();
 
         for terminal in terminals {
-            terminal.update(cx, |terminal, terminal_cx| {
-                terminal.request_close(terminal_cx)
-            });
+            terminal.request_close(cx);
         }
         cx.notify();
     }

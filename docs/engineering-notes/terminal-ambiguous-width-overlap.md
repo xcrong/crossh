@@ -37,13 +37,13 @@
    CTFontGetGlyphsForCharacters(base, [0x2461], …) // → glyph 0，确认缺字
    // 级联后 PingFang 的 advance = 14px (1.0 em)，cell_width = advance('m' in Lilex) = 8.4px (0.6 em)
    ```
-2. 纯测试：`ambiguous_shrink_factor(shaped=14, cell=8.4) == Some(0.6)` 判定超宽，`can_append` 对不同 `font_size` 返回 `false`，超宽 `cell_count=2` 且 `extra_offset` 右移（见 `terminal_element_tests.rs` 的 `spec_20260826_*`）。
+2. 纯逻辑：`ambiguous_shrink_factor(shaped=14, cell=8.4) == Some(0.6)` 判定超宽，`can_append` 对不同 `font_size` 返回 `false`，超宽 `cell_count=2` 且 `extra_offset` 右移。
 3. 人工视觉：终端执行 `echo '锚点②③ 输出与文档记录一致。'` 与 `echo "②③"`，确认 `②③` 保持原字号、占两格、与后续字符不叠印（首版缩字会小一号，此版已修复）。
 
 ## 涉及代码
 
-- `src/features/terminal/zed_view/terminal_element.rs`：`layout_grid`（`cell_width`/`rem_size` 参数、`shaped_cache`、`ambiguous_shrink_factor` 判定、`extra_offset` + `cell_count=2` 占两格）、`BatchedTextRun::can_append`（新增 `font_size` 比较）、`::paint` 保持 `Some(cell_width)` 不变
-- `src/features/terminal/zed_view/terminal_element_tests.rs`：`spec_20260826_*` 5 项
+- `crates/crossh-terminal-view/src/zed_view/terminal_element_layout.rs`：`layout_grid`（`cell_width`/`rem_size` 参数、`shaped_cache`、`ambiguous_shrink_factor` 判定、`extra_offset` + `cell_count=2` 占两格）
+- `crates/crossh-terminal-view/src/zed_view/terminal_element.rs`：`BatchedTextRun::can_append`（新增 `font_size` 比较）、`::paint` 保持 `Some(cell_width)` 不变
 - `Cargo.toml`：`unicode-width = "0.2"`（网格宽度判定复用同一语义）
 
 ## 关键词

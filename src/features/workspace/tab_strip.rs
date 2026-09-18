@@ -18,6 +18,7 @@ use crate::features::workspace::shell::AppShell;
 use crate::features::workspace::status::local_tab_dot_color;
 use crate::features::workspace::view::{ActiveView, LocalSessionId};
 use crate::shared::i18n;
+use crossh_terminal_view::TerminalItem as _;
 use crossh_ui::context_menu::ShellMenuAction;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::context_menu::{MenuEntry, MenuItem};
@@ -234,13 +235,13 @@ pub(super) fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> 
                 let Some(session) = shell.workspace.sessions.local_sessions.get(&session_id) else {
                     continue;
                 };
-                let state = session.terminal.read(cx).state.clone();
-                let command_running = session.terminal.read(cx).is_command_running(cx);
+                let state = session.terminal.state(cx);
+                let command_running = session.terminal.is_command_running(cx);
                 let fallback = format!("ses{}", idx + 1);
                 let label = session
                     .custom_name
                     .clone()
-                    .unwrap_or_else(|| session.terminal.read(cx).tab_title(&fallback));
+                    .unwrap_or_else(|| session.terminal.tab_title(cx, &fallback));
                 let cwd = session.cwd.clone();
                 let default_command = session.default_command.clone();
                 let has_default_command = default_command.is_some();
@@ -308,16 +309,16 @@ pub(super) fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> 
                     .sessions
                     .local_sessions
                     .get(&session_id)
-                    .map(|session| session.terminal.read(cx).state.clone());
+                    .map(|session| session.terminal.state(cx));
                 let command_running = shell
                     .workspace
                     .sessions
                     .local_sessions
                     .get(&session_id)
-                    .is_some_and(|session| session.terminal.read(cx).is_command_running(cx));
+                    .is_some_and(|session| session.terminal.is_command_running(cx));
                 let fallback = format!("ses{}", idx + 1);
                 let label = match shell.workspace.sessions.local_sessions.get(&session_id) {
-                    Some(session) => session.terminal.read(cx).tab_title(&fallback),
+                    Some(session) => session.terminal.tab_title(cx, &fallback),
                     None => fallback,
                 };
                 let cwd = shell

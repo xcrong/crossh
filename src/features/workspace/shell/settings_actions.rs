@@ -7,6 +7,7 @@ use crate::shared::i18n::LanguagePreference;
 use crossh_terminal::{
     MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK, TerminalSettings,
 };
+use crossh_terminal_view::TerminalItem as _;
 
 use super::AppShell;
 
@@ -41,16 +42,10 @@ impl AppShell {
             return;
         };
         let terminal = session.terminal.clone();
-        let new_value = {
-            let mut next = false;
-            terminal.update(cx, |view, cx| {
-                next = !view.show_timestamps();
-                view.set_show_timestamps(next, cx);
-            });
-            next
-        };
-        if self.terminal_settings.show_timestamps != new_value {
-            self.terminal_settings.show_timestamps = new_value;
+        let next = !terminal.show_timestamps(cx);
+        terminal.set_show_timestamps(next, cx);
+        if self.terminal_settings.show_timestamps != next {
+            self.terminal_settings.show_timestamps = next;
             self.persist_settings();
         }
         cx.notify();
@@ -122,9 +117,7 @@ impl AppShell {
         crossh_terminal_view::TerminalView::apply_zed_settings(&settings, cx);
 
         for session in self.workspace.sessions.local_sessions.values() {
-            session.terminal.update(cx, |terminal, cx| {
-                terminal.apply_settings(settings.clone(), cx)
-            });
+            session.terminal.apply_settings(settings.clone(), cx);
         }
 
         self.terminal_settings = settings;

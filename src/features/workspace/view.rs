@@ -20,6 +20,7 @@ use crate::features::workspace::tab_strip;
 use crate::features::workspace::toaster::{ToastNotice, ToastTone};
 use crate::shared::i18n;
 use crossh_core::git_status::GitStatus;
+use crossh_terminal_view::TerminalItem as _;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
     BadgeTone, Button, ButtonSize, ButtonVariant, ModalDialog, ModalField, SharedTextState,
@@ -823,7 +824,7 @@ pub(crate) fn render_workspace_status_bar(
                     .sessions
                     .local_sessions
                     .get(&session_id)
-                    .map(|session| session.terminal.read(cx).show_timestamps()),
+                    .map(|session| session.terminal.show_timestamps(cx)),
             })
             .unwrap_or(shell.terminal_settings.show_timestamps);
         left = left.child(render_status_bar_toggle(

@@ -4,7 +4,8 @@
 //! is the sole writer of `GlobalTheme` after `theme::init(JustBase)`.
 //! ANSI 16 colors remain at Zed One Dark base; Crossh's canvas (#23272e) is
 //! the terminal background and `minimum_contrast 45` via APCA guarantees
-//! visibility (see `terminal_element::cell_style`). Do not read
+//! visibility (see `cell_style` in
+//! `crates/crossh-terminal-view/src/zed_view/terminal_element_layout.rs`). Do not read
 //! `ThemeSettings`/`SettingsStore` at runtime.
 
 use std::sync::Arc;

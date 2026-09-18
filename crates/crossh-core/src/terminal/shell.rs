@@ -596,7 +596,7 @@ fn remote_fish_startup_script() -> String {
 
 pub fn shell_quote(value: &str) -> String {
     // 委托给 `shlex::try_quote` 以覆盖空串、换行与单引号等边界用例，
-    // 与 `src/features/terminal/view.rs:584` 的路径粘贴保持同一套引号语义。
+    // 与 `crates/crossh-terminal-view/src/view.rs:542` 的路径粘贴保持同一套引号语义。
     // `shlex` 对 NUL 返回 `Err`，但此处输入均为临时目录/环境变量路径，
     // 不会出现 NUL；若出现则回退到手写单引号转义以保持旧行为。
     shlex::try_quote(value)

@@ -5,6 +5,7 @@ use gpui::{ClipboardItem, Context, KeyDownEvent, Window};
 
 use crate::features::workspace::view::ActiveView;
 use crate::shared::text_editing::{EditingKeystroke, handle_text_editing_key};
+use crossh_terminal_view::TerminalItem as _;
 
 use super::AppShell;
 
@@ -54,9 +55,7 @@ impl AppShell {
         match view {
             ActiveView::LocalSession(session_id) => {
                 if let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) {
-                    session.terminal.update(cx, |terminal, term_cx| {
-                        terminal.run_command_without_focus(&text, term_cx)
-                    });
+                    session.terminal.run_command_without_focus(&text, cx);
                 }
             }
         }

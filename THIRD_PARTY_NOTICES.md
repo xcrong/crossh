@@ -52,8 +52,11 @@ Feather MIT notice documented in Lucide's official `LICENSE` file.
   revision. It owns process I/O, emulation, resize, and terminal scrollback.
   GPL-3.0-or-later.
 - **terminal_view source fork** — Crossh's
-  `src/features/terminal/zed_view/terminal_element.rs` is derived from Zed's
-  `crates/terminal_view/src/terminal_element.rs`; its local APCA helper is
+  `crates/crossh-terminal-view/src/zed_view/` is derived from Zed's
+  `crates/terminal_view/src/terminal_element.rs`; that file is kept as a
+  positional split into `terminal_element.rs`, `terminal_element_layout.rs`,
+  `terminal_element_paint.rs`, and `terminal_element_input.rs` (see the split
+  map in the parent file's header). Its local APCA helper is
   derived from Zed's `crates/ui/src/utils/apca_contrast.rs`. Both are
   GPL-3.0-or-later and retain the pinned revision in their source headers. The fork keeps
   GPUI painting, keyboard/mouse input, selection, IME, and terminal scrolling,

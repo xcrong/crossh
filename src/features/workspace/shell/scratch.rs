@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use gpui::{Context, Window};
 
 use super::AppShell;
+use crossh_terminal_view::TerminalItem as _;
 use crossh_terminal_view::TerminalView as TerminalViewEntity;
 
 pub(crate) const SCRATCH_DEFAULT_HEIGHT: f32 = 420.0;
@@ -24,7 +25,7 @@ impl AppShell {
         self.ensure_scratch_terminal(cx);
         self.scratch_visible = true;
         if let Some(terminal) = &self.scratch_terminal {
-            terminal.update(cx, |term, _| term.request_focus());
+            terminal.request_focus(cx);
         }
         cx.notify();
     }

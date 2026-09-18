@@ -5,13 +5,15 @@
 //!
 //! Positional split of the original 2201-line `terminal_element.rs` (same Zed
 //! revision); nothing was renamed, reordered, or rewritten. Split map:
-//!   - `terminal_element.rs`        shared data structures, `TerminalElement`
-//!                                  itself, trait impls, and the constructor.
-//!   - `terminal_element_layout.rs` `layout_grid`, `cell_style`, block-element
-//!                                  and cell helpers, color conversion.
-//!   - `terminal_element_paint.rs`  the `Element` impl, `HighlightedRange`,
-//!                                  `cursor_position`, timestamp gutter.
-//!   - `terminal_element_input.rs`  mouse listeners and the IME input handler.
+//!
+//! - `terminal_element.rs` - shared data structures, `TerminalElement` itself,
+//!   trait impls, and the constructor.
+//! - `terminal_element_layout.rs` - `layout_grid`, `cell_style`, block-element
+//!   and cell helpers, color conversion.
+//! - `terminal_element_paint.rs` - the `Element` impl, `HighlightedRange`,
+//!   `cursor_position`, timestamp gutter.
+//! - `terminal_element_input.rs` - mouse listeners and the IME input handler.
+//!
 //! Child modules reach the private items declared here through Rust's
 //! descendant-visibility rule; re-evaluate it before renaming items or moving
 //! any of them across a crate boundary.

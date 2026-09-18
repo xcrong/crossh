@@ -295,7 +295,7 @@ impl AppShell {
     ) -> Option<TabCloseRisk> {
         let session = self.workspace.sessions.local_sessions.get(&session_id)?;
         Some(TabCloseRisk {
-            command_running: session.terminal.read(cx).is_command_running(cx),
+            command_running: session.terminal.is_command_running(cx),
             ..TabCloseRisk::default()
         })
     }
@@ -720,12 +720,10 @@ impl AppShell {
         if session.pin_id.is_none() {
             return;
         }
-        if session.terminal.read(cx).is_command_running(cx) {
+        if session.terminal.is_command_running(cx) {
             return;
         }
-        session.terminal.update(cx, |terminal, terminal_cx| {
-            terminal.run_command(&cmd, terminal_cx)
-        });
+        session.terminal.run_command(&cmd, cx);
         cx.notify();
     }
 
@@ -805,8 +803,8 @@ impl AppShell {
                                         .get(&session_id)
                                         .is_some_and(|s| {
                                             s.terminal.entity_id() == terminal.entity_id()
-                                                && s.terminal.read(cx).state == ConnState::Connected
-                                                && !s.terminal.read(cx).is_command_running(cx)
+                                                && s.terminal.state(cx) == ConnState::Connected
+                                                && !s.terminal.is_command_running(cx)
                                         })
                                 })
                                 .unwrap_or(false);
@@ -815,8 +813,7 @@ impl AppShell {
                                     if let Some(s) =
                                         this.workspace.sessions.local_sessions.get(&session_id)
                                     {
-                                        s.terminal
-                                            .update(cx, |t, term_cx| t.run_command(&cmd, term_cx));
+                                        s.terminal.run_command(&cmd, cx);
                                     }
                                 });
                                 break;
@@ -890,9 +887,7 @@ impl AppShell {
     pub(crate) fn refocus_active_terminal(&self, cx: &mut Context<Self>) {
         if let Some(ActiveView::LocalSession(session_id)) = self.workspace.active_view {
             if let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) {
-                session.terminal.update(cx, |terminal, _| {
-                    terminal.request_focus();
-                });
+                session.terminal.request_focus(cx);
             }
         } else if let Some(session_id) = self
             .workspace
@@ -903,9 +898,7 @@ impl AppShell {
             .cloned()
             && let Some(session) = self.workspace.sessions.local_sessions.get(&session_id)
         {
-            session.terminal.update(cx, |terminal, _| {
-                terminal.request_focus();
-            });
+            session.terminal.request_focus(cx);
         }
     }
 }
