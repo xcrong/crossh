@@ -1,21 +1,28 @@
 //! Terminal session and terminal emulation feature.
+//!
+//! Model-level settings and event contracts live in `crossh-terminal`; this
+//! crate owns the GPUI view, its keymap, and the host wiring. The host
+//! application injects the localization resolver at boot
+//! ([`set_text_resolver`]).
+
+mod text;
+pub mod view;
+
+pub use crossh_terminal::{ConnState, TerminalEvent};
+pub use text::set_text_resolver;
+pub use view::TerminalView;
 
 use gpui::{App, KeyBinding};
 use terminal as zed_terminal;
 
-use crate::features::terminal::view::{SendKeystroke, SendText};
-
-pub(crate) mod view;
-
-pub(crate) use crossh_terminal::{ConnState, TerminalEvent};
-pub(crate) use view::TerminalView;
+use crate::view::{SendKeystroke, SendText};
 
 /// Install the terminal-only portion of Zed's default keymap.
 ///
 /// The full Zed keymap belongs to the editor application and is intentionally
 /// not a Crossh dependency. These bindings cover actions implemented by the
 /// local terminal-view host and are scoped to the `Terminal` key context.
-pub(crate) fn init(cx: &mut App) {
+pub fn init(cx: &mut App) {
     #[cfg(target_os = "macos")]
     cx.bind_keys([
         KeyBinding::new("cmd-c", zed_terminal::Copy, Some("Terminal")),

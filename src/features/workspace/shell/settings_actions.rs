@@ -119,7 +119,7 @@ impl AppShell {
             return;
         }
 
-        crate::features::terminal::TerminalView::apply_zed_settings(&settings, cx);
+        crossh_terminal_view::TerminalView::apply_zed_settings(&settings, cx);
 
         for session in self.workspace.sessions.local_sessions.values() {
             session.terminal.update(cx, |terminal, cx| {

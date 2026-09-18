@@ -8,7 +8,7 @@ failure=0
 
 # Keep exceptions explicit and local to this check. These files are maintained
 # as upstream-derived code and remain unsplit to preserve diffability.
-size_whitelist='src/features/terminal/zed_view/terminal_element.rs
+size_whitelist='crates/crossh-terminal-view/src/zed_view/terminal_element.rs
 crates/terminal/src/terminal.rs
 crates/terminal/src/alacritty/hyperlinks.rs
 crates/crossh-editor/src/input/base/state.rs

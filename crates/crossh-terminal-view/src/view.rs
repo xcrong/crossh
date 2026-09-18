@@ -21,7 +21,7 @@ use terminal as zed_terminal;
 use terminal::terminal_settings::CursorShape;
 use theme::ActiveTheme;
 
-use crate::shared::i18n;
+use crate::text;
 use crossh_core::terminal::{
     LocalShellEnvironment, ShellCommandMarker, ShellPromptMarker, command_marker_from_title,
     local_terminal_tab_title, local_terminal_title, prompt_marker_from_title,
@@ -736,12 +736,12 @@ impl TerminalView {
         cx.show_system_notification(SystemNotification {
             tag: terminal_notification_tag(cx.entity_id()).into(),
             title: self.tab_title("Terminal").into(),
-            body: i18n::text("terminal.bell").into(),
+            body: text::text("terminal.bell").into(),
             actions: Vec::new(),
         });
     }
 
-    pub(crate) fn request_focus(&mut self) {
+    pub fn request_focus(&mut self) {
         self.focused_once = false;
     }
 
@@ -753,7 +753,7 @@ impl TerminalView {
             .update(cx, |terminal, _| terminal.input(bytes));
     }
 
-    pub(crate) fn run_command(&mut self, command: &str, cx: &mut Context<Self>) {
+    pub fn run_command(&mut self, command: &str, cx: &mut Context<Self>) {
         let command = command.trim();
         if command.is_empty() {
             return;
@@ -763,7 +763,7 @@ impl TerminalView {
         self.request_focus();
     }
 
-    pub(crate) fn run_command_without_focus(&mut self, command: &str, cx: &mut Context<Self>) {
+    pub fn run_command_without_focus(&mut self, command: &str, cx: &mut Context<Self>) {
         let command = command.trim();
         if command.is_empty() {
             return;
@@ -773,7 +773,7 @@ impl TerminalView {
         // 不请求焦点，保持独立输入栏持有焦点
     }
 
-    pub(crate) fn request_close(&mut self, cx: &mut Context<Self>) {
+    pub fn request_close(&mut self, cx: &mut Context<Self>) {
         if self.state == ConnState::Closed {
             return;
         }
@@ -801,18 +801,18 @@ impl TerminalView {
         (self.show_timestamps, timestamps)
     }
 
-    pub(crate) fn show_timestamps(&self) -> bool {
+    pub fn show_timestamps(&self) -> bool {
         self.show_timestamps
     }
 
-    pub(crate) fn set_show_timestamps(&mut self, show: bool, cx: &mut Context<Self>) {
+    pub fn set_show_timestamps(&mut self, show: bool, cx: &mut Context<Self>) {
         if self.show_timestamps != show {
             self.show_timestamps = show;
             cx.notify();
         }
     }
 
-    pub(crate) fn apply_settings(&mut self, settings: TerminalSettings, cx: &mut Context<Self>) {
+    pub fn apply_settings(&mut self, settings: TerminalSettings, cx: &mut Context<Self>) {
         // `show_timestamps` is per-terminal (per `TerminalView`) since split panes must be
         // independently toggleable. Global `TerminalSettings` only provides the default for
         // new terminals and for font/scrollback propagated via Zed's global settings.
@@ -854,7 +854,7 @@ impl TerminalView {
         cx.notify();
     }
 
-    pub(crate) fn is_command_running(&self, cx: &App) -> bool {
+    pub fn is_command_running(&self, cx: &App) -> bool {
         self.state == ConnState::Connected
             && self
                 .zed_terminal
@@ -886,7 +886,7 @@ impl TerminalView {
         fallback.to_owned()
     }
 
-    pub(crate) fn handle_system_notification_response(
+    pub fn handle_system_notification_response(
         &mut self,
         response: &SystemNotificationResponse,
         cx: &mut Context<Self>,
@@ -921,7 +921,7 @@ impl Render for TerminalView {
             let message = self
                 .builder_error
                 .clone()
-                .unwrap_or_else(|| i18n::text("terminal.connecting"));
+                .unwrap_or_else(|| text::text("terminal.connecting"));
             return status_view(&message, &self.focus);
         }
 
@@ -996,7 +996,7 @@ impl Render for TerminalView {
 
         if let Some(message) = match &self.state {
             ConnState::Error(message) => Some(message.clone()),
-            ConnState::Closed => Some(i18n::text("terminal.closed")),
+            ConnState::Closed => Some(text::text("terminal.closed")),
             ConnState::Connecting | ConnState::Connected => None,
         } {
             root = root.child(

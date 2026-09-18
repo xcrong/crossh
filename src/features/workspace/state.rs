@@ -9,9 +9,9 @@ use std::path::PathBuf;
 
 use gpui::Entity;
 
-use crate::features::terminal::TerminalView;
 use crossh_core::git_status::GitStatus;
 use crossh_terminal::ConnState;
+use crossh_terminal_view::TerminalView;
 
 pub type LocalSessionId = u64;
 

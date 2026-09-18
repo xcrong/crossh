@@ -157,7 +157,8 @@ fn main() {
         infrastructure::theme::install_crossh_theme(cx);
         crossh_ui::assets::load_fonts(cx).expect("Crossh fonts should load");
         features::settings::init();
-        features::terminal::init(cx);
+        crossh_terminal_view::set_text_resolver(crate::shared::i18n::text);
+        crossh_terminal_view::init(cx);
         features::workspace::shell::init(cx);
         cx.bind_keys([
             gpui::KeyBinding::new("cmd-`", ToggleScratchTerminal, Some("AppShell")),

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use gpui::{Context, Window};
 
 use super::AppShell;
-use crate::features::terminal::view::TerminalView as TerminalViewEntity;
+use crossh_terminal_view::TerminalView as TerminalViewEntity;
 
 pub(crate) const SCRATCH_DEFAULT_HEIGHT: f32 = 420.0;
 pub(crate) const SCRATCH_MIN_HEIGHT: f32 = 200.0;
@@ -45,7 +45,7 @@ impl AppShell {
         let cwd = self.scratch_initial_cwd(cx);
         let terminal = TerminalViewEntity::from_local_zed(cwd, self.terminal_settings.clone(), cx);
         let subscription = cx.subscribe(&terminal, |this, _terminal, event, cx| {
-            if matches!(event, crate::features::terminal::TerminalEvent::Closed) {
+            if matches!(event, crossh_terminal_view::TerminalEvent::Closed) {
                 this.scratch_terminal = None;
                 this.scratch_subscription = None;
                 this.scratch_visible = false;

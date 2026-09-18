@@ -23,7 +23,6 @@ use gpui::{
 
 use crate::features::editor_launcher;
 use crate::features::settings::{self, SettingsSnapshot};
-use crate::features::terminal::{TerminalEvent, TerminalView};
 use crate::features::updates::{UpdateController, UpdateSettings};
 use crate::features::workspace::command_palette::CommandPaletteState;
 use crate::features::workspace::modal_editor::{DefaultCommandEditor, RenameEditor};
@@ -44,6 +43,7 @@ use crossh_core::git_remote::fetch_all_remotes;
 use crossh_core::git_status::inspect;
 use crossh_core::system_stats::{SystemMonitorState, SystemSampler};
 use crossh_terminal::TerminalSettings;
+use crossh_terminal_view::{TerminalEvent, TerminalView};
 use crossh_ui::context_menu::ShellMenuAction;
 use crossh_ui::theme;
 use crossh_ui_component::context_menu::{ContextMenuState, MenuEntry, render_context_menu};

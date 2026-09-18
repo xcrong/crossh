@@ -5,7 +5,7 @@
 
 use gpui::Rgba;
 
-use crate::features::terminal::ConnState;
+use crossh_terminal::ConnState;
 use crossh_ui::theme;
 
 /// 连接状态的状态点颜色（侧栏主机列表与远程标签条共用）。
@@ -31,7 +31,7 @@ pub(crate) fn local_tab_dot_color(state: &Option<ConnState>, command_running: bo
 mod tests {
     use super::{conn_state_dot_color, local_tab_dot_color};
 
-    use crate::features::terminal::ConnState;
+    use crossh_terminal::ConnState;
     use crossh_ui::theme;
 
     #[test]

@@ -1505,6 +1505,7 @@ dependencies = [
  "crossh-editor",
  "crossh-note",
  "crossh-terminal",
+ "crossh-terminal-view",
  "crossh-ui",
  "crossh-ui-component",
  "crossh-update",
@@ -1611,6 +1612,27 @@ dependencies = [
  "chrono",
  "crossh-core",
  "serde",
+]
+
+[[package]]
+name = "crossh-terminal-view"
+version = "0.35.1"
+dependencies = [
+ "crossh-core",
+ "crossh-terminal",
+ "crossh-ui",
+ "gpui",
+ "gpui_platform",
+ "itertools 0.15.0",
+ "log",
+ "schemars",
+ "serde",
+ "shlex 2.0.1",
+ "task",
+ "terminal",
+ "theme",
+ "unicode-width 0.2.2",
+ "util",
 ]
 
 [[package]]
