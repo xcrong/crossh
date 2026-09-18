@@ -25,8 +25,8 @@ anyhow = "1"
 aho-corasick = "1.1.3"
 chrono = "0.4.38"
 futures = "0.3"
-gpui = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557" }
-gpui_macros = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "74646bf29c1a3d1cdb178930d810ecc5a8a6bece" }
+gpui_macros = { git = "https://github.com/zed-industries/zed", rev = "74646bf29c1a3d1cdb178930d810ecc5a8a6bece" }
 instant = { version = "0.1", features = ["wasm-bindgen"] }
 lsp-types = { version = "0.97.0", features = ["proposed"] }
 markdown = { version = "1.0.0", features = ["serde"] }
@@ -45,7 +45,7 @@ web-time = "1"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 smol = "2"
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557", features = ["font-kit", "wayland", "x11"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "74646bf29c1a3d1cdb178930d810ecc5a8a6bece", features = ["font-kit", "wayland", "x11"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 async-channel = "2.3.1"
@@ -57,9 +57,9 @@ objc2-app-kit = { version = "0.3", features = ["NSView", "NSWindow"] }
 objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString"] }
 
 [dev-dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557", features = ["test-support"] }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "74646bf29c1a3d1cdb178930d810ecc5a8a6bece", features = ["test-support"] }
 indoc = "2"
-reqwest_client = { git = "https://github.com/zed-industries/zed", rev = "251854020a9dbea1a388bf392c9bd04fd136a557" }
+reqwest_client = { git = "https://github.com/zed-industries/zed", rev = "74646bf29c1a3d1cdb178930d810ecc5a8a6bece" }
 
 [lints]
 clippy.all = "warn"

@@ -5,4 +5,8 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 
 [dependencies]
-rust-embed = "8.12.0"
+# Pin to 8.11 like Zed's own lock: 8.12 adds `RustEmbed::compressed`, which Zed's
+# `util::fs_embed!` dev arm does not implement, so 8.12 breaks the Zed `assets`
+# crate in debug builds once Zed enables rust-embed's `compression` feature.
+# Lift this pin once Zed implements `compressed`.
+rust-embed = "=8.11.0"
