@@ -175,6 +175,7 @@ define_icons! {
     ChevronRight => "icons/chevron-right.svg",
     Clock => "icons/clock.svg",
     Columns2 => "icons/columns-2.svg",
+    Copy => "icons/copy.svg",
     Rows2 => "icons/rows-2.svg",
     Download => "icons/download.svg",
     FileText => "icons/file-text.svg",

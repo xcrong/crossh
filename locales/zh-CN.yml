@@ -190,6 +190,7 @@ git:
   no_remotes: 暂无远端
   current_branch: 当前
   switch_branch: 切换
+  copy_branch_name: 复制分支名
   no_upstream: 未配置上游
   upstream_gone: 上游已删除
   commit_detail: 提交详情

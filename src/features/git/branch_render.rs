@@ -1,9 +1,11 @@
 //! Git Branch 页面渲染。
 
+use std::time::Duration;
+
 use gpui::{
-    AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ListSizingBehavior,
-    ParentElement, SharedString, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder,
-    px, uniform_list,
+    AnyElement, ClipboardItem, Context, FontWeight, InteractiveElement, IntoElement,
+    ListSizingBehavior, ParentElement, SharedString, StatefulInteractiveElement, Styled, div,
+    prelude::FluentBuilder, px, uniform_list,
 };
 
 use crate::shared::i18n;
@@ -18,6 +20,9 @@ use super::branch::BranchListState;
 use super::session::OperationState;
 use super::window::GitWindow;
 use super::{GIT_BRANCH_CONTEXT, MoveBranchDown, MoveBranchUp, SwitchSelectedBranch};
+
+/// 复制成功后图标保持反馈状态的时长。
+const COPY_FEEDBACK_DURATION: Duration = Duration::from_secs(1);
 
 impl GitWindow {
     pub(super) fn render_branch_list(
@@ -107,8 +112,10 @@ impl GitWindow {
     fn render_branch_row(&self, branch: &BranchSummary, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.session.branch.selected.as_deref() == Some(branch.name.as_str());
         let current = branch.current;
+        let copied = self.copied_branch.as_deref() == Some(branch.name.as_str());
         let name = branch.name.clone();
         let switch_name = branch.name.clone();
+        let copy_name = branch.name.clone();
         let tracking = branch
             .upstream
             .clone()
@@ -123,7 +130,7 @@ impl GitWindow {
         let mut row = selectable_row(
             SharedString::from(format!("git-branch-{}", branch.name)),
             selected,
-            px(60.),
+            px(72.),
         )
         .px_3()
         .py_2()
@@ -141,11 +148,42 @@ impl GitWindow {
                     div()
                         .min_w_0()
                         .flex_1()
-                        .truncate()
-                        .text_sm()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme::text())
-                        .child(SharedString::from(branch.name.clone())),
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme::text())
+                                .child(SharedString::from(branch.name.clone())),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!(
+                                "git-copy-branch-{}",
+                                branch.name
+                            )))
+                            .size(ButtonSize::Icon(px(22.)))
+                            .variant(ButtonVariant::Ghost)
+                            .tooltip(i18n::text("git.copy_branch_name"))
+                            .icon(if copied {
+                                icons::icon(icons::IconName::Check, 12.).text_color(theme::accent())
+                            } else {
+                                icons::icon(icons::IconName::Copy, 12.)
+                                    .text_color(theme::muted_text())
+                            })
+                            .on_click(cx.listener(
+                                move |this, _event, _window, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        copy_name.clone(),
+                                    ));
+                                    this.mark_branch_copied(copy_name.clone(), cx);
+                                    cx.stop_propagation();
+                                },
+                            )),
+                        ),
                 )
                 .when(current, |line| {
                     line.child(
@@ -212,5 +250,22 @@ impl GitWindow {
             row = row.cursor_default();
         }
         row.into_any_element()
+    }
+
+    /// 记录复制反馈：图标短暂变为对勾，超时后自动还原。
+    fn mark_branch_copied(&mut self, branch: String, cx: &mut Context<Self>) {
+        self.copied_branch = Some(branch.clone());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(COPY_FEEDBACK_DURATION).await;
+            this.update(cx, |this, cx| {
+                if this.copied_branch.as_deref() == Some(branch.as_str()) {
+                    this.copied_branch = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 }

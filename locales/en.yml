@@ -190,6 +190,7 @@ git:
   no_remotes: No remotes
   current_branch: Current
   switch_branch: Switch
+  copy_branch_name: Copy branch name
   no_upstream: No upstream
   upstream_gone: Upstream gone
   commit_detail: Commit details
