@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use gpui::{Context, Window};
 
-use crate::features::workspace::registry::SplitSide;
+use crate::features::workspace::registry::{SplitFocusDirection, SplitSide};
 
 use super::tabs::{SplitPaneRetirement, TabCloseRisk, split_pane_retirement};
 
@@ -228,6 +228,71 @@ impl AppShell {
             self.refocus_active_terminal(cx);
             cx.notify();
         }
+    }
+
+    pub(crate) fn move_split_focus(
+        &mut self,
+        direction: SplitFocusDirection,
+        cx: &mut Context<Self>,
+    ) {
+        if self.workspace.move_split_focus(direction) {
+            self.refocus_active_terminal(cx);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn handle_split_terminal_horizontal(
+        &mut self,
+        _: &super::SplitTerminalHorizontal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_terminal_split(window, cx);
+    }
+
+    pub(crate) fn handle_split_terminal_vertical(
+        &mut self,
+        _: &super::SplitTerminalVertical,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_vertical_split(window, cx);
+    }
+
+    pub(crate) fn handle_focus_split_left(
+        &mut self,
+        _: &super::FocusSplitLeft,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_split_focus(SplitFocusDirection::Left, cx);
+    }
+
+    pub(crate) fn handle_focus_split_right(
+        &mut self,
+        _: &super::FocusSplitRight,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_split_focus(SplitFocusDirection::Right, cx);
+    }
+
+    pub(crate) fn handle_focus_split_up(
+        &mut self,
+        _: &super::FocusSplitUp,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_split_focus(SplitFocusDirection::Up, cx);
+    }
+
+    pub(crate) fn handle_focus_split_down(
+        &mut self,
+        _: &super::FocusSplitDown,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_split_focus(SplitFocusDirection::Down, cx);
     }
 
     /// 为分栏创建右窗格会话。分栏右窗格**总是新建**独立会话：

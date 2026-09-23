@@ -615,6 +615,25 @@ fn terminal_split_top_height(
     split_clamped_size(requested, default, min_height, max_height)
 }
 
+/// 分栏按钮 tooltip 的快捷键后缀：GPUI `platform` 修饰键在 macOS 是 `⌘`，
+/// 在 Linux/Windows 是 Win/Super 键，按目标平台显示对应字形。
+#[cfg(target_os = "macos")]
+const SPLIT_HORIZONTAL_HINT: &str = "⌘D";
+#[cfg(not(target_os = "macos"))]
+const SPLIT_HORIZONTAL_HINT: &str = "Win+D";
+#[cfg(target_os = "macos")]
+const SPLIT_VERTICAL_HINT: &str = "⇧⌘D";
+#[cfg(not(target_os = "macos"))]
+const SPLIT_VERTICAL_HINT: &str = "Shift+Win+D";
+
+/// tooltip 文案 + 可选快捷键后缀（禁用态不带后缀，避免暗示不可用的按键）。
+fn split_toggle_tooltip(base_key: &str, hint: Option<&str>) -> String {
+    match hint {
+        Some(hint) => format!("{}（{}）", i18n::text(base_key), hint),
+        None => i18n::text(base_key),
+    }
+}
+
 fn render_workspace_terminal_toggle(
     shell: &AppShell,
     available_width: Pixels,
@@ -641,19 +660,19 @@ fn render_workspace_terminal_toggle(
     });
     let can_toggle_horizontal = has_horizontal || terminal_split_available(available_width);
     let can_vertical = shell.workspace.can_add_vertical() || has_vertical;
-    let horizontal_tooltip = if has_horizontal {
-        "tooltip.close_split"
+    let (horizontal_tooltip, horizontal_hint) = if has_horizontal {
+        ("tooltip.close_split", Some(SPLIT_HORIZONTAL_HINT))
     } else if can_toggle_horizontal {
-        "tooltip.split_terminal"
+        ("tooltip.split_terminal", Some(SPLIT_HORIZONTAL_HINT))
     } else {
-        "tooltip.split_terminal_narrow"
+        ("tooltip.split_terminal_narrow", None)
     };
-    let vertical_tooltip = if has_vertical {
-        "tooltip.close_vertical_split"
+    let (vertical_tooltip, vertical_hint) = if has_vertical {
+        ("tooltip.close_vertical_split", Some(SPLIT_VERTICAL_HINT))
     } else if can_vertical {
-        "tooltip.split_terminal_vertical"
+        ("tooltip.split_terminal_vertical", Some(SPLIT_VERTICAL_HINT))
     } else {
-        "tooltip.split_terminal_vertical_full"
+        ("tooltip.split_terminal_vertical_full", None)
     };
     div()
         .flex()
@@ -672,7 +691,7 @@ fn render_workspace_terminal_toggle(
                         theme::muted_text()
                     }),
                 )
-                .tooltip(i18n::text(horizontal_tooltip))
+                .tooltip(split_toggle_tooltip(horizontal_tooltip, horizontal_hint))
                 .on_click(cx.listener(|this, _event, window, cx| {
                     this.toggle_terminal_split(window, cx);
                 })),
@@ -690,7 +709,7 @@ fn render_workspace_terminal_toggle(
                         theme::muted_text()
                     }),
                 )
-                .tooltip(i18n::text(vertical_tooltip))
+                .tooltip(split_toggle_tooltip(vertical_tooltip, vertical_hint))
                 .on_click(cx.listener(|this, _event, window, cx| {
                     this.toggle_vertical_split(window, cx);
                 })),

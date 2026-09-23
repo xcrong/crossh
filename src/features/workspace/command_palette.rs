@@ -27,6 +27,17 @@ pub(crate) struct PaletteCommand {
     pub keywords: &'static [&'static str],
 }
 
+/// 分栏快捷键展示：macOS `⌘` = Linux/Windows Win/Super
+///（GPUI `platform` 修饰键），按目标平台显示对应字形。
+#[cfg(target_os = "macos")]
+const SPLIT_HORIZONTAL_SHORTCUT: &str = "⌘D";
+#[cfg(not(target_os = "macos"))]
+const SPLIT_HORIZONTAL_SHORTCUT: &str = "Win+D";
+#[cfg(target_os = "macos")]
+const SPLIT_VERTICAL_SHORTCUT: &str = "⇧⌘D";
+#[cfg(not(target_os = "macos"))]
+const SPLIT_VERTICAL_SHORTCUT: &str = "Shift+Win+D";
+
 /// 面板可执行的最小命令集（MVP）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PaletteCommandKind {
@@ -176,7 +187,7 @@ pub(crate) fn palette_commands() -> Vec<PaletteCommand> {
             label: i18n::text("palette.split_horizontal"),
             icon: icons::IconName::Columns2,
             kind: PaletteCommandKind::SplitHorizontal,
-            shortcut: None,
+            shortcut: Some(SPLIT_HORIZONTAL_SHORTCUT.into()),
             keywords: &["left", "right"],
         },
         PaletteCommand {
@@ -184,7 +195,7 @@ pub(crate) fn palette_commands() -> Vec<PaletteCommand> {
             label: i18n::text("palette.split_vertical"),
             icon: icons::IconName::Rows2,
             kind: PaletteCommandKind::SplitVertical,
-            shortcut: None,
+            shortcut: Some(SPLIT_VERTICAL_SHORTCUT.into()),
             keywords: &["up", "down"],
         },
         PaletteCommand {

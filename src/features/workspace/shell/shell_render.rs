@@ -88,6 +88,12 @@ impl Render for AppShell {
                 .on_action(cx.listener(AppShell::handle_switch_to_tab7))
                 .on_action(cx.listener(AppShell::handle_switch_to_tab8))
                 .on_action(cx.listener(AppShell::handle_switch_to_tab9))
+                .on_action(cx.listener(AppShell::handle_split_terminal_horizontal))
+                .on_action(cx.listener(AppShell::handle_split_terminal_vertical))
+                .on_action(cx.listener(AppShell::handle_focus_split_left))
+                .on_action(cx.listener(AppShell::handle_focus_split_right))
+                .on_action(cx.listener(AppShell::handle_focus_split_up))
+                .on_action(cx.listener(AppShell::handle_focus_split_down))
                 .on_action(cx.listener(|this, _: &crate::OpenProject, _, cx| {
                     this.choose_project_directory(cx)
                 }))

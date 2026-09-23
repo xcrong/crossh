@@ -75,6 +75,12 @@ actions!(
         SwitchToTab7,
         SwitchToTab8,
         SwitchToTab9,
+        SplitTerminalHorizontal,
+        SplitTerminalVertical,
+        FocusSplitLeft,
+        FocusSplitRight,
+        FocusSplitUp,
+        FocusSplitDown,
     ]
 );
 
@@ -108,6 +114,15 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("ctrl-8", SwitchToTab8, Some("AppShell")),
         KeyBinding::new("cmd-9", SwitchToTab9, Some("AppShell")),
         KeyBinding::new("ctrl-9", SwitchToTab9, Some("AppShell")),
+        // 分栏：`cmd-d` 左右开/关、`cmd-shift-d` 上下开/关、
+        // `cmd-alt-方向键` 在格间移动焦点。`cmd` 在 Linux/Windows 自动
+        // 映射为 Ctrl（GPUI 约定），与现有标签页快捷键同一风格。
+        KeyBinding::new("cmd-d", SplitTerminalHorizontal, Some("AppShell")),
+        KeyBinding::new("cmd-shift-d", SplitTerminalVertical, Some("AppShell")),
+        KeyBinding::new("cmd-alt-left", FocusSplitLeft, Some("AppShell")),
+        KeyBinding::new("cmd-alt-right", FocusSplitRight, Some("AppShell")),
+        KeyBinding::new("cmd-alt-up", FocusSplitUp, Some("AppShell")),
+        KeyBinding::new("cmd-alt-down", FocusSplitDown, Some("AppShell")),
     ]);
 }
 

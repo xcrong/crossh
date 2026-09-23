@@ -28,6 +28,16 @@ impl SplitSide {
     }
 }
 
+/// 键盘在分栏格之间移动焦点的方向；`TerminalSplitState::move_focus_toward`
+/// 把方向翻译成目标 `SplitSide`（缺格时保持不动）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SplitFocusDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SplitViewCloseOutcome {
     /// 视图不在分栏中。
@@ -68,6 +78,25 @@ impl TerminalSplitState {
         if can_focus {
             self.focused = side;
         }
+    }
+
+    /// 按方向移动焦点；目标格不存在时返回 `false` 且保持不动。
+    /// `focus` 已做存在性守卫，这里只做方向到目标的翻译。
+    pub(crate) fn move_focus_toward(&mut self, direction: SplitFocusDirection) -> bool {
+        let target = match (self.focused, direction) {
+            (SplitSide::Left, SplitFocusDirection::Right) => SplitSide::Right,
+            (SplitSide::Right, SplitFocusDirection::Left) => SplitSide::Left,
+            (SplitSide::BottomLeft, SplitFocusDirection::Right) => SplitSide::BottomRight,
+            (SplitSide::BottomRight, SplitFocusDirection::Left) => SplitSide::BottomLeft,
+            (SplitSide::Left, SplitFocusDirection::Down) => SplitSide::BottomLeft,
+            (SplitSide::Right, SplitFocusDirection::Down) => SplitSide::BottomRight,
+            (SplitSide::BottomLeft, SplitFocusDirection::Up) => SplitSide::Left,
+            (SplitSide::BottomRight, SplitFocusDirection::Up) => SplitSide::Right,
+            _ => return false,
+        };
+        let before = self.focused;
+        self.focus(target);
+        self.focused != before
     }
 
     pub(crate) fn focused_view(self) -> ActiveView {
@@ -283,6 +312,17 @@ impl WorkspaceState {
             return split.focused != before;
         }
         false
+    }
+
+    pub(crate) fn move_split_focus(&mut self, direction: SplitFocusDirection) -> bool {
+        let Some(owner) = self.active_view else {
+            return false;
+        };
+        if let Some(split) = self.terminal_splits.get_mut(&owner) {
+            split.move_focus_toward(direction)
+        } else {
+            false
+        }
     }
 
     pub(crate) fn focus_split_view(&mut self, view: ActiveView) -> bool {
@@ -588,6 +628,50 @@ mod tests {
         assert_eq!(workspace.sessions.allocate_local_session_id(), 1);
         assert_eq!(workspace.sessions.allocate_local_session_id(), 2);
         assert_eq!(workspace.sessions.allocate_local_session_id(), 3);
+    }
+
+    #[test]
+    fn split_focus_moves_left_and_right_between_columns() {
+        let left = ActiveView::LocalSession(1);
+        let right = ActiveView::LocalSession(2);
+        let mut split = TerminalSplitState::new(left, right);
+        assert_eq!(split.focused, SplitSide::Right);
+
+        assert!(split.move_focus_toward(SplitFocusDirection::Left));
+        assert_eq!(split.focused, SplitSide::Left);
+        // 左缘再往左：保持不动。
+        assert!(!split.move_focus_toward(SplitFocusDirection::Left));
+        assert_eq!(split.focused, SplitSide::Left);
+
+        assert!(split.move_focus_toward(SplitFocusDirection::Right));
+        assert_eq!(split.focused, SplitSide::Right);
+    }
+
+    #[test]
+    fn split_focus_up_and_down_needs_an_existing_pane() {
+        let left = ActiveView::LocalSession(1);
+        let right = ActiveView::LocalSession(2);
+        let mut split = TerminalSplitState::new(left, right);
+
+        // 无底部格时上下移动是空操作。
+        split.focus(SplitSide::Left);
+        assert!(!split.move_focus_toward(SplitFocusDirection::Down));
+        assert_eq!(split.focused, SplitSide::Left);
+
+        split.bottom_left = Some(ActiveView::LocalSession(3));
+        assert!(split.move_focus_toward(SplitFocusDirection::Down));
+        assert_eq!(split.focused, SplitSide::BottomLeft);
+        assert!(split.move_focus_toward(SplitFocusDirection::Up));
+        assert_eq!(split.focused, SplitSide::Left);
+
+        // 右列无底部格：从 Right 下移保持不动。
+        split.focus(SplitSide::Right);
+        assert!(!split.move_focus_toward(SplitFocusDirection::Down));
+        split.bottom_right = Some(ActiveView::LocalSession(4));
+        assert!(split.move_focus_toward(SplitFocusDirection::Down));
+        assert_eq!(split.focused, SplitSide::BottomRight);
+        assert!(split.move_focus_toward(SplitFocusDirection::Left));
+        assert_eq!(split.focused, SplitSide::BottomLeft);
     }
 
     #[test]
