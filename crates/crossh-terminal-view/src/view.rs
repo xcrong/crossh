@@ -332,15 +332,21 @@ impl TerminalView {
                 cx.background_executor().timer(CURSOR_BLINK_INTERVAL).await;
                 if weak
                     .update(cx, |this, cx| {
-                        if this.focused
+                        // P0: only notify when the visible cursor state actually
+                        // changes. Unfocused / non-blinking terminals used to
+                        // re-render the whole view every 530ms for nothing.
+                        let next = if this.focused
                             && this.blinking_terminal_enabled
                             && Instant::now() >= this.cursor_blink_pause_until
                         {
-                            this.cursor_blink_on = !this.cursor_blink_on;
+                            !this.cursor_blink_on
                         } else {
-                            this.cursor_blink_on = true;
+                            true
+                        };
+                        if this.cursor_blink_on != next {
+                            this.cursor_blink_on = next;
+                            cx.notify();
                         }
-                        cx.notify();
                     })
                     .is_err()
                 {

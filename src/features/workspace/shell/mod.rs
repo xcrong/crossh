@@ -111,9 +111,10 @@ pub(crate) fn init(cx: &mut App) {
     ]);
 }
 
-const GIT_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
-/// 后台 fetch 节拍：5s 轮询 × 60 = 约 5min fetch 一次，更新 behind 计数。
-const GIT_FETCH_EVERY_TICKS: u64 = 60;
+/// ponytail: 15s 足够——每次 tick 都要 fork 一次 git 子进程，5s 太密是 idle CPU 主来源之一。
+const GIT_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(15);
+/// 后台 fetch 节拍：15s 轮询 × 20 = 约 5min fetch 一次，更新 behind 计数（与之前等价）。
+const GIT_FETCH_EVERY_TICKS: u64 = 20;
 
 /// 状态栏 Git 同步操作（push/pull）的一次进行/错误状态；按会话独立记录，
 /// 避免一个会话的在途结果被另一个会话覆盖。
@@ -1028,9 +1029,6 @@ impl AppShell {
                     .timer(GIT_STATUS_REFRESH_INTERVAL)
                     .await;
                 tick += 1;
-                if tick.is_multiple_of(GIT_FETCH_EVERY_TICKS) {
-                    log::info!("git status refresh loop alive (tick {tick})");
-                }
 
                 if weak
                     .update(cx, |this, cx| {
@@ -1082,10 +1080,13 @@ impl AppShell {
                         }
                         if let Some(sampler) = this.system_sampler.as_mut() {
                             let snapshot = sampler.sample(now);
-                            this.system_monitor
-                                .apply_snapshot(snapshot, expected_generation);
+                            // ponytail: 快照不变就不 notify，避免每 2s 强制重绘整个 AppShell。
+                            if this.system_monitor.snapshot.as_ref() != Some(&snapshot) {
+                                this.system_monitor
+                                    .apply_snapshot(snapshot, expected_generation);
+                                cx.notify();
+                            }
                         }
-                        cx.notify();
                         true
                     })
                     .unwrap_or(false);
