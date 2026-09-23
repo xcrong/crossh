@@ -5,8 +5,8 @@ use gpui::{
     ParentElement, SharedString, StatefulInteractiveElement, Styled, div, px, uniform_list,
 };
 
-use crate::shared::i18n;
 use crossh_core::git_stash::StashSummary;
+use crossh_core::i18n;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
     Banner, BannerTone, Button, ButtonSize, ButtonVariant, ListStatus, PaneToolbar, list_pane,

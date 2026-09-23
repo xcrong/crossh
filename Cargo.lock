@@ -1503,7 +1503,9 @@ dependencies = [
  "assets",
  "crossh-core",
  "crossh-editor",
+ "crossh-git-view",
  "crossh-note",
+ "crossh-note-view",
  "crossh-terminal",
  "crossh-terminal-view",
  "crossh-ui",
@@ -1549,6 +1551,8 @@ dependencies = [
  "dirs",
  "dunce",
  "pretty_assertions",
+ "rust-i18n",
+ "serde",
  "shlex 2.0.1",
  "sys-locale",
  "sysinfo 0.39.6",
@@ -1594,6 +1598,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossh-git-view"
+version = "0.35.1"
+dependencies = [
+ "crossh-core",
+ "crossh-editor",
+ "crossh-ui",
+ "crossh-ui-component",
+ "gpui",
+ "gpui_platform",
+ "rust-i18n",
+]
+
+[[package]]
 name = "crossh-note"
 version = "0.35.1"
 dependencies = [
@@ -1603,6 +1620,21 @@ dependencies = [
  "rusqlite",
  "serde",
  "tempfile",
+]
+
+[[package]]
+name = "crossh-note-view"
+version = "0.35.1"
+dependencies = [
+ "crossh-core",
+ "crossh-editor",
+ "crossh-note",
+ "crossh-ui",
+ "crossh-ui-component",
+ "gpui",
+ "gpui_platform",
+ "log",
+ "pulldown-cmark",
 ]
 
 [[package]]
@@ -1642,6 +1674,7 @@ dependencies = [
  "assets",
  "crossh-assets",
  "gpui",
+ "theme",
 ]
 
 [[package]]

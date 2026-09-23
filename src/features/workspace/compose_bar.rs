@@ -8,7 +8,7 @@ use crossh_ui::theme;
 use crossh_ui::widgets::{ime_input_canvas, marked_text_span, text_caret, text_span};
 use crossh_ui_component::{Button, ButtonSize, ButtonVariant};
 
-use crate::shared::i18n;
+use crossh_core::i18n;
 
 use super::shell::AppShell;
 
@@ -25,7 +25,7 @@ pub(crate) fn render_compose_bar(
         .focused_view()
         .and_then(|view| shell.workspace.compose_state_for(view))
         .cloned()
-        .unwrap_or_else(|| crate::shared::text_editing::TextEditingState::new(String::new()));
+        .unwrap_or_else(|| crossh_core::text_editing::TextEditingState::new(String::new()));
     let value = compose_state.value.clone();
     let ime_marked_text = compose_state.ime_marked_text.clone();
     let ime_replacement = compose_state.ime_replacement;

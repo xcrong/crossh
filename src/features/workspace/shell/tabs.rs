@@ -905,7 +905,7 @@ impl AppShell {
 
 #[cfg(test)]
 mod tests {
-    use crate::shared::i18n;
+    use crossh_core::i18n;
 
     use super::{SplitPaneRetirement, TabCloseRisk, split_pane_retirement};
 

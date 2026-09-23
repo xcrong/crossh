@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::features::updates::UpdateSettings;
 use crate::features::workspace::settings::WorkspaceSettings;
-use crate::shared::i18n::LanguagePreference;
+use crossh_core::i18n::LanguagePreference;
 use crossh_terminal::TerminalSettings;
 
 const SETTINGS_FILE_NAME: &str = "settings.toml";

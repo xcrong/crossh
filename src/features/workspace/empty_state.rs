@@ -8,7 +8,7 @@ use gpui::{
 };
 
 use crate::features::workspace::shell::AppShell;
-use crate::shared::i18n;
+use crossh_core::i18n;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{Button, ButtonSize, ButtonVariant};
 

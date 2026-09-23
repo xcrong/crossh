@@ -21,7 +21,6 @@ use gpui::{
     size,
 };
 
-use crate::features::editor_launcher;
 use crate::features::settings::{self, SettingsSnapshot};
 use crate::features::updates::{UpdateController, UpdateSettings};
 use crate::features::workspace::command_palette::CommandPaletteState;
@@ -36,12 +35,13 @@ use crate::features::workspace::view::{
     ActiveView, LocalDir, LocalSession, LocalSessionId, render_default_command_editor, render_main,
     render_rename_editor, render_workspace_status_bar,
 };
-use crate::shared::i18n::{self, LanguagePreference};
-use crate::shared::text_editing::{EditingKeystroke, TextEditingState, handle_text_editing_key};
+use crossh_core::editor_launcher;
 use crossh_core::git::{pull, push};
 use crossh_core::git_remote::fetch_all_remotes;
 use crossh_core::git_status::inspect;
+use crossh_core::i18n::{self, LanguagePreference};
 use crossh_core::system_stats::{SystemMonitorState, SystemSampler};
+use crossh_core::text_editing::{EditingKeystroke, TextEditingState, handle_text_editing_key};
 use crossh_terminal::TerminalSettings;
 use crossh_terminal_view::{TerminalEvent, TerminalItem as _, TerminalView};
 use crossh_ui::context_menu::ShellMenuAction;
@@ -144,7 +144,7 @@ pub struct AppShell {
     /// 模态文本输入缓冲（密码/口令）。
     /// 模态输入框焦点。
     /// 上一帧是否有活动模态（用于在弹窗出现时自动聚焦）。
-    /// 当前语言偏好；实际 locale 经 [`crate::shared::i18n::set_locale`] 切换。
+    /// 当前语言偏好；实际 locale 经 [`crossh_core::i18n::set_locale`] 切换。
     pub(crate) language_preference: LanguagePreference,
     /// 当前打开的右键上下文菜单（None = 未打开）。
     pub(crate) context_menu: Option<ContextMenuState<ShellMenuAction>>,

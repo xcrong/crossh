@@ -17,7 +17,7 @@ use crate::features::workspace::pinned::pinned_tabs_for_project;
 use crate::features::workspace::shell::AppShell;
 use crate::features::workspace::status::local_tab_dot_color;
 use crate::features::workspace::view::{ActiveView, LocalSessionId};
-use crate::shared::i18n;
+use crossh_core::i18n;
 use crossh_terminal_view::TerminalItem as _;
 use crossh_ui::context_menu::ShellMenuAction;
 use crossh_ui::{icons, theme};

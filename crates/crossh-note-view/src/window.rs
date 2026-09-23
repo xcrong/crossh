@@ -4,11 +4,11 @@ use std::ops::Range;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::shared::input_handler::{
+use crossh_core::input_handler::{
     editing_mark_text, editing_marked_range, editing_replace, editing_selected_range,
     editing_unmark,
 };
-use crate::shared::text_editing::{
+use crossh_core::text_editing::{
     EditingKeystroke, TextEditingState, byte_index_for_utf16, handle_text_editing_key, utf16_len,
     utf16_slice,
 };

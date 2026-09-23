@@ -5,7 +5,7 @@
 use gpui::{ClipboardEntry, ClipboardItem, Context, FocusHandle, KeyDownEvent, Window};
 
 use crate::features::workspace::state::LocalSessionId;
-use crate::shared::text_editing::{EditingKeystroke, TextEditingState, handle_text_editing_key};
+use crossh_core::text_editing::{EditingKeystroke, TextEditingState, handle_text_editing_key};
 
 use super::*;
 

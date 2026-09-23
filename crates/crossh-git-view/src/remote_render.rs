@@ -6,8 +6,8 @@ use gpui::{
     px, uniform_list,
 };
 
-use crate::shared::i18n;
 use crossh_core::git_remote::RemoteSummary;
+use crossh_core::i18n;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
     Banner, BannerTone, Button, ButtonSize, ButtonVariant, ListStatus, PaneToolbar, TextInput,

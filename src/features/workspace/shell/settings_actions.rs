@@ -3,7 +3,7 @@
 
 use gpui::Context;
 
-use crate::shared::i18n::LanguagePreference;
+use crossh_core::i18n::LanguagePreference;
 use crossh_terminal::{
     MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_SCROLLBACK, TerminalSettings,
 };
@@ -22,7 +22,7 @@ impl AppShell {
             cx.notify();
             return;
         }
-        crate::shared::i18n::set_locale(preference);
+        crossh_core::i18n::set_locale(preference);
         crate::infrastructure::app_menu::refresh(cx);
         self.language_preference = preference;
         self.persist_settings();

@@ -1,33 +1,12 @@
 //! Standalone Note Viewer entry point.
 //!
-//! 共享逻辑通过 `#[path]` 直接复用 `src/features/note/*` 与
-//! `note_launcher.rs` / `infrastructure/theme.rs`，与主 `crossh` 二进制同源。
-//! `crates/crossh-note` 仅承载存储层；搜索框与侧栏/Git 共用 `src/shared` 的
-//! `TextEditingState` 编辑语义，此处按 `crossh-git` 的同构方式挂载。
+//! 纯装配层：窗口内容来自 `crossh-note-view`，存储层来自 `crossh-note`，
+//! 文本编辑语义与启动器来自 `crossh-core`，主题来自 `crossh-ui`。
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-use crossh_core::single_instance;
-
-#[path = "../features/note_launcher.rs"]
-mod note_launcher;
-
-#[path = "../features/note/mod.rs"]
-mod note;
-
-#[path = "../shared/text_editing.rs"]
-pub mod text_editing;
-
-#[path = "../shared/input_handler.rs"]
-pub mod input_handler;
-
-mod shared {
-    pub use crate::input_handler;
-    pub use crate::text_editing;
-}
-
-#[path = "../infrastructure/theme.rs"]
-mod infrastructure_theme;
+use crossh_core::{note_launcher, single_instance};
+use crossh_note_view as note;
 
 use gpui::{App, QuitMode};
 use release_channel as zed_release_channel;
@@ -76,7 +55,7 @@ fn main() {
             zed_release_channel::AppVersion::load(env!("CARGO_PKG_VERSION"), None, None);
         zed_release_channel::init(app_version, cx);
         theme::init(LoadThemes::JustBase, cx);
-        infrastructure_theme::install_crossh_theme(cx);
+        crossh_ui::theme::install_crossh_theme(cx);
         crossh_ui::assets::load_fonts(cx).expect("Crossh fonts should load");
         note::init(cx);
         note::open_note_window(cx);

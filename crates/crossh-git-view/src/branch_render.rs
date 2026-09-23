@@ -8,8 +8,8 @@ use gpui::{
     prelude::FluentBuilder, px, uniform_list,
 };
 
-use crate::shared::i18n;
 use crossh_core::git_branch::BranchSummary;
+use crossh_core::i18n;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
     Badge, BadgeTone, Button, ButtonSize, ButtonVariant, ListStatus, PaneToolbar, list_pane,

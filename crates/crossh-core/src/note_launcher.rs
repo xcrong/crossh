@@ -5,12 +5,12 @@
 use std::process::Command;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum NoteCliCommand {
+pub enum NoteCliCommand {
     Open,
     Help,
 }
 
-pub(crate) fn parse_cli(mut args: impl Iterator<Item = String>) -> Result<NoteCliCommand, String> {
+pub fn parse_cli(mut args: impl Iterator<Item = String>) -> Result<NoteCliCommand, String> {
     match args.next().as_deref() {
         None => Ok(NoteCliCommand::Open),
         Some("--help" | "-h" | "help") => Ok(NoteCliCommand::Help),
@@ -18,17 +18,16 @@ pub(crate) fn parse_cli(mut args: impl Iterator<Item = String>) -> Result<NoteCl
     }
 }
 
-pub(crate) fn print_help(command: &str) {
+pub fn print_help(command: &str) {
     println!("Usage: {command}\n\nOpen the Note Viewer.");
 }
 
-#[allow(dead_code)]
-pub(crate) fn spawn_note_process() -> std::io::Result<()> {
+pub fn spawn_note_process() -> std::io::Result<()> {
     note_process_command()?.spawn().map(|_| ())
 }
 
 fn note_process_command() -> std::io::Result<Command> {
-    Ok(crossh_core::process::sibling_command("crossh-note"))
+    Ok(crate::process::sibling_command("crossh-note"))
 }
 
 #[cfg(test)]

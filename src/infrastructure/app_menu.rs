@@ -10,12 +10,12 @@ use gpui::SystemMenuType;
 
 use crate::features::settings::{self, SettingsSection};
 use crate::features::workspace::{AppShell, open_main_window};
-use crate::shared::i18n;
 use crate::{
     About, CheckForUpdates, CloseActiveTab, CloseWindow, MinimizeWindow, NewTerminal, OpenProject,
     OpenSettings, Quit, ToggleCommandPalette, ToggleFullScreen, ToggleHostSidebar,
     ToggleTimestamps, ZoomWindow,
 };
+use crossh_core::i18n;
 
 #[cfg(target_os = "macos")]
 use crate::{Hide, HideOthers, ShowAll};

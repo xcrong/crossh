@@ -7,8 +7,8 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, div, px,
 };
 
-use crate::shared::i18n;
-use crate::shared::text_editing::{EditingKeystroke, TextEditingState, handle_text_editing_key};
+use crossh_core::i18n;
+use crossh_core::text_editing::{EditingKeystroke, TextEditingState, handle_text_editing_key};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{ModalField, SharedTextState};
 
@@ -311,7 +311,7 @@ impl AppShell {
                 self.open_focused_project_git_viewer();
             }
             PaletteCommandKind::OpenNotes => {
-                if let Err(error) = crate::features::note_launcher::spawn_note_process() {
+                if let Err(error) = crossh_core::note_launcher::spawn_note_process() {
                     log::warn!("spawn note failed: {error}");
                 }
             }
@@ -354,7 +354,7 @@ impl AppShell {
         else {
             return;
         };
-        if let Err(error) = crate::features::git_launcher::spawn_git_process(&cwd) {
+        if let Err(error) = crossh_core::git_launcher::spawn_git_process(&cwd) {
             log::error!("failed to start crossh-git for {}: {error}", cwd.display());
         }
     }

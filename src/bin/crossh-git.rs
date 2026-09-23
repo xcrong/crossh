@@ -1,28 +1,8 @@
 //! Standalone Git Viewer entry point.
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-#[path = "../shared/text_editing.rs"]
-pub mod text_editing;
-
-mod shared {
-    pub mod i18n {
-        pub fn text(key: &str) -> String {
-            rust_i18n::t!(key).to_string()
-        }
-    }
-
-    pub use crate::text_editing;
-}
-
-rust_i18n::i18n!("locales", fallback = "en");
-
-use crossh_core::single_instance;
-
-#[path = "../features/git_launcher.rs"]
-mod git_launcher;
-
-#[path = "../features/git/mod.rs"]
-mod git;
+use crossh_core::{git_launcher, single_instance};
+use crossh_git_view as git;
 
 use gpui::{App, QuitMode};
 

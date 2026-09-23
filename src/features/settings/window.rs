@@ -11,11 +11,11 @@ use gpui::{
     WindowBounds, WindowOptions, div, px, relative,
 };
 
-use crate::features::editor_launcher;
 use crate::features::settings::{self, SettingsSnapshot};
 use crate::features::updates::{UpdateController, UpdateStatus};
 use crate::features::workspace::AppShell;
-use crate::shared::i18n::{self, LanguagePreference};
+use crossh_core::editor_launcher;
+use crossh_core::i18n::{self, LanguagePreference};
 use crossh_editor::{Progress, ProgressIndicator, ProgressTrack};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{

@@ -75,9 +75,9 @@ check_absent \
     "$repo_root/src/shared"
 
 check_absent \
-    "standalone updater includes application source with #[path]" \
+    "standalone binaries include application source with #[path]" \
     '#\[path' \
-    "$repo_root/src/bin/crossh-updater.rs"
+    "$repo_root/src/bin"
 
 check_absent \
     "crossh-ui-base imports upper layers" \

@@ -12,7 +12,7 @@ use gpui::{
 use crate::features::workspace::shell::AppShell;
 use crate::features::workspace::state::preferred_state;
 use crate::features::workspace::view::{ActiveView, LocalDir};
-use crate::shared::i18n::{self};
+use crossh_core::i18n::{self};
 use crossh_core::terminal::path_display_name;
 use crossh_terminal::ConnState;
 use crossh_terminal_view::TerminalItem as _;

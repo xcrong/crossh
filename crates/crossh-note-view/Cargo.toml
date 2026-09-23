@@ -1,0 +1,19 @@
+[package]
+name = "crossh-note-view"
+version = "0.35.1"
+edition = "2024"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+crossh-core = { path = "../crossh-core" }
+crossh-note = { path = "../crossh-note" }
+crossh-editor = { path = "../crossh-editor" }
+crossh-ui = { path = "../crossh-ui" }
+crossh-ui-component = { path = "../crossh-ui-component" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "74646bf29c1a3d1cdb178930d810ecc5a8a6bece" }
+log = "0.4"
+pulldown-cmark = "0.13"
+
+[dev-dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", rev = "74646bf29c1a3d1cdb178930d810ecc5a8a6bece", features = ["test-support"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "74646bf29c1a3d1cdb178930d810ecc5a8a6bece", features = ["font-kit", "test-support", "wayland", "x11"] }

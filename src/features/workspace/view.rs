@@ -10,7 +10,6 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, canvas, div, px,
 };
 
-use crate::features::editor_launcher;
 use crate::features::settings::is_settings_window_open;
 use crate::features::workspace::empty_state;
 use crate::features::workspace::registry::{SplitSide, TerminalSplitState};
@@ -18,8 +17,9 @@ use crate::features::workspace::shell::{AppShell, CrossDragState, GitSyncOperati
 pub use crate::features::workspace::state::{ActiveView, LocalDir, LocalSession, LocalSessionId};
 use crate::features::workspace::tab_strip;
 use crate::features::workspace::toaster::{ToastNotice, ToastTone};
-use crate::shared::i18n;
+use crossh_core::editor_launcher;
 use crossh_core::git_status::GitStatus;
+use crossh_core::i18n;
 use crossh_terminal_view::TerminalItem as _;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
@@ -919,7 +919,7 @@ pub(crate) fn render_workspace_status_bar(
                 .icon(icons::icon(icons::IconName::FileText, 13.).text_color(theme::muted_text()))
                 .tooltip(i18n::text("tooltip.note"))
                 .on_click(cx.listener(|_, _ev, _window, _cx| {
-                    if let Err(error) = crate::features::note_launcher::spawn_note_process() {
+                    if let Err(error) = crossh_core::note_launcher::spawn_note_process() {
                         log::warn!("spawn note failed: {error}");
                     }
                 }))
@@ -973,7 +973,7 @@ fn render_git_status(
         .cursor_pointer()
         .hover(|s| s.bg(theme::raised()))
         .tooltip(|_window, cx| {
-            cx.new(|_| Tooltip::new(crate::shared::i18n::text("git.title")))
+            cx.new(|_| Tooltip::new(crossh_core::i18n::text("git.title")))
                 .into()
         })
         .child(icons::icon(icons::IconName::GitBranch, 13.).text_color(theme::accent()))
@@ -983,7 +983,7 @@ fn render_git_status(
                 .child(SharedString::from(status.branch.clone())),
         )
         .on_click(cx.listener(move |_this, _ev, _window, _cx| {
-            if let Err(error) = crate::features::git_launcher::spawn_git_process(&click_cwd) {
+            if let Err(error) = crossh_core::git_launcher::spawn_git_process(&click_cwd) {
                 log::error!(
                     "failed to start crossh-git for {}: {error}",
                     click_cwd.display()

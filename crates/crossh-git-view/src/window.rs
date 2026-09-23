@@ -13,8 +13,6 @@ use gpui::{
 #[cfg(feature = "visual-tests")]
 use super::history::{HistoryDetailState, HistoryFileDiffState, HistoryListState};
 use super::session::{ChangeKey, GitOperation, GitSession, OperationState, selected_index};
-use crate::shared::i18n;
-use crate::shared::text_editing::TextEditingState;
 #[cfg(feature = "visual-tests")]
 use crossh_core::git::{DiffLine, DiffLineKind, FileDiff};
 use crossh_core::git::{
@@ -34,7 +32,9 @@ use crossh_core::git_stash::{
     apply_stash as apply_git_stash, drop_stash as drop_git_stash, list_stashes,
     pop_stash as pop_git_stash, push_stash as push_git_stash,
 };
+use crossh_core::i18n;
 use crossh_core::terminal::path_display_name;
+use crossh_core::text_editing::TextEditingState;
 use crossh_ui_component::context_menu::{ContextMenuState, MenuEntry, MenuItem};
 
 pub(super) const GIT_COMPACT_WIDTH: f32 = 840.;

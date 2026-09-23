@@ -5,12 +5,12 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum GitCliCommand {
+pub enum GitCliCommand {
     Open(PathBuf),
     Help,
 }
 
-pub(crate) fn parse_cli(
+pub fn parse_cli(
     mut args: impl Iterator<Item = String>,
     current_dir: Result<PathBuf, String>,
 ) -> Result<GitCliCommand, String> {
@@ -29,19 +29,18 @@ pub(crate) fn parse_cli(
     }
 }
 
-pub(crate) fn print_help(command: &str) {
+pub fn print_help(command: &str) {
     println!(
         "Usage: {command} [DIRECTORY]\n\nOpen the Git Viewer for DIRECTORY, or the current directory when omitted."
     );
 }
 
-#[allow(dead_code)]
-pub(crate) fn spawn_git_process(cwd: &Path) -> std::io::Result<()> {
+pub fn spawn_git_process(cwd: &Path) -> std::io::Result<()> {
     git_process_command(cwd)?.spawn().map(|_| ())
 }
 
 fn git_process_command(cwd: &Path) -> std::io::Result<Command> {
-    let mut cmd = crossh_core::process::sibling_command("crossh-git");
+    let mut cmd = crate::process::sibling_command("crossh-git");
     cmd.arg(cwd).current_dir(cwd);
     Ok(cmd)
 }

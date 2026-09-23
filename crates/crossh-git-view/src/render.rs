@@ -9,9 +9,9 @@ use gpui::{
     prelude::FluentBuilder, px, uniform_list,
 };
 
-use crate::shared::i18n;
 use crossh_core::git::{ChangeStatus, DiffLine, DiffLineKind, FileChange};
 use crossh_core::git_conflict::ConflictResolution;
+use crossh_core::i18n;
 use crossh_editor::{Scrollbar, ScrollbarMode};
 use crossh_ui::widgets::{ime_input_canvas, marked_text_span, text_caret, text_span};
 use crossh_ui::{icons, theme};

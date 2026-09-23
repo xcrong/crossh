@@ -11,5 +11,5 @@ pub(crate) use window::{
 /// Load persisted feature settings and initialize the locale during boot.
 pub(crate) fn init() {
     let snapshot = load();
-    crate::shared::i18n::set_locale(snapshot.language);
+    crossh_core::i18n::set_locale(snapshot.language);
 }

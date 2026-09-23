@@ -6,9 +6,9 @@ use gpui::{
     Styled, canvas, div, point, prelude::FluentBuilder, px, uniform_list,
 };
 
-use crate::shared::i18n;
 use crossh_core::git_history::{CommitDetail, CommitFileChange, HistoryRef, HistoryRefKind};
 use crossh_core::git_history_graph::HistoryGraphRow;
+use crossh_core::i18n;
 use crossh_editor::{Scrollbar, ScrollbarMode};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{

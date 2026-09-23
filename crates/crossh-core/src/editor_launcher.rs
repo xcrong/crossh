@@ -94,7 +94,7 @@ fn cached_login_shell_path() -> Option<OsString> {
 
 /// 对外暴露的合并后 PATH，自动补全 shell 与回退目录。
 /// 调用方（设置下拉、tooltip、启动）应使用此函数而非直接 `var_os("PATH")`。
-pub(crate) fn effective_path() -> OsString {
+pub fn effective_path() -> OsString {
     let env_path = std::env::var_os("PATH").unwrap_or_default();
     let shell = cached_login_shell_path();
     merge_paths(&env_path, shell.as_deref())
@@ -103,7 +103,7 @@ pub(crate) fn effective_path() -> OsString {
 /// 自动检测候选的默认顺序：第一项 `zed`，随后是常用编辑器命令名。
 /// 该列表是程序默认值，写死在代码中，不暴露为设置项（见
 /// docs/specs/20260820-open-project-in-editor.md）。
-pub(crate) const DEFAULT_EDITOR_PRIORITY: &[&str] = &[
+pub const DEFAULT_EDITOR_PRIORITY: &[&str] = &[
     "zed",
     "code",
     "code-insiders",
@@ -126,7 +126,7 @@ pub(crate) const DEFAULT_EDITOR_PRIORITY: &[&str] = &[
 /// 命中的 PATH 目录处解析为完整路径，整体保持候选顺序、天然无重复。
 ///
 /// `exists` 是平台相关的可执行判定，注入以便纯逻辑测试。
-pub(crate) fn detect_editors(path_env: &OsStr, exists: impl Fn(&Path) -> bool) -> Vec<String> {
+pub fn detect_editors(path_env: &OsStr, exists: impl Fn(&Path) -> bool) -> Vec<String> {
     DEFAULT_EDITOR_PRIORITY
         .iter()
         .filter_map(|candidate| {
@@ -149,7 +149,7 @@ pub(crate) fn detect_editors(path_env: &OsStr, exists: impl Fn(&Path) -> bool) -
 ///   PATH 目录中查找第一个存在且可执行的文件，返回其完整路径。
 ///
 /// `exists` 是平台相关的可执行判定，注入以便纯逻辑测试。
-pub(crate) fn resolve_editor(
+pub fn resolve_editor(
     configured: Option<&str>,
     path_env: &OsStr,
     exists: impl Fn(&Path) -> bool,
@@ -161,7 +161,7 @@ pub(crate) fn resolve_editor(
 }
 
 /// 命令的展示名：优先取 basename，退化时显示完整值（tooltip / 下拉框共用）。
-pub(crate) fn command_display_name(command: &str) -> String {
+pub fn command_display_name(command: &str) -> String {
     Path::new(command)
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -169,7 +169,7 @@ pub(crate) fn command_display_name(command: &str) -> String {
 }
 
 /// 平台相关的可执行判定（Unix 检查可执行位；Windows 检查 PATHEXT 扩展名）。
-pub(crate) fn executable_exists(path: &Path) -> bool {
+pub fn executable_exists(path: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -198,7 +198,7 @@ fn is_batch_binary(binary: &str) -> bool {
 }
 /// 构造「以 `directory` 为参数与工作目录」的分离进程命令。
 /// 命令本身不执行；Windows 上 `.cmd`/`.bat` 批处理经 `cmd /C` 包装。
-pub(crate) fn editor_process_command(binary: &str, directory: &Path) -> Command {
+pub fn editor_process_command(binary: &str, directory: &Path) -> Command {
     #[cfg(windows)]
     let mut command = if is_batch_binary(binary) {
         let mut command = Command::new("cmd");
@@ -217,8 +217,8 @@ pub(crate) fn editor_process_command(binary: &str, directory: &Path) -> Command 
     };
 
     command.current_dir(directory);
-    crossh_core::process::null_stdio(&mut command);
-    crossh_core::process::detach(&mut command);
+    crate::process::null_stdio(&mut command);
+    crate::process::detach(&mut command);
     command
 }
 

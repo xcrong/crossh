@@ -1,5 +1,7 @@
 //! Git Viewer UI：由独立的 `crossh-git` 进程承载。
 
+rust_i18n::i18n!("../../locales", fallback = "en");
+
 use gpui::{App, KeyBinding, actions};
 
 actions!(
@@ -33,7 +35,7 @@ const GIT_BRANCH_CONTEXT: &str = "GitBranch";
 const GIT_STASH_CONTEXT: &str = "GitStash";
 const GIT_REMOTE_CONTEXT: &str = "GitRemote";
 
-pub(crate) fn init(cx: &mut App) {
+pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("up", MoveSelectionUp, Some(GIT_CHANGES_CONTEXT)),
         KeyBinding::new("down", MoveSelectionDown, Some(GIT_CHANGES_CONTEXT)),
@@ -69,4 +71,4 @@ mod stash;
 mod stash_render;
 mod window;
 
-pub(crate) use window::open_git_window;
+pub use window::open_git_window;

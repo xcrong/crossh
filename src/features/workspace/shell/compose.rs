@@ -4,7 +4,7 @@
 use gpui::{ClipboardItem, Context, KeyDownEvent, Window};
 
 use crate::features::workspace::view::ActiveView;
-use crate::shared::text_editing::{EditingKeystroke, handle_text_editing_key};
+use crossh_core::text_editing::{EditingKeystroke, handle_text_editing_key};
 use crossh_terminal_view::TerminalItem as _;
 
 use super::AppShell;

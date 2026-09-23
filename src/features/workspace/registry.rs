@@ -12,7 +12,7 @@ use gpui::{Subscription, Task};
 
 use super::state::{ActiveView, LocalDir, LocalSession, LocalSessionId};
 use super::toaster::ToasterState;
-use crate::shared::text_editing::TextEditingState;
+use crossh_core::text_editing::TextEditingState;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SplitSide {

@@ -8,7 +8,7 @@
 //! 只做字符串级解析：即使文件其他字段损坏，语言选择依然有效；非法值走向跟随系统，
 //! 与主应用全文件解析失败即回退默认的可观察结果一致。
 //!
-//! 中文判定规则与 `src/shared/i18n.rs::locale_from_system_tag` 同步维护。
+//! 中文判定规则与 `crate::i18n` 同步维护。
 
 /// rust-i18n 中文 locale 代号，与 `locales/zh-CN.yml` 对应。
 pub const SIMPLIFIED_CHINESE_CODE: &str = "zh-CN";

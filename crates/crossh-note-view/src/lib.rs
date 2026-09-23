@@ -17,7 +17,7 @@ actions!(
 
 const NOTE_WINDOW_CONTEXT: &str = "NoteWindow";
 
-pub(crate) fn init(cx: &mut App) {
+pub fn init(cx: &mut App) {
     // 初始化 crossh-editor 的 Input 键位（TextArea/Input 的 undo/移动/选择等）
     crossh_editor::init(cx);
     cx.bind_keys([
@@ -46,4 +46,4 @@ pub(crate) fn init(cx: &mut App) {
 }
 mod markdown;
 mod window;
-pub(crate) use window::open_note_window;
+pub use window::open_note_window;

@@ -77,7 +77,7 @@ pub fn editing_mark_text(state: &mut TextEditingState, new_text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shared::text_editing::TextEditingState;
+    use crate::text_editing::TextEditingState;
 
     #[test]
     fn editing_selected_range_covers_cursor_and_reversed_anchor() {

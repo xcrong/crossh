@@ -7,7 +7,6 @@
 mod app;
 mod features;
 mod infrastructure;
-mod shared;
 
 use gpui::{App, actions};
 use release_channel as zed_release_channel;
@@ -60,38 +59,38 @@ fn main() {
             return;
         }
         app::cli::CliCommand::Git(result) => match result {
-            Ok(features::git_launcher::GitCliCommand::Open(cwd)) => {
-                if let Err(error) = features::git_launcher::spawn_git_process(&cwd) {
+            Ok(crossh_core::git_launcher::GitCliCommand::Open(cwd)) => {
+                if let Err(error) = crossh_core::git_launcher::spawn_git_process(&cwd) {
                     eprintln!("crossh git: failed to start crossh-git: {error}");
                     std::process::exit(1);
                 }
                 return;
             }
-            Ok(features::git_launcher::GitCliCommand::Help) => {
-                features::git_launcher::print_help("crossh git");
+            Ok(crossh_core::git_launcher::GitCliCommand::Help) => {
+                crossh_core::git_launcher::print_help("crossh git");
                 return;
             }
             Err(error) => {
                 eprintln!("crossh git: {error}\n");
-                features::git_launcher::print_help("crossh git");
+                crossh_core::git_launcher::print_help("crossh git");
                 std::process::exit(2);
             }
         },
         app::cli::CliCommand::Note(result) => match result {
-            Ok(features::note_launcher::NoteCliCommand::Open) => {
-                if let Err(error) = features::note_launcher::spawn_note_process() {
+            Ok(crossh_core::note_launcher::NoteCliCommand::Open) => {
+                if let Err(error) = crossh_core::note_launcher::spawn_note_process() {
                     eprintln!("crossh note: failed to start crossh-note: {error}");
                     std::process::exit(1);
                 }
                 return;
             }
-            Ok(features::note_launcher::NoteCliCommand::Help) => {
-                features::note_launcher::print_help("crossh note");
+            Ok(crossh_core::note_launcher::NoteCliCommand::Help) => {
+                crossh_core::note_launcher::print_help("crossh note");
                 return;
             }
             Err(error) => {
                 eprintln!("crossh note: {error}\n");
-                features::note_launcher::print_help("crossh note");
+                crossh_core::note_launcher::print_help("crossh note");
                 std::process::exit(2);
             }
         },
@@ -154,10 +153,10 @@ fn main() {
             zed_release_channel::AppVersion::load(env!("CARGO_PKG_VERSION"), None, None);
         zed_release_channel::init(app_version, cx);
         theme::init(LoadThemes::JustBase, cx);
-        infrastructure::theme::install_crossh_theme(cx);
+        crossh_ui::theme::install_crossh_theme(cx);
         crossh_ui::assets::load_fonts(cx).expect("Crossh fonts should load");
         features::settings::init();
-        crossh_terminal_view::set_text_resolver(crate::shared::i18n::text);
+        crossh_terminal_view::set_text_resolver(crossh_core::i18n::text);
         crossh_terminal_view::init(cx);
         features::workspace::shell::init(cx);
         cx.bind_keys([

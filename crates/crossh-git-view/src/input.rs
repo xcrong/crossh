@@ -7,14 +7,14 @@ use gpui::{
     Point, UTF16Selection, Window, px, size,
 };
 
-use crate::shared::text_editing::{
+use crossh_core::text_editing::{
     EditingKeystroke, TextEditingState, byte_index_for_utf16, handle_text_editing_key,
     replace_utf16_range, utf16_len, utf16_offset_for_byte, utf16_slice,
 };
 use crossh_ui::widgets::{printable_char, text_width};
 
 use super::window::GitWindow;
-use crate::shared::text_editing::selection_bounds;
+use crossh_core::text_editing::selection_bounds;
 
 impl GitWindow {
     /// 历史搜索与侧栏/Note 筛选条同一编辑语义：共享分发处理插入/删除/光标/选区/剪贴板；

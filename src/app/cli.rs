@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use crate::features::{
+use crossh_core::{
     git_launcher::{self, GitCliCommand},
     note_launcher::{self, NoteCliCommand},
 };
@@ -84,7 +84,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{CliCommand, help_text, parse_cli};
-    use crate::features::git_launcher::GitCliCommand;
+    use crossh_core::git_launcher::GitCliCommand;
 
     fn cwd_ok(path: &str) -> Result<PathBuf, String> {
         Ok(PathBuf::from(path))
@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn note_delegates_to_note_launcher() {
-        use crate::features::note_launcher::NoteCliCommand;
+        use crossh_core::note_launcher::NoteCliCommand;
 
         let command = parse_cli(["note"].into_iter().map(str::to_string), cwd_ok("/repo"));
         assert_eq!(command, CliCommand::Note(Ok(NoteCliCommand::Open)));

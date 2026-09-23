@@ -64,7 +64,7 @@ pub fn preference_label(preference: LanguagePreference) -> String {
     })
 }
 
-pub(crate) fn set_locale(preference: LanguagePreference) {
+pub fn set_locale(preference: LanguagePreference) {
     rust_i18n::set_locale(preference.resolve().code());
 }
 
