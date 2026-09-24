@@ -16,7 +16,8 @@ pub const SIDEBAR_RAIL_WIDTH: f32 = 44.0;
 pub const TITLEBAR_HEIGHT: f32 = 42.0;
 pub const TAB_HEIGHT: f32 = 38.0;
 pub const STATUS_BAR_HEIGHT: f32 = 27.0;
-pub const ROW_HEIGHT: f32 = 36.0;
+// tty7 侧栏单行 28px（搜索/切换同高）；36px 太空，30px 仍保留 24px 行内命中区。
+pub const ROW_HEIGHT: f32 = 30.0;
 pub const RADIUS_SM: f32 = 4.0;
 pub const RADIUS_MD: f32 = 8.0;
 
@@ -174,7 +175,8 @@ pub fn install_crossh_theme(cx: &mut App) {
     colors.toolbar_background = sidebar;
     colors.tab_bar_background = surface;
     colors.tab_inactive_background = surface;
-    colors.tab_active_background = accent_soft;
+    // tty7：顶栏当前项中性 selected 阶；强调色只留给可执行的主操作。
+    colors.tab_active_background = overlay;
     colors.panel_background = surface;
     colors.panel_focused_border = accent;
     colors.panel_overlay_background = overlay;

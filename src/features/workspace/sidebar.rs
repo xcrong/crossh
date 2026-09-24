@@ -485,15 +485,12 @@ fn render_local_dir(
     let tooltip_path = SharedString::from(project_dir.to_string_lossy().to_string());
     let count = dir.sessions.len();
     let state = local_dir_state(shell, dir, cx);
-    let folder_color = if selected {
-        theme::accent()
-    } else {
-        match state {
-            Some(ConnState::Connected) => theme::accent(),
-            Some(ConnState::Connecting) => theme::warning(),
-            Some(ConnState::Error(_)) => theme::danger(),
-            _ => theme::muted_text(),
-        }
+    // tty7：饱和色留给状态点，选中不强制染成强调色，目录图标只反映连接状态。
+    let folder_color = match state {
+        Some(ConnState::Connected) => theme::accent(),
+        Some(ConnState::Connecting) => theme::warning(),
+        Some(ConnState::Error(_)) => theme::danger(),
+        _ => theme::muted_text(),
     };
     let mut row = div()
         .id(("local-group", idx))
@@ -505,12 +502,16 @@ fn render_local_dir(
         .gap_2()
         .rounded(px(theme::RADIUS_SM))
         .text_sm()
-        .cursor_pointer();
+        .cursor_pointer()
+        // tty7：侧栏当前行中性 selected 阶 + semibold，不用强调色底/边框。
+        // ponytail: 暂复用 raised 作 selected 阶，后续按 tty7 Surfaces 建完整阶梯。
+        .font_weight(if selected {
+            FontWeight::SEMIBOLD
+        } else {
+            FontWeight::NORMAL
+        });
     if selected {
-        row = row
-            .bg(theme::accent_soft())
-            .border_l_2()
-            .border_color(theme::accent());
+        row = row.bg(theme::raised());
     }
     row = row
         .hover(|s| s.bg(theme::surface()))

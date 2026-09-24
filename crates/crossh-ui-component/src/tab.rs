@@ -2,9 +2,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, AppContext, ClickEvent, Context, ElementId, InteractiveElement, IntoElement,
-    MouseButton, MouseDownEvent, ParentElement, Pixels, Render, RenderOnce, Rgba, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
+    AnyElement, App, AppContext, ClickEvent, Context, ElementId, FontWeight, InteractiveElement,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Render, RenderOnce, Rgba,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
 };
 
 use crate::layout::h_flex;
@@ -234,7 +234,12 @@ impl RenderOnce for TabItem {
             } else {
                 theme::muted_text()
             })
-            .hover(|style| style.text_color(theme::accent()))
+            // tty7：当前标签中性底 + medium，hover 只给中性填充，文字不跳强调色。
+            .font_weight(if active {
+                FontWeight::MEDIUM
+            } else {
+                FontWeight::NORMAL
+            })
             .when_some(dot_color, |view, color| view.child(StatusDot::new(color)))
             .when_some(leading_icon, |view, icon| view.child(icon))
             .child(
@@ -258,11 +263,9 @@ impl RenderOnce for TabItem {
             .h(px(28.))
             .px_1()
             .rounded(px(theme::RADIUS_SM))
-            .when(active, |tab| {
-                tab.bg(theme::accent_soft())
-                    .border_b_2()
-                    .border_color(theme::accent())
-            })
+            // tty7：顶栏当前项用中性 selected 阶，不用强调色底 + 下划线抢主操作。
+            // ponytail: 暂复用 overlay 作 selected 阶，后续按 tty7 Surfaces 建 hover/selected/pressed 阶梯。
+            .when(active, |tab| tab.bg(theme::overlay()))
             .when(!active, |tab| tab.hover(|style| style.bg(theme::raised())))
             .child(label_view)
             .children(children);
@@ -277,7 +280,7 @@ impl RenderOnce for TabItem {
                 .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
                 .drag_over(move |style, incoming: &DragLocalTab, _, _| {
                     if incoming.pinned == pinned {
-                        style.bg(theme::accent_soft())
+                        style.bg(theme::overlay())
                     } else {
                         style
                     }

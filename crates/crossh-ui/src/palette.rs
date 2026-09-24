@@ -57,7 +57,10 @@ pub const fn muted_text() -> Rgb {
 }
 
 pub const fn faint_text() -> Rgb {
-    Rgb::from_hex(0x65717c)
+    // tty7 设计：辅助文字在内容/侧栏/浮层背景上均需 ≥4.5:1，不再叠加透明度。
+    // #939FAB 在 canvas/sidebar/surface 上通过；raised/overlay 上仍不足，
+    // ponytail: 已知上限，后续按 tty7 Surfaces 做分表面文字阶梯再收敛。
+    Rgb::from_hex(0x939fab)
 }
 
 pub const fn accent() -> Rgb {
