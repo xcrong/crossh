@@ -33,7 +33,8 @@ crossh-update     -> no GPUI, release/download/install implementation
 crossh-assets     -> no GPUI, embedded Crossh icon assets and icon identifiers
 crossh-ui         -> GPUI primitives, renderer-independent palette (ex crossh-theme), icon rendering, and the asset-source adapter
 crossh-ui-component -> GPUI widgets on top of crossh-ui
-crossh-note       -> no GPUI, SQLite note store (WAL, FTS5, tags, pinned) and tag normalization
+crossh-note       -> no GPUI, SQLite note store (WAL, FTS5 with a LIKE fallback for
+                      CJK text, pinned ordering) and its content-size limit
 shared resources  -> external `crossh-assets` directory loaded by every binary
 ```
 
@@ -49,7 +50,7 @@ shared resources  -> external `crossh-assets` directory loaded by every binary
 - `crossh-ui-base`: unstyled GPUI behavior and geometry foundation (button behavior, popup placement, list selection); gpui-only, no theme, no application state.
 - `crossh`: process startup plus user-facing feature views and GPUI adapters. `crossh git` and the workspace status-bar Git entry delegate to the sibling `crossh-git` binary; `crossh note` and the workspace status-bar Note entry delegate to the sibling `crossh-note` binary; the `crossh-terminal-view` crate is the `terminal_view`-style host around Zed's terminal foundation.
 - `crossh-git-view`: the GPUI Git Viewer feature: session state, window, input, keymap, and rendering for Changes, History, Branches, Stashes, and conflict resolution. Consumed only by the thin `crossh-git` binary in `src/bin`; the `crossh` application binary reaches Git through the sibling process, never by compiling this crate into its own views.
-- `crossh-note-view`: the GPUI Note Viewer feature: window, list/search/tags, `crossh-editor` input state, and Markdown preview. Consumed only by the thin `crossh-note` binary in `src/bin`; the note store itself stays in `crossh-note`.
+- `crossh-note-view`: the GPUI Note Viewer feature: window, list/search, `crossh-editor` input state, Markdown preview, and the in-note find panel. Split into `window.rs` (state and layout), `find_panel.rs` (find overlay), `format.rs` (pure formatting, no `gpui`), and `markdown.rs` (a thin wrapper over `crossh_editor::TextView`). Consumed only by the thin `crossh-note` binary in `src/bin`; the note store itself stays in `crossh-note`.
 - `features/settings`: application settings persistence and settings window.
 - `features/updates`: update controller and update presentation only.
 `AppShell` is the GPUI composition root for the workspace feature. Session

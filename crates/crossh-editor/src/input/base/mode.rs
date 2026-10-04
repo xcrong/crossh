@@ -27,7 +27,14 @@ pub(crate) struct HighlighterUpdate<'a> {
 #[derive(Clone)]
 pub(crate) enum LayoutMode {
     /// A plain text input mode.
-    PlainText { tab: TabSize, rows: usize },
+    PlainText {
+        tab: TabSize,
+        rows: usize,
+        /// Show a line-number gutter. Available to plain-text inputs too (not
+        /// just code editors) so `TextareaState` can render a gutter; see
+        /// [`InputBaseState::line_number`](crate::input::InputBaseState::line_number).
+        line_number: bool,
+    },
     /// An auto grow input mode.
     AutoGrow {
         rows: usize,
@@ -62,6 +69,7 @@ impl LayoutMode {
         LayoutMode::PlainText {
             tab: TabSize::default(),
             rows: 1,
+            line_number: false,
         }
     }
 
@@ -161,12 +169,23 @@ impl LayoutMode {
         }
     }
 
-    /// Return false if the mode is not [`LayoutMode::CodeEditor`].
+    /// Whether to render a line-number gutter. Both `PlainText` and
+    /// `CodeEditor` can opt in; the gutter painting and the resulting content
+    /// offset are shared, so plain-text inputs get them for free.
     #[inline]
     pub(super) fn line_number(&self) -> bool {
         match self {
             LayoutMode::CodeEditor { line_number, .. } => *line_number,
-            _ => false,
+            LayoutMode::PlainText { line_number, .. } => *line_number,
+            LayoutMode::AutoGrow { .. } => false,
+        }
+    }
+
+    pub(super) fn set_line_number(&mut self, on: bool) {
+        match self {
+            LayoutMode::CodeEditor { line_number, .. } => *line_number = on,
+            LayoutMode::PlainText { line_number, .. } => *line_number = on,
+            LayoutMode::AutoGrow { .. } => {}
         }
     }
 
@@ -339,6 +358,7 @@ mod tests {
         let mode = LayoutMode::PlainText {
             tab: TabSize::default(),
             rows: 5,
+            line_number: false,
         };
         assert_eq!(mode.line_number(), false);
         assert_eq!(mode.rows(), 5);
@@ -349,6 +369,23 @@ mod tests {
         assert_eq!(mode.line_number(), false);
         assert_eq!(mode.rows(), 1);
         assert_eq!(mode.min_rows(), 1);
+    }
+
+    /// 回归：行号栏此前只在 `CodeEditor` 模式下生效，`TextareaState`（笔记编辑器）
+    /// 因此画不出行号。`PlainText` 现在同样可开关。
+    #[test]
+    fn test_plain_text_line_number_toggles() {
+        let mut mode = LayoutMode::plain_text();
+        assert!(!mode.line_number());
+        mode.set_line_number(true);
+        assert!(mode.line_number());
+        mode.set_line_number(false);
+        assert!(!mode.line_number());
+
+        // AutoGrow 没有行号栏，set_line_number 不得 panic。
+        let mut mode = LayoutMode::auto_grow(2, 5);
+        mode.set_line_number(true);
+        assert!(!mode.line_number());
     }
 
     #[test]

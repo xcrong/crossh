@@ -1624,7 +1624,7 @@ dependencies = [
  "gpui",
  "gpui_platform",
  "log",
- "pulldown-cmark",
+ "tempfile",
 ]
 
 [[package]]

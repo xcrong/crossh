@@ -5,7 +5,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
-pub const MAX_CONTENT_BYTES: usize = 8 * 1024;
+/// 单条笔记的字节上限。SQLite TEXT 本身能存到 1 GB，这里只挡病态输入；
+/// 超限一律**拒绝**而非截断——静默砍掉用户写了一半的内容比报错糟糕得多。
+/// 早期版本用 8 KB + 截断，导致长笔记被砍一半且 `is_dirty` 永久为真（存进去的
+/// 是截断版，编辑器里是全文，两者永远不等）。
+pub const MAX_CONTENT_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Note {
@@ -23,16 +27,17 @@ fn now_ts() -> i64 {
         .as_secs() as i64
 }
 
-fn truncate_bytes(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
+/// 校验待写入的内容：trim 后非空、且不超过 [`MAX_CONTENT_BYTES`]。
+/// 返回错误码字符串供 UI 直接展示（`empty_content` / `content_too_large`）。
+fn validate_content(content: &str) -> Result<String, String> {
+    let content = content.trim();
+    if content.is_empty() {
+        return Err("empty_content".to_string());
     }
-    // 在字节边界截断并保证 UTF-8 合法
-    let mut end = max;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
+    if content.len() > MAX_CONTENT_BYTES {
+        return Err("content_too_large".to_string());
     }
-    s[..end].to_string()
+    Ok(content.to_string())
 }
 
 fn corrupt_backup_path(path: &Path) -> PathBuf {
@@ -303,10 +308,7 @@ impl NoteStore {
     }
 
     pub fn create(&self, content: &str) -> Result<Note, String> {
-        let content = truncate_bytes(content.trim(), MAX_CONTENT_BYTES);
-        if content.is_empty() {
-            return Err("empty_content".to_string());
-        }
+        let content = validate_content(content)?;
         let now = now_ts();
         let conn = self.conn.lock();
         conn.execute(
@@ -325,10 +327,7 @@ impl NoteStore {
     }
 
     pub fn update(&self, id: i64, content: &str) -> Result<Note, String> {
-        let content = truncate_bytes(content.trim(), MAX_CONTENT_BYTES);
-        if content.is_empty() {
-            return Err("empty_content".to_string());
-        }
+        let content = validate_content(content)?;
         let now = now_ts();
         let conn = self.conn.lock();
         let changed = conn
@@ -438,11 +437,26 @@ mod tests {
     }
 
     #[test]
-    fn spec_20260827_note__max_bytes_truncated() {
+    fn spec_20260827_note__max_bytes_rejected_not_truncated() {
+        // 回归：旧实现按 8 KB 静默截断，用户写的长笔记被砍掉一半且无从察觉。
+        // 现在超限一律报错，内容不落库。
         let (store, _dir) = tmp_store();
         let big = "a".repeat(MAX_CONTENT_BYTES + 100);
-        let note = store.create(&big).unwrap();
-        assert!(note.content.len() <= MAX_CONTENT_BYTES);
+        assert_eq!(store.create(&big).unwrap_err(), "content_too_large");
+        assert_eq!(store.list().unwrap().len(), 0);
+        // 恰好等于上限应放行（边界不误伤）。
+        let exact = "a".repeat(MAX_CONTENT_BYTES);
+        let note = store.create(&exact).unwrap();
+        assert_eq!(note.content.len(), MAX_CONTENT_BYTES);
+        // update 同样拒绝，且不改动原有内容。
+        assert_eq!(
+            store.update(note.id, &big).unwrap_err(),
+            "content_too_large"
+        );
+        assert_eq!(
+            store.get(note.id).unwrap().unwrap().content.len(),
+            MAX_CONTENT_BYTES
+        );
     }
 
     #[test]

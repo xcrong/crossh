@@ -12,8 +12,8 @@ crossh-ui = { path = "../crossh-ui" }
 crossh-ui-component = { path = "../crossh-ui-component" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a" }
 log = "0.4"
-pulldown-cmark = "0.13"
 
 [dev-dependencies]
 gpui = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a", features = ["test-support"] }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a", features = ["font-kit", "test-support", "wayland", "x11"] }
+tempfile = "3"

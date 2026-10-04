@@ -753,9 +753,19 @@ impl<M: InputModeKind> InputBaseState<M> {
     }
 
     /// Set presentation padding for multi-line text and its scrollbar layout.
+    ///
+    /// Prefer this over padding on a wrapper element: the padding is folded
+    /// into the scrollable bounds, so the last line can still scroll fully
+    /// into view and the scrollbar never overlaps the text.
     #[doc(hidden)]
     pub fn set_editor_paddings(&mut self, paddings: Edges<Pixels>) {
         self.editor_paddings = paddings;
+    }
+
+    /// The padding currently applied by [`Self::set_editor_paddings`].
+    #[doc(hidden)]
+    pub fn editor_paddings(&self) -> Edges<Pixels> {
+        self.editor_paddings
     }
 
     pub fn apply_highlighter_fold_candidates(
@@ -5133,6 +5143,23 @@ impl<M: crate::input::MultiLineMode> InputBaseState<M> {
         cx.notify();
     }
 
+    /// Show or hide the line-number gutter.
+    ///
+    /// Available to every multi-line mode, not just code editors: `TextareaState`
+    /// gains a gutter too, which is what note editing needs. Turning it on shifts
+    /// the text content right by the gutter width; the shared layout path already
+    /// accounts for that offset in hit-testing and cursor placement.
+    pub fn line_number(mut self, line_number: bool) -> Self {
+        self.mode.set_line_number(line_number);
+        self
+    }
+
+    /// See [`Self::line_number`].
+    pub fn set_line_number(&mut self, line_number: bool, _: &mut Window, cx: &mut Context<Self>) {
+        self.mode.set_line_number(line_number);
+        cx.notify();
+    }
+
     /// Set the soft wrap mode, default is true.
     #[doc(hidden)]
     pub fn soft_wrap(mut self, wrap: bool) -> Self {
@@ -5335,22 +5362,5 @@ impl InputBaseState<crate::input::EditorMode> {
         }
         cx.notify();
         true
-    }
-
-    /// Set enable/disable line number.
-    #[doc(hidden)]
-    pub fn line_number(mut self, line_number: bool) -> Self {
-        if let LayoutMode::CodeEditor { line_number: l, .. } = &mut self.mode {
-            *l = line_number;
-        }
-        self
-    }
-
-    /// Set line number.
-    pub fn set_line_number(&mut self, line_number: bool, _: &mut Window, cx: &mut Context<Self>) {
-        if let LayoutMode::CodeEditor { line_number: l, .. } = &mut self.mode {
-            *l = line_number;
-        }
-        cx.notify();
     }
 }

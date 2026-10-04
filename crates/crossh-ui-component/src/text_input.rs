@@ -10,8 +10,8 @@ use crossh_ui_base::{
 };
 use gpui::{
     App, ElementId, Entity, EntityInputHandler, FocusHandle, InteractiveElement, IntoElement,
-    KeyDownEvent, ParentElement, RenderOnce, Rgba, SharedString, StatefulInteractiveElement,
-    Styled, Window, div, prelude::FluentBuilder, px,
+    KeyContext, KeyDownEvent, ParentElement, RenderOnce, Rgba, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
 };
 
 use crate::theme;
@@ -50,6 +50,7 @@ pub struct TextInput<V> {
     suffix_icon: Option<icons::IconName>,
     entity: Option<Entity<V>>,
     on_key_down: Option<KeyHandler>,
+    key_context: Option<KeyContext>,
 }
 
 impl<V> TextInput<V> {
@@ -75,6 +76,7 @@ impl<V> TextInput<V> {
             suffix_icon: None,
             entity: None,
             on_key_down: None,
+            key_context: None,
         }
     }
 
@@ -194,6 +196,14 @@ impl<V> TextInput<V> {
         self.on_key_down = Some(Rc::new(handler));
         self
     }
+
+    /// Push a key context while this input holds focus, so window-level key
+    /// bindings scoped to it (Enter to confirm, Escape to dismiss, …) resolve
+    /// here instead of bubbling to an ancestor context.
+    pub fn key_context(mut self, context: &str) -> Self {
+        self.key_context = KeyContext::try_from(context).ok();
+        self
+    }
 }
 
 impl<V: EntityInputHandler + 'static> IntoElement for TextInput<V> {
@@ -231,6 +241,7 @@ impl<V: EntityInputHandler + 'static> RenderOnce for TextInput<V> {
             full_width,
             entity,
             on_key_down,
+            key_context,
             suffix_icon,
         } = self;
         let focused = focus.is_focused(window);
@@ -364,6 +375,7 @@ impl<V: EntityInputHandler + 'static> RenderOnce for TextInput<V> {
             .text_color(text_color)
             .track_focus(&focus)
             .tab_stop(true)
+            .when_some(key_context, |el, context| el.key_context(context))
             .focus(|style| style.border_color(theme::focus_ring()))
             .when(focus_visible_accent, |el| {
                 el.focus_visible(|style| style.border_color(theme::accent()))
