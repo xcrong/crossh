@@ -107,6 +107,7 @@ tooltip:
   close_tab: Close tab
   host_sidebar: Show or hide the project sidebar
   timestamps: Show or hide line timestamps
+  focus_follows_mouse: Switch panes on hover in split view
   split_terminal: Split the terminal into two columns
   close_split: Close the right terminal
   split_terminal_narrow: The window is too narrow for two terminal columns

@@ -107,6 +107,7 @@ tooltip:
   close_tab: 关闭标签
   host_sidebar: 显示或隐藏项目侧栏
   timestamps: 显示或隐藏行时间戳
+  focus_follows_mouse: 自动聚焦
   split_terminal: 将终端分为左右两栏
   close_split: 关闭右侧终端
   split_terminal_narrow: 窗口太窄，无法使用两栏终端

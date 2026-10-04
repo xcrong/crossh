@@ -37,6 +37,10 @@ pub(crate) struct WorkspaceSettings {
     /// 检测候选列表是代码常量 `editor_launcher::DEFAULT_EDITOR_PRIORITY`，不可配置。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) editor_command: Option<String>,
+    /// 焦点跟随鼠标：分屏时鼠标悬停到哪个窗格，焦点（含 accent 边框）就跟到哪。
+    /// 仅在分屏布局内生效，不跨标签页切换（横扫标签条会导致视图乱跳）。
+    #[serde(default = "default_focus_follows_mouse")]
+    pub(crate) focus_follows_mouse: bool,
 }
 
 impl Default for WorkspaceSettings {
@@ -47,6 +51,7 @@ impl Default for WorkspaceSettings {
             recent_dirs_max: default_recent_dirs_max(),
             pinned_local_tabs: Vec::new(),
             editor_command: None,
+            focus_follows_mouse: default_focus_follows_mouse(),
         }
     }
 }
@@ -92,6 +97,11 @@ fn default_show_host_sidebar() -> bool {
     true
 }
 
+/// 焦点跟随鼠标默认开启：分屏越多，鼠标定位比键盘导航更省事。
+fn default_focus_follows_mouse() -> bool {
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,6 +129,24 @@ mod tests {
         .normalized();
         assert_eq!(high.recent_dirs_max, MAX_RECENT_DIRS_MAX);
         assert_eq!(high.recent_dirs, paths);
+    }
+
+    #[test]
+    fn focus_follows_mouse_defaults_on_for_legacy_and_explicit_configs() {
+        // 老版本配置文件不含该键，反序列化必须回落到默认开启而非 false。
+        assert!(
+            WorkspaceSettings::default().focus_follows_mouse,
+            "默认应开启"
+        );
+
+        let legacy = toml::from_str::<WorkspaceSettings>("").unwrap();
+        assert!(legacy.focus_follows_mouse, "缺失键应回落到默认值 true");
+
+        let off = toml::from_str::<WorkspaceSettings>("focus_follows_mouse = false").unwrap();
+        assert!(!off.focus_follows_mouse, "显式关闭必须被尊重");
+
+        let on = toml::from_str::<WorkspaceSettings>("focus_follows_mouse = true").unwrap();
+        assert!(on.focus_follows_mouse, "显式开启必须被尊重");
     }
 
     #[test]

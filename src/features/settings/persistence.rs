@@ -122,6 +122,7 @@ mod tests {
                 recent_dirs: vec![PathBuf::from("/a"), PathBuf::from("/b")],
                 recent_dirs_max: 2,
                 editor_command: Some("zed".into()),
+                focus_follows_mouse: false,
                 pinned_local_tabs: vec![
                     crate::features::workspace::settings::PinnedLocalTab {
                         pin_id: 1,

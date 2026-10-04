@@ -594,8 +594,33 @@ fn render_split_pane(
                 cx.stop_propagation();
             }),
         )
+        // 焦点跟随鼠标：仅切分屏格，不跨标签页。
+        .on_mouse_move(
+            cx.listener(move |this, event: &MouseMoveEvent, _window, cx| {
+                let hovered_side_is_focused = this
+                    .workspace
+                    .active_split()
+                    .is_some_and(|split| split.focused == side);
+                // 按住拖选文本（pressed_button 非空）与拖拽分隔线（active_drag）期间必须让位，
+                // 否则焦点会在选字/拉手柄的过程中乱跳。
+                let is_plain_hover = event.pressed_button.is_none() && !cx.has_active_drag();
+                if hover_should_switch_focus(
+                    this.workspace_settings.focus_follows_mouse,
+                    hovered_side_is_focused,
+                    is_plain_hover,
+                ) {
+                    this.focus_terminal_split(side, cx);
+                }
+            }),
+        )
         .child(content)
         .into_any_element()
+}
+
+/// 焦点跟随鼠标的纯判定：仅当开关开启、当前是纯悬停、且悬停格尚非聚焦侧时才切焦点。
+/// `is_plain_hover` 为 false 时（拖选文本 / 拖拽分隔线）一律不切焦点。
+fn hover_should_switch_focus(enabled: bool, already_focused: bool, is_plain_hover: bool) -> bool {
+    enabled && is_plain_hover && !already_focused
 }
 
 fn terminal_split_available(width: Pixels) -> bool {
@@ -855,6 +880,15 @@ pub(crate) fn render_workspace_status_bar(
             cx,
         ));
         left = left.child(render_workspace_terminal_toggle(shell, available_width, cx));
+        // 焦点跟随鼠标与时间戳同属"分屏体验"开关，故置于终端区末尾。
+        left = left.child(render_status_bar_toggle(
+            "status-focus-follows-mouse",
+            icons::IconName::Crosshair,
+            "tooltip.focus_follows_mouse",
+            shell.workspace_settings.focus_follows_mouse,
+            AppShell::toggle_focus_follows_mouse,
+            cx,
+        ));
     }
     {
         let compose_active = shell.workspace.compose_visible_for_focused();
@@ -1245,6 +1279,21 @@ pub fn render_default_command_editor(
 mod tests {
     use super::*;
     use gpui::{ClipboardEntry, TestAppContext};
+
+    #[test]
+    fn hover_should_switch_focus_respects_toggle_drag_and_current_focus() {
+        // 开启 + 纯悬停 + 非聚焦侧：切换（唯一的正例）
+        assert!(hover_should_switch_focus(true, false, true));
+        // 关闭开关：永不切换，哪怕悬停在别的格
+        assert!(!hover_should_switch_focus(false, false, true));
+        // 已是聚焦侧：幂等短路，避免每帧重复切焦点
+        assert!(!hover_should_switch_focus(true, true, true));
+        // 拖选文本 / 拖分隔线期间让位，不抢焦点
+        assert!(!hover_should_switch_focus(true, false, false));
+        // 三者任一不满足都不得切换（穷举开关关闭 + 两种抑制）
+        assert!(!hover_should_switch_focus(false, true, false));
+        assert!(!hover_should_switch_focus(true, true, false));
+    }
 
     #[gpui::test]
     fn spec_20260817_workspace_status_path_copy_copies_full_current_path_to_clipboard(

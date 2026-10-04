@@ -57,6 +57,12 @@ impl AppShell {
         cx.notify();
     }
 
+    pub(crate) fn toggle_focus_follows_mouse(&mut self, cx: &mut Context<Self>) {
+        self.workspace_settings.focus_follows_mouse = !self.workspace_settings.focus_follows_mouse;
+        self.persist_settings();
+        cx.notify();
+    }
+
     pub(crate) fn toggle_terminal_notifications(&mut self, cx: &mut Context<Self>) {
         let mut terminal = self.terminal_settings.clone();
         terminal.notifications_enabled = !terminal.notifications_enabled;

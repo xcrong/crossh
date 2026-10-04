@@ -176,6 +176,7 @@ define_icons! {
     Clock => "icons/clock.svg",
     Columns2 => "icons/columns-2.svg",
     Copy => "icons/copy.svg",
+    Crosshair => "icons/crosshair.svg",
     Rows2 => "icons/rows-2.svg",
     Download => "icons/download.svg",
     FileText => "icons/file-text.svg",
