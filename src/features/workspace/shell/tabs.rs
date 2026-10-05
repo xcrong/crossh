@@ -884,21 +884,40 @@ impl AppShell {
     }
 
     /// 把焦点交还给当前活动终端 tab（切换 tab / 关闭模态后调用）。
-    pub(crate) fn refocus_active_terminal(&self, cx: &mut Context<Self>) {
-        if let Some(ActiveView::LocalSession(session_id)) = self.workspace.active_view {
-            if let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) {
-                session.terminal.request_focus(cx);
-            }
-        } else if let Some(session_id) = self
+    ///
+    /// 状态栏只渲染 `focused_view()` 的 git 段，而后台轮询也只轮询这一个
+    /// 会话；焦点换人时若不补刷，切过去看到的就是上一轮缓存的陈旧状态，
+    /// 必须等下一个 `GIT_STATUS_REFRESH_INTERVAL` 才追平。
+    pub(crate) fn refocus_active_terminal(&mut self, cx: &mut Context<Self>) {
+        let session_id = self
             .workspace
-            .sessions
-            .local_sessions
-            .keys()
-            .next()
-            .cloned()
-            && let Some(session) = self.workspace.sessions.local_sessions.get(&session_id)
+            .active_view
+            .map(|view| match view {
+                ActiveView::LocalSession(session_id) => session_id,
+            })
+            .or_else(|| {
+                self.workspace
+                    .sessions
+                    .local_sessions
+                    .keys()
+                    .next()
+                    .copied()
+            });
+        if let Some(session_id) = session_id
+            && let Some(session) = self.workspace.sessions.local_sessions.get_mut(&session_id)
         {
             session.terminal.request_focus(cx);
+        }
+        self.refresh_focused_git_status(cx);
+    }
+
+    /// 立刻补一次状态栏聚焦会话的 git 状态，让切焦点后无需等待下一个轮询 tick。
+    ///
+    /// `GitStatusRefresh` 会把在途期间的并发请求合并成一次后续检查，因此「焦点
+    /// 跟随鼠标」下快速划过多个窗格也最多只多跑一次 `git status`。
+    fn refresh_focused_git_status(&mut self, cx: &mut Context<Self>) {
+        if let Some(ActiveView::LocalSession(session_id)) = self.workspace.focused_view() {
+            self.refresh_git_status(session_id, false, cx);
         }
     }
 }
