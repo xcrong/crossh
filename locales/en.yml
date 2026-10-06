@@ -120,6 +120,10 @@ tooltip:
   system_monitor: System monitor
   scratch_terminal: Scratch terminal
   note: Note
+  update_check: Check for updates
+  update_download: Download update %{version}
+  update_downloading: Downloading %{version} · %{progress}
+  update_restart: Restart to install %{version}
 toast:
   path_copied: Path copied
   copied: Copied
@@ -127,6 +131,7 @@ toast:
   editor_not_found: No editor detected. Configure one in Settings.
   editor_spawn_failed: Failed to launch editor
   search_no_match: No matching project
+  update_downloaded: Update downloaded — restart from the status bar to install
 
 context_menu:
   copy_path: Copy Path

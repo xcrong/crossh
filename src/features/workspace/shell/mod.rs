@@ -22,7 +22,7 @@ use gpui::{
 };
 
 use crate::features::settings::{self, SettingsSnapshot};
-use crate::features::updates::{UpdateController, UpdateSettings};
+use crate::features::updates::{UpdateController, UpdateNotice, UpdateSettings};
 use crate::features::workspace::command_palette::CommandPaletteState;
 use crate::features::workspace::modal_editor::{DefaultCommandEditor, RenameEditor};
 use crate::features::workspace::pinned::{pinned_tabs_for_project, prune_missing_pinned_tabs};
@@ -60,6 +60,7 @@ mod shell_input;
 mod shell_render;
 mod split;
 mod tabs;
+mod update_indicator;
 
 actions!(
     shell,
@@ -167,6 +168,10 @@ pub struct AppShell {
     pub(crate) terminal_settings: TerminalSettings,
     pub(crate) update_settings: UpdateSettings,
     pub(crate) updates: Entity<UpdateController>,
+    /// 用户主动检查后的「已是最新」提示等待位。
+    update_notice: UpdateNotice,
+    /// 更新状态变化时刷新外壳（状态栏指示器）。
+    _updates_subscription: Subscription,
     pub(crate) workspace_settings: WorkspaceSettings,
     /// 侧栏宽度与拖动状态；只影响布局，不改变导航状态。
     pub(crate) sidebar_width: Rc<Cell<f32>>,
@@ -248,46 +253,56 @@ impl AppShell {
             );
         }
 
-        let shell = cx.new(|cx| Self {
-            workspace: WorkspaceState::new(local_dirs),
-            status: None,
-            search_query: TextEditingState::new(String::new()),
-            search_focus: cx.focus_handle(),
-            shell_focus: cx.focus_handle(),
-            _project_picker: None,
-            language_preference,
-            context_menu: None,
-            terminal_settings,
-            update_settings,
-            updates: updates.clone(),
-            workspace_settings,
-            sidebar_width: Rc::new(Cell::new(theme::SIDEBAR_WIDTH)),
-            sidebar_dragging: Rc::new(Cell::new(false)),
-            sidebar_scroll: gpui::ScrollHandle::new(),
-            tab_scroll: gpui::ScrollHandle::new(),
-            terminal_split_dragging: Rc::new(Cell::new(false)),
-            terminal_split_vertical_dragging: Rc::new(Cell::new(false)),
-            terminal_split_vertical_right_dragging: Rc::new(Cell::new(false)),
-            terminal_split_cross_drag: Rc::new(Cell::new(None)),
-            rename_editor: None,
-            default_command_editor: None,
-            command_palette: None,
-            compose_focus: cx.focus_handle(),
-            compose_scroll: gpui::ScrollHandle::new(),
-            _git_status_refresh_task: None,
-            git_sync: BTreeMap::new(),
-            git_fetching: HashSet::new(),
-            system_monitor: SystemMonitorState::new(),
-            system_sampler: None,
-            _system_monitor_task: None,
-            scratch_visible: false,
-            scratch_terminal: None,
-            scratch_height: Rc::new(Cell::new(0.)),
-            scratch_dragging: Rc::new(Cell::new(false)),
-            scratch_subscription: None,
-            quit_confirmation_open: false,
-            shutdown_in_progress: false,
-            tab_close_confirmation_open: false,
+        let shell = cx.new(|cx| {
+            let updates_subscription = cx.observe(
+                &updates,
+                |this: &mut Self, _updates, cx: &mut Context<Self>| {
+                    this.sync_update_status(cx);
+                },
+            );
+            Self {
+                workspace: WorkspaceState::new(local_dirs),
+                status: None,
+                search_query: TextEditingState::new(String::new()),
+                search_focus: cx.focus_handle(),
+                shell_focus: cx.focus_handle(),
+                _project_picker: None,
+                language_preference,
+                context_menu: None,
+                terminal_settings,
+                update_settings,
+                updates: updates.clone(),
+                update_notice: UpdateNotice::default(),
+                _updates_subscription: updates_subscription,
+                workspace_settings,
+                sidebar_width: Rc::new(Cell::new(theme::SIDEBAR_WIDTH)),
+                sidebar_dragging: Rc::new(Cell::new(false)),
+                sidebar_scroll: gpui::ScrollHandle::new(),
+                tab_scroll: gpui::ScrollHandle::new(),
+                terminal_split_dragging: Rc::new(Cell::new(false)),
+                terminal_split_vertical_dragging: Rc::new(Cell::new(false)),
+                terminal_split_vertical_right_dragging: Rc::new(Cell::new(false)),
+                terminal_split_cross_drag: Rc::new(Cell::new(None)),
+                rename_editor: None,
+                default_command_editor: None,
+                command_palette: None,
+                compose_focus: cx.focus_handle(),
+                compose_scroll: gpui::ScrollHandle::new(),
+                _git_status_refresh_task: None,
+                git_sync: BTreeMap::new(),
+                git_fetching: HashSet::new(),
+                system_monitor: SystemMonitorState::new(),
+                system_sampler: None,
+                _system_monitor_task: None,
+                scratch_visible: false,
+                scratch_terminal: None,
+                scratch_height: Rc::new(Cell::new(0.)),
+                scratch_dragging: Rc::new(Cell::new(false)),
+                scratch_subscription: None,
+                quit_confirmation_open: false,
+                shutdown_in_progress: false,
+                tab_close_confirmation_open: false,
+            }
         });
         updates.update(cx, |updates, cx| updates.start_startup_check(cx));
         shell

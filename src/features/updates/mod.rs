@@ -235,3 +235,145 @@ impl UpdateController {
         self.status = UpdateStatus::Failed(error);
     }
 }
+
+/// 用户主动发起的更新动作：异步结果落地后补一次提示。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UpdateNoticeKind {
+    /// 点击检查：落地为「已是最新」时提示。
+    UpToDate,
+    /// 点击下载：下载完成时提示可以重启安装。
+    Downloaded,
+}
+
+/// 等待中的提示槽位。
+///
+/// 检查与下载都是异步的：点击只发起请求，结果稍后由 [`UpdateController`]
+/// 落地。自动检查（启动时、菜单）不经过这里，避免每次启动都弹提示。
+/// 同一时刻至多一个等待项（点击是串行的，后一次覆盖前一次）。
+#[derive(Debug, Default)]
+pub(crate) struct UpdateNotice {
+    pending: Option<UpdateNoticeKind>,
+}
+
+impl UpdateNotice {
+    /// 用户发起一次检查 / 下载，等结果落地。
+    pub(crate) fn request(&mut self, kind: UpdateNoticeKind) {
+        self.pending = Some(kind);
+    }
+
+    /// 用最新状态结算等待中的提示；返回应补哪条提示（无则 `None`）。
+    pub(crate) fn resolve(&mut self, status: &UpdateStatus) -> Option<UpdateNoticeKind> {
+        let kind = self.pending?;
+        let landed = match (kind, status) {
+            // 结果尚未落地（仍在检查 / 下载），继续等待。
+            (UpdateNoticeKind::UpToDate, UpdateStatus::Checking)
+            | (UpdateNoticeKind::Downloaded, UpdateStatus::Downloading { .. }) => return None,
+            // 落地成用户等待的那个结果：提示一次。
+            (UpdateNoticeKind::UpToDate, UpdateStatus::UpToDate)
+            | (UpdateNoticeKind::Downloaded, UpdateStatus::Ready { .. }) => true,
+            // 其它结果（发现新版本 / 失败）：指示器图标已表达状态，不再补 toast。
+            _ => false,
+        };
+        self.pending = None;
+        landed.then_some(kind)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use semver::Version;
+
+    use super::{UpdateCandidate, UpdateNotice, UpdateNoticeKind, UpdateStatus, UpdateTarget};
+    use crossh_update::{ArtifactFormat, UpdateArtifact};
+
+    fn candidate() -> UpdateCandidate {
+        UpdateCandidate {
+            version: Version::new(0, 2, 0),
+            notes: String::new(),
+            release_url: None,
+            artifact: UpdateArtifact {
+                url: "https://example.com/crossh.zip".into(),
+                filename: "crossh.zip".into(),
+                format: ArtifactFormat::Zip,
+                sha256: "0".repeat(64),
+                size: 1024,
+            },
+            target: UpdateTarget::MacosAarch64,
+        }
+    }
+
+    #[test]
+    fn notice_fires_once_for_interactive_up_to_date() {
+        let mut notice = UpdateNotice::default();
+        // 自动检查不经过 request，绝不弹提示。
+        assert_eq!(notice.resolve(&UpdateStatus::UpToDate), None);
+
+        notice.request(UpdateNoticeKind::UpToDate);
+        // 点击后结果未落地：继续等待。
+        assert_eq!(notice.resolve(&UpdateStatus::Checking), None);
+        // 落地为已是最新：弹一次。
+        assert_eq!(
+            notice.resolve(&UpdateStatus::UpToDate),
+            Some(UpdateNoticeKind::UpToDate)
+        );
+        // 同一次请求不重复弹。
+        assert_eq!(notice.resolve(&UpdateStatus::UpToDate), None);
+    }
+
+    #[test]
+    fn notice_fires_once_for_interactive_download() {
+        let mut notice = UpdateNotice::default();
+        notice.request(UpdateNoticeKind::Downloaded);
+        // 下载进度变化不属于落地，继续等待。
+        assert_eq!(
+            notice.resolve(&UpdateStatus::Downloading {
+                candidate: candidate(),
+                downloaded: 512,
+                total: 1024,
+            }),
+            None
+        );
+        // 下载完成：提示可以重启安装。
+        assert_eq!(
+            notice.resolve(&UpdateStatus::Ready {
+                candidate: candidate(),
+                package: PathBuf::from("/tmp/crossh.zip"),
+            }),
+            Some(UpdateNoticeKind::Downloaded)
+        );
+        assert_eq!(
+            notice.resolve(&UpdateStatus::Ready {
+                candidate: candidate(),
+                package: PathBuf::from("/tmp/crossh.zip"),
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn notice_drops_when_interactive_action_finds_update_or_fails() {
+        let mut notice = UpdateNotice::default();
+
+        notice.request(UpdateNoticeKind::UpToDate);
+        assert_eq!(notice.resolve(&UpdateStatus::Available(candidate())), None);
+        assert_eq!(notice.resolve(&UpdateStatus::UpToDate), None);
+
+        notice.request(UpdateNoticeKind::UpToDate);
+        assert_eq!(notice.resolve(&UpdateStatus::Failed("boom".into())), None);
+        assert_eq!(notice.resolve(&UpdateStatus::UpToDate), None);
+
+        notice.request(UpdateNoticeKind::Downloaded);
+        assert_eq!(notice.resolve(&UpdateStatus::Failed("boom".into())), None);
+    }
+
+    #[test]
+    fn later_action_replaces_the_pending_notice() {
+        let mut notice = UpdateNotice::default();
+        notice.request(UpdateNoticeKind::UpToDate);
+        // 用户改点下载：等待项被替换，检查落地不再补提示。
+        notice.request(UpdateNoticeKind::Downloaded);
+        assert_eq!(notice.resolve(&UpdateStatus::UpToDate), None);
+    }
+}

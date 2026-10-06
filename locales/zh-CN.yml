@@ -120,6 +120,10 @@ tooltip:
   system_monitor: 系统监视器
   scratch_terminal: 临时终端
   note: 笔记
+  update_check: 检查更新
+  update_download: 下载更新 %{version}
+  update_downloading: 正在下载 %{version} · %{progress}
+  update_restart: 重启并安装 %{version}
 toast:
   path_copied: 路径已复制
   copied: 已复制
@@ -127,6 +131,7 @@ toast:
   editor_not_found: 未检测到编辑器，可在设置中配置
   editor_spawn_failed: 编辑器启动失败
   search_no_match: 未找到匹配的项目
+  update_downloaded: 更新已下载，点击状态栏按钮重启安装
 
 context_menu:
   copy_path: 复制路径

@@ -11,6 +11,7 @@ use gpui::{
 };
 
 use crate::features::settings::is_settings_window_open;
+use crate::features::updates::UpdateStatus;
 use crate::features::workspace::empty_state;
 use crate::features::workspace::registry::{SplitSide, TerminalSplitState};
 use crate::features::workspace::shell::{AppShell, CrossDragState, GitSyncOperation, GitSyncState};
@@ -977,12 +978,129 @@ pub(crate) fn render_workspace_status_bar(
                     }
                 }))
                 .into_any_element(),
-        );
+        )
+        .child(render_update_indicator(shell, cx));
 
     StatusBar::new("workspace-status-bar")
         .child(left)
         .child(right)
         .into_any_element()
+}
+
+/// 状态栏更新指示器：检查 → 下载 → 重启，随更新状态切换图标与点击动作。
+fn render_update_indicator(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
+    let status = shell
+        .updates
+        .read_with(cx, |updates, _app| updates.status().clone());
+    let indicator = update_indicator(&status);
+    let mut row = div().flex().items_center().gap_1().child(
+        Button::new("status-update")
+            .size(ButtonSize::Icon(px(22.)))
+            .variant(ButtonVariant::Ghost)
+            .disabled(indicator.disabled)
+            .icon(icons::icon(indicator.icon, 13.).text_color(indicator.color))
+            .tooltip(indicator.tooltip)
+            .on_click(cx.listener(|this, _ev, _window, cx| {
+                this.activate_update_indicator(cx);
+            })),
+    );
+    if let Some(progress) = indicator.progress {
+        row = row.child(
+            div()
+                .text_color(theme::muted_text())
+                .child(SharedString::from(progress)),
+        );
+    }
+    row.into_any_element()
+}
+
+/// 更新状态在状态栏上的呈现：图标、颜色、提示、可点击性与下载进度文本。
+struct UpdateIndicator {
+    icon: icons::IconName,
+    color: gpui::Rgba,
+    tooltip: String,
+    /// 检查/下载进行中：只展示状态，不接受点击。
+    disabled: bool,
+    progress: Option<String>,
+}
+
+fn update_indicator(status: &UpdateStatus) -> UpdateIndicator {
+    match status {
+        UpdateStatus::Idle => UpdateIndicator {
+            icon: icons::IconName::RefreshCw,
+            color: theme::muted_text(),
+            tooltip: i18n::text("tooltip.update_check"),
+            disabled: false,
+            progress: None,
+        },
+        UpdateStatus::Checking => UpdateIndicator {
+            icon: icons::IconName::RefreshCw,
+            color: theme::info(),
+            tooltip: i18n::text("settings.updates_checking"),
+            disabled: true,
+            progress: None,
+        },
+        UpdateStatus::UpToDate => UpdateIndicator {
+            icon: icons::IconName::Check,
+            color: theme::muted_text(),
+            tooltip: i18n::text("settings.updates_up_to_date"),
+            disabled: false,
+            progress: None,
+        },
+        UpdateStatus::Available(candidate) => UpdateIndicator {
+            icon: icons::IconName::Download,
+            color: theme::info(),
+            tooltip: rust_i18n::t!(
+                "tooltip.update_download",
+                version = candidate.version.to_string()
+            )
+            .to_string(),
+            disabled: false,
+            progress: None,
+        },
+        UpdateStatus::Downloading {
+            candidate,
+            downloaded,
+            total,
+        } => {
+            let fraction = if *total == 0 {
+                0.
+            } else {
+                (*downloaded as f32 / *total as f32).clamp(0., 1.)
+            };
+            let progress = format!("{:.0}%", fraction * 100.);
+            UpdateIndicator {
+                icon: icons::IconName::Download,
+                color: theme::warning(),
+                tooltip: rust_i18n::t!(
+                    "tooltip.update_downloading",
+                    version = candidate.version.to_string(),
+                    progress = progress.clone()
+                )
+                .to_string(),
+                disabled: true,
+                progress: Some(progress),
+            }
+        }
+        UpdateStatus::Ready { candidate, .. } => UpdateIndicator {
+            icon: icons::IconName::RefreshCw,
+            color: theme::accent(),
+            tooltip: rust_i18n::t!(
+                "tooltip.update_restart",
+                version = candidate.version.to_string()
+            )
+            .to_string(),
+            disabled: false,
+            progress: None,
+        },
+        UpdateStatus::Failed(error) => UpdateIndicator {
+            icon: icons::IconName::CircleX,
+            color: theme::danger(),
+            tooltip: rust_i18n::t!("settings.updates_failed", error = error).to_string(),
+            disabled: false,
+            progress: None,
+        },
+    }
 }
 
 fn render_status_bar_toggle(
@@ -1278,6 +1396,7 @@ pub fn render_default_command_editor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossh_update::{ArtifactFormat, UpdateArtifact, UpdateCandidate, UpdateTarget};
     use gpui::{ClipboardEntry, TestAppContext};
 
     #[test]
@@ -1325,5 +1444,84 @@ mod tests {
         assert_eq!(terminal_split_left_width(0., 500., 160., 940.), 500.);
         assert_eq!(terminal_split_left_width(220., 500., 160., 940.), 220.);
         assert_eq!(terminal_split_left_width(760., 500., 160., 940.), 760.);
+    }
+
+    fn update_candidate() -> UpdateCandidate {
+        UpdateCandidate {
+            version: semver::Version::new(0, 2, 0),
+            notes: String::new(),
+            release_url: None,
+            artifact: UpdateArtifact {
+                url: "https://example.com/crossh.zip".into(),
+                filename: "crossh.zip".into(),
+                format: ArtifactFormat::Zip,
+                sha256: "0".repeat(64),
+                size: 1024,
+            },
+            target: UpdateTarget::MacosAarch64,
+        }
+    }
+
+    #[test]
+    fn update_indicator_maps_every_status_to_its_action() {
+        let idle = update_indicator(&UpdateStatus::Idle);
+        assert_eq!(idle.icon, icons::IconName::RefreshCw);
+        assert!(!idle.disabled);
+
+        // 检查/下载进行中不接受点击，避免重复触发。
+        assert!(update_indicator(&UpdateStatus::Checking).disabled);
+
+        assert_eq!(
+            update_indicator(&UpdateStatus::UpToDate).icon,
+            icons::IconName::Check
+        );
+        assert_eq!(
+            update_indicator(&UpdateStatus::Available(update_candidate())).icon,
+            icons::IconName::Download
+        );
+
+        let downloading = update_indicator(&UpdateStatus::Downloading {
+            candidate: update_candidate(),
+            downloaded: 512,
+            total: 1024,
+        });
+        assert!(downloading.disabled);
+        assert_eq!(downloading.progress.as_deref(), Some("50%"));
+
+        // 总大小未知时按 0% 处理，不得出现 NaN。
+        let unknown_total = update_indicator(&UpdateStatus::Downloading {
+            candidate: update_candidate(),
+            downloaded: 0,
+            total: 0,
+        });
+        assert_eq!(unknown_total.progress.as_deref(), Some("0%"));
+
+        let ready = update_indicator(&UpdateStatus::Ready {
+            candidate: update_candidate(),
+            package: PathBuf::from("/tmp/crossh.zip"),
+        });
+        assert_eq!(ready.icon, icons::IconName::RefreshCw);
+        assert_eq!(ready.color, theme::accent());
+        assert!(!ready.disabled);
+
+        let failed = update_indicator(&UpdateStatus::Failed("boom".into()));
+        assert_eq!(failed.icon, icons::IconName::CircleX);
+        assert_eq!(failed.color, theme::danger());
+    }
+
+    #[test]
+    fn update_indicator_copy_resolves_in_both_locales() {
+        for locale in ["en", "zh-CN"] {
+            for key in [
+                "tooltip.update_check",
+                "tooltip.update_download",
+                "tooltip.update_downloading",
+                "tooltip.update_restart",
+                "toast.update_downloaded",
+            ] {
+                let text = rust_i18n::t!(key, locale = locale).to_string();
+                assert_ne!(text, key, "missing locale entry {key} for {locale}");
+            }
+        }
     }
 }
