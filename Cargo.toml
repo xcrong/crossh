@@ -6,10 +6,13 @@ license = "GPL-3.0-or-later"
 default-run = "crossh"
 
 [features]
-default = ["wayland", "x11"]
+default = ["wayland", "x11", "updates-network"]
 visual-tests = []
 wayland = ["gpui_platform/wayland"]
 x11 = ["gpui_platform/x11"]
+# Release behavior. The dev loop builds without it to skip reqwest/rustls/aws-lc (~80s cold):
+# cargo check --no-default-features --features wayland,x11
+updates-network = ["crossh-update/network"]
 
 [workspace]
 members = [
@@ -36,7 +39,7 @@ crossh-note-view = { path = "crates/crossh-note-view" }
 crossh-git-view = { path = "crates/crossh-git-view" }
 crossh-terminal = { path = "crates/crossh-terminal" }
 crossh-terminal-view = { path = "crates/crossh-terminal-view" }
-crossh-update = { path = "crates/crossh-update" }
+crossh-update = { path = "crates/crossh-update", default-features = false }
 crossh-ui = { path = "crates/crossh-ui" }
 crossh-ui-component = { path = "crates/crossh-ui-component" }
 crossh-editor = { path = "crates/crossh-editor" }

@@ -7,3 +7,8 @@ rustflags = ["-C", "link-arg=-Wl,-dead_strip"]
 
 [target.x86_64-apple-darwin]
 rustflags = ["-C", "link-arg=-Wl,-dead_strip"]
+
+# Fast dev-loop check: same backends as default, but without the
+# updates-network feature (skips reqwest/rustls/aws-lc, ~80s cold).
+[alias]
+check-dev = "check --no-default-features --features wayland,x11"

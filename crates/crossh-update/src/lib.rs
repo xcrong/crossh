@@ -11,6 +11,7 @@ pub mod signature;
 pub const DEFAULT_MANIFEST_URL: &str =
     "https://github.com/xcrong/crossh/releases/latest/download/stable.json";
 
+#[cfg(feature = "network")]
 /// 更新加速前缀：manifest 与 artifact 请求默认优先经此前缀转发，
 /// 加速通道不可达时回退 GitHub 原站。
 pub(crate) const DEFAULT_ACCELERATE_PREFIX: &str = "https://gh-proxy.com/";

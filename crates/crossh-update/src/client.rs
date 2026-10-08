@@ -1,25 +1,36 @@
 //! HTTPS release manifest and artifact transport.
 
-use std::path::{Path, PathBuf};
+#[cfg(feature = "network")]
+use std::path::Path;
+use std::path::PathBuf;
+#[cfg(feature = "network")]
 use std::time::Duration;
 
+#[cfg(feature = "network")]
 use reqwest::StatusCode;
+#[cfg(any(feature = "network", test))]
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+#[cfg(feature = "network")]
 use tokio::io::AsyncWriteExt;
 
-use super::model::{
-    MAX_DOWNLOAD_BYTES, MAX_MANIFEST_BYTES, UpdateArtifact, UpdateManifest, parse_manifest,
-    validate_https_url,
-};
+#[cfg(any(feature = "network", test))]
+use super::model::MAX_DOWNLOAD_BYTES;
+#[cfg(feature = "network")]
+use super::model::{MAX_MANIFEST_BYTES, parse_manifest, validate_https_url};
+use super::model::{UpdateArtifact, UpdateManifest};
+#[cfg(feature = "network")]
 use crate::DEFAULT_ACCELERATE_PREFIX;
 
+#[cfg(feature = "network")]
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Error)]
 pub enum UpdateError {
+    #[cfg(feature = "network")]
     #[error("update request failed: {0}")]
     Request(#[from] reqwest::Error),
+    #[cfg(feature = "network")]
     #[error("update server returned HTTP {0}")]
     HttpStatus(StatusCode),
     #[error("update manifest is too large")]
@@ -34,17 +45,21 @@ pub enum UpdateError {
     SizeMismatch { expected: u64, actual: u64 },
     #[error("update checksum mismatch: expected {expected}, got {actual}")]
     ChecksumMismatch { expected: String, actual: String },
+    #[error("update network is disabled in this build (rebuild with updates-network)")]
+    Disabled,
 }
 
 impl UpdateError {
     /// 是否为传输层错误（换通道重试有意义）；校验类错误不在此列。
     /// 加速源与 GitHub 原站两条通道共享此分类：传输错误触发回退，
     /// 校验失败（内容不可信）直接返回、不再换通道尝试。
+    #[cfg(feature = "network")]
     pub(crate) fn is_transport(&self) -> bool {
         matches!(self, UpdateError::Request(_) | UpdateError::HttpStatus(_))
     }
 }
 
+#[cfg(feature = "network")]
 /// 把 GitHub release 资产 URL 重写为加速前缀 + 原始完整 URL；
 /// 非 github.com 域名的 URL 原样返回（不重写）。
 fn rewrite_url(url: &str, prefix: &str) -> String {
@@ -55,6 +70,7 @@ fn rewrite_url(url: &str, prefix: &str) -> String {
     }
 }
 
+#[cfg(feature = "network")]
 /// 候选请求序列：加速优先、GitHub 原站兜底；重写不生效时去重为单候选。
 fn candidate_urls(url: &str) -> Vec<String> {
     let accelerated = rewrite_url(url, DEFAULT_ACCELERATE_PREFIX);
@@ -65,6 +81,7 @@ fn candidate_urls(url: &str) -> Vec<String> {
     }
 }
 
+#[cfg(feature = "network")]
 fn client() -> Result<reqwest::Client, reqwest::Error> {
     reqwest::Client::builder()
         .user_agent(concat!("crossh/", env!("CARGO_PKG_VERSION")))
@@ -72,6 +89,7 @@ fn client() -> Result<reqwest::Client, reqwest::Error> {
         .build()
 }
 
+#[cfg(feature = "network")]
 pub async fn fetch_manifest(url: &str) -> Result<UpdateManifest, UpdateError> {
     // 加速源优先、GitHub 原站兜底；仅传输类错误触发回退，
     // 校验类错误（验签失败等）直接返回，不换通道重试。
@@ -86,6 +104,12 @@ pub async fn fetch_manifest(url: &str) -> Result<UpdateManifest, UpdateError> {
     Err(last_error.expect("candidate list is never empty"))
 }
 
+#[cfg(not(feature = "network"))]
+pub async fn fetch_manifest(_url: &str) -> Result<UpdateManifest, UpdateError> {
+    Err(UpdateError::Disabled)
+}
+
+#[cfg(feature = "network")]
 async fn fetch_manifest_once(url: &str) -> Result<UpdateManifest, UpdateError> {
     validate_https_url(url)?;
     let mut response = client()?.get(url).send().await?;
@@ -121,6 +145,7 @@ pub async fn download_artifact(
     download_artifact_with_progress(artifact, version, target, |_, _| {}).await
 }
 
+#[cfg(feature = "network")]
 /// 下载 artifact 并按 chunk 上报 `(downloaded, total)`；total 取 manifest 声明的 `artifact.size`。
 pub async fn download_artifact_with_progress(
     artifact: &UpdateArtifact,
@@ -166,6 +191,17 @@ pub async fn download_artifact_with_progress(
     Err(last_error.expect("candidate list is never empty"))
 }
 
+#[cfg(not(feature = "network"))]
+pub async fn download_artifact_with_progress(
+    _artifact: &UpdateArtifact,
+    _version: &str,
+    _target: &str,
+    _on_progress: impl Fn(u64, u64) + Send + Sync,
+) -> Result<PathBuf, UpdateError> {
+    Err(UpdateError::Disabled)
+}
+
+#[cfg(feature = "network")]
 async fn download_from(
     url: &str,
     artifact: &UpdateArtifact,
@@ -198,6 +234,7 @@ async fn download_from(
     .await
 }
 
+#[cfg(feature = "network")]
 async fn write_and_verify(
     mut response: reqwest::Response,
     temporary: &Path,
@@ -218,6 +255,7 @@ async fn write_and_verify(
     verifier.finish()
 }
 
+#[cfg(any(feature = "network", test))]
 struct DownloadVerifier<'a> {
     hasher: Sha256,
     downloaded: u64,
@@ -225,6 +263,7 @@ struct DownloadVerifier<'a> {
     expected_size: u64,
 }
 
+#[cfg(any(feature = "network", test))]
 impl<'a> DownloadVerifier<'a> {
     fn new(expected_checksum: &'a str, expected_size: u64) -> Self {
         Self {
@@ -235,6 +274,7 @@ impl<'a> DownloadVerifier<'a> {
         }
     }
 
+    #[cfg(feature = "network")]
     fn downloaded(&self) -> u64 {
         self.downloaded
     }
@@ -272,6 +312,7 @@ impl<'a> DownloadVerifier<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "network")]
     use crate::DEFAULT_ACCELERATE_PREFIX;
 
     fn checksum(bytes: &[u8]) -> String {
@@ -312,6 +353,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "network")]
     #[test]
     fn spec_20260818_update_accel_rewrite_url_prefixes_github_release_urls() {
         let url =
@@ -322,6 +364,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "network")]
     #[test]
     fn spec_20260818_update_accel_rewrite_url_covers_latest_download_path() {
         let url = "https://github.com/xcrong/crossh/releases/latest/download/stable.json";
@@ -331,12 +374,14 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "network")]
     #[test]
     fn spec_20260818_update_accel_rewrite_url_leaves_non_github_urls_unchanged() {
         let url = "https://example.com/crossh/stable.json";
         assert_eq!(rewrite_url(url, DEFAULT_ACCELERATE_PREFIX), url);
     }
 
+    #[cfg(feature = "network")]
     #[test]
     fn spec_20260818_update_accel_candidate_urls_are_accelerated_first_and_deduped() {
         let github = "https://github.com/xcrong/crossh/releases/latest/download/stable.json";
@@ -353,6 +398,7 @@ mod tests {
         assert_eq!(candidate_urls(non_github), vec![non_github.to_owned()]);
     }
 
+    #[cfg(feature = "network")]
     #[test]
     fn spec_20260818_update_accel_transport_errors_are_retryable_verification_errors_are_not() {
         assert!(UpdateError::HttpStatus(StatusCode::BAD_GATEWAY).is_transport());
@@ -380,6 +426,7 @@ mod tests {
         assert!(!UpdateError::Io(std::io::Error::other("disk")).is_transport());
     }
 
+    #[cfg(feature = "network")]
     #[tokio::test]
     async fn spec_20260818_update_accel_request_error_is_classified_as_transport() {
         // 127.0.0.1:1 无服务监听，连接立即被拒绝，构造真实的传输层错误。
