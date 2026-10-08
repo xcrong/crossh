@@ -15,7 +15,6 @@ size_whitelist='crates/terminal/src/terminal.rs
 crates/terminal/src/alacritty/hyperlinks.rs
 crates/crossh-editor/src/input/base/state.rs
 crates/crossh-editor/src/input/base/element.rs
-crates/crossh-editor/src/dock/dock_area.rs
 crates/crossh-editor/src/scrollbar.rs
 crates/crossh-editor/src/text/node.rs
 crates/crossh-editor/src/text_selection.rs'
