@@ -40,14 +40,7 @@ pub fn render_sidebar(
         .filter(|dir| local_dir_matches_query(dir, &query))
         .collect();
     // 活跃目录优先，其余按「最近打开」顺序（未被记录的排在最后）。
-    project_dirs.sort_by_key(|dir| {
-        let recency = shell
-            .workspace_settings
-            .recent_dirs
-            .iter()
-            .position(|project_dir| project_dir == &dir.project_dir);
-        (dir.sessions.is_empty(), recency.unwrap_or(usize::MAX))
-    });
+    project_dirs.sort_by_key(|dir| project_dir_sort_key(shell, dir));
     let mut project_name_counts = BTreeMap::new();
     for dir in shell.workspace.sessions.local_dirs.values() {
         *project_name_counts
@@ -97,6 +90,23 @@ pub fn render_sidebar(
     if show_projects {
         list = list.child(project_list);
     }
+
+    let footer = div()
+        .flex_shrink_0()
+        .border_t_1()
+        .border_color(theme::border())
+        .px_2()
+        .py_2()
+        .child(
+            Button::new("sidebar-open-project")
+                .variant(ButtonVariant::Secondary)
+                .icon(icons::icon(icons::IconName::FolderOpen, 14.))
+                .label(i18n::text("rail_add.open_local_project"))
+                .full_width()
+                .on_click(cx.listener(|this, _ev, _window, cx| {
+                    this.choose_project_directory(cx);
+                })),
+        );
 
     let search = filter_row("host-search-wrap").child(
         filter_text_input(
@@ -160,7 +170,8 @@ pub fn render_sidebar(
             .flex_col()
             .child(titlebar)
             .child(search)
-            .child(list),
+            .child(list)
+            .child(footer),
     )
     .into_any_element()
 }
@@ -183,13 +194,16 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
         .items_center()
         .gap_1()
         .overflow_y_scroll();
-    for dir in shell
+    // 与展开侧栏同序：活跃优先、其余按「最近打开」，避免开关侧栏时顺序跳变。
+    let mut rail_dirs: Vec<&LocalDir> = shell
         .workspace
         .sessions
         .local_dirs
         .values()
         .filter(|dir| !dir.sessions.is_empty())
-    {
+        .collect();
+    rail_dirs.sort_by_key(|dir| project_dir_sort_key(shell, dir));
+    for dir in rail_dirs {
         let project_dir = dir.project_dir.clone();
         let label = local_dir_name(&project_dir);
         let duplicate = project_name_counts
@@ -320,6 +334,17 @@ fn local_dir_name(path: &Path) -> String {
 
 fn local_dir_name_key(path: &Path) -> String {
     local_dir_name(path).to_ascii_lowercase()
+}
+
+/// 展开侧栏与收起 rail 的统一排序键：有会话者优先，其余按「最近打开」，
+/// 未被记录的排最后。同键时保持 `BTreeMap` 路径序（`sort_by_key` 稳定）。
+fn project_dir_sort_key(shell: &AppShell, dir: &LocalDir) -> (bool, usize) {
+    let recency = shell
+        .workspace_settings
+        .recent_dirs
+        .iter()
+        .position(|project_dir| project_dir == &dir.project_dir);
+    (dir.sessions.is_empty(), recency.unwrap_or(usize::MAX))
 }
 
 #[cfg(test)]
