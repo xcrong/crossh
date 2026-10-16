@@ -189,6 +189,8 @@ pub struct GitWindow {
     pub(super) history_query: TextEditingState,
     /// 刚复制过分支名的分支；仅用于复制按钮的短暂反馈。
     pub(super) copied_branch: Option<String>,
+    /// 刚复制过地址的远端（`名称/fetch` 或 `名称/push`）；仅用于复制按钮的短暂反馈。
+    pub(super) copied_remote_url: Option<String>,
 }
 
 impl GitWindow {
@@ -229,6 +231,7 @@ impl GitWindow {
             remote_add_url: TextEditingState::new(String::new()),
             history_query: TextEditingState::new(String::new()),
             copied_branch: None,
+            copied_remote_url: None,
         };
         git_window.refresh_list(cx);
         git_window.ensure_refresh_loop(cx);

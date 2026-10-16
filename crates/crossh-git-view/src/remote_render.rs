@@ -1,9 +1,9 @@
 //! Git Remote 页面渲染。
 
 use gpui::{
-    AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ListSizingBehavior,
-    ParentElement, SharedString, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder,
-    px, uniform_list,
+    AnyElement, ClipboardItem, Context, FontWeight, InteractiveElement, IntoElement,
+    ListSizingBehavior, ParentElement, SharedString, StatefulInteractiveElement, Styled, div,
+    prelude::FluentBuilder, px, uniform_list,
 };
 
 use crossh_core::git_remote::RemoteSummary;
@@ -14,6 +14,7 @@ use crossh_ui_component::{
     labeled_field, list_pane, list_state_body, pane_operation_error, selectable_row,
 };
 
+use super::branch_render::COPY_FEEDBACK_DURATION;
 use super::remote::RemoteListState;
 use super::session::OperationState;
 use super::window::GitWindow;
@@ -333,21 +334,21 @@ impl GitWindow {
                 .text_xs()
                 .text_color(theme::faint_text())
                 .when_some(fetch_url, |column, url| {
-                    column.child(
-                        div()
-                            .w_full()
-                            .truncate()
-                            .child(SharedString::from(format!("↓ {url}"))),
-                    )
+                    column.child(self.render_remote_url(
+                        format!("{}/fetch", remote.name),
+                        '↓',
+                        url,
+                        cx,
+                    ))
                 })
                 .when(push_distinct, |column| {
                     column.when_some(push_url, |column, url| {
-                        column.child(
-                            div()
-                                .w_full()
-                                .truncate()
-                                .child(SharedString::from(format!("↑ {url}"))),
-                        )
+                        column.child(self.render_remote_url(
+                            format!("{}/push", remote.name),
+                            '↑',
+                            url,
+                            cx,
+                        ))
                     })
                 }),
         )
@@ -355,5 +356,63 @@ impl GitWindow {
             this.select_remote(name.clone(), cx);
         }));
         row.into_any_element()
+    }
+
+    /// 远端地址行：截断显示的地址文本 + 右侧复制按钮。
+    /// `key` 为 `名称/fetch` 或 `名称/push`，仅用于复制按钮的短暂反馈。
+    fn render_remote_url(
+        &self,
+        key: String,
+        prefix: char,
+        url: String,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let copied = self.copied_remote_url.as_deref() == Some(key.as_str());
+        let copy_url = url.clone();
+        div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .child(SharedString::from(format!("{prefix} {url}"))),
+            )
+            .child(
+                Button::new(SharedString::from(format!("git-copy-remote-{key}")))
+                    .size(ButtonSize::Icon(px(22.)))
+                    .variant(ButtonVariant::Ghost)
+                    .tooltip(i18n::text("git.copy_remote_url"))
+                    .icon(if copied {
+                        icons::icon(icons::IconName::Check, 12.).text_color(theme::accent())
+                    } else {
+                        icons::icon(icons::IconName::Copy, 12.).text_color(theme::muted_text())
+                    })
+                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy_url.clone()));
+                        this.mark_remote_url_copied(key.clone(), cx);
+                        cx.stop_propagation();
+                    })),
+            )
+            .into_any_element()
+    }
+
+    /// 记录远端地址复制反馈：图标短暂变为对勾，超时后自动还原。
+    fn mark_remote_url_copied(&mut self, key: String, cx: &mut Context<Self>) {
+        self.copied_remote_url = Some(key.clone());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(COPY_FEEDBACK_DURATION).await;
+            this.update(cx, |this, cx| {
+                if this.copied_remote_url.as_deref() == Some(key.as_str()) {
+                    this.copied_remote_url = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 }

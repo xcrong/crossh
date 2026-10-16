@@ -22,7 +22,7 @@ use super::window::GitWindow;
 use super::{GIT_BRANCH_CONTEXT, MoveBranchDown, MoveBranchUp, SwitchSelectedBranch};
 
 /// 复制成功后图标保持反馈状态的时长。
-const COPY_FEEDBACK_DURATION: Duration = Duration::from_secs(1);
+pub(super) const COPY_FEEDBACK_DURATION: Duration = Duration::from_secs(1);
 
 impl GitWindow {
     pub(super) fn render_branch_list(
