@@ -139,6 +139,24 @@ impl ShellKind {
         }
     }
 
+    #[cfg(windows)]
+    /// We do not want to escape arguments if we are using CMD as our shell.
+    /// If we do we end up with too many quotes/escaped quotes for CMD to handle.
+    pub const fn tty_escape_args(&self) -> bool {
+        match self {
+            ShellKind::Cmd => false,
+            ShellKind::Posix
+            | ShellKind::Csh
+            | ShellKind::Tcsh
+            | ShellKind::Rc
+            | ShellKind::Fish
+            | ShellKind::PowerShell
+            | ShellKind::Pwsh
+            | ShellKind::Nushell
+            | ShellKind::Xonsh
+            | ShellKind::Elvish => true,
+        }
+    }
     pub fn new(program: impl AsRef<Path>, is_windows: bool) -> Self {
         let program = program.as_ref();
         let program = program
