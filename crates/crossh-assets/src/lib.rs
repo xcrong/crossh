@@ -8,6 +8,18 @@ use rust_embed::RustEmbed;
 #[folder = "assets/icons/"]
 struct Icons;
 
+#[derive(RustEmbed)]
+#[folder = "assets/fonts/"]
+#[include = "*.ttf"]
+struct Fonts;
+
+/// GPUI-style paths of every embedded font, e.g. `fonts/lilex/Lilex-Regular.ttf`.
+pub fn embedded_font_paths() -> Vec<String> {
+    Fonts::iter()
+        .map(|name| format!("fonts/{}", name.as_ref()))
+        .collect()
+}
+
 pub const LOGO_PATH: &str = "brand/crossh-logo.svg";
 const CROSSH_LOGO: &[u8] = include_bytes!("../../../assets/appicon/icon-master.svg");
 
@@ -135,9 +147,17 @@ mod asset_store_tests {
 }
 
 /// Return an embedded Crossh asset by its GPUI-style path.
+///
+/// Fonts are the Lilex + IBM Plex Sans sets vendored from Zed's assets
+/// (both SIL OFL 1.1, see `assets/fonts/` license files); they used to come
+/// from Zed's `assets` crate and are now bundled here so Crossh keeps no Zed
+/// dependency besides `gpui`/`gpui_platform`.
 pub fn load(path: &str) -> Option<Cow<'static, [u8]>> {
     if path == LOGO_PATH {
         return Some(Cow::Borrowed(CROSSH_LOGO));
+    }
+    if let Some(font_path) = path.strip_prefix("fonts/") {
+        return Fonts::get(font_path).map(|asset| asset.data);
     }
     let icon_path = path.strip_prefix("icons/")?;
     Icons::get(icon_path).map(|asset| asset.data)
@@ -233,5 +253,15 @@ mod tests {
             assert!(data.starts_with(b"<svg"), "{path} is not an SVG asset");
         }
         assert!(count > 0);
+    }
+
+    #[test]
+    fn every_embedded_font_lists_and_loads() {
+        let paths = embedded_font_paths();
+        assert!(paths.iter().any(|path| path.ends_with("Lilex-Regular.ttf")));
+        for path in &paths {
+            let data = load(path).expect("listed font should be embedded");
+            assert!(!data.is_empty(), "{path} is empty");
+        }
     }
 }

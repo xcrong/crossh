@@ -39,7 +39,7 @@ fn display_terminal(cx: &mut TestAppContext) -> gpui::Entity<Terminal> {
             Some(64),
             0,
             cx.background_executor(),
-            util::paths::PathStyle::local(),
+            terminal::paths::PathStyle::local(),
         )
         .subscribe(cx)
     })

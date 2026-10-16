@@ -12,9 +12,9 @@ use gpui::{
 };
 use itertools::Itertools;
 use std::time::Instant;
+use terminal::result_ext::ResultExt;
+use terminal::theme::CrosshTheme;
 use terminal::{CursorShape, IndexedCell, Modes, Range, TerminalBounds};
-use theme::ActiveTheme;
-use util::ResultExt;
 
 use super::terminal_element_input::TerminalInputHandler;
 use super::{CursorLayout, DisplayCursor, EditorCursorShape, LayoutState, TerminalElement};
@@ -290,13 +290,13 @@ impl Element for TerminalElement {
                     .font_size
                     .map(|s| s.into())
                     .unwrap_or_else(|| px(14.0).into());
-                let theme = cx.theme().clone();
+                let theme = CrosshTheme::get(cx).clone();
 
                 let link_style = HighlightStyle {
-                    color: Some(theme.colors().link_text_hover),
+                    color: Some(theme.link_text_hover),
                     font_weight: Some(font_weight),
                     underline: Some(UnderlineStyle {
-                        color: Some(theme.colors().link_text_hover),
+                        color: Some(theme.link_text_hover),
                         thickness: px(1.0),
                         wavy: false,
                     }),
@@ -313,7 +313,7 @@ impl Element for TerminalElement {
                     line_height: px(line_height).into(),
                     white_space: WhiteSpace::Normal,
                     // These are going to be overridden per-cell
-                    color: theme.colors().terminal_foreground,
+                    color: theme.terminal_foreground,
                     ..Default::default()
                 };
 
@@ -393,7 +393,7 @@ impl Element for TerminalElement {
                     )
                 };
 
-                let background_color = theme.colors().terminal_background;
+                let background_color = theme.terminal_background;
 
                 let last_hovered_word = self.terminal.update(cx, |terminal, cx| {
                     terminal.set_size(dimensions);
@@ -525,7 +525,7 @@ impl Element for TerminalElement {
                         &[TextRun {
                             len,
                             font: text_style.font(),
-                            color: theme.colors().terminal_ansi_background,
+                            color: theme.terminal_ansi_background,
                             ..Default::default()
                         }],
                         None,
@@ -567,7 +567,7 @@ impl Element for TerminalElement {
                             bounds.origin,
                             bounds.size.width,
                             bounds.size.height,
-                            theme.players().local().cursor,
+                            theme.cursor,
                             shape,
                             text,
                         )

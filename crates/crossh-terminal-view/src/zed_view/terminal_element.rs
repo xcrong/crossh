@@ -24,8 +24,8 @@ use gpui::{
     Interactivity, IntoElement, Pixels, Point as GpuiPoint, StatefulInteractiveElement, TextRun,
     TextStyle, Window, fill, point, px, size,
 };
+use terminal::result_ext::ResultExt;
 use terminal::{Cell, IndexedCell, Modes, Point, Range, Terminal, TerminalBounds};
-use util::ResultExt;
 
 use super::TerminalView;
 mod apca_contrast;

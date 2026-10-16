@@ -2,12 +2,14 @@
 //! Bridges to `crossh_terminal::TerminalSettings` for user-facing knobs,
 //! keeps terminal-internal knobs locally with `Global` fallback.
 
-use collections::HashMap;
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
 use gpui::{App, FontFallbacks, FontFeatures, FontWeight, Global, Pixels, px};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::sync::LazyLock;
-use task::Shell;
+
+use crate::shell::Shell;
 
 // Re-exported so `terminal::terminal_settings::{CursorShape, AlternateScroll}` stays import-compatible.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -88,7 +90,9 @@ pub enum WorkingDirectory {
     #[default]
     CurrentProjectDirectory,
     AlwaysHome,
-    Always { directory: String },
+    Always {
+        directory: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -192,12 +196,44 @@ impl Default for TerminalSettings {
             toolbar: Toolbar { breadcrumbs: false },
             scrollbar: ScrollbarSettings { show: None },
             minimum_contrast: 45.0,
-            path_hyperlink_regexes: Vec::new(),
+            path_hyperlink_regexes: default_path_hyperlink_regexes(),
             path_hyperlink_timeout_ms: 100,
             show_count_badge: false,
             bell: TerminalBell::Off,
         }
     }
+}
+
+/// Default `terminal.path_hyperlink_regexes`, vendored from Zed's
+/// `assets/settings/default.json` at the pinned revision. Without these,
+/// bare paths (`src/main.rs:12`, `File "...", line 4`) don't linkify —
+/// the fork previously left this empty because it has no settings store.
+fn default_path_hyperlink_regexes() -> Vec<String> {
+    vec![
+        // Python-style diagnostics
+        r#"File "(?<path>[^"]+)", line (?<line>[0-9]+)"#.to_string(),
+        // Common path syntax with optional line, column, description,
+        // trailing punctuation, or surrounding symbols or quotes.
+        // (Zed stores this as an array of lines joined with newlines;
+        // pre-joined here.)
+        r##"(?x)
+(?<path>
+    (
+        # multi-char path: first char (not opening delimiter, space, or box drawing char)
+        [^({\[<"\u0060'\ \u2500-\u257F]
+        # middle chars: non-space, and colon/paren only if not followed by digit/paren/space
+        ([^\ :(]|[:(][^0-9()\ ])*
+        # last char: not closing delimiter or colon
+        [^()}\]>"'`.,;:\ ]
+    |
+        # single-char path: not delimiter, punctuation, space, or box drawing char
+        [^(){}\[\]<>"'`.,;:\ \u2500-\u257F]
+    )
+    # optional line/column suffix (included in path for PathWithPosition::parse_str)
+    (:+[0-9]+(:[0-9]+)?|:?\([0-9]+([,:]?[0-9]+)?\))?
+)"##
+        .to_string(),
+    ]
 }
 
 impl Global for TerminalSettings {}
@@ -214,9 +250,10 @@ impl TerminalSettings {
     /// separate from Zed's global so `TerminalView::from_local_zed` can stay
     /// self-contained.
     pub fn from_crossh(crossh: &crossh_terminal::TerminalSettings) -> Self {
-        let mut base = Self::default();
-        base.font_size = Some(px(crossh.font_size));
-        base.max_scroll_history_lines = Some(crossh.scrollback);
-        base
+        Self {
+            font_size: Some(px(crossh.font_size)),
+            max_scroll_history_lines: Some(crossh.scrollback),
+            ..Self::default()
+        }
     }
 }

@@ -10,11 +10,11 @@ use gpui::{
 use itertools::Itertools;
 use std::mem;
 use std::time::Instant;
+use terminal::theme::CrosshTheme;
 use terminal::{
     Cell, Color, NamedColor, Point, Range,
     is_app_chosen_exact_color as terminal_is_app_chosen_exact_color, is_default_background_color,
 };
-use theme::{ActiveTheme, Theme};
 use unicode_width::UnicodeWidthChar;
 
 use super::apca_contrast::ensure_minimum_contrast;
@@ -76,7 +76,7 @@ impl TerminalElement {
         Vec<BlockElementLayoutRect>,
     ) {
         let start_time = Instant::now();
-        let theme = cx.theme();
+        let theme = CrosshTheme::get(cx);
 
         // Pre-allocate with estimated capacity to reduce reallocations
         let estimated_cells = grid.size_hint().0;
@@ -501,7 +501,7 @@ impl TerminalElement {
         cell: &Cell,
         fg: Color,
         bg: Color,
-        colors: &Theme,
+        colors: &CrosshTheme,
         text_style: &TextStyle,
         minimum_contrast: f32,
     ) -> TextRun {
@@ -578,8 +578,8 @@ pub fn is_blank(cell: &Cell) -> bool {
 }
 
 /// Converts a 2, 8, or 24 bit color ANSI color to the GPUI equivalent.
-pub fn convert_color(fg: &Color, theme: &Theme) -> Hsla {
-    let colors = theme.colors();
+pub fn convert_color(fg: &Color, theme: &CrosshTheme) -> Hsla {
+    let colors = theme;
     match fg {
         // Named and theme defined colors
         Color::Named(color) => match color {
@@ -601,7 +601,7 @@ pub fn convert_color(fg: &Color, theme: &Theme) -> Hsla {
             NamedColor::BrightWhite => colors.terminal_ansi_bright_white,
             NamedColor::Foreground => colors.terminal_foreground,
             NamedColor::Background => colors.terminal_ansi_background,
-            NamedColor::Cursor => theme.players().local().cursor,
+            NamedColor::Cursor => theme.cursor,
             NamedColor::DimBlack => colors.terminal_ansi_dim_black,
             NamedColor::DimRed => colors.terminal_ansi_dim_red,
             NamedColor::DimGreen => colors.terminal_ansi_dim_green,

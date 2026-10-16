@@ -70,12 +70,20 @@ Feather MIT notice documented in Lucide's official `LICENSE` file.
   Rendering is re-skinned via `crossh-theme` (see `crates/crossh-editor/README.md` for the copied file list and rev pin).
   Complete `gpui-component` theme/style layers are intentionally not used; the vendored code is tracked as third-party
   `Apache-2.0` source and remains diffable against upstream.
-- **assets** — Zed's embedded resource source, including the bundled Lilex
-  and IBM Plex fonts loaded by Crossh's GPUI text system. GPL-3.0-or-later.
-- **settings / task / theme / theme_settings / release_channel / util** — Zed
-  infrastructure used to initialize the terminal core, apply terminal settings,
-  create shell processes, and integrate its theme.
-  Licensing follows the Zed source at the pinned revision in `Cargo.toml`.
+- **bundled fonts** — Lilex + IBM Plex Sans loaded by Crossh's GPUI text
+  system, vendored from Zed's `assets/fonts/` into
+  `crates/crossh-assets/assets/fonts/` (both SIL OFL 1.1, license files kept
+  alongside the fonts). Replaces the former direct dependency on Zed's
+  `assets` crate.
+- **terminal shell/paths/theme helpers** — `crates/terminal/src/shell.rs`
+  (`Shell`, `ShellKind`, `ShellBuilder`, `HideStrategy`, `SpawnInTerminal`),
+  `src/paths.rs` (`PathStyle`, `UrlExt`, `PathWithPosition`),
+  `src/theme.rs` (terminal palette) and `src/result_ext.rs` are vendored from
+  Zed's `util::shell`, `util::shell_builder`, `util::paths`, `path`,
+  `gpui_util`, `task`, `theme`, `collections` and `release_channel` at the
+  pinned revision in `Cargo.toml`. The direct dependencies on those Zed
+  crates are removed; Crossh keeps `gpui`/`gpui_platform` only.
+  Licensing follows the Zed source (GPL-3.0-or-later).
 - **alacritty_terminal / vte** — transitive dependencies of Zed's `terminal`
   emulator. Crossh no longer owns a second production renderer or direct
   protocol implementation using these crates. Apache-2.0 / MIT.

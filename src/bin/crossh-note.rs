@@ -9,8 +9,6 @@ use crossh_core::{note_launcher, single_instance};
 use crossh_note_view as note;
 
 use gpui::{App, QuitMode};
-use release_channel as zed_release_channel;
-use theme::LoadThemes;
 
 fn main() {
     // Windows GUI 子系统下无控制台：挂回父控制台，保证 --help/错误输出可见。
@@ -51,10 +49,6 @@ fn main() {
     app.run(move |cx: &mut App| {
         cx.set_app_identity("me.xcrong.crossh.note", "Crossh Note");
         cx.init_colors();
-        let app_version =
-            zed_release_channel::AppVersion::load(env!("CARGO_PKG_VERSION"), None, None);
-        zed_release_channel::init(app_version, cx);
-        theme::init(LoadThemes::JustBase, cx);
         crossh_ui::theme::install_crossh_theme(cx);
         crossh_ui::assets::load_fonts(cx).expect("Crossh fonts should load");
         note::init(cx);

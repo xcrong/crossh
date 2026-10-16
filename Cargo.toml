@@ -29,6 +29,7 @@ members = [
     "crates/crossh-ui-component",
     "crates/crossh-note",
     "crates/crossh-editor",
+    "crates/terminal",
 ]
 resolver = "2"
 
@@ -46,12 +47,8 @@ crossh-editor = { path = "crates/crossh-editor" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a", features = ["font-kit", "wayland", "x11"] }
 itertools = "0.15"
-terminal = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a" }
-task = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a" }
-theme = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a" }
-util = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a" }
-release_channel = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a" }
 semver = "1"
+terminal = { path = "crates/terminal" }
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time", "fs"] }
 log = "0.4"
@@ -71,9 +68,9 @@ pulldown-cmark = "0.13"
 embed-resource = "3"
 
 [dev-dependencies]
-assets = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a", features = ["test-support"] }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a", features = ["font-kit", "test-support", "wayland", "x11"] }
+terminal = { path = "crates/terminal" }
 
 [profile.dev]
 incremental = true
@@ -93,9 +90,6 @@ opt-level = "z"
 strip = "symbols"
 panic = "abort"
 incremental = false
-
-[patch."https://github.com/zed-industries/zed"]
-terminal = { path = "crates/terminal" }
 
 [patch.crates-io]
 async-process = { git = "https://github.com/zed-industries/async-process", rev = "0b6d6713570af61806e1e5cb40e0f757cb93fd9d" }

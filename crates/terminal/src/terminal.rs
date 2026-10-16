@@ -1,8 +1,12 @@
 mod mappings;
 
 mod alacritty;
+pub mod paths;
 mod pty_info;
+pub mod result_ext;
+pub mod shell;
 pub mod terminal_settings;
+pub mod theme;
 
 #[cfg(not(windows))]
 use anyhow::Context as _;
@@ -22,16 +26,15 @@ use mappings::mouse::{
     scroll_report,
 };
 
+use crate::{paths::PathStyle, result_ext::ResultExt as _};
 use async_channel::{Receiver, Sender};
-use collections::{HashMap, VecDeque};
 use futures::StreamExt;
 use pty_info::{ProcessIdGetter, PtyProcessInfo};
 use serde::{Deserialize, Serialize};
-use task::{HideStrategy, Shell, ShellKind, SpawnInTerminal};
+use shell::{HideStrategy, Shell, ShellKind, SpawnInTerminal};
+use std::collections::{HashMap, VecDeque};
 use terminal_settings::{AlternateScroll, CursorShape as SettingsCursorShape, TerminalSettings};
-use theme::{ActiveTheme, Theme};
-use urlencoding;
-use util::{ResultExt as _, paths::PathStyle, truncate_and_trailoff};
+use theme::CrosshTheme;
 
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
@@ -1076,6 +1079,9 @@ impl TerminalBuilder {
         }
     }
 
+    // 14 args is the upstream builder shape; callers pass whole config rows
+    // positionally, so a struct would only move the arity elsewhere.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         working_directory: Option<PathBuf>,
         mode: TerminalMode,
@@ -1092,7 +1098,7 @@ impl TerminalBuilder {
         activation_script: Vec<String>,
         path_style: PathStyle,
     ) -> Task<Result<TerminalBuilder>> {
-        let version = release_channel::AppVersion::global(cx);
+        let version = env!("CARGO_PKG_VERSION");
         let background_executor = cx.background_executor().clone();
         // Headless hosts (e.g. the eval CLI) have no controlling TTY, so PTY
         // allocation / acquiring a controlling terminal fails with `ENOTTY`.
@@ -1158,7 +1164,7 @@ impl TerminalBuilder {
                 Shell::System => {
                     if cfg!(windows) {
                         Some(ShellParams::new(
-                            util::shell::get_windows_system_shell(),
+                            shell::get_windows_system_shell(),
                             None,
                             None,
                         ))
@@ -1178,7 +1184,7 @@ impl TerminalBuilder {
 
             #[cfg(windows)]
             let shell_program = shell_params.as_ref().map(|params| {
-                use util::ResultExt;
+                use crate::result_ext::ResultExt;
 
                 Self::resolve_path(&params.program)
                     .log_err()
@@ -1224,7 +1230,7 @@ impl TerminalBuilder {
                         params.program.clone(),
                         params.args.clone().unwrap_or_default(),
                     ),
-                    None => (util::shell::get_system_shell(), Vec::new()),
+                    None => (shell::get_system_shell(), Vec::new()),
                 };
                 let subprocess = match spawn_task_subprocess(
                     program,
@@ -1689,7 +1695,7 @@ impl Terminal {
                 // followed by a color request sequence.
 
                 let color = self.term.lock().colors()[index]
-                    .unwrap_or_else(|| to_vte_rgb(get_color_at_index(index, cx.theme().as_ref())));
+                    .unwrap_or_else(|| to_vte_rgb(get_color_at_index(index, CrosshTheme::get(cx))));
                 self.write_to_pty(format(color).into_bytes());
             }
             TerminalBackendEvent::ChildExit(exit_status) => {
@@ -2449,15 +2455,8 @@ impl Terminal {
 
     fn mouse_changed(&mut self, point: Point, side: SelectionSide) -> bool {
         match self.last_mouse {
-            Some((old_point, old_side)) => {
-                if old_point == point && old_side == side {
-                    false
-                } else {
-                    self.last_mouse = Some((point, side));
-                    true
-                }
-            }
-            None => {
+            Some((old_point, old_side)) if old_point == point && old_side == side => false,
+            _ => {
                 self.last_mouse = Some((point, side));
                 true
             }
@@ -2519,17 +2518,15 @@ impl Terminal {
 
         // Throttle hyperlink searches to avoid excessive processing
         let now = Instant::now();
-        let throttle = !self
-            .last_hyperlink_search_position
-            .map_or(true, |last_pos| {
-                // Only search if mouse moved significantly or enough time passed
-                let distance_moved = ((position.x - last_pos.x).abs()
-                    + (position.y - last_pos.y).abs())
-                    > FIND_HYPERLINK_THROTTLE_PX;
-                let time_elapsed =
-                    now.duration_since(self.last_mouse_move_time) > FIND_HYPERLINK_THROTTLE;
-                distance_moved || time_elapsed
-            });
+        let throttle = !self.last_hyperlink_search_position.is_none_or(|last_pos| {
+            // Only search if mouse moved significantly or enough time passed
+            let distance_moved = ((position.x - last_pos.x).abs()
+                + (position.y - last_pos.y).abs())
+                > FIND_HYPERLINK_THROTTLE_PX;
+            let time_elapsed =
+                now.duration_since(self.last_mouse_move_time) > FIND_HYPERLINK_THROTTLE;
+            distance_moved || time_elapsed
+        });
 
         #[cfg(test)]
         let throttle = if self.suppress_hyperlink_throttle_once {
@@ -3175,7 +3172,7 @@ impl Terminal {
     }
 
     pub fn clone_builder(&self, cx: &App, cwd: Option<PathBuf>) -> Task<Result<TerminalBuilder>> {
-        let working_directory = self.working_directory().or_else(|| cwd);
+        let working_directory = self.working_directory().or(cwd);
         TerminalBuilder::new(
             working_directory,
             TerminalMode::interactive(),
@@ -3256,8 +3253,13 @@ fn convert_lf_to_crlf(bytes: &[u8], previous_byte_was_cr: &mut bool) -> Vec<u8> 
 /// Owns a non-PTY task subprocess and the background task pumping its output
 /// into the terminal emulator. Used by headless hosts (e.g. the eval CLI) where
 /// PTY allocation fails with `ENOTTY`. Dropping this kills the child.
+///
+/// ponytail: plain `smol` spawn, no process-group/job-object containment like
+/// upstream's `util::process::Child` had — killing stops the direct child,
+/// grandchildren it spawned may outlive it. Upgrade path: re-add setsid on
+/// unix + job objects on Windows if orphans show up.
 struct SubprocessHandle {
-    child: Arc<parking_lot::Mutex<Option<util::process::Child>>>,
+    child: Arc<parking_lot::Mutex<Option<smol::process::Child>>>,
     _reader: Task<()>,
 }
 
@@ -3266,6 +3268,34 @@ impl SubprocessHandle {
         if let Some(child) = self.child.lock().as_mut() {
             child.kill().log_err();
         }
+    }
+}
+
+/// Builds a std command that hides the console window on Windows, matching
+/// what `gpui_util::new_std_command` did for the removed `util` dependency.
+fn new_std_command(program: &str) -> std::process::Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut command = std::process::Command::new(program);
+        command.creation_flags(0x0800_0000);
+        command
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new(program)
+    }
+}
+
+/// Truncates `s` to `max_chars` characters, appending `…` when truncated.
+fn truncate_and_trailoff(s: &str, max_chars: usize) -> String {
+    debug_assert!(max_chars >= 5);
+    if s.len() <= max_chars {
+        return s.to_string();
+    }
+    match s.char_indices().map(|(i, _)| i).nth(max_chars) {
+        Some(index) => s[..index].to_string() + "…",
+        _ => s.to_string(),
     }
 }
 
@@ -3284,15 +3314,20 @@ fn spawn_task_subprocess(
     use futures::io::AsyncReadExt as _;
     use std::process::Stdio;
 
-    let mut command = util::command::new_std_command(&program);
+    let mut command = new_std_command(&program);
     command.args(&args);
     command.envs(&env);
     if let Some(directory) = &working_directory {
         command.current_dir(directory);
     }
 
-    let mut child =
-        util::process::Child::spawn(command, Stdio::null(), Stdio::piped(), Stdio::piped())?;
+    let mut command = smol::process::Command::from(command);
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| anyhow::anyhow!("failed to spawn subprocess {program:?}: {error}"))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let child = Arc::new(parking_lot::Mutex::new(Some(child)));
@@ -3464,8 +3499,8 @@ fn content_index_for_mouse(pos: GpuiPoint<Pixels>, terminal_bounds: &TerminalBou
 /// Converts an 8 bit ANSI color to its GPUI equivalent.
 /// Accepts `usize` for compatibility with the `alacritty::Colors` interface,
 /// Other than that use case, should only be called with values in the `[0,255]` range
-pub fn get_color_at_index(index: usize, theme: &Theme) -> Hsla {
-    let colors = theme.colors();
+pub fn get_color_at_index(index: usize, theme: &CrosshTheme) -> Hsla {
+    let colors = theme;
 
     match index {
         // 0-15 are the same as the named colors above
@@ -3505,7 +3540,7 @@ pub fn get_color_at_index(index: usize, theme: &Theme) -> Hsla {
         // See: https://github.com/alacritty/alacritty/blob/master/alacritty_terminal/src/term/color.rs
         256 => colors.terminal_foreground,
         257 => colors.terminal_background,
-        258 => theme.players().local().cursor,
+        258 => theme.cursor,
         259 => colors.terminal_ansi_dim_black,
         260 => colors.terminal_ansi_dim_red,
         261 => colors.terminal_ansi_dim_green,
@@ -3556,17 +3591,17 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::shell::{Shell, ShellBuilder};
     use crate::{
         Cell, Content, IndexedCell, TerminalBounds, TerminalBuilder, content_index_for_mouse,
         rgb_for_index,
     };
-    use collections::HashMap;
     use gpui::{
         ClipboardItem, Entity, Pixels, TestAppContext, VisualTestContext, bounds, point, size,
     };
     use parking_lot::Mutex;
-    use rand::{Rng, distr, rngs::StdRng};
-    use task::{Shell, ShellBuilder};
+    use rand::{RngExt as _, distr, rngs::StdRng};
+    use std::collections::HashMap;
 
     #[test]
     fn test_init_command_startup_marker_commands_do_not_contain_marker() {
@@ -3700,17 +3735,13 @@ mod tests {
         program: String,
         args: Vec<String>,
     ) -> Entity<Terminal> {
-        let mode = TerminalMode::task(SpawnInTerminal {
-            command: Some(program.clone()),
-            args: args.clone(),
-            ..Default::default()
-        });
+        let mode = TerminalMode::task(SpawnInTerminal::default());
         let builder = cx
             .update(|cx| {
                 TerminalBuilder::new(
                     None,
                     mode,
-                    task::Shell::WithArguments {
+                    Shell::WithArguments {
                         program,
                         args,
                         title_override: None,
@@ -3743,18 +3774,14 @@ mod tests {
         program: String,
         args: Vec<String>,
     ) -> Entity<Terminal> {
-        let mode = TerminalMode::task(SpawnInTerminal {
-            command: Some(program.clone()),
-            args: args.clone(),
-            ..Default::default()
-        });
+        let mode = TerminalMode::task(SpawnInTerminal::default());
         let builder = cx
             .update(|cx| {
                 cx.set_global(HeadlessTerminal(true));
                 TerminalBuilder::new(
                     None,
                     mode,
-                    task::Shell::WithArguments {
+                    Shell::WithArguments {
                         program,
                         args,
                         title_override: None,
@@ -4147,7 +4174,7 @@ mod tests {
                 TerminalBuilder::new(
                     None,
                     TerminalMode::interactive_with_completion(completion_tx),
-                    task::Shell::System,
+                    Shell::System,
                     HashMap::default(),
                     SettingsCursorShape::default(),
                     AlternateScroll::On,
@@ -4214,7 +4241,7 @@ mod tests {
                 TerminalBuilder::new(
                     None,
                     TerminalMode::interactive(),
-                    task::Shell::System,
+                    Shell::System,
                     HashMap::default(),
                     SettingsCursorShape::default(),
                     AlternateScroll::On,
@@ -4275,7 +4302,7 @@ mod tests {
                 TerminalBuilder::new(
                     None,
                     TerminalMode::interactive_with_completion(completion_tx),
-                    task::Shell::WithArguments {
+                    Shell::WithArguments {
                         program,
                         args,
                         title_override: None,
@@ -4785,7 +4812,6 @@ mod tests {
             Pixels, Subscription, TestAppContext, VisualContext, VisualTestContext, point,
         };
         use std::ops::RangeInclusive;
-        use util::default;
 
         fn ctrl_mouse_down_at(
             terminal: &mut Terminal,
@@ -4972,9 +4998,11 @@ mod tests {
         ) {
             let terminal = init_terminal_test(cx, b"Visit https://zed.dev/ for more\r\n");
 
-            cx.update_global(|settings: &mut crate::terminal_settings::TerminalSettings, _| {
-                settings.open_links_in_mouse_mode = false;
-            });
+            cx.update_global(
+                |settings: &mut crate::terminal_settings::TerminalSettings, _| {
+                    settings.open_links_in_mouse_mode = false;
+                },
+            );
 
             terminal.update(cx, |terminal, cx| {
                 terminal.last_content.mode = Modes::MOUSE_MODE;
@@ -5109,7 +5137,7 @@ mod tests {
                     terminal.with_renderable_cells(|cells| {
                         let mut text_lines = Vec::new();
                         let linegroups = cells.into_iter().chunk_by(|cell| cell.point.line);
-                        for (_, (_, line)) in linegroups.into_iter().enumerate() {
+                        for (_, line) in linegroups.into_iter() {
                             let mut previous_cell_had_extras = false;
                             let mut text = String::new();
                             for IndexedCell { cell, .. } in line {
@@ -5173,7 +5201,7 @@ mod tests {
                 let move_event = MouseMoveEvent {
                     position,
                     modifiers,
-                    ..default()
+                    ..Default::default()
                 };
                 self.window.simulate_mouse_move(position, self.cx);
                 self.unthrottle();
@@ -5219,7 +5247,7 @@ mod tests {
             }
 
             fn clear_window_secondary_key(&mut self) {
-                self.window.set_modifiers(default());
+                self.window.set_modifiers(Default::default());
             }
         }
 
@@ -5260,15 +5288,14 @@ mod tests {
                 let terminal_events_subscription = cx.subscribe_in(
                     terminal,
                     window,
-                    |test_view, terminal, event, window, cx| match event {
-                        Event::Wakeup => {
+                    |test_view, terminal, event, window, cx| {
+                        if let Event::Wakeup = event {
                             test_view.wakeups += 1;
                             cx.update_entity(terminal, |terminal, cx| {
                                 terminal.suppress_hyperlink_throttle_once = true;
                                 terminal.sync(window, cx)
                             })
                         }
-                        _ => {}
                     },
                 );
                 vec![terminal_subscription, terminal_events_subscription]
@@ -5285,7 +5312,7 @@ mod tests {
             test_view: &Entity<TestView>,
             cx: &mut VisualTestContext,
         ) {
-            let (actual_wakeups, actual_notifies) = cx.update_entity(&test_view, |test_view, _| {
+            let (actual_wakeups, actual_notifies) = cx.update_entity(test_view, |test_view, _| {
                 (
                     std::mem::take(&mut test_view.wakeups),
                     std::mem::take(&mut test_view.notifies),
@@ -5515,7 +5542,7 @@ mod tests {
                 init_ctrl_hover_hyperlink_test_with_window(cx).await;
             for _ in 0..10 {
                 update_test_entities(&test_entities, cx, |cx: &mut HyperlinkVisualTestContext| {
-                    cx.try_modifiers_change(default());
+                    cx.try_modifiers_change(Default::default());
                     Some(Expected(Wakeups(0), Notifies(0)))
                 });
                 update_test_entities(&test_entities, cx, |cx: &mut HyperlinkVisualTestContext| {
@@ -5661,10 +5688,7 @@ mod tests {
     mod perf {
         use super::{super::*, init_terminal_test_with_window};
         use gpui::{ScrollDelta, ScrollWheelEvent, TestAppContext, VisualContext, point};
-        use util::default;
-        use util_macros::perf;
 
-        #[perf]
         #[gpui::test]
         async fn scroll_long_line_benchmark(cx: &mut TestAppContext) {
             let (terminal, cx) =
@@ -5679,7 +5703,7 @@ mod tests {
                     terminal.mouse_move(
                         &MouseMoveEvent {
                             position,
-                            ..default()
+                            ..Default::default()
                         },
                         cx,
                     );
@@ -5688,7 +5712,7 @@ mod tests {
                         &ScrollWheelEvent {
                             position,
                             delta: ScrollDelta::Lines(GpuiPoint::new(0.0, lines as f32)),
-                            ..default()
+                            ..Default::default()
                         },
                         1.0,
                     );

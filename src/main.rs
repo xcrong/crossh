@@ -9,8 +9,6 @@ mod features;
 mod infrastructure;
 
 use gpui::{App, actions};
-use release_channel as zed_release_channel;
-use theme::LoadThemes;
 
 rust_i18n::i18n!("locales", fallback = "en");
 
@@ -149,10 +147,6 @@ fn main() {
     app.run(move |cx: &mut App| {
         cx.set_app_identity("me.xcrong.crossh", "Crossh");
         cx.init_colors();
-        let app_version =
-            zed_release_channel::AppVersion::load(env!("CARGO_PKG_VERSION"), None, None);
-        zed_release_channel::init(app_version, cx);
-        theme::init(LoadThemes::JustBase, cx);
         crossh_ui::theme::install_crossh_theme(cx);
         crossh_ui::assets::load_fonts(cx).expect("Crossh fonts should load");
         features::settings::init();

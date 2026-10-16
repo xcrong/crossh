@@ -9,4 +9,4 @@ license = "GPL-3.0-or-later"
 # `util::fs_embed!` dev arm does not implement, so 8.12 breaks the Zed `assets`
 # crate in debug builds once Zed enables rust-embed's `compression` feature.
 # Lift this pin once Zed implements `compressed`.
-rust-embed = "=8.11.0"
+rust-embed = { version = "=8.11.0", features = ["include-exclude"] }

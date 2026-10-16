@@ -14,11 +14,8 @@ log = "0.4"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 shlex = "2"
-task = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a" }
-terminal = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a" }
-theme = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a" }
+terminal = { path = "../terminal" }
 unicode-width = "0.2"
-util = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a" }
 
 [dev-dependencies]
 gpui = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a", features = ["test-support"] }

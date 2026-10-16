@@ -16,10 +16,10 @@ use gpui::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use task::Shell;
 use terminal as zed_terminal;
+use terminal::shell::Shell;
 use terminal::terminal_settings::CursorShape;
-use theme::ActiveTheme;
+use terminal::theme::CrosshTheme;
 
 use crate::text;
 use crossh_core::terminal::{
@@ -195,7 +195,7 @@ impl TerminalView {
 
     pub fn from_local_zed(cwd: PathBuf, settings: TerminalSettings, cx: &mut App) -> Entity<Self> {
         let initial_cwd = cwd.to_string_lossy().into_owned();
-        let system_shell = util::shell::get_system_shell();
+        let system_shell = Shell::default().program();
         let shell_environment = match LocalShellEnvironment::create(&system_shell) {
             Ok(environment) => environment,
             Err(error) => {
@@ -243,7 +243,7 @@ impl TerminalView {
             Some(settings.scrollback),
             0,
             cx.background_executor(),
-            util::paths::PathStyle::local(),
+            zed_terminal::paths::PathStyle::local(),
             terminal_bounds_for_grid(
                 INITIAL_COLUMNS,
                 INITIAL_ROWS,
@@ -270,7 +270,7 @@ impl TerminalView {
             0,
             cx,
             Vec::new(),
-            util::paths::PathStyle::local(),
+            zed_terminal::paths::PathStyle::local(),
         );
 
         let entity = cx.new(|cx| {
@@ -883,7 +883,7 @@ impl TerminalView {
         let title = local_terminal_title(
             self.cwd.as_deref(),
             None,
-            Some(util::shell::get_system_shell().as_str()),
+            Some(Shell::default().program().as_str()),
         );
         if title != "Terminal" {
             return title;
@@ -956,7 +956,7 @@ impl Render for TerminalView {
                 && content.mode.contains(zed_terminal::Modes::SHOW_CURSOR)
                 && content.cursor.shape != zed_terminal::CursorShape::Hidden
         };
-        let background = cx.theme().colors().terminal_background;
+        let background = CrosshTheme::get(cx).terminal_background;
         let focus = self.focus.clone();
         let terminal_element = TerminalElement::new(
             self.zed_terminal.clone(),
@@ -1025,6 +1025,25 @@ impl Render for TerminalView {
 mod tests {
     use super::*;
 
+    #[test]
+    fn shell_builder_quotes_task_commands() {
+        use zed_terminal::shell::ShellBuilder;
+
+        let (program, args) = ShellBuilder::new(&Shell::Program("sh".into()), false)
+            .build(Some("echo".into()), &["hello world".to_string()]);
+        assert_eq!(program, "sh");
+        assert_eq!(args, vec!["-i", "-c", "echo 'hello world'"]);
+
+        let (program, args) = ShellBuilder::new(&Shell::Program("powershell".into()), true)
+            .build(Some("echo".into()), &["a b".to_string()]);
+        assert_eq!(program, "powershell");
+        assert_eq!(args, vec!["-C", "echo 'a b'"]);
+
+        let (_, args) = ShellBuilder::new(&Shell::Program("sh".into()), false)
+            .non_interactive()
+            .build(Some("echo hi".into()), &[]);
+        assert_eq!(args, vec!["-c", "echo hi"]);
+    }
     #[test]
     fn right_click_copies_only_with_non_empty_selection() {
         assert!(has_copyable_selection(true, Some("ls -la")));
