@@ -19,7 +19,7 @@
 1. 解压先归一化再校验：`entry.name().replace('\\', "/")` 之后才做 `is_safe_relative_path`（要求全 `Normal` 组件）与目录判定。`..\..\evil` 归一化后是 `../../evil`，照样被拒，防护不降级。
 2. 打包侧不依赖宿主 PowerShell 版本：手工写 `ZipArchive` 条目并统一 `/`，不要换回 `Compress-Archive`。
 3. PowerShell 脚本里用 .NET API（`ZipFile::Open`、`[System.IO.File]::` 等）时，相对路径按**进程工作目录**解析，而不是 PowerShell 的 location；脚本内一律先 `Resolve-Path` 成绝对路径。
-4. 含中文注释的 `.ps1` 必须存为 UTF-8 with BOM：Windows PowerShell 5.1 按 ANSI 代码页读取无 BOM 文件，中文机器（GBK）上解码出的字节会破坏 token，`powershell -File` 直接解析失败。CI 的 windows-latest 是 CP1252，碰巧不炸，本地中文机器会炸。
+4. 含中文注释的 `.ps1` 必须存为 UTF-8 with BOM：Windows PowerShell 5.1 按 ANSI 代码页读取无 BOM 文件，中文机器（GBK）上解码出的字节会破坏 token，`powershell -File` 直接解析失败。CI 的 windows-latest 是 CP1252，碰巧不炸，本地中文机器会炸。注意：就地编辑工具保存文件时可能把 BOM 写丢，编辑 `.ps1` 后要用 `Parser::ParseFile` 复查（`v0.39.2` 排障时实测踩中）。
 5. Windows 允许 rename 正在运行的 exe（自更新可以借此替换自身），但不允许删除它；被替换下来的旧 exe 备份只能等该进程退出后再删。
 
 ## 验证方法
