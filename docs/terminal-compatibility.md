@@ -83,11 +83,22 @@ Crossh adds the layer around that grid:
 - OSC 133 A/B/C/D-style markers are emitted by the generated hooks for tools
   that read them; Crossh's own parsing is the title-channel marker path
   described above.
+- OSC 7501 Program Status: output bytes are scanned for `OSC 7501` state
+  sequences on the PTY read path before the emulator sees them
+  (observation-only; the scanner never consumes or rewrites bytes), and the
+  parsed state drives tab status dots, working-progress suffixes, and label
+  tooltips. The feature probe (`OSC 7501;?`) is answered with the supported
+  state set. MVP trims: hierarchical `id` sub-records, `OSC 9;4` progress
+  mapping, native notifications, and shell-hook cleanup of stale statuses on
+  prompt markers are not implemented.
 
-There is no second incremental parser: output bytes are consumed by the
-single Zed/alacritty emulator for both local and SSH sessions, and the
-title-channel markers hold up across PTY-read boundaries because they travel
-through the emulator's normal OSC-title handling.
+There is no second incremental parser for screen state: output bytes are
+consumed by the single Zed/alacritty emulator for both local and SSH
+sessions, and the title-channel markers hold up across PTY-read boundaries
+because they travel through the emulator's normal OSC-title handling. The
+only exception is the observation-only OSC 7501 scanner described above,
+which watches the same byte stream, alters nothing, and produces no screen
+state.
 
 ## Deliberate gaps
 

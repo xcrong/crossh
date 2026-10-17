@@ -28,7 +28,7 @@ use crossh_core::terminal::{
     strip_shell_host_prefix,
 };
 use crossh_terminal::timestamps::{TerminalRow, TerminalTimestampState, timestamp_now};
-use crossh_terminal::{ConnState, TerminalEvent, TerminalSettings};
+use crossh_terminal::{ConnState, ProgramState, ProgramStatus, TerminalEvent, TerminalSettings};
 
 #[path = "zed_view/terminal_element.rs"]
 mod terminal_element;
@@ -164,6 +164,8 @@ pub struct TerminalView {
     pub state: ConnState,
     pub cwd: Option<String>,
     title: Option<String>,
+    /// 最近一次 OSC 7501 报告的状态，随 `ProgramStatusChanged` 事件同步。
+    program_status: Option<ProgramStatus>,
     ime_marked_text: String,
     /// Set when the terminal emitted a bell since the last frame; consumed by
     /// the renderer so the system bell fires exactly once per scheduled ring.
@@ -295,6 +297,7 @@ impl TerminalView {
                 state: ConnState::default(),
                 cwd: initial_cwd,
                 title: None,
+                program_status: None,
                 ime_marked_text: String::new(),
                 bell_pending: false,
                 last_bell_ring: None,
@@ -428,6 +431,10 @@ impl TerminalView {
                     if !internal_marker {
                         cx.emit(TerminalEvent::TitleChanged);
                     }
+                }
+                zed_terminal::Event::ProgramStatusChanged => {
+                    this.program_status = terminal.read(cx).program_status().cloned();
+                    cx.emit(TerminalEvent::ProgramStatusChanged);
                 }
                 zed_terminal::Event::BlinkChanged(blinking) => {
                     this.blinking_terminal_enabled = *blinking;
@@ -872,6 +879,23 @@ impl TerminalView {
 
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
+    }
+
+    /// 最近一次 OSC 7501 报告的状态（供 tab 状态点等 UI 消费）。
+    pub fn program_status(&self) -> Option<&ProgramStatus> {
+        self.program_status.as_ref()
+    }
+
+    /// 用户回到该终端时停止展示 done/error 状态；working/blocked 照常显示。
+    pub fn acknowledge_program_status(&mut self, cx: &mut Context<Self>) {
+        let acknowledged = matches!(
+            self.program_status.as_ref().map(|s| s.state),
+            Some(ProgramState::Done | ProgramState::Error)
+        );
+        if acknowledged {
+            self.program_status = None;
+            cx.emit(TerminalEvent::ProgramStatusChanged);
+        }
     }
 
     pub fn tab_title(&self, fallback: &str) -> String {

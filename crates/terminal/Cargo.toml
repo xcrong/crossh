@@ -23,6 +23,7 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd3
 itertools = "0.15"
 libc = "0.2"
 log = "0.4.16"
+polling = "3.8.0"
 regex = "1.5"
 schemars = "1.0"
 serde = { version = "1", features = ["derive"] }

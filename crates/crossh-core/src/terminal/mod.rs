@@ -1,9 +1,14 @@
 //! Transport-neutral terminal contracts and title helpers.
 
+pub mod program_status;
 pub mod session;
 pub mod shell;
 pub mod title;
 
+pub use program_status::{
+    FEATURE_DETECTION_REPLY, Osc7501Scanner, ProgramState, ProgramStatus, StatusUpdate,
+    parse_program_status,
+};
 pub use shell::{
     LocalShellEnvironment, RemoteShell, ShellCommandMarker, ShellPromptMarker,
     command_marker_from_title, prompt_marker_from_title, remote_shell_bootstrap_command,

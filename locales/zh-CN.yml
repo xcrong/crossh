@@ -133,6 +133,13 @@ toast:
   search_no_match: 未找到匹配的项目
   update_downloaded: 更新已下载，点击状态栏按钮重启安装
 
+tab:
+  status:
+    working: 工作中
+    blocked: 等待输入
+    done: 已完成
+    error: 出错
+
 context_menu:
   copy_path: 复制路径
   open_local_terminal: 在此打开终端

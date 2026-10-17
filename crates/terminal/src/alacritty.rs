@@ -206,6 +206,8 @@ pub(super) fn spawn_event_loop(
     pty: AlacrittyPty,
     drain_on_exit: bool,
 ) -> Result<PtySender> {
+    // 用 TeePty 包装后在读路径旁路收集 OSC 7501 状态报告
+    let pty = crate::pty_tap::TeePty::new(pty, events_tx.clone());
     let event_loop = EventLoop::new(term, ZedListener(events_tx), pty, drain_on_exit, false)
         .context("failed to create event loop")?;
     let pty_tx = event_loop.channel();

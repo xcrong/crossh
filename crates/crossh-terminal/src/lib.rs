@@ -5,6 +5,11 @@
 
 pub mod timestamps;
 
+pub use crossh_core::terminal::program_status::{
+    FEATURE_DETECTION_REPLY, Osc7501Scanner, ProgramState, ProgramStatus, StatusUpdate,
+    parse_program_status,
+};
+
 use serde::{Deserialize, Serialize};
 
 // ---- settings (merged from settings.rs) ----
@@ -91,6 +96,8 @@ pub enum TerminalEvent {
     PromptReached,
     /// The terminal title changed.
     TitleChanged,
+    /// The terminal received an OSC 7501 program status update.
+    ProgramStatusChanged,
     /// The terminal produced a user-facing notification or bell.
     Notification,
     /// Right-click copied the current selection to the clipboard.

@@ -13,7 +13,7 @@
 
 use gpui::{App, Entity, SystemNotificationResponse};
 
-use crossh_terminal::{ConnState, TerminalSettings};
+use crossh_terminal::{ConnState, ProgramStatus, TerminalSettings};
 
 use crate::view::TerminalView;
 
@@ -23,6 +23,10 @@ pub trait TerminalItem {
     fn title(&self, cx: &App) -> Option<String>;
     fn tab_title(&self, cx: &App, fallback: &str) -> String;
     fn is_command_running(&self, cx: &App) -> bool;
+    /// 最近一次 OSC 7501 报告的状态。
+    fn program_status(&self, cx: &App) -> Option<ProgramStatus>;
+    /// 用户回到该终端时停止展示 done/error 状态（展示时机由终端决定）。
+    fn acknowledge_program_status(&self, cx: &mut App);
     fn show_timestamps(&self, cx: &App) -> bool;
     fn set_show_timestamps(&self, show: bool, cx: &mut App);
     fn apply_settings(&self, settings: TerminalSettings, cx: &mut App);
@@ -56,6 +60,14 @@ impl TerminalItem for Entity<TerminalView> {
 
     fn is_command_running(&self, cx: &App) -> bool {
         self.read(cx).is_command_running(cx)
+    }
+
+    fn program_status(&self, cx: &App) -> Option<ProgramStatus> {
+        self.read(cx).program_status().cloned()
+    }
+
+    fn acknowledge_program_status(&self, cx: &mut App) {
+        self.update(cx, |terminal, cx| terminal.acknowledge_program_status(cx));
     }
 
     fn show_timestamps(&self, cx: &App) -> bool {

@@ -3,6 +3,7 @@ mod mappings;
 mod alacritty;
 pub mod paths;
 mod pty_info;
+mod pty_tap;
 pub mod result_ext;
 pub mod shell;
 pub mod terminal_settings;
@@ -77,6 +78,7 @@ use crate::alacritty::{
 };
 use crate::mappings::colors::to_vte_rgb;
 use crate::mappings::keys::to_esc_str;
+use crossh_terminal::{ProgramState, ProgramStatus, StatusUpdate};
 
 /// Process-wide flag set by headless hosts (e.g. the eval CLI) that have no
 /// controlling TTY. In such sandboxes PTY allocation and acquiring a
@@ -671,6 +673,7 @@ pub fn insert_zed_terminal_env(
 pub enum Event {
     TitleChanged,
     BreadcrumbsChanged,
+    ProgramStatusChanged,
     CloseTerminal,
     Bell,
     Wakeup,
@@ -735,6 +738,7 @@ pub(crate) enum TerminalBackendEvent {
     CursorBlinkingChange,
     Wakeup,
     Bell,
+    ProgramStatus(StatusUpdate),
     Exit,
     ChildExit(ExitStatus),
 }
@@ -753,13 +757,14 @@ impl fmt::Debug for TerminalBackendEvent {
             Self::CursorBlinkingChange => f.write_str("CursorBlinkingChange"),
             Self::Wakeup => f.write_str("Wakeup"),
             Self::Bell => f.write_str("Bell"),
+            Self::ProgramStatus(update) => write!(f, "ProgramStatus({update:?})"),
             Self::Exit => f.write_str("Exit"),
             Self::ChildExit(status) => write!(f, "ChildExit({status})"),
         }
     }
 }
 
-enum PtyEvent {
+pub(crate) enum PtyEvent {
     Event(TerminalBackendEvent),
 }
 
@@ -1034,6 +1039,7 @@ impl TerminalBuilder {
 
             selection_head: None,
             breadcrumb_text: String::new(),
+            program_status: None,
             scroll_px: px(0.),
             next_link_id: 0,
             selection_phase: SelectionPhase::Ended,
@@ -1321,6 +1327,7 @@ impl TerminalBuilder {
 
                 selection_head: None,
                 breadcrumb_text: String::new(),
+                program_status: None,
                 scroll_px: px(0.),
                 next_link_id: 0,
                 selection_phase: SelectionPhase::Ended,
@@ -1474,7 +1481,7 @@ impl TerminalBuilder {
         use windows::Win32::Storage::FileSystem::SearchPathW;
         use windows::core::HSTRING;
 
-        let path = if path.starts_with(r"\\?\") || !path.contains(&['/', '\\']) {
+        let path = if path.starts_with(r"\\?\") || !path.contains(['/', '\\']) {
             path.to_string()
         } else {
             r"\\?\".to_string() + path
@@ -1524,6 +1531,8 @@ pub struct Terminal {
 
     pub breadcrumb_text: String,
     title_override: Option<String>,
+    /// 最近一次 OSC 7501 报告的根记录状态；`None` 表示无状态或已清除。
+    program_status: Option<ProgramStatus>,
     scroll_px: Pixels,
     next_link_id: usize,
     selection_phase: SelectionPhase,
@@ -1672,6 +1681,21 @@ impl Terminal {
             TerminalBackendEvent::Bell => {
                 cx.emit(Event::Bell);
             }
+            TerminalBackendEvent::ProgramStatus(update) => match update {
+                StatusUpdate::Set(status) => {
+                    self.program_status = Some(status);
+                    cx.emit(Event::ProgramStatusChanged);
+                }
+                StatusUpdate::Clear => {
+                    if self.program_status.take().is_some() {
+                        cx.emit(Event::ProgramStatusChanged);
+                    }
+                }
+                // 特性探测必须回复，否则按规范视为协议不支持，程序不再上报
+                StatusUpdate::Query => {
+                    self.write_to_pty(crossh_terminal::FEATURE_DETECTION_REPLY.as_bytes().to_vec());
+                }
+            },
             TerminalBackendEvent::Exit => self.register_task_finished(None, cx),
             TerminalBackendEvent::MouseCursorDirty => {
                 //NOOP, Handled in render
@@ -3098,6 +3122,14 @@ impl Terminal {
         exit_status: Option<ExitStatus>,
         cx: &mut Context<Terminal>,
     ) {
+        // 规范：进程退出时丢弃 working/blocked 记录；done/error 存活
+        if matches!(
+            self.program_status.as_ref().map(|s| s.state),
+            Some(ProgramState::Working | ProgramState::Blocked)
+        ) {
+            self.program_status = None;
+            cx.emit(Event::ProgramStatusChanged);
+        }
         if let Some(tx) = &self.completion_tx {
             tx.try_send(exit_status).ok();
         }
@@ -3169,6 +3201,11 @@ impl Terminal {
 
     pub fn vi_mode_enabled(&self) -> bool {
         self.vi_mode_enabled
+    }
+
+    /// 最近一次 OSC 7501 报告的根记录状态（供 tab 状态点等 UI 消费）。
+    pub fn program_status(&self) -> Option<&ProgramStatus> {
+        self.program_status.as_ref()
     }
 
     pub fn clone_builder(&self, cx: &App, cwd: Option<PathBuf>) -> Task<Result<TerminalBuilder>> {

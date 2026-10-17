@@ -133,6 +133,13 @@ toast:
   search_no_match: No matching project
   update_downloaded: Update downloaded — restart from the status bar to install
 
+tab:
+  status:
+    working: Working
+    blocked: Blocked
+    done: Done
+    error: Error
+
 context_menu:
   copy_path: Copy Path
   open_local_terminal: Open Terminal Here

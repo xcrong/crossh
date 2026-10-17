@@ -15,7 +15,10 @@ use gpui::{
 
 use crate::features::workspace::pinned::pinned_tabs_for_project;
 use crate::features::workspace::shell::AppShell;
-use crate::features::workspace::status::local_tab_dot_color;
+use crate::features::workspace::status::{
+    local_tab_dot_color, program_status_dot_color, program_status_progress_suffix,
+    program_status_tooltip,
+};
 use crate::features::workspace::view::{ActiveView, LocalSessionId};
 use crossh_core::i18n;
 use crossh_terminal_view::TerminalItem as _;
@@ -33,6 +36,7 @@ fn render_tab_chip<M, S, C>(
     container_id: impl Into<gpui::ElementId>,
     dot_color: gpui::Rgba,
     label: impl Into<SharedString>,
+    tooltip: Option<String>,
     is_active: bool,
     leading: Option<AnyElement>,
     label_id: impl Into<ElementId>,
@@ -50,6 +54,9 @@ where
 {
     let label: SharedString = label.into();
     let mut tab = TabItem::new(container_id, label.clone());
+    if let Some(tooltip) = tooltip {
+        tab = tab.tooltip(tooltip);
+    }
     tab = tab
         .drag_tab(DragLocalTab::new(session_id, pinned, label))
         .on_drop_tab(cx.listener(move |this, drag: &DragLocalTab, _window, cx| {
@@ -237,11 +244,16 @@ pub(super) fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> 
                 };
                 let state = session.terminal.state(cx);
                 let command_running = session.terminal.is_command_running(cx);
+                let program_status = session.terminal.program_status(cx);
                 let fallback = format!("ses{}", idx + 1);
                 let label = session
                     .custom_name
                     .clone()
                     .unwrap_or_else(|| session.terminal.tab_title(cx, &fallback));
+                let label = match program_status_progress_suffix(&program_status) {
+                    Some(suffix) => format!("{label}{suffix}"),
+                    None => label,
+                };
                 let cwd = session.cwd.clone();
                 let default_command = session.default_command.clone();
                 let has_default_command = default_command.is_some();
@@ -261,8 +273,11 @@ pub(super) fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> 
                 strip = strip.child(render_tab_chip(
                     cx,
                     ("pinned-tab-container", session_id),
-                    local_tab_dot_color(&Some(state), command_running),
+                    // 程序状态点优先于连接/命令运行色
+                    program_status_dot_color(&program_status)
+                        .unwrap_or_else(|| local_tab_dot_color(&Some(state), command_running)),
                     label,
+                    program_status_tooltip(&program_status),
                     is_active,
                     Some(leading),
                     ("pinned-tab", session_id),
@@ -304,22 +319,20 @@ pub(super) fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> 
                     continue;
                 }
                 let is_active = active_session_id == session_id;
-                let state = shell
-                    .workspace
-                    .sessions
-                    .local_sessions
-                    .get(&session_id)
-                    .map(|session| session.terminal.state(cx));
-                let command_running = shell
-                    .workspace
-                    .sessions
-                    .local_sessions
-                    .get(&session_id)
-                    .is_some_and(|session| session.terminal.is_command_running(cx));
+                let session = shell.workspace.sessions.local_sessions.get(&session_id);
+                let state = session.map(|session| session.terminal.state(cx));
+                let command_running =
+                    session.is_some_and(|session| session.terminal.is_command_running(cx));
+                let program_status =
+                    session.and_then(|session| session.terminal.program_status(cx));
                 let fallback = format!("ses{}", idx + 1);
-                let label = match shell.workspace.sessions.local_sessions.get(&session_id) {
+                let label = match session {
                     Some(session) => session.terminal.tab_title(cx, &fallback),
                     None => fallback,
+                };
+                let label = match program_status_progress_suffix(&program_status) {
+                    Some(suffix) => format!("{label}{suffix}"),
+                    None => label,
                 };
                 let cwd = shell
                     .workspace
@@ -332,8 +345,11 @@ pub(super) fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> 
                 strip = strip.child(render_tab_chip(
                     cx,
                     ("local-tab-container", session_id),
-                    local_tab_dot_color(&state, command_running),
+                    // 程序状态点优先于连接/命令运行色
+                    program_status_dot_color(&program_status)
+                        .unwrap_or_else(|| local_tab_dot_color(&state, command_running)),
                     label,
+                    program_status_tooltip(&program_status),
                     is_active,
                     None,
                     ("local-tab", session_id),

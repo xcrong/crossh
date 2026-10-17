@@ -10,6 +10,7 @@ use gpui::{
 use crate::layout::h_flex;
 use crate::status_dot::StatusDot;
 use crate::theme;
+use crate::tooltip::Tooltip;
 
 type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 type MouseDownHandler = Rc<dyn Fn(&MouseDownEvent, &mut Window, &mut App)>;
@@ -119,6 +120,7 @@ pub struct TabItem {
     label: SharedString,
     active: bool,
     dot_color: Option<Rgba>,
+    tooltip: Option<SharedString>,
     leading_icon: Option<AnyElement>,
     max_label_width: Pixels,
     children: Vec<AnyElement>,
@@ -137,6 +139,7 @@ impl TabItem {
             label: label.into(),
             active: false,
             dot_color: None,
+            tooltip: None,
             leading_icon: None,
             max_label_width: px(220.),
             children: Vec::new(),
@@ -159,6 +162,12 @@ impl TabItem {
 
     pub fn dot_color(mut self, color: impl Into<Rgba>) -> Self {
         self.dot_color = Some(color.into());
+        self
+    }
+
+    /// 标签名区域的悬停提示（如 OSC 7501 程序状态与消息）。
+    pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(tooltip.into());
         self
     }
 
@@ -213,6 +222,7 @@ impl RenderOnce for TabItem {
             label,
             active,
             dot_color,
+            tooltip,
             leading_icon,
             max_label_width,
             children,
@@ -250,6 +260,10 @@ impl RenderOnce for TabItem {
                     .child(label),
             );
         let mut label_view = label_view.id(label_id);
+        if let Some(tooltip) = tooltip {
+            label_view =
+                label_view.tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into());
+        }
         if let Some(on_select) = on_select {
             label_view = label_view.on_click(move |event, window, cx| {
                 on_select(event, window, cx);

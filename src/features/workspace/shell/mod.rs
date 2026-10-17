@@ -483,6 +483,7 @@ impl AppShell {
                         );
                     }
                     TerminalEvent::TitleChanged | TerminalEvent::Notification => cx.notify(),
+                    TerminalEvent::ProgramStatusChanged => cx.notify(),
                 },
             );
         self.workspace
@@ -566,6 +567,10 @@ impl AppShell {
             dir.active_session = Some(session_id);
         }
         self.workspace.active_view = Some(ActiveView::LocalSession(session_id));
+        if let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) {
+            // 用户回到该终端：done/error 状态视为已读，tab 状态点随之消失
+            session.terminal.acknowledge_program_status(cx);
+        }
         self.refocus_active_terminal(cx);
         cx.notify();
     }
