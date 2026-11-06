@@ -8,7 +8,7 @@ license = "GPL-3.0-or-later"
 crossh-core = { path = "../crossh-core" }
 crossh-terminal = { path = "../crossh-terminal" }
 crossh-ui = { path = "../crossh-ui" }
-gpui = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1478fb5e60f8b7852a2b0da32aa3da5cd9bb6954" }
 itertools = "0.15"
 log = "0.4"
 schemars = "1"
@@ -18,5 +18,5 @@ terminal = { path = "../terminal" }
 unicode-width = "0.2"
 
 [dev-dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a", features = ["test-support"] }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a", features = ["font-kit", "test-support", "wayland", "x11"] }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1478fb5e60f8b7852a2b0da32aa3da5cd9bb6954", features = ["test-support"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1478fb5e60f8b7852a2b0da32aa3da5cd9bb6954", features = ["font-kit", "test-support", "wayland", "x11"] }

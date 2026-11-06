@@ -171,7 +171,7 @@ impl TerminalElement {
             TerminalElement::right_button_handler(terminal.clone(), terminal_view, focus.clone()),
         );
 
-        self.interactivity.on_scroll_wheel({
+        self.interactivity.on_scroll({
             let terminal = self.terminal.clone();
             move |event, _window, cx| {
                 terminal.update(cx, |terminal, terminal_cx| {

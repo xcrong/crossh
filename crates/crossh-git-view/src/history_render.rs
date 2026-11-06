@@ -884,8 +884,8 @@ mod tests {
     use gpui::{
         App, Bounds, Context, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement,
         LayoutId, Length, ListHorizontalSizingBehavior, ListSizingBehavior, ParentElement, Pixels,
-        Render, ScrollDelta, ScrollWheelEvent, Styled, TestAppContext, UniformListScrollHandle,
-        Window, div, point, px, uniform_list,
+        Render, ScrollDelta, ScrollEvent, Styled, TestAppContext, UniformListScrollHandle, Window,
+        div, point, px, uniform_list,
     };
 
     /// 固定 4000px 宽的探针行，记录每次 prepaint 的行原点 x。
@@ -1034,7 +1034,7 @@ mod tests {
                 bounds.origin.y + bounds.size.height / 2.,
             )
         });
-        cx.simulate_event(ScrollWheelEvent {
+        cx.simulate_event(ScrollEvent {
             position,
             delta: ScrollDelta::Pixels(point(px(-600.), px(0.))),
             ..Default::default()

@@ -399,7 +399,7 @@ impl Element for TerminalElement {
                     terminal.set_size(dimensions);
                     terminal.sync(window, cx);
 
-                    (window.modifiers().secondary()
+                    (window.modifiers().secondary(cx)
                         && dimensions.bounds.contains(&window.mouse_position()))
                     .then(|| terminal.last_content.last_hovered_word.clone())
                     .flatten()

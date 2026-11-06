@@ -9,8 +9,8 @@ use gpui::{
     App, AppContext as _, Bounds, Context, Element, ElementId, Entity, EntityId, EventEmitter,
     Global, GlobalElementId, Half, Hitbox, InputEvent as _, InspectorElementId, IntoElement,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    ScrollDelta, ScrollWheelEvent, SharedString, Style, Subscription, TextLayout, WeakEntity,
-    Window, point, px,
+    ScrollDelta, ScrollEvent, SharedString, Style, Subscription, TextLayout, WeakEntity, Window,
+    point, px,
 };
 
 use crate::text_boundary::{line_range_at, word_range_at};
@@ -1507,7 +1507,7 @@ impl WindowSelectionState {
             cx.defer(move |cx| {
                 _ = window.update(cx, |_, window, cx| {
                     window.dispatch_event(
-                        ScrollWheelEvent {
+                        ScrollEvent {
                             position,
                             delta: ScrollDelta::Pixels(point(px(0.), -delta)),
                             ..Default::default()
@@ -1941,7 +1941,7 @@ fn paint_text_selection(state: &Entity<WindowSelectionState>, window: &mut Windo
     });
 
     let scroll_state = state.downgrade();
-    window.on_mouse_event(move |_: &ScrollWheelEvent, phase, window, cx| {
+    window.on_mouse_event(move |_: &ScrollEvent, phase, window, cx| {
         if phase.bubble()
             && let Some(state) = scroll_state.upgrade()
         {

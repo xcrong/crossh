@@ -278,18 +278,19 @@ mod tests {
     }
 
     fn press(window: AnyWindowHandle, cx: &mut TestAppContext, key: &str) {
+        let os = cx.update(|cx| cx.platform_info().os);
         // 原生语义：down/up 配对才合成一次点击。
         for down in [true, false] {
             let input = if down {
                 KeyDownEvent {
-                    keystroke: Keystroke::parse(key).unwrap(),
+                    keystroke: Keystroke::parse_with_os(key, os).unwrap(),
                     is_held: false,
                     prefer_character_input: false,
                 }
                 .to_platform_input()
             } else {
                 KeyUpEvent {
-                    keystroke: Keystroke::parse(key).unwrap(),
+                    keystroke: Keystroke::parse_with_os(key, os).unwrap(),
                 }
                 .to_platform_input()
             };

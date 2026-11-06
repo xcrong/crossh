@@ -568,7 +568,7 @@ impl TerminalView {
     }
 
     fn send_keystroke(&mut self, text: &SendKeystroke, _: &mut Window, cx: &mut Context<Self>) {
-        if let Ok(keystroke) = Keystroke::parse(&text.0) {
+        if let Ok(keystroke) = Keystroke::parse_with_os(&text.0, cx.platform_info().os) {
             self.process_keystroke(&keystroke, cx);
         }
     }
