@@ -347,6 +347,7 @@ note:
     undo_delete: 撤销删除
     preview: 预览
     edit: 编辑
+    dismiss: 关闭提示
   find:
     placeholder: 查找...
     no_matches: 无匹配
@@ -369,7 +370,7 @@ note:
     restored_hidden: 已恢复，可在清空搜索后查看
     recovered_backup: 笔记库损坏，旧库已备份到 %{path}
     store_unavailable: 笔记库不可用，当前修改无法保存；请恢复笔记库后重试
-    too_large: 内容超过 %{mb} MB 上限，未保存；请删减后重试
+    too_large: 内容超过 %{mb} MiB 上限，未保存；请删减后重试
     empty_content: 空内容无法保存
     save_failed: "保存失败：%{error}"
     note_deleted: 笔记已被删除，无法保存

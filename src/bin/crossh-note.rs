@@ -12,7 +12,19 @@ use gpui::{App, QuitMode};
 
 fn main() {
     // Windows GUI 子系统下无控制台：挂回父控制台，保证 --help/错误输出可见。
+    // 必须是 `main` 的第一句：先挂控制台再初始化日志，否则 Windows GUI 子系统的
+    // stderr 副本会被丢掉（`logging::init` 立刻 tee 到 stderr，见
+    // `crossh-core/src/logging.rs`）。
     crossh_core::process::attach_parent_console();
+
+    // 独立子进程不经过根 bin 的 `app::bootstrap::init()`：不在这里初始化，
+    // 本进程里所有 `log::warn!` / `log::error!` 都没有 sink（stderr 与文件都收不到）。
+    // 必须早于 `parse_cli`（任何 warn 都要有 sink），但**启动记录不记在这里**：
+    // `--help` / 参数错误这类立刻退出的路径也是同一入口，在这里记 INFO 会让它比
+    // `crossh --help` / `crossh-git --help` 多打一行。启动记录只记在真正开窗的路径上。
+    // `init` 一并装 panic hook：父进程把本进程 stderr 重定向到 null，
+    // 没有 hook 的话 panic 在 run.log 里一痕不见。
+    crossh_core::logging::init();
 
     let args = std::env::args().skip(1);
     let command = match note_launcher::parse_cli(args) {
@@ -46,6 +58,10 @@ fn main() {
     // 跟随主应用的语言设置：独立二进制不挂载 settings feature，
     // 只读 settings.toml 的 language 键（缺失/非法时跟随系统）。
     rust_i18n::set_locale(crossh_core::locale::persisted_locale_code());
+
+    // 真正要开窗了才记启动记录：`--help` / 参数错误 / 单实例转发都已在上面的分支
+    // 退出，它们的输出保持与其它 bin 一样安静。
+    log::info!("---- crossh-note startup (pid {}) ----", std::process::id());
 
     let app = gpui_platform::application()
         .with_assets(crossh_ui::assets::UiAssetSource::default())

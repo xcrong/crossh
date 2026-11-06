@@ -27,6 +27,8 @@ pub fn note_title(content: &str, max: usize) -> String {
 /// 未知错误码原样透出（含 SQLite 原文），便于用户截图反馈时定位。
 pub fn persist_error_message(code: &str) -> String {
     match code {
+        // 超限的文案按 MiB 说（参数就是 `MAX_CONTENT_BYTES / (1024 * 1024)`）：
+        // 存储层卡的是 1024*1024 字节，写成 MB 会与“写进 1,100,000 字节仍被拒”对不上。
         "content_too_large" => rust_i18n::t!(
             "note.error.too_large",
             mb = MAX_CONTENT_BYTES / (1024 * 1024)

@@ -347,6 +347,7 @@ note:
     undo_delete: Undo delete
     preview: Preview
     edit: Edit
+    dismiss: Dismiss
   find:
     placeholder: Find…
     no_matches: No matches
@@ -369,7 +370,7 @@ note:
     restored_hidden: Restored — clear the search to see it
     recovered_backup: "Note library was corrupted; the old library was backed up to %{path}"
     store_unavailable: The note library is unavailable, so changes cannot be saved; restore the library and try again
-    too_large: "Content is over the %{mb} MB limit and was not saved; trim it and try again"
+    too_large: "Content is over the %{mb} MiB limit and was not saved; trim it and try again"
     empty_content: An empty note cannot be saved
     save_failed: "Save failed: %{error}"
     note_deleted: This note was deleted and cannot be saved

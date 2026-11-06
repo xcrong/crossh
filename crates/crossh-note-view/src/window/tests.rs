@@ -1171,3 +1171,461 @@ fn note_precedes_matches_store_list_order() {
     // 同一行不比它自己优先：否则就地插入找位置时会把新行插到自己后面。
     assert!(!note_precedes(&older, &older));
 }
+
+#[gpui::test]
+fn note_search_filtering_selected_note_does_not_rewrite_it(cx: &mut TestAppContext) {
+    use std::time::Duration;
+
+    // 回归（终审 P2）：判脏原先按 id 去 `notes` 里找当前笔记，而 `notes` 是搜索
+    // **过滤后**的列表。当前笔记被过滤掉后在那里找不到它，判脏退化成「正文非空即脏」，
+    // 于是每敲一个搜索词、防抖到期就白 `update` 一遍同一行（updated_at 被推高、
+    // FTS 重跑，清空搜索后笔记还会跳到列表顶部）。
+    let dir = tempfile::TempDir::new().unwrap();
+    let store = NoteStore::open(dir.path().join("note.db")).unwrap();
+    let milk = store.create("买牛奶").unwrap();
+
+    let window = window_with_store(cx, store);
+    window
+        .update(cx, |note_window, window, cx| {
+            note_window.select_note_focused(milk.id, window, cx);
+            assert_eq!(
+                note_window.content_state.read(cx).value().as_str(),
+                "买牛奶"
+            );
+            // 探针：把这一行软删。多出来的任何一次 update 都会拿到 `not_found` 并回退成
+            // create，于是库里会多出一条「买牛奶」——比 `updated_at`（秒级精度）更确定。
+            note_window.store.as_ref().unwrap().delete(milk.id).unwrap();
+            note_window.search_query = TextEditingState::new("meeting");
+            note_window.on_search_changed(cx);
+        })
+        .unwrap();
+    cx.executor().advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
+    window
+        .update(cx, |note_window, _window, _cx| {
+            let store = note_window.store.as_ref().unwrap();
+            let row = store.get(milk.id).unwrap().expect("软删行仍在库里");
+            assert!(
+                note_window.notes.is_empty(),
+                "防抖到期确实重查过库（否则下面的断言就只是空过）"
+            );
+            // 行已软删：多出来的 `update` 只会拿到 `not_found` 并回退成 create，所以
+            // 这条断言实际只说「行仍在库里且未被改写」，真正抓「白 update」回归的是
+            // 后面的 `store.list()` ——多出任一副本就红。
+            assert_eq!(row.updated_at, milk.updated_at, "行仍在库里且未被改写");
+            assert!(
+                store.list().unwrap().is_empty(),
+                "不得多出 create 出来的副本：{:?}",
+                store.list().unwrap()
+            );
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn note_clearing_existing_content_explains_itself(cx: &mut TestAppContext) {
+    // 回归（终审 P2）：把整篇删空后 `persist_if_dirty` 提前返回、保存按钮变灰，
+    // 用户只看到永久「未保存」+ 灰按钮，老正文还在库里，却没有任何解释。
+    let dir = tempfile::TempDir::new().unwrap();
+    let store = NoteStore::open(dir.path().join("note.db")).unwrap();
+    let note = store.create("first").unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| NoteWindow::with_store_for_test(window, cx, store));
+    cx.run_until_parked();
+    view.update_in(cx, |note_window, window, cx| {
+        note_window.select_note_focused(note.id, window, cx);
+        note_window
+            .content_state
+            .update(cx, |s, cx| s.set_value_simple("   \n", cx));
+        assert!(note_window.is_dirty(cx), "删空也是改动，仍待保存");
+        assert!(
+            note_window.is_save_disabled(cx),
+            "空白内容的自动保存保持静默"
+        );
+        assert!(note_window.is_clearing_existing_note(cx));
+    });
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+    assert!(
+        cx.debug_bounds("note-empty-hint").is_some(),
+        "状态栏必须解释为什么没保存"
+    );
+    view.update_in(cx, |note_window, window, cx| {
+        // 主动保存（⌘S 走的就是这一支）必须给解释，而且不写库、不删库。
+        note_window.save_current(window, cx);
+        assert_eq!(
+            note_window.persist_error,
+            Some(expected("note.error.empty_content"))
+        );
+        assert_eq!(
+            note_window
+                .store
+                .as_ref()
+                .unwrap()
+                .get(note.id)
+                .unwrap()
+                .unwrap()
+                .content,
+            "first",
+            "清空不得写库，也不得删库"
+        );
+    });
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+    assert!(
+        cx.debug_bounds("note-empty-hint").is_none(),
+        "横幅在就不该再重复一句"
+    );
+    view.update_in(cx, |note_window, _window, cx| {
+        // ⌘Z 撤销回原文：不再判脏，也就再不会走到落库那几行——横幅必须自己消失，
+        // 否则会永久贴在编辑区上方（自动保存的防抖到期会经过 `persist_if_dirty`）。
+        note_window
+            .content_state
+            .update(cx, |s, cx| s.set_value_simple("first", cx));
+        assert!(!note_window.is_dirty(cx));
+        note_window.autosave(cx);
+        assert_eq!(note_window.persist_error, None, "撤销回原文后横幅必须消失");
+        assert_eq!(note_window.persist_error_code, None);
+        assert!(!note_window.is_clearing_existing_note(cx));
+    });
+}
+
+#[gpui::test]
+fn note_switching_notes_clears_empty_content_banner(cx: &mut TestAppContext) {
+    // 回归（终审 P2）：删空 A → ⌘S 出红横幅 → 点 B。`select_note` 的 `persist_if_dirty`
+    // 在 A 的空白现场早退（不清错），横幅就挂在了 B 上方——说的却是 A 的事。
+    let dir = tempfile::TempDir::new().unwrap();
+    let store = NoteStore::open(dir.path().join("note.db")).unwrap();
+    let a = store.create("first").unwrap();
+    let b = store.create("second").unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| NoteWindow::with_store_for_test(window, cx, store));
+    cx.run_until_parked();
+    view.update_in(cx, |note_window, window, cx| {
+        note_window.select_note_focused(a.id, window, cx);
+        note_window
+            .content_state
+            .update(cx, |s, cx| s.set_value_simple("   \n", cx));
+        note_window.save_current(window, cx);
+        assert_eq!(
+            note_window.persist_error_code.as_deref(),
+            Some("empty_content")
+        );
+        note_window.select_note_focused(b.id, window, cx);
+        assert_eq!(note_window.selected_id, Some(b.id));
+        assert_eq!(
+            note_window.persist_error, None,
+            "横幅属于 A 的空白现场，不能挂在 B 上方"
+        );
+        assert_eq!(note_window.persist_error_code, None);
+    });
+}
+
+#[gpui::test]
+fn note_switching_notes_keeps_real_persist_error_banner(cx: &mut TestAppContext) {
+    // 反向回归（终审 P2）：`snapshot_loaded` 只清 `empty_content`，其它错误码是真实的
+    // 写库失败（正文仍是那份存不进去的草稿，清掉就等于把失败信号吞了）。把条件放宽成
+    // 「清所有 `persist_error`」时，上面几条正向断言仍然全绿——只有这条会红。
+    let dir = tempfile::TempDir::new().unwrap();
+    let store = NoteStore::open(dir.path().join("note.db")).unwrap();
+    let a = store.create("first").unwrap();
+    let b = store.create("second").unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| NoteWindow::with_store_for_test(window, cx, store));
+    cx.run_until_parked();
+    view.update_in(cx, |note_window, window, cx| {
+        note_window.select_note_focused(a.id, window, cx);
+        // 直接写私有字段：模拟一次失败的落库（真实路径要造库层故障，这里只验证
+        // 「切换笔记不清非 empty_content 的横幅」这一条不变量）。
+        note_window.persist_error = Some("boom".into());
+        note_window.persist_error_code = Some("database is locked".into());
+        note_window.select_note_focused(b.id, window, cx);
+        assert_eq!(note_window.selected_id, Some(b.id));
+        assert_eq!(
+            note_window.persist_error,
+            Some("boom".into()),
+            "真实的写库失败横幅说的是草稿本身，切换笔记不该把它吞掉"
+        );
+        assert_eq!(
+            note_window.persist_error_code.as_deref(),
+            Some("database is locked")
+        );
+    });
+}
+
+#[gpui::test]
+fn note_new_note_clears_empty_content_banner(cx: &mut TestAppContext) {
+    // 回归（第 12 轮）：删空 A → ⌘S 出红横幅 → 新建笔记。`new_note` 原先直接写
+    // `loaded = None`，绕过 `snapshot_loaded`，于是「正文被整体替换就清空内容横幅」
+    // 在新建这条路径上不生效——横幅挂在了新草稿上方，说的却是 A 的事。
+    let dir = tempfile::TempDir::new().unwrap();
+    let store = NoteStore::open(dir.path().join("note.db")).unwrap();
+    let a = store.create("first").unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| NoteWindow::with_store_for_test(window, cx, store));
+    cx.run_until_parked();
+    view.update_in(cx, |note_window, window, cx| {
+        note_window.select_note_focused(a.id, window, cx);
+        note_window
+            .content_state
+            .update(cx, |s, cx| s.set_value_simple("   \n", cx));
+        note_window.save_current(window, cx);
+        assert_eq!(
+            note_window.persist_error_code.as_deref(),
+            Some("empty_content"),
+            "先有 A 的「空内容无法保存」横幅"
+        );
+        note_window.new_note(window, cx);
+        assert_eq!(note_window.selected_id, None);
+        assert_eq!(
+            note_window.persist_error, None,
+            "横幅属于 A 的空白现场，不能挂在新草稿上方"
+        );
+    });
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+    assert!(
+        cx.debug_bounds("note-empty-hint").is_none(),
+        "新草稿不是「删空已有正文」，不该有解释"
+    );
+}
+
+#[gpui::test]
+fn note_switching_notes_clears_pending_undo(cx: &mut TestAppContext) {
+    // 回归（终审 P2）：`pending_restore_id` 原先只在删除/撤销/查询成功时清。切到别的
+    // 笔记后状态栏仍挂着「已删除 · 可撤销」和一个撤销按钮，跨几十分钟一直亮着。
+    let dir = tempfile::TempDir::new().unwrap();
+    let store = NoteStore::open(dir.path().join("note.db")).unwrap();
+    let a = store.create("first").unwrap();
+    let b = store.create("second").unwrap();
+    let _c = store.create("third").unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| NoteWindow::with_store_for_test(window, cx, store));
+    cx.run_until_parked();
+    view.update_in(cx, |note_window, window, cx| {
+        note_window.select_note_focused(a.id, window, cx);
+        note_window.delete_current(window, cx); // 第一次：只标记
+        note_window.delete_current(window, cx); // 第二次：真删
+        assert_eq!(note_window.pending_restore_id, Some(a.id));
+        assert_ne!(
+            note_window.selected_id,
+            Some(b.id),
+            "删除后应自动选中另一篇，下面才是真正的切换"
+        );
+    });
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+    assert!(
+        cx.debug_bounds("note-status-undo").is_some(),
+        "刚删完撤销按钮必须在"
+    );
+    view.update_in(cx, |note_window, window, cx| {
+        note_window.select_note_focused(b.id, window, cx);
+        assert_eq!(note_window.selected_id, Some(b.id));
+        assert!(
+            note_window.pending_restore_id.is_none(),
+            "切到别的笔记后撤销目标必须失效"
+        );
+    });
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+    assert!(
+        cx.debug_bounds("note-status-undo").is_none(),
+        "撤销按钮不该再渲染"
+    );
+}
+
+#[test]
+fn note_too_large_message_says_mib() {
+    // 存储层卡的是 1024*1024 字节（`MAX_CONTENT_BYTES`），文案写 MB 会让
+    // 「1,100,000 字节被拒」读不通：1.1 MB 还没到 1 MB 上限。
+    let msg = rust_i18n::t!("note.error.too_large", mb = 1).to_string();
+    assert!(msg.contains("MiB"), "超限文案必须按 MiB 说，实际：{msg}");
+    assert_ne!(msg, "note.error.too_large", "locales/ 缺少键");
+}
+
+#[gpui::test]
+fn note_recovery_notice_can_be_dismissed(cx: &mut TestAppContext) {
+    // 回归（终审 P2）：洗库提示永久占一条列表顶部。它必须可关闭，但备份路径是旧数据
+    // 唯一的线索，所以关掉时要把原文（含路径）写进日志。
+    cx.update(crossh_editor::init);
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("note.db");
+    std::fs::write(&path, b"this is definitely not a sqlite database").unwrap();
+    let store = NoteStore::open(&path).unwrap();
+    assert!(store.recovered_from.is_some(), "损坏库应被备份重建");
+
+    let (view, cx) =
+        cx.add_window_view(|window, cx| NoteWindow::with_store_for_test(window, cx, store));
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+    let dismiss = cx
+        .debug_bounds("note-recovery-dismiss")
+        .expect("洗库提示必须有关闭按钮");
+    // 图标按钮没有可见文字，tooltip 就是它的标签：键必须真实存在于 locales/。
+    assert!(!expected("note.action.dismiss").is_empty());
+    view.update(cx, |note_window, _cx| {
+        assert!(note_window.recovery_notice.is_some());
+    });
+    cx.simulate_click(dismiss.center(), gpui::Modifiers::default());
+    view.update(cx, |note_window, _cx| {
+        assert!(
+            note_window.recovery_notice.is_none(),
+            "点关闭后提示必须消失（备份路径已转写进日志）"
+        );
+    });
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+    assert!(
+        cx.debug_bounds("note-recovery-notice").is_none(),
+        "提示行随之消失"
+    );
+}
+
+#[gpui::test]
+fn note_autosave_syncs_snapshot_for_filtered_note(cx: &mut TestAppContext) {
+    use std::time::Duration;
+
+    // 钉子：`apply_persist_result` 落库成功后必须 `snapshot_loaded`。当前笔记被搜索
+    // 过滤掉时 `notes` 里查不到它，判脏只剩 `loaded` 这一条基准；不同步的话它永远
+    // 显示「未保存」，每一轮防抖到期都再写一遍库。
+    let dir = tempfile::TempDir::new().unwrap();
+    let store = NoteStore::open(dir.path().join("note.db")).unwrap();
+    let milk = store.create("买牛奶").unwrap();
+    let window = window_with_store(cx, store);
+    window
+        .update(cx, |note_window, window, cx| {
+            note_window.select_note_focused(milk.id, window, cx);
+            // 搜索词把选中笔记挡在列表外：`notes` 里再没有它。
+            note_window.search_query = TextEditingState::new("meeting");
+            note_window.refresh_list();
+            assert!(note_window.notes.is_empty(), "选中笔记应被搜索过滤掉");
+            note_window
+                .content_state
+                .update(cx, |s, cx| s.set_value_simple("买牛奶和面包", cx));
+            assert!(note_window.is_dirty(cx));
+            note_window.schedule_autosave(cx);
+        })
+        .unwrap();
+    cx.executor().advance_clock(Duration::from_millis(900));
+    cx.run_until_parked();
+    window
+        .update(cx, |note_window, _window, cx| {
+            assert_eq!(
+                note_window
+                    .store
+                    .as_ref()
+                    .unwrap()
+                    .get(milk.id)
+                    .unwrap()
+                    .unwrap()
+                    .content,
+                "买牛奶和面包",
+                "自动保存必须落库"
+            );
+            assert!(
+                !note_window.is_dirty(cx),
+                "落库后基准必须同步过去，否则被过滤掉的笔记永远显示「未保存」"
+            );
+            // 探针：把这一行软删。若还判脏，下一次自动保存的 `update` 会拿到
+            // `not_found` 并回退成 create，库里就多出一条副本——比 `updated_at`
+            // （秒级精度）更能确定「没有再写库」。
+            note_window.store.as_ref().unwrap().delete(milk.id).unwrap();
+        })
+        .unwrap();
+    window
+        .update(cx, |note_window, _window, cx| {
+            note_window.schedule_autosave(cx)
+        })
+        .unwrap();
+    cx.executor().advance_clock(Duration::from_millis(900));
+    cx.run_until_parked();
+    window
+        .update(cx, |note_window, _window, _cx| {
+            let store = note_window.store.as_ref().unwrap();
+            assert_eq!(
+                store.get(milk.id).unwrap().expect("软删行仍在库里").content,
+                "买牛奶和面包",
+                "再次触发自动保存不得改写库里的内容"
+            );
+            assert!(
+                store.list().unwrap().is_empty(),
+                "不脏就不该再写库（否则会多出一条 create 出来的副本）：{:?}",
+                store.list().unwrap()
+            );
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn note_empty_hint_absent_for_blank_new_note(cx: &mut TestAppContext) {
+    // `is_clearing_existing_note` 的否定面之一：新建空笔记只是「还没写」，
+    // 不是「正在弄丢一篇已有正文」，状态栏不该挂那条解释。
+    let dir = tempfile::TempDir::new().unwrap();
+    let store = NoteStore::open(dir.path().join("note.db")).unwrap();
+    store.create("first").unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| NoteWindow::with_store_for_test(window, cx, store));
+    cx.run_until_parked();
+    view.update_in(cx, |note_window, window, cx| {
+        note_window.new_note(window, cx);
+        assert_eq!(note_window.selected_id, None);
+        assert!(!note_window.is_clearing_existing_note(cx));
+    });
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+    assert!(
+        cx.debug_bounds("note-empty-hint").is_none(),
+        "新建空笔记不是「删空已有正文」，不该有解释"
+    );
+}
+
+#[gpui::test]
+fn note_empty_hint_clears_when_typing_resumes(cx: &mut TestAppContext) {
+    // 否定面之二：删空后接着输入正文，就不再是「删空已有正文」，提示必须随之消失。
+    let dir = tempfile::TempDir::new().unwrap();
+    let store = NoteStore::open(dir.path().join("note.db")).unwrap();
+    let note = store.create("first").unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| NoteWindow::with_store_for_test(window, cx, store));
+    cx.run_until_parked();
+    view.update_in(cx, |note_window, window, cx| {
+        note_window.select_note_focused(note.id, window, cx);
+        note_window
+            .content_state
+            .update(cx, |s, cx| s.set_value_simple("   \n", cx));
+        assert!(note_window.is_clearing_existing_note(cx));
+    });
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+    assert!(
+        cx.debug_bounds("note-empty-hint").is_some(),
+        "删空后先有解释（见 note_clearing_existing_content_explains_itself）"
+    );
+    view.update_in(cx, |note_window, _window, cx| {
+        note_window
+            .content_state
+            .update(cx, |s, cx| s.set_value_simple("续写", cx));
+        assert!(
+            !note_window.is_clearing_existing_note(cx),
+            "又写回正文了，就不是删空"
+        );
+    });
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+    assert!(
+        cx.debug_bounds("note-empty-hint").is_none(),
+        "提示必须随输入消失"
+    );
+}

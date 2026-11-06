@@ -16,7 +16,7 @@ use crossh_core::text_editing::{
     utf16_slice,
 };
 use crossh_editor::Textarea;
-use crossh_editor::input::{InputEvent, TextareaState};
+use crossh_editor::input::{InputEvent, Rope, TextareaState};
 use crossh_note::{Note, NoteStore};
 use crossh_ui::widgets::ime_caret_bounds;
 use crossh_ui::{icons, theme};
@@ -105,6 +105,12 @@ pub struct NoteWindow {
     list_notice: Option<String>,
     notes: Vec<Note>,
     selected_id: Option<i64>,
+    // 编辑器当前载入内容的快照：`(笔记 id, 载入时的正文)`。
+    // 判脏的基准不能取自 `notes`：那是**搜索过滤后**的列表，当前笔记被过滤掉后按 id
+    // 找不到它，`is_dirty` 就退化成「正文非空即脏」——状态栏误显「未保存」，每敲一个
+    // 搜索词防抖到期都白 `update` 一遍同一行。快照与列表无关；`Rope` 的 clone 是 O(1)
+    // （共享树节点），留一份基准不复制正文。
+    loaded: Option<(i64, Rope)>,
     preview: bool,
     // 删除二次确认：第一次点击只记录目标，第二次才真删。
     pending_delete_id: Option<i64>,
@@ -180,6 +186,15 @@ impl NoteWindow {
         }
         self.store = Some(store);
         self.reload_notes(cx);
+    }
+
+    /// 关掉洗库提示。备份路径是旧数据唯一的线索：提示从界面上消失后，
+    /// 仍要能在日志里找到它，否则用户点掉提示就彻底失了线索。
+    fn dismiss_recovery_notice(&mut self, cx: &mut Context<Self>) {
+        if let Some(msg) = self.recovery_notice.take() {
+            log::warn!("note recovery notice dismissed: {msg}");
+        }
+        cx.notify();
     }
 
     /// 测试专用构造：不碰用户真实笔记库。
@@ -271,6 +286,7 @@ impl NoteWindow {
             list_notice: None,
             notes: Vec::new(),
             selected_id: None,
+            loaded: None,
             preview: false,
             pending_delete_id: None,
             pending_restore_id: None,
@@ -405,6 +421,17 @@ impl NoteWindow {
     /// 无库时无法落库但不阻塞切换；落库失败返回 false，调用方放弃切换。
     /// 成功时不刷新列表（调用方统一 refresh，避免递归）。
     fn persist_if_dirty(&mut self, cx: &mut Context<Self>) -> bool {
+        // 「删空已有笔记后按 ⌘S」挂上的横幅只解释那一次动作：用户 ⌘Z 撤销回原文后
+        // `is_dirty` 已为 false，落库这几行一次都不会再走，横幅就会永久贴在编辑区上方。
+        // ⌘Z 同样会触发 autosave 并经过这里，所以在最前面清。
+        // 只清 `empty_content`：其它错误码是真实的写入失败，结果还没变（正文仍是那份
+        // 存不进去的草稿），清掉就等于把失败信号吞了。
+        if self.persist_error_code.as_deref() == Some("empty_content")
+            && !self.is_clearing_existing_note(cx)
+        {
+            self.persist_error = None;
+            self.persist_error_code = None;
+        }
         if !self.is_dirty(cx) {
             return true;
         }
@@ -435,17 +462,20 @@ impl NoteWindow {
                 None => store.create(&raw),
             }
         };
-        self.apply_persist_result(result)
+        self.apply_persist_result(result, cx)
     }
 
     /// 落库结果归集：成功则清错误、把落库后的 `Note` 并回内存列表；失败则挂错误横幅。
-    fn apply_persist_result(&mut self, result: Result<Note, String>) -> bool {
+    fn apply_persist_result(&mut self, result: Result<Note, String>, cx: &App) -> bool {
         match result {
             Ok(note) => {
                 self.persist_error = None;
                 self.persist_error_code = None;
                 self.selected_id = Some(note.id);
                 self.upsert_note_in_place(note);
+                // 库里刚写进去的就是编辑器里这一份：基准同步过去，保存后立刻不脏。
+                // 不跟新的话，被搜索过滤掉的笔记（不在 `notes` 里）会永远是「未保存」。
+                self.snapshot_loaded(cx);
                 true
             }
             Err(e) => {
@@ -521,12 +551,14 @@ impl NoteWindow {
             self.content_state.update(cx, |s, cx| {
                 s.set_value_simple(first.content.clone(), cx);
             });
+            self.snapshot_loaded(cx);
             self.preview = false;
         } else if self.selected_id.is_none() {
             self.reset_find(cx);
             self.content_state.update(cx, |s, cx| {
                 s.set_value_simple("", cx);
             });
+            self.snapshot_loaded(cx);
         }
         cx.notify();
     }
@@ -548,13 +580,22 @@ impl NoteWindow {
         // ——"把 A 的内容写进 B"。
         let Some(note) = self.notes.iter().find(|n| n.id == id).cloned() else {
             self.selected_id = None;
+            // `selected_id` 清空后 `loaded` 也必须跟着作废（`snapshot_loaded` 在无选中时
+            // 写 `None`），否则 `is_dirty` 依赖的「两者只成对同步」在这里被打破。
+            self.snapshot_loaded(cx);
             cx.notify();
             return;
         };
         self.selected_id = Some(id);
+        // 撤销目标只在「刚刚删过」这一上下文里成立：用户已经切到别的笔记，状态栏不该
+        // 跳几十分钟还挂着「已删除 · 可撤销」和一个撤销按钮。
+        // 位置在切换**成功之后**：上面那条护栏是切换失败（id 已失同步），此时用户
+        // 并没有离开当前笔记，撤销入口不该被误清。
+        self.pending_restore_id = None;
         self.reset_find(cx);
         self.content_state
             .update(cx, |s, cx| s.set_value_simple(note.content.clone(), cx));
+        self.snapshot_loaded(cx);
         self.preview = false;
         cx.notify();
     }
@@ -583,6 +624,15 @@ impl NoteWindow {
     }
 
     fn save_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 把一篇已有笔记的正文删空后按 ⌘S：判空会直接 return、保存按钮也是灰的、
+        // 自动保存又静默，主动保存就是用户唯一能问「为什么没存」的地方，必须给解释。
+        // 不写库也不删库：库里的正文原样保留，用户还能改主意。
+        if self.is_clearing_existing_note(cx) {
+            self.persist_error = Some(persist_error_message("empty_content"));
+            self.persist_error_code = Some("empty_content".to_string());
+            cx.notify();
+            return;
+        }
         // 判空借用 `&Rope`；落库用原文（见 `persist_if_dirty`）。
         if self
             .content_state
@@ -637,11 +687,13 @@ impl NoteWindow {
             return;
         }
         self.pending_delete_id = None;
+        self.pending_restore_id = None;
         self.selected_id = None;
         self.reset_find(cx);
         self.content_state.update(cx, |s, cx| {
             s.set_value_simple("", cx);
         });
+        self.snapshot_loaded(cx);
         self.preview = false;
         self.refresh_list();
         window.focus(&self.content_state.read(cx).focus_handle(cx), cx);
@@ -686,6 +738,8 @@ impl NoteWindow {
         self.content_state.update(cx, |s, cx| {
             s.set_value_simple("", cx);
         });
+        // 编辑器已清空，基准随之作废：留着旧正文当基准会拿它跟空白比较。
+        self.snapshot_loaded(cx);
         self.reload_notes(cx);
         if !self.notes.is_empty() {
             window.focus(&self.content_state.read(cx).focus_handle(cx), cx);
@@ -729,6 +783,9 @@ impl NoteWindow {
     /// 关窗即自动落库，因此不存在"忘了保存"的路径：
     /// - 不脏 → 直接关。
     /// - 脏且落库成功 → 关。
+    /// - 把一篇已有笔记删空 → 等价「取消删除」：库里原文原样保留、不写库也不删库
+    ///   （`persist_if_dirty` 在空白处早退），因此直接关。这是有意为之：删空不当作
+    ///   「删掉这篇笔记」，用户仍能重新打开原文。
     /// - 脏但落不了库（无库 / 写入失败）→ **不关**，把原因渲染在编辑区上方，
     ///   草稿留在编辑器里。关窗会让进程退出（QuitMode::LastWindowClosed），
     ///   草稿将永久丢失，所以必须拦下。
@@ -783,6 +840,24 @@ impl NoteWindow {
         }
     }
 
+    /// 记录编辑器当前载入的正文快照（判脏基准），归属当前选中项；无选中则作废。
+    /// 取编辑器自己的 `Rope` 而不是把刚传入的字符串再解析一遍：`set_value_simple`
+    /// 会做输入归一化，只有编辑器里那份才是用户看到、也是将要落库的内容。
+    ///
+    /// 正文在这里被整体替换，`empty_content` 横幅解释的是**替换前**那份空白状态，
+    /// 必须一并清掉（`apply_persist_result` 只在成功时清）。否则：删空 A → ⌘S 出横幅
+    /// → 点 B，`select_note` 的 `persist_if_dirty` 在 A 的空白现场早退（`is_clearing`
+    /// 真 → 不清），横幅就挂在了 B 上方。其它错误码不动：它们是真实的写库失败。
+    fn snapshot_loaded(&mut self, cx: &App) {
+        if self.persist_error_code.as_deref() == Some("empty_content") {
+            self.persist_error = None;
+            self.persist_error_code = None;
+        }
+        self.loaded = self
+            .selected_id
+            .map(|id| (id, self.content_state.read(cx).text().clone()));
+    }
+
     fn is_dirty(&self, cx: &App) -> bool {
         // 借用 `&Rope` 比较：`value()` 每次调用都把整篇正文（单条上限 1 MiB）
         // 物化成新的 `SharedString`，而状态栏每帧要问好几次。`chars()` 逐字符比较
@@ -792,12 +867,45 @@ impl NoteWindow {
         // 当成"没改动"。
         let state = self.content_state.read(cx);
         let text = state.text();
-        if let Some(id) = self.selected_id
-            && let Some(note) = self.notes.iter().find(|n| n.id == id)
-        {
-            return !text.chars().eq(note.content.chars());
+        if let Some(id) = self.selected_id {
+            // 主路：与「载入时的正文」比。`notes` 是搜索过滤后的列表，当前笔记被
+            // 过滤掉时按 id 找不到它——旧实现就退化成「正文非空即脏」，于是状态栏
+            // 误显「未保存」，每敲一个搜索词防抖到期都白 `update` 一遍同一行
+            // （`updated_at` 被推高、FTS 重跑、清空搜索后笔记跳到列表顶部）。
+            if let Some((loaded_id, loaded)) = &self.loaded
+                && *loaded_id == id
+            {
+                return !text.chars().eq(loaded.chars());
+            }
+            // 兜底：`loaded` 与 `selected_id` 只成对同步，走到这里就是那条不变量
+            // 被破坏了（测试会直接手填 `notes` / `selected_id`，生产路径不该发生）。
+            // 这不是合法路径，只是总比把正文当“未保存”或直接 panic 好。
+            if let Some(note) = self.notes.iter().find(|n| n.id == id) {
+                return !text.chars().eq(note.content.chars());
+            }
         }
         !text.chars().all(char::is_whitespace)
+    }
+
+    /// 「把一篇已有笔记的正文删空了」：有选中笔记、编辑器全空白、而载入时的正文非空白。
+    ///
+    /// 这不是「草稿还没写」而是「你正在弄丢一篇已存在的正文」：自动保存会静默跳过
+    /// （不写库也不删库），用户却只看到永久的「未保存」+ 灰保存按钮。
+    fn is_clearing_existing_note(&self, cx: &App) -> bool {
+        let Some(id) = self.selected_id else {
+            return false;
+        };
+        let Some((loaded_id, loaded)) = &self.loaded else {
+            return false;
+        };
+        if *loaded_id != id || loaded.chars().all(char::is_whitespace) {
+            return false;
+        }
+        self.content_state
+            .read(cx)
+            .text()
+            .chars()
+            .all(char::is_whitespace)
     }
 
     fn is_save_disabled(&self, cx: &App) -> bool {
@@ -958,6 +1066,24 @@ impl NoteWindow {
             left =
                 left.child(StatusMetric::new(text("note.status.unsaved")).tone(BadgeTone::Warning));
         }
+        // 把一篇已有笔记的正文删空了：自动保存静默（不写库、也不删库），只留下永久的
+        // 「未保存」+ 灰保存按钮，用户读不出原因。用 muted 而非红色：这还不是错误，
+        // 而是「当前不会被写库」的解释（主动保存的解释走 `persist_error`）。
+        // 按 ⌘S 后横幅说的是同一句文案，这条就让位——两份并排出现只是重复。
+        if self.is_clearing_existing_note(cx)
+            && self.persist_error_code.as_deref() != Some("empty_content")
+        {
+            left = left.child(
+                div()
+                    .id("note-empty-hint")
+                    .debug_selector(|| "note-empty-hint".into())
+                    .min_w_0()
+                    .truncate()
+                    .text_xs()
+                    .text_color(theme::muted_text())
+                    .child(text("note.error.empty_content")),
+            );
+        }
         // 删除二次确认进行中：在状态栏明示“再按一次确认删除”。
         let delete_armed = self.selected_id.is_some() && self.pending_delete_id == self.selected_id;
         if delete_armed {
@@ -1012,18 +1138,28 @@ impl NoteWindow {
                     .on_click(cx.listener(|this, _, window, cx| this.save_current(window, cx))),
             );
         // 软删后**额外**多一个撤销位，而不是用它替换删除按钮：`pending_restore_id`
-        // 会一直留到下次删除或成功查询，替换的话鼠标用户在整个会话里都点不到删除
-        // （⌘D 只绑在编辑器的 Input context，列表侧没有入口）。
+        // 会一直留到下次删除、切换选中笔记或撤销为止，替换的话鼠标用户在整个会话里
+        // 都点不到删除（⌘D 只绑在编辑器的 Input context，列表侧没有入口）。
         // 代价只是多一个 22px 图标位。
         if let Some(id) = self.pending_restore_id {
             actions = actions.child(
-                Button::new("note-status-undo")
-                    .size(ButtonSize::Icon(px(22.)))
-                    .variant(ButtonVariant::Ghost)
-                    .icon(icons::icon(icons::IconName::RefreshCw, 13.).text_color(theme::accent()))
-                    .tooltip(text("note.action.undo_delete"))
-                    .on_click(
-                        cx.listener(move |this, _, window, cx| this.undo_delete(id, window, cx)),
+                // Button 本身不带 `debug_selector`（那是 gpui 的 Element 能力），包一层
+                // div 只为让测试能断言「撤销按钮在/不在」。
+                div()
+                    .debug_selector(|| "note-status-undo".into())
+                    .flex_shrink_0()
+                    .child(
+                        Button::new("note-status-undo")
+                            .size(ButtonSize::Icon(px(22.)))
+                            .variant(ButtonVariant::Ghost)
+                            .icon(
+                                icons::icon(icons::IconName::RefreshCw, 13.)
+                                    .text_color(theme::accent()),
+                            )
+                            .tooltip(text("note.action.undo_delete"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.undo_delete(id, window, cx)
+                            })),
                     ),
             );
         }
@@ -1259,6 +1395,7 @@ impl gpui::Render for NoteWindow {
         }
         // 洗库提示：与错误行同构（列表顶部一条醒目行），但用 warning 色——
         // 这不是“现在坏了”，而是“旧数据已经搬到别处了”，指向还在的备份文件。
+        // 可关闭：永久占一行会挤列表；关掉后备份路径已写进日志（见 `dismiss_recovery_notice`）。
         if let Some(msg) = self.recovery_notice.clone() {
             list_top.push(
                 div()
@@ -1267,11 +1404,34 @@ impl gpui::Render for NoteWindow {
                     .w_full()
                     .px_2()
                     .py_1()
+                    .flex()
+                    .items_center()
+                    .gap_1()
                     .border_b_1()
                     .border_color(theme::warning())
                     .text_xs()
                     .text_color(theme::warning())
-                    .child(SharedString::from(msg))
+                    .child(div().min_w_0().flex_1().child(SharedString::from(msg)))
+                    .child(
+                        // 包一层 div 只因为 Button 不带 `debug_selector`：测试靠它断言
+                        // 关闭按钮真的存在并点击它。
+                        div()
+                            .debug_selector(|| "note-recovery-dismiss".into())
+                            .flex_shrink_0()
+                            .child(
+                                Button::new("note-recovery-dismiss")
+                                    .size(ButtonSize::Icon(px(18.)))
+                                    .variant(ButtonVariant::Ghost)
+                                    .icon(
+                                        icons::icon(icons::IconName::X, 11.)
+                                            .text_color(theme::warning()),
+                                    )
+                                    .tooltip(text("note.action.dismiss"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.dismiss_recovery_notice(cx)
+                                    })),
+                            ),
+                    )
                     .into_any_element(),
             );
         }

@@ -21,6 +21,7 @@ pub mod git_status;
 pub mod i18n;
 pub mod input_handler;
 pub mod locale;
+pub mod logging;
 pub mod note_launcher;
 pub mod process;
 pub mod single_instance;
