@@ -317,3 +317,66 @@ compose:
 scratch:
   title: 临时终端
   close: 关闭临时终端
+
+note:
+  title: 笔记
+  list:
+    empty: 无笔记，新建试试
+    no_matches: 无匹配，新建试试
+    search_placeholder: 搜索...
+    meta: "%{time} · %{count} 字"
+    empty_note: 空笔记
+  editor:
+    placeholder: 输入笔记内容... (支持 Markdown)
+    preview_empty: 预览为空
+  status:
+    no_store: 笔记库打开失败
+    new_note: 新建笔记
+    no_notes: 无笔记
+    no_selection: 未选择
+    note_count: "%{count} 条"
+    char_count: "%{count} 字"
+    unsaved: 未保存
+    confirm_delete: 再按一次确认删除
+    deleted_undoable: 已删除 · 可撤销
+  action:
+    new_note: 新建笔记
+    save: 保存
+    delete: 删除
+    confirm_delete: 再次点击确认删除
+    undo_delete: 撤销删除
+    preview: 预览
+    edit: 编辑
+  find:
+    placeholder: 查找...
+    no_matches: 无匹配
+    counter: "%{current}/%{total}"
+    previous: 上一个匹配
+    next: 下一个匹配
+    close: 关闭查找
+  menu:
+    copy: 复制
+    cut: 剪切
+    paste: 粘贴
+    select_all: 全选
+    undo: 撤销
+    redo: 重做
+  error:
+    store_open: "笔记库打开失败：%{error}"
+    query_failed: 查询失败，显示旧数据
+    delete_failed: 删除失败，请重试
+    undo_failed: 撤销失败，该笔记已不存在
+    restored_hidden: 已恢复，可在清空搜索后查看
+    recovered_backup: 笔记库损坏，旧库已备份到 %{path}
+    store_unavailable: 笔记库不可用，当前修改无法保存；请恢复笔记库后重试
+    too_large: 内容超过 %{mb} MB 上限，未保存；请删减后重试
+    empty_content: 空内容无法保存
+    save_failed: "保存失败：%{error}"
+    note_deleted: 笔记已被删除，无法保存
+  time:
+    unknown: 未知时间
+    just_now: 刚刚
+    minutes_ago: "%{count} 分钟前"
+    hours_ago: "%{count} 小时前"
+    yesterday: 昨天
+    days_ago: "%{count} 天前"

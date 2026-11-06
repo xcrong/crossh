@@ -9,6 +9,10 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/appicon/AppIcon.ico");
     println!("cargo:rerun-if-changed=assets/appicon/icon-master.svg");
 
+    // rust-i18n 的 `i18n!` 在编译期把 locales/ 读进翻译表；不声明这条依赖，
+    // 改文案后增量构建会沿用旧表（新键查不到，直接回吐 key）。
+    println!("cargo:rerun-if-changed=locales");
+
     // 新版 embed-resource 3.x 要求处理 CompilationResult
     embed_resource::compile("assets/appicon/app.rc", embed_resource::NONE)
         .manifest_optional()

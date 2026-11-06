@@ -1474,6 +1474,7 @@ dependencies = [
  "gpui",
  "gpui_platform",
  "log",
+ "rust-i18n",
  "tempfile",
 ]
 

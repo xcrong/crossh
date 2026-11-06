@@ -1,10 +1,12 @@
 //! Note 窗口 — 搜索框走 TextEditingState（与侧栏/Git 同一编辑语义），内容区基于 crossh-editor TextareaState。
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 use std::time::Duration;
 
+use crossh_core::i18n::text;
 use crossh_core::input_handler::{
     editing_mark_text, editing_marked_range, editing_replace, editing_selected_range,
     editing_unmark,
@@ -20,7 +22,7 @@ use crossh_ui::widgets::ime_caret_bounds;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
     BadgeTone, Button, ButtonSize, ButtonVariant, SplitResizer, StatusBar, StatusMetric,
-    context_menu::{ContextMenuState, MenuEntry, MenuItem, render_context_menu},
+    context_menu::{ContextMenuState, render_context_menu},
     filter_row, filter_text_input,
 };
 use gpui::{
@@ -31,6 +33,7 @@ use gpui::{
     UniformListScrollHandle, Window, WindowBounds, WindowOptions, div, point, px, uniform_list,
 };
 
+use super::context_menu::NoteMenuAction;
 use super::format::{format_note_time, note_title, persist_error_message};
 use super::markdown::render_markdown;
 use super::{
@@ -54,8 +57,25 @@ pub(super) const EDITOR_PADDING_Y: f32 = 12.;
 fn clamp_list_pane_width(width: f32) -> f32 {
     width.clamp(LIST_PANE_MIN_WIDTH, LIST_PANE_MAX_WIDTH)
 }
+/// 与 `NoteStore::list` 的排序一致：pinned DESC, updated_at DESC, id DESC。
+/// 就地插入新笔记时要靠它找出与库同样的位置，否则下一次刷新列表顺序会跳一下。
+fn note_precedes(a: &Note, b: &Note) -> bool {
+    match a.pinned.cmp(&b.pinned) {
+        std::cmp::Ordering::Equal => match a.updated_at.cmp(&b.updated_at) {
+            std::cmp::Ordering::Equal => a.id > b.id,
+            other => other.is_gt(),
+        },
+        other => other.is_gt(),
+    }
+}
 // 搜索防抖时长：输入停止约 200ms 后才查库（与 hover/toast 的 timer 惯例一致）。
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(200);
+// 自动保存防抖时长：停止输入约 800ms 后才落库。与搜索同一套「代际 + timer」模式，
+// 连续敲键只保留最后一次——每个字符都写一次 SQLite 在 WAL 下每次都带一次 fsync。
+const AUTOSAVE_DEBOUNCE: Duration = Duration::from_millis(800);
+// 软删行的保留期（秒）。撤销只保留一层且只在本次会话有效，30 天足够兜住「按错了」，
+// 又不至于让按错留下的垃圾永久占库。
+const SOFT_DELETE_RETENTION_SECS: i64 = 30 * 86400;
 fn sync_editor_theme(cx: &mut App) {
     let theme = crossh_editor::theme::Theme::global_mut(cx);
     theme.appearance = crossh_editor::theme::ThemeAppearance::Dark;
@@ -73,29 +93,35 @@ fn sync_editor_theme(cx: &mut App) {
     c.primary_foreground = Hsla::from(theme::canvas());
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum NoteMenuAction {
-    Copy,
-    Cut,
-    Paste,
-    SelectAll,
-    Undo,
-    Redo,
-}
-
 pub struct NoteWindow {
     store: Option<NoteStore>,
     // open_default 失败时的原因（store 为 None 时必有值），渲染错误行用。
     store_error: Option<String>,
     // 最近一次 list/search 失败的提示；成功后清空，失败时保留旧列表。
     list_error: Option<String>,
+    // 列表顶部的中性提示（成功语气，如"已恢复，可在清空搜索后查看"）。与
+    // `list_error` 同机制、不同语气：撤销恢复的笔记可能被搜索过滤掉而不在列表里，
+    // 静默读起来就是"撤销没反应"。下次查询成功（`refresh_list`）时清掉。
+    list_notice: Option<String>,
     notes: Vec<Note>,
     selected_id: Option<i64>,
     preview: bool,
     // 删除二次确认：第一次点击只记录目标，第二次才真删。
     pending_delete_id: Option<i64>,
+    // 软删后的撤销目标：存储层的 `delete` 只打 `deleted_at`，没有这个入口的话
+    // 软删行既不可达也永远不会被回收。只保留一层（新的删除覆盖上一个目标）。
+    pending_restore_id: Option<i64>,
     // 搜索防抖代际计数：每次输入变更加一，只有最新一代到期后才 reload。
     search_generation: u64,
+    // 自动保存代际计数：与 `search_generation` 同一套防抖写法。
+    autosave_generation: u64,
+    // 列表字数旁路缓存。渲染时每帧都要显示「N 字」，早前每行都 `chars().count()`
+    // 扫一遍正文（单条上限 1 MiB）；改成刷新列表时算一次、渲染只读。
+    // 不变量：只有 `refresh_list`（全量）与 `upsert_note_in_place`（单条）写它。
+    char_counts: HashMap<i64, usize>,
+    // 洗库（损坏库备份重建）后的提示：必须告诉用户旧数据被搬去了哪里，
+    // 否则重建后的空列表读起来就是「笔记全没了」。
+    recovery_notice: Option<String>,
     // 搜索状态；与侧栏/Git 筛选条同一编辑语义（`TextEditingState` + 共享分发）。
     search_query: TextEditingState,
     search_focus: FocusHandle,
@@ -106,10 +132,14 @@ pub struct NoteWindow {
     list_dragging: Rc<Cell<bool>>,
     window_focus: FocusHandle,
     _content_sub: Subscription,
-    context_menu: Option<ContextMenuState<NoteMenuAction>>,
+    pub(super) context_menu: Option<ContextMenuState<NoteMenuAction>>,
     // 最近一次落库失败的原因。落库失败此前只写日志，用户看到的是"保存按钮点了没反应"，
     // 且 is_dirty 永远为真、状态栏永远挂"未保存"。改为记录并渲染在编辑区上方。
     persist_error: Option<String>,
+    // 最近一次落库失败的**错误码**（`persist_error` 是给人看的文案）。
+    // 关窗时只有 `not_found` 需要特殊处置：目标笔记已在别处被删，草稿无处可存，
+    // 拦下关窗只会让用户永远关不掉窗口。
+    persist_error_code: Option<String>,
     // 笔记内查找面板。匹配引擎在 `TextareaState.search_session` 里（crossh-editor
     // 提供），行为见 `find_panel.rs`。
     pub(super) find_query: TextEditingState,
@@ -120,22 +150,36 @@ pub struct NoteWindow {
 impl NoteWindow {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // 打开失败不再吞掉：记下原因，渲染层给出错误行 + 状态栏标题。
-        let (store, store_error) = match NoteStore::open_default() {
-            Ok(store) => (Some(store), None),
+        let mut this = Self::new_uncoupled(window, cx);
+        match NoteStore::open_default() {
+            Ok(store) => this.attach_store(store, cx),
             Err(e) => {
                 log::warn!("note store open failed: {e}");
-                (None, Some(format!("笔记库打开失败：{e}")))
+                this.store_error =
+                    Some(rust_i18n::t!("note.error.store_open", error = e).to_string());
             }
-        };
-
-        let mut this = Self::new_uncoupled(window, cx);
-        if let Some(s) = store {
-            this.store = Some(s);
-            this.reload_notes(cx);
-        } else {
-            this.store_error = store_error;
         }
         this
+    }
+
+    /// 挂上已打开的库：先播报洗库备份，再清一把过期软删行，最后加载列表。
+    fn attach_store(&mut self, store: NoteStore, cx: &mut Context<Self>) {
+        // 洗过库（损坏库被备份重建）时列表是空的，用户看到的只有“笔记全没了”。
+        // 备份路径是旧数据唯一的线索，必须显式给出。
+        self.recovery_notice = store.recovered_from.as_ref().map(|path| {
+            rust_i18n::t!(
+                "note.error.recovered_backup",
+                path = path.display().to_string()
+            )
+            .to_string()
+        });
+        // 软删行不能永远长下去：每次打开清一把超过保留期的。失败只 warn：
+        // 行留着只是占空间，而打不开库是用户不能工作。
+        if let Err(e) = store.purge_deleted(SOFT_DELETE_RETENTION_SECS) {
+            log::warn!("note purge_deleted failed: {e}");
+        }
+        self.store = Some(store);
+        self.reload_notes(cx);
     }
 
     /// 测试专用构造：不碰用户真实笔记库。
@@ -151,6 +195,21 @@ impl NoteWindow {
         Self::new_uncoupled(window, cx)
     }
 
+    /// 测试专用：直接挂一个已打开的临时库（不碰用户真实笔记库）。
+    ///
+    /// 走与 [`NoteWindow::new`] 相同的 `attach_store`，所以洗库提示、过期软删清理、
+    /// 列表加载这些真实路径都能被断言到。
+    #[cfg(test)]
+    pub(super) fn with_store_for_test(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        store: NoteStore,
+    ) -> Self {
+        let mut this = Self::new_uncoupled(window, cx);
+        this.attach_store(store, cx);
+        this
+    }
+
     /// 构造窗口但**不打开笔记库**，`new` 与 `new_for_test` 共用。
     /// 调用方负责按需挂 store 并决定是否 `reload_notes`。
     fn new_uncoupled(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -158,7 +217,7 @@ impl NoteWindow {
         let search_focus = cx.focus_handle();
         let content_state = cx.new(|cx| {
             let mut state = TextareaState::new(window, cx)
-                .placeholder("输入笔记内容... (支持 Markdown)")
+                .placeholder(text("note.editor.placeholder"))
                 .soft_wrap(true)
                 // 行号栏：笔记普遍是多行文本，缺行号时数行号/定位段落很费劲。
                 .line_number(true)
@@ -196,22 +255,29 @@ impl NoteWindow {
         content_state.update(cx, |s, _| s.on_context_menu(content_handler));
 
         let content_clone = content_state.clone();
-        let _content_sub =
-            cx.subscribe(&content_clone, |_: &mut Self, _, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    cx.notify();
-                }
-            });
+        let _content_sub = cx.subscribe(&content_clone, |this: &mut Self, _, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                // 内容一变就排一次防抖落库：崩溃/断电最多丢 800ms 输入，
+                // 而不是整篇草稿等下一个切笔记/⌘S/关窗才落库。
+                this.schedule_autosave(cx);
+                cx.notify();
+            }
+        });
 
         let this = Self {
             store: None,
             store_error: None,
             list_error: None,
+            list_notice: None,
             notes: Vec::new(),
             selected_id: None,
             preview: false,
             pending_delete_id: None,
+            pending_restore_id: None,
             search_generation: 0,
+            autosave_generation: 0,
+            char_counts: HashMap::new(),
+            recovery_notice: None,
             search_query: TextEditingState::new(String::new()),
             search_focus,
             content_state,
@@ -222,6 +288,7 @@ impl NoteWindow {
             _content_sub,
             context_menu: None,
             persist_error: None,
+            persist_error_code: None,
             find_query: TextEditingState::new(String::new()),
             find_focus: cx.focus_handle(),
             find_open: false,
@@ -246,12 +313,19 @@ impl NoteWindow {
         };
         match result {
             Ok(notes) => {
+                // 字数旁路缓存的唯一全量写点：渲染每帧要显示「N 字」，不能每次都全量扫正文。
+                self.char_counts = notes
+                    .iter()
+                    .map(|n| (n.id, n.content.chars().count()))
+                    .collect();
                 self.notes = notes;
                 self.list_error = None;
+                // 查询成功即"操作已生效"：顶部中性提示到此为止，不必常驻。
+                self.list_notice = None;
             }
             Err(e) => {
                 log::warn!("note query failed: {e}");
-                self.list_error = Some("查询失败，显示旧数据".to_string());
+                self.list_error = Some(text("note.error.query_failed"));
             }
         }
     }
@@ -334,45 +408,86 @@ impl NoteWindow {
         if !self.is_dirty(cx) {
             return true;
         }
-        let content = self.content_state.read(cx).value().trim().to_string();
-        if content.is_empty() {
+        // 落库是唯一需要 owned `String` 的地方（存储层签名是 `&str`）；判空与会话内
+        // 比较都走借用的 `text()`，见 `is_dirty`。
+        // 落库用**原文**：存储层已按原文保存，这里再 trim 会把 Markdown
+        // 缩进代码块的首行缩进和结尾空行吃掉——用户每按一次保存就丢一部分内容。
+        // trim 只能用来判「这算不算空」。
+        let raw = self.content_state.read(cx).text().to_string();
+        if raw.chars().all(char::is_whitespace) {
             return true;
         }
-        let Some(store) = &self.store else {
-            return true;
-        };
-        self.persist_error = None;
-        if let Some(id) = self.selected_id {
-            if self
-                .notes
-                .iter()
-                .find(|n| n.id == id)
-                .is_some_and(|n| n.content == content)
-            {
+        // `store` 是 `self` 字段的借用，先在块内用完，后面才能改 `self` 的其它字段。
+        let result = {
+            let Some(store) = self.store.as_ref() else {
                 return true;
+            };
+            match self.selected_id {
+                // 直接按 id 更新，不受搜索过滤影响（被过滤掉的选中项也能存）。
+                Some(id) => match store.update(id, &raw) {
+                    // 目标行被外部删除/软删后 update 恒返回 `not_found`。就此失败的话，
+                    // `select_note` / `new_note` / `reload_notes` 的脏保护会全部早退：
+                    // 切不了笔记、建不了新笔记、"未保存"常驻，草稿的出路只剩关窗丢掉。
+                    // 回退为 create 把草稿存成新笔记，收尾逻辑与 `Ok` 分支相同。
+                    Err(e) if e == "not_found" => store.create(&raw),
+                    other => other,
+                },
+                None => store.create(&raw),
             }
-            // 直接按 id 更新，不受搜索过滤影响（被过滤掉的选中项也能存）。
-            match store.update(id, &content) {
-                Ok(_) => true,
-                Err(e) => {
-                    log::warn!("note update failed: {e}");
-                    self.persist_error = Some(persist_error_message(&e));
-                    false
-                }
+        };
+        self.apply_persist_result(result)
+    }
+
+    /// 落库结果归集：成功则清错误、把落库后的 `Note` 并回内存列表；失败则挂错误横幅。
+    fn apply_persist_result(&mut self, result: Result<Note, String>) -> bool {
+        match result {
+            Ok(note) => {
+                self.persist_error = None;
+                self.persist_error_code = None;
+                self.selected_id = Some(note.id);
+                self.upsert_note_in_place(note);
+                true
             }
-        } else {
-            match store.create(&content) {
-                Ok(note) => {
-                    self.selected_id = Some(note.id);
-                    true
-                }
-                Err(e) => {
-                    log::warn!("note create failed: {e}");
-                    self.persist_error = Some(persist_error_message(&e));
-                    false
-                }
+            Err(e) => {
+                log::warn!("note persist failed: {e}");
+                self.persist_error = Some(persist_error_message(&e));
+                self.persist_error_code = Some(e);
+                false
             }
         }
+    }
+
+    /// 把落库后的 `Note` 并回内存列表，**故意不动排序**：
+    ///
+    /// - 已有的行就地换 content/updated_at、保持列表位置。`list()` 按 `updated_at`
+    ///   排序，自动保存每 800ms 成功一次就 `refresh_list` 的话，正在编辑的那行会不断
+    ///   跳到列表顶部、光标下的行跑掉。代价：排序与「刚刚/N 分钟前」的显示滞后到下次
+    ///   刷新（切笔记 / ⌘S / 搜索）才更新——打字时不跳行比相对时间实时更值钱。
+    /// - 新建的行（首次自动保存一篇草稿）按 `list()` 的排序
+    ///   （pinned DESC, updated_at DESC, id DESC）插到对应位置，否则它压根不出现在列表里。
+    fn upsert_note_in_place(&mut self, note: Note) {
+        // 字数缓存的单条写点（见 `char_counts` 的不变量）。
+        self.char_counts
+            .insert(note.id, note.content.chars().count());
+        if let Some(existing) = self.notes.iter_mut().find(|n| n.id == note.id) {
+            existing.content = note.content;
+            existing.updated_at = note.updated_at;
+            existing.pinned = note.pinned;
+            return;
+        }
+        // 首次自动保存（create）会多出一条新笔记。搜索词生效时不能插进本地列表：
+        // 它会作为一条**不匹配当前过滤条件**的行出现在结果里（`save_current` 之后
+        // 会 `refresh_list` 自愈，autosave 不会）。此时不动本地列表，
+        // 下次 `refresh_list` 自然把它带回（匹配该词时）。
+        if !self.search_query.value.trim().is_empty() {
+            return;
+        }
+        let at = self
+            .notes
+            .iter()
+            .position(|n| note_precedes(&note, n))
+            .unwrap_or(self.notes.len());
+        self.notes.insert(at, note);
     }
 
     fn reload_notes(&mut self, cx: &mut Context<Self>) {
@@ -393,7 +508,20 @@ impl NoteWindow {
         }
         if self.selected_id.is_none() && !self.notes.is_empty() {
             let first = self.notes[0].clone();
-            self.select_note(first.id, cx);
+            // 这里**不能**复用 `select_note`：它的脏保护会看到 `selected_id` 已被
+            // `refresh_list` 清成 `None`、编辑器里还留着上一篇的正文，于是判脏、
+            // 走 `persist_if_dirty` 的 `None => store.create(raw)` 分支，把上一篇
+            // （刚被搜索过滤掉、列表里已看不见）`create` 成一条重复笔记。
+            // 草稿在上面的 persist 里已按 id 落库，此处直接就地载入即可。
+            // 与 `select_note` 一致：切换选中即清掉「待确认删除」标记，否则标记会跨自动
+            // 选中保留（用户刚标记删除 A、随后列表又自动选回 A），下一次点删除跳过二次确认。
+            self.pending_delete_id = None;
+            self.selected_id = Some(first.id);
+            self.reset_find(cx);
+            self.content_state.update(cx, |s, cx| {
+                s.set_value_simple(first.content.clone(), cx);
+            });
+            self.preview = false;
         } else if self.selected_id.is_none() {
             self.reset_find(cx);
             self.content_state.update(cx, |s, cx| {
@@ -414,13 +542,20 @@ impl NoteWindow {
             return;
         }
         self.pending_delete_id = None;
+        // 失同步护栏：id 不在本地列表时**清空选中并返回**，绝不先把 `selected_id`
+        // 设成它。否则选中项指向一条不在 `notes` 里的笔记、编辑器还留着上一篇正文，
+        // `is_dirty` 退化成"非空即脏"，autosave 就会把上一篇的正文写进这个 id
+        // ——"把 A 的内容写进 B"。
+        let Some(note) = self.notes.iter().find(|n| n.id == id).cloned() else {
+            self.selected_id = None;
+            cx.notify();
+            return;
+        };
         self.selected_id = Some(id);
-        if let Some(note) = self.notes.iter().find(|n| n.id == id).cloned() {
-            self.reset_find(cx);
-            self.content_state
-                .update(cx, |s, cx| s.set_value_simple(note.content.clone(), cx));
-            self.preview = false;
-        }
+        self.reset_find(cx);
+        self.content_state
+            .update(cx, |s, cx| s.set_value_simple(note.content.clone(), cx));
+        self.preview = false;
         cx.notify();
     }
 
@@ -448,8 +583,14 @@ impl NoteWindow {
     }
 
     fn save_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let content = self.content_state.read(cx).value().trim().to_string();
-        if content.is_empty() {
+        // 判空借用 `&Rope`；落库用原文（见 `persist_if_dirty`）。
+        if self
+            .content_state
+            .read(cx)
+            .text()
+            .chars()
+            .all(char::is_whitespace)
+        {
             return;
         }
         if !self.persist_if_dirty(cx) {
@@ -458,6 +599,35 @@ impl NoteWindow {
         }
         self.refresh_list();
         window.focus(&self.content_state.read(cx).focus_handle(cx), cx);
+        cx.notify();
+    }
+
+    /// 内容变更后的防抖落库调度。与 `on_search_changed` 同一套写法：
+    /// 代际加一、到期时只有仍是最新一代才落库，连续敲键只保留最后一次。
+    fn schedule_autosave(&mut self, cx: &mut Context<Self>) {
+        self.autosave_generation = self.autosave_generation.wrapping_add(1);
+        let generation = self.autosave_generation;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(AUTOSAVE_DEBOUNCE).await;
+            this.update(cx, |this, cx| {
+                if this.autosave_generation != generation {
+                    return;
+                }
+                this.autosave(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// 防抖到期后落库。直接复用 `persist_if_dirty`：
+    /// 不脏 / 空内容 / 无库都直接返回，失败沿用编辑区上方的错误横幅，不另写一套。
+    fn autosave(&mut self, cx: &mut Context<Self>) {
+        if !self.persist_if_dirty(cx) {
+            log::warn!("note autosave failed");
+        }
+        // 不 `refresh_list`：落库结果已由 `upsert_note_in_place` 并回列表，
+        // 列表位置保持不变（原因见 `upsert_note_in_place` 的注释）。
         cx.notify();
     }
 
@@ -487,13 +657,28 @@ impl NoteWindow {
             return;
         }
         self.pending_delete_id = None;
-        if let Some(store) = &self.store
-            && let Err(e) = store.delete(id)
-        {
-            log::warn!("note delete failed: {e}");
-            self.list_error = Some("删除失败，请重试".to_string());
-            cx.notify();
-            return;
+        if let Some(store) = &self.store {
+            match store.delete(id) {
+                Ok(()) => {
+                    // 存储层是软删：留一个撤销入口，否则接口行既不可达也永远不会被回收。
+                    // 只保留一层（新的删除覆盖上一个目标），够兜住“手滑按了两次”。
+                    self.pending_restore_id = Some(id);
+                }
+                // `not_found` 表示这行已被别处删掉（或已软删）——用户要的结果已经达成。
+                // 若就此挂错早退，列表里那行还会留在内存里，用户再点两次得到同一个错，
+                // 窗口看起来永远删不掉。所以当成功处理，走与 `Ok` 相同的 reload 收尾。
+                // 撤销目标照旧记下：目标若是别处软删的，restore 能正常拉回来；
+                // 真被物理清理了，`undo_delete` 已有一条 graceful 的失败提示。
+                Err(e) if e == "not_found" => {
+                    self.pending_restore_id = Some(id);
+                }
+                Err(e) => {
+                    log::warn!("note delete failed: {e}");
+                    self.list_error = Some(text("note.error.delete_failed"));
+                    cx.notify();
+                    return;
+                }
+            }
         }
         self.selected_id = None;
         // 先清空编辑器再 reload，否则旧内容会被脏保护当成草稿复活成新笔记。
@@ -507,6 +692,38 @@ impl NoteWindow {
         }
     }
 
+    /// 撤销上一次软删：恢复后重新加载；只有被恢复的笔记**确实在列表里可见**时
+    /// 才选中并聚焦它。
+    fn undo_delete(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        let result = self.store.as_ref().map(|store| store.restore(id));
+        match result {
+            Some(Ok(())) => {
+                self.pending_restore_id = None;
+                self.reload_notes(cx);
+                if self.notes.iter().any(|n| n.id == id) {
+                    self.select_note_focused(id, window, cx);
+                } else {
+                    // 搜索过滤把恢复的笔记挡在列表外：不能借机把用户从正在编辑的
+                    // 笔记上拉走（选中与焦点都保持原样），也不能静默——撤销按钮与
+                    // "已删除 · 可撤销"会同时消失，用户读到的是"撤销没反应"。
+                    // 故只给一条中性提示，指向重新看见它的办法。
+                    self.list_notice = Some(text("note.error.restored_hidden"));
+                }
+                cx.notify();
+            }
+            Some(Err(e)) => {
+                log::warn!("note restore failed: {e}");
+                // 目标已被物理清理（超出保留期）或在别处已恢复：撤销目标失效。
+                self.pending_restore_id = None;
+                self.reload_notes(cx);
+                // reload 成功会清空 list_error，所以提示要在 reload 之后写。
+                self.list_error = Some(text("note.error.undo_failed"));
+                cx.notify();
+            }
+            None => {}
+        }
+    }
+
     /// 请求关窗（Escape / ⌘W 共用的出口）。
     ///
     /// 关窗即自动落库，因此不存在"忘了保存"的路径：
@@ -515,21 +732,30 @@ impl NoteWindow {
     /// - 脏但落不了库（无库 / 写入失败）→ **不关**，把原因渲染在编辑区上方，
     ///   草稿留在编辑器里。关窗会让进程退出（QuitMode::LastWindowClosed），
     ///   草稿将永久丢失，所以必须拦下。
+    /// - 例外：失败原因是 `not_found`（该笔记已被另一个窗口/实例删掉）→ 放行。
+    ///   此时草稿在那条记录上**再也存不进去**，拦下只会让用户永远关不掉窗口，
+    ///   只能强杀进程——关不掉本身就成了丢稿的原因。
+    ///   这一支现在只是纯兜底：`persist_if_dirty` 已把 `not_found` 回退成 create，
+    ///   正常路径下不会再拿到这个错误码。
     ///
     /// 无库时 `persist_if_dirty` 返回 true 是切换路径的有意语义（不阻塞浏览），
     /// 这里必须区别对待。
     fn request_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_dirty(cx) && self.store.is_none() {
-            self.persist_error =
-                Some("笔记库不可用，当前修改无法保存；请恢复笔记库后重试".to_string());
+            self.persist_error = Some(text("note.error.store_unavailable"));
             cx.notify();
             return;
         }
         if self.persist_if_dirty(cx) {
             window.remove_window();
-        } else {
-            cx.notify();
+            return;
         }
+        if self.persist_error_code.as_deref() == Some("not_found") {
+            log::warn!("closing note window: draft has nowhere to go (target note was deleted)");
+            window.remove_window();
+            return;
+        }
+        cx.notify();
     }
 
     fn toggle_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -557,166 +783,36 @@ impl NoteWindow {
         }
     }
 
-    fn open_context_menu(
-        &mut self,
-        position: Point<Pixels>,
-        cap: crossh_editor::input::InputContextMenuCapabilities,
-        cx: &mut Context<Self>,
-    ) {
-        let has_selection = cap.has_selection();
-        let editable = cap.is_editable();
-        let mut entries = Vec::new();
-        entries.push(MenuEntry::Item(MenuItem {
-            id: "copy".into(),
-            label: "复制".into(),
-            shortcut_hint: Some(
-                if cfg!(target_os = "macos") {
-                    "⌘C"
-                } else {
-                    "Ctrl+C"
-                }
-                .into(),
-            ),
-            disabled: !has_selection,
-            danger: false,
-            action: NoteMenuAction::Copy,
-        }));
-        entries.push(MenuEntry::Item(MenuItem {
-            id: "cut".into(),
-            label: "剪切".into(),
-            shortcut_hint: Some(
-                if cfg!(target_os = "macos") {
-                    "⌘X"
-                } else {
-                    "Ctrl+X"
-                }
-                .into(),
-            ),
-            disabled: !has_selection || !editable,
-            danger: false,
-            action: NoteMenuAction::Cut,
-        }));
-        entries.push(MenuEntry::Item(MenuItem {
-            id: "paste".into(),
-            label: "粘贴".into(),
-            shortcut_hint: Some(
-                if cfg!(target_os = "macos") {
-                    "⌘V"
-                } else {
-                    "Ctrl+V"
-                }
-                .into(),
-            ),
-            disabled: !editable,
-            danger: false,
-            action: NoteMenuAction::Paste,
-        }));
-        entries.push(MenuEntry::Separator);
-        entries.push(MenuEntry::Item(MenuItem {
-            id: "select-all".into(),
-            label: "全选".into(),
-            shortcut_hint: Some(
-                if cfg!(target_os = "macos") {
-                    "⌘A"
-                } else {
-                    "Ctrl+A"
-                }
-                .into(),
-            ),
-            disabled: false,
-            danger: false,
-            action: NoteMenuAction::SelectAll,
-        }));
-        entries.push(MenuEntry::Separator);
-        entries.push(MenuEntry::Item(MenuItem {
-            id: "undo".into(),
-            label: "撤销".into(),
-            shortcut_hint: Some(
-                if cfg!(target_os = "macos") {
-                    "⌘Z"
-                } else {
-                    "Ctrl+Z"
-                }
-                .into(),
-            ),
-            disabled: !editable,
-            danger: false,
-            action: NoteMenuAction::Undo,
-        }));
-        entries.push(MenuEntry::Item(MenuItem {
-            id: "redo".into(),
-            label: "重做".into(),
-            shortcut_hint: Some(
-                if cfg!(target_os = "macos") {
-                    "⇧⌘Z"
-                } else {
-                    "Ctrl+Y"
-                }
-                .into(),
-            ),
-            disabled: !editable,
-            danger: false,
-            action: NoteMenuAction::Redo,
-        }));
-        self.context_menu = Some(ContextMenuState { position, entries });
-        cx.notify();
-    }
-
-    fn close_context_menu(&mut self, cx: &mut Context<Self>) {
-        if self.context_menu.take().is_some() {
-            cx.notify();
-        }
-    }
-
-    fn handle_context_menu_action(
-        &mut self,
-        action: NoteMenuAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.close_context_menu(cx);
-        match action {
-            NoteMenuAction::Copy => {
-                window.dispatch_action(Box::new(crossh_editor::input::Copy), cx)
-            }
-            NoteMenuAction::Cut => window.dispatch_action(Box::new(crossh_editor::input::Cut), cx),
-            NoteMenuAction::Paste => {
-                window.dispatch_action(Box::new(crossh_editor::input::Paste), cx)
-            }
-            NoteMenuAction::SelectAll => {
-                window.dispatch_action(Box::new(crossh_editor::input::SelectAll), cx)
-            }
-            NoteMenuAction::Undo => {
-                window.dispatch_action(Box::new(crossh_editor::input::Undo), cx)
-            }
-            NoteMenuAction::Redo => {
-                window.dispatch_action(Box::new(crossh_editor::input::Redo), cx)
-            }
-        }
-    }
-
     fn is_dirty(&self, cx: &App) -> bool {
-        let content = self.content_state.read(cx).value().trim().to_string();
+        // 借用 `&Rope` 比较：`value()` 每次调用都把整篇正文（单条上限 1 MiB）
+        // 物化成新的 `SharedString`，而状态栏每帧要问好几次。`chars()` 逐字符比较
+        // 在第一个不同处短路，不需要双方先算长度。
+        // 比较用**原文**，trim 只用于判「是否算空」：旧实现 trim 后比较，库里原文
+        // 带首尾空白时每次都判脏（恒脏），还会把 Markdown 缩进代码块的首行缩进
+        // 当成"没改动"。
+        let state = self.content_state.read(cx);
+        let text = state.text();
         if let Some(id) = self.selected_id
             && let Some(note) = self.notes.iter().find(|n| n.id == id)
         {
-            return content != note.content;
+            return !text.chars().eq(note.content.chars());
         }
-        !content.is_empty()
+        !text.chars().all(char::is_whitespace)
     }
 
     fn is_save_disabled(&self, cx: &App) -> bool {
-        let content = self.content_state.read(cx).value().trim().to_string();
-        if content.is_empty() {
-            return true;
-        }
-        !self.is_dirty(cx)
+        // 判空也借用 `&Rope`：与 `is_dirty` 同一理由，别为判空物化整篇正文。
+        let blank = {
+            let state = self.content_state.read(cx);
+            state.text().chars().all(char::is_whitespace)
+        };
+        blank || !self.is_dirty(cx)
     }
 
     fn status_title(&self, cx: &App) -> String {
         // 笔记库打不开时 notes 为空，在标题处直接给出简化原因。
         if self.store_error.is_some() {
-            return "笔记库打开失败".to_string();
+            return text("note.status.no_store");
         }
         if let Some(id) = self.selected_id
             && let Some(note) = self.notes.iter().find(|n| n.id == id)
@@ -724,12 +820,12 @@ impl NoteWindow {
             return note_title(&note.content, 30);
         }
         if self.is_dirty(cx) {
-            return "新建笔记".to_string();
+            return text("note.status.new_note");
         }
         if self.notes.is_empty() {
-            return "无笔记".to_string();
+            return text("note.status.no_notes");
         }
-        "未选择".to_string()
+        text("note.status.no_selection")
     }
 
     /// 列表单行：标题（首行，超长加省略号）+ 第二行小字（更新时间 · 字数）+ 置顶按钮。
@@ -739,11 +835,16 @@ impl NoteWindow {
         let id = note.id;
         let pin_label = if note.pinned { "📌 " } else { "" };
         let title = format!("{}{}", pin_label, note_title(&note.content, 30));
-        let meta = format!(
-            "{} · {} 字",
-            format_note_time(note.updated_at),
-            note.content.chars().count()
-        );
+        let meta = rust_i18n::t!(
+            "note.list.meta",
+            time = format_note_time(note.updated_at),
+            count = self
+                .char_counts
+                .get(&note.id)
+                .copied()
+                .unwrap_or_else(|| note.content.chars().count())
+        )
+        .to_string();
         let transparent = gpui::Rgba {
             r: 0.,
             g: 0.,
@@ -821,7 +922,9 @@ impl NoteWindow {
     fn render_status_bar(&self, _window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let total = self.notes.len();
         let pinned = self.notes.iter().filter(|n| n.pinned).count();
-        let char_count = self.content_state.read(cx).value().chars().count();
+        // `len_chars()` 是 O(1) 的树长度，不扫全文（早前是 `value().chars().count()`，
+        // 每帧把整篇正文物化再数一遍）。
+        let char_count = self.content_state.read(cx).text().len_chars();
         let dirty = self.is_dirty(cx);
         let save_disabled = self.is_save_disabled(cx);
         let title = self.status_title(cx);
@@ -841,27 +944,46 @@ impl NoteWindow {
                     .child(SharedString::from(title)),
             );
         if total > 0 {
-            left = left.child(StatusMetric::new(format!("{} 条", total)).tone(BadgeTone::Neutral));
+            left = left.child(
+                StatusMetric::new(
+                    rust_i18n::t!("note.status.note_count", count = total).to_string(),
+                )
+                .tone(BadgeTone::Neutral),
+            );
         }
         if pinned > 0 {
             left = left.child(StatusMetric::new(format!("📌 {}", pinned)).tone(BadgeTone::Accent));
         }
         if dirty {
-            left = left.child(StatusMetric::new("未保存").tone(BadgeTone::Warning));
+            left =
+                left.child(StatusMetric::new(text("note.status.unsaved")).tone(BadgeTone::Warning));
         }
         // 删除二次确认进行中：在状态栏明示“再按一次确认删除”。
         let delete_armed = self.selected_id.is_some() && self.pending_delete_id == self.selected_id;
         if delete_armed {
-            left = left.child(StatusMetric::new("再按一次确认删除").tone(BadgeTone::Danger));
+            left = left.child(
+                StatusMetric::new(text("note.status.confirm_delete")).tone(BadgeTone::Danger),
+            );
+        }
+        // 软删后可撤销：与“再按一次确认删除”同一处表达状态，不引入 Toast/弹窗。
+        let undo_armed = self.pending_restore_id.is_some();
+        if undo_armed {
+            left = left.child(
+                StatusMetric::new(text("note.status.deleted_undoable")).tone(BadgeTone::Warning),
+            );
         }
         if self.preview {
-            left = left.child(StatusMetric::new("预览").tone(BadgeTone::Info));
+            left = left.child(StatusMetric::new(text("note.action.preview")).tone(BadgeTone::Info));
         } else if char_count > 0 {
-            left = left
-                .child(StatusMetric::new(format!("{} 字", char_count)).tone(BadgeTone::Neutral));
+            left = left.child(
+                StatusMetric::new(
+                    rust_i18n::t!("note.status.char_count", count = char_count).to_string(),
+                )
+                .tone(BadgeTone::Neutral),
+            );
         }
 
-        let actions = div()
+        let mut actions = div()
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -871,7 +993,7 @@ impl NoteWindow {
                     .size(ButtonSize::Icon(px(22.)))
                     .variant(ButtonVariant::Ghost)
                     .icon(icons::icon(icons::IconName::Plus, 13.).text_color(theme::muted_text()))
-                    .tooltip("新建笔记")
+                    .tooltip(text("note.action.new_note"))
                     .on_click(cx.listener(|this, _, window, cx| this.new_note(window, cx))),
             )
             .child(
@@ -885,10 +1007,27 @@ impl NoteWindow {
                             theme::muted_text()
                         },
                     ))
-                    .tooltip("保存")
+                    .tooltip(text("note.action.save"))
                     .disabled(save_disabled)
                     .on_click(cx.listener(|this, _, window, cx| this.save_current(window, cx))),
-            )
+            );
+        // 软删后**额外**多一个撤销位，而不是用它替换删除按钮：`pending_restore_id`
+        // 会一直留到下次删除或成功查询，替换的话鼠标用户在整个会话里都点不到删除
+        // （⌘D 只绑在编辑器的 Input context，列表侧没有入口）。
+        // 代价只是多一个 22px 图标位。
+        if let Some(id) = self.pending_restore_id {
+            actions = actions.child(
+                Button::new("note-status-undo")
+                    .size(ButtonSize::Icon(px(22.)))
+                    .variant(ButtonVariant::Ghost)
+                    .icon(icons::icon(icons::IconName::RefreshCw, 13.).text_color(theme::accent()))
+                    .tooltip(text("note.action.undo_delete"))
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.undo_delete(id, window, cx)),
+                    ),
+            );
+        }
+        let actions = actions
             .child(
                 Button::new("note-status-delete")
                     .size(ButtonSize::Icon(px(22.)))
@@ -906,9 +1045,9 @@ impl NoteWindow {
                         }),
                     )
                     .tooltip(if delete_armed {
-                        "再次点击确认删除"
+                        text("note.action.confirm_delete")
                     } else {
-                        "删除"
+                        text("note.action.delete")
                     })
                     .disabled(self.selected_id.is_none())
                     .on_click(cx.listener(|this, _, window, cx| this.delete_current(window, cx))),
@@ -923,7 +1062,11 @@ impl NoteWindow {
                     } else {
                         icons::icon(icons::IconName::FileText, 13.).text_color(theme::muted_text())
                     })
-                    .tooltip(if self.preview { "编辑" } else { "预览" })
+                    .tooltip(if self.preview {
+                        text("note.action.edit")
+                    } else {
+                        text("note.action.preview")
+                    })
                     .on_click(cx.listener(|this, _, window, cx| this.toggle_preview(window, cx))),
             );
 
@@ -1064,9 +1207,7 @@ impl Focusable for NoteWindow {
 impl gpui::Render for NoteWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         sync_editor_theme(cx);
-        let notes = self.notes.clone();
-
-        // 列表顶部错误行：store 打不开 / 查询失败时可见（store 字段保持 Option 不变）。
+        // 列表顶部错误行：store 打不开 / 查询失败 / 洗过库时可见。
         let mut list_top: Vec<AnyElement> = Vec::new();
         if let Some(e) = self.store_error.clone() {
             list_top.push(
@@ -1098,15 +1239,51 @@ impl gpui::Render for NoteWindow {
                     .into_any_element(),
             );
         }
+        // 列表顶部中性提示行（如撤销恢复被搜索挡住）。与错误行同构，但用 accent 色：
+        // 这不是"现在坏了"，而是"操作生效了，只是当前视图看不到"。
+        if let Some(msg) = self.list_notice.clone() {
+            list_top.push(
+                div()
+                    .id("note-list-notice")
+                    .debug_selector(|| "note-list-notice".into())
+                    .w_full()
+                    .px_2()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(theme::accent())
+                    .text_xs()
+                    .text_color(theme::accent())
+                    .child(SharedString::from(msg))
+                    .into_any_element(),
+            );
+        }
+        // 洗库提示：与错误行同构（列表顶部一条醒目行），但用 warning 色——
+        // 这不是“现在坏了”，而是“旧数据已经搬到别处了”，指向还在的备份文件。
+        if let Some(msg) = self.recovery_notice.clone() {
+            list_top.push(
+                div()
+                    .id("note-recovery-notice")
+                    .debug_selector(|| "note-recovery-notice".into())
+                    .w_full()
+                    .px_2()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(theme::warning())
+                    .text_xs()
+                    .text_color(theme::warning())
+                    .child(SharedString::from(msg))
+                    .into_any_element(),
+            );
+        }
 
         // 空列表占位：区分“无笔记”与“搜索无匹配”，保持 260px 列宽不溢出。
         let is_searching = !self.search_query.value.trim().is_empty();
         let empty_hint = if is_searching {
-            "无匹配，新建试试"
+            text("note.list.no_matches")
         } else {
-            "无笔记，新建试试"
+            text("note.list.empty")
         };
-        let list_body: AnyElement = if notes.is_empty() {
+        let list_body: AnyElement = if self.notes.is_empty() {
             div()
                 .id("note-list-empty")
                 .flex_1()
@@ -1121,17 +1298,19 @@ impl gpui::Render for NoteWindow {
         } else {
             // 虚拟列表：只渲染可视区的行。旧实现 `.children(notes.iter().map(..))`
             // 全量渲染，几百条笔记就是几百个 div，每次按键都重绘。
-            // `cx.processor` 要求 `'static`，故用 `this.notes`（render 开头已 clone
-            // 到局部变量，避免借用跨越闭包边界）。
-            let visible = notes.clone();
+            // processor 内按索引取单行：早前在 render 与闭包外各 clone 一份 `notes`，
+            // 也就是**每帧把全部笔记正文拷两遍**（单条上限 1 MiB），现在只拷可视行。
+            let count = self.notes.len();
             uniform_list(
                 "note-list",
-                notes.len(),
+                count,
                 cx.processor(move |this, range: Range<usize>, _window, cx| {
                     range
-                        .map(|ix| {
-                            let note = visible[ix].clone();
-                            this.render_note_row(&note, cx)
+                        .filter_map(|ix| {
+                            // 用 `get`：列表长度与本帧传入的 count 理应一致，
+                            // 但两者之间若有一帧错位，宁可少画一行也不能 panic。
+                            let note = this.notes.get(ix)?.clone();
+                            Some(this.render_note_row(&note, cx))
                         })
                         .collect::<Vec<_>>()
                 }),
@@ -1149,7 +1328,7 @@ impl gpui::Render for NoteWindow {
                 "note-search",
                 self.search_focus.clone(),
                 self.search_query.value.clone(),
-                "搜索...",
+                text("note.list.search_placeholder"),
                 self.search_query.ime_marked_text.clone(),
                 self.search_query.selection(),
                 self.search_query.cursor,
@@ -1182,7 +1361,9 @@ impl gpui::Render for NoteWindow {
             .child(list_body)
             .child(resizer);
         let right: AnyElement = if self.preview {
-            let md = self.content_state.read(cx).value().to_string();
+            // 预览渲染需要 owned String（渲染器拿 &str）：从 Rope 直接物化一次，
+            // 不经 `value()` 中间再拷一遍。
+            let md = self.content_state.read(cx).text().to_string();
             div()
                 .id("note-preview")
                 .flex_1()
@@ -1268,7 +1449,7 @@ impl gpui::Render for NoteWindow {
             .child(right);
 
         let linux_titlebar =
-            crossh_ui::linux_titlebar::render_linux_titlebar(window, cx, "Note".into());
+            crossh_ui::linux_titlebar::render_linux_titlebar(window, cx, text("note.title").into());
 
         // 查找面板浮在编辑区之上（预览模式下无意义，不挂）。
         let find_panel: Option<AnyElement> =
@@ -1363,7 +1544,7 @@ fn create_note_window(cx: &mut App) {
         .open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Note".into()),
+                    title: Some(text("note.title").into()),
                     ..Default::default()
                 }),
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -1383,521 +1564,4 @@ fn create_note_window(cx: &mut App) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crossh_note::Note;
-    use gpui::TestAppContext;
-
-    /// 查找动作会走到编辑器的命中/高亮渲染，那条路径读 `GlobalState`。
-    /// `NoteWindow::new` 不初始化它（生产路径由 `crossh_editor::init` 负责），
-    /// 所以凡是触发查找面板的测试都要先补上，否则 panic。
-    fn init_editor_state(cx: &mut TestAppContext) {
-        cx.update(crossh_editor::init);
-    }
-
-    #[gpui::test]
-    fn note_window_historic_note_loads_in_edit_state(cx: &mut TestAppContext) {
-        let window = cx.add_window(NoteWindow::new_for_test);
-        cx.run_until_parked();
-        window
-            .update(cx, |note_window, window, cx| {
-                let historic = Note {
-                    id: 1,
-                    content: "hello 历史笔记".to_string(),
-                    pinned: false,
-                    created_at: 0,
-                    updated_at: 0,
-                };
-                note_window.notes = vec![historic.clone()];
-                note_window.select_note_focused(historic.id, window, cx);
-                assert_eq!(note_window.notes.len(), 1);
-                assert_eq!(note_window.selected_id, Some(historic.id));
-                assert_eq!(
-                    note_window.content_state.read(cx).value().to_string(),
-                    "hello 历史笔记"
-                );
-                assert!(!note_window.preview);
-                assert!(
-                    note_window
-                        .content_state
-                        .read(cx)
-                        .focus_handle(cx)
-                        .is_focused(window)
-                );
-                note_window.content_state.update(cx, |state, cx| {
-                    state.set_value_simple("hello 历史笔记 modified", cx);
-                });
-                assert_eq!(
-                    note_window.content_state.read(cx).value().to_string(),
-                    "hello 历史笔记 modified"
-                );
-            })
-            .unwrap();
-    }
-
-    #[gpui::test]
-    fn note_window_select_via_list_focuses_content(cx: &mut TestAppContext) {
-        let window = cx.add_window(NoteWindow::new_for_test);
-        cx.run_until_parked();
-        window
-            .update(cx, |note_window, window, cx| {
-                let n1 = Note {
-                    id: 1,
-                    content: "first".to_string(),
-                    pinned: false,
-                    created_at: 0,
-                    updated_at: 0,
-                };
-                let n2 = Note {
-                    id: 2,
-                    content: "second".to_string(),
-                    pinned: false,
-                    created_at: 0,
-                    updated_at: 1,
-                };
-                note_window.notes = vec![n2.clone(), n1.clone()];
-                note_window.selected_id = Some(n2.id);
-                note_window
-                    .content_state
-                    .update(cx, |s, cx| s.set_value_simple(n2.content.clone(), cx));
-                note_window.select_note_focused(n1.id, window, cx);
-                assert_eq!(note_window.selected_id, Some(n1.id));
-                assert_eq!(
-                    note_window.content_state.read(cx).value().to_string(),
-                    "first"
-                );
-                assert!(
-                    note_window
-                        .content_state
-                        .read(cx)
-                        .focus_handle(cx)
-                        .is_focused(window)
-                );
-                assert!(!note_window.preview);
-            })
-            .unwrap();
-    }
-
-    #[gpui::test]
-    fn note_status_dirty_and_save_disabled(cx: &mut TestAppContext) {
-        let window = cx.add_window(NoteWindow::new_for_test);
-        cx.run_until_parked();
-        window
-            .update(cx, |note_window, _window, cx| {
-                note_window.notes = Vec::new();
-                note_window.selected_id = None;
-                note_window
-                    .content_state
-                    .update(cx, |s, cx| s.set_value_simple("", cx));
-                assert!(!note_window.is_dirty(cx));
-                assert!(note_window.is_save_disabled(cx));
-                assert_eq!(note_window.status_title(cx), "无笔记");
-                note_window
-                    .content_state
-                    .update(cx, |s, cx| s.set_value_simple("hello", cx));
-                assert!(note_window.is_dirty(cx));
-                assert!(!note_window.is_save_disabled(cx));
-                assert_eq!(note_window.status_title(cx), "新建笔记");
-                let note = Note {
-                    id: 1,
-                    content: "hello".to_string(),
-                    pinned: false,
-                    created_at: 0,
-                    updated_at: 0,
-                };
-                note_window.notes = vec![note.clone()];
-                note_window.selected_id = Some(note.id);
-                note_window
-                    .content_state
-                    .update(cx, |s, cx| s.set_value_simple(note.content.clone(), cx));
-                assert!(!note_window.is_dirty(cx));
-                assert!(note_window.is_save_disabled(cx));
-                assert_eq!(note_window.status_title(cx), "hello");
-                note_window
-                    .content_state
-                    .update(cx, |s, cx| s.set_value_simple("hello world", cx));
-                assert!(note_window.is_dirty(cx));
-                assert!(!note_window.is_save_disabled(cx));
-            })
-            .unwrap();
-    }
-
-    #[gpui::test]
-    fn note_status_title_fallbacks(cx: &mut TestAppContext) {
-        let window = cx.add_window(NoteWindow::new_for_test);
-        cx.run_until_parked();
-        window
-            .update(cx, |note_window, _window, cx| {
-                note_window.notes = vec![Note {
-                    id: 1,
-                    content: "".to_string(),
-                    pinned: false,
-                    created_at: 0,
-                    updated_at: 0,
-                }];
-                note_window.selected_id = None;
-                note_window
-                    .content_state
-                    .update(cx, |s, cx| s.set_value_simple("", cx));
-                assert_eq!(note_window.status_title(cx), "未选择");
-            })
-            .unwrap();
-    }
-
-    fn sample_note(id: i64, content: &str) -> Note {
-        Note {
-            id,
-            content: content.to_string(),
-            pinned: false,
-            created_at: 0,
-            updated_at: 0,
-        }
-    }
-
-    #[gpui::test]
-    fn note_dirty_switch_without_store_keeps_moving(cx: &mut TestAppContext) {
-        let window = cx.add_window(NoteWindow::new_for_test);
-        cx.run_until_parked();
-        window
-            .update(cx, |note_window, _window, cx| {
-                // 无库时无法落库但不阻塞切换（确定性路径，不碰真实笔记库）。
-                let n1 = sample_note(1, "first");
-                let n2 = sample_note(2, "second");
-                note_window.notes = vec![n1.clone(), n2.clone()];
-                note_window.selected_id = Some(n1.id);
-                note_window
-                    .content_state
-                    .update(cx, |s, cx| s.set_value_simple(n1.content.clone(), cx));
-                // 脏编辑后切换：直接切到 n2，不丢 dirty（无库则放行）。
-                note_window
-                    .content_state
-                    .update(cx, |s, cx| s.set_value_simple("first 草稿", cx));
-                assert!(note_window.is_dirty(cx));
-                note_window.select_note(n2.id, cx);
-                assert_eq!(note_window.selected_id, Some(n2.id));
-                assert_eq!(
-                    note_window.content_state.read(cx).value().to_string(),
-                    "second"
-                );
-                // 同一条重复点击不折腾编辑器。
-                note_window
-                    .content_state
-                    .update(cx, |s, cx| s.set_value_simple("second 草稿", cx));
-                note_window.select_note(n2.id, cx);
-                assert_eq!(
-                    note_window.content_state.read(cx).value().to_string(),
-                    "second 草稿"
-                );
-            })
-            .unwrap();
-    }
-
-    #[gpui::test]
-    fn note_delete_requires_second_confirm(cx: &mut TestAppContext) {
-        let window = cx.add_window(NoteWindow::new_for_test);
-        cx.run_until_parked();
-        window
-            .update(cx, |note_window, window, cx| {
-                let n1 = sample_note(1, "first");
-                let n2 = sample_note(2, "second");
-                note_window.notes = vec![n1.clone(), n2.clone()];
-                note_window.selected_id = Some(n1.id);
-                note_window
-                    .content_state
-                    .update(cx, |s, cx| s.set_value_simple(n1.content.clone(), cx));
-                // 第一次：只标记，不删除。
-                note_window.delete_current(window, cx);
-                assert_eq!(note_window.selected_id, Some(n1.id));
-                assert_eq!(note_window.pending_delete_id, Some(n1.id));
-                assert_eq!(
-                    note_window.content_state.read(cx).value().to_string(),
-                    "first"
-                );
-                // 第二次：真删。库中 n1 已不在（此处手动模拟库侧删除），
-                // reload 后自动选中剩余第一条 n2。
-                note_window.notes = vec![n2.clone()];
-                note_window.delete_current(window, cx);
-                assert_eq!(note_window.pending_delete_id, None);
-                assert_eq!(note_window.selected_id, Some(n2.id));
-                assert_eq!(
-                    note_window.content_state.read(cx).value().to_string(),
-                    "second"
-                );
-                // 空库时真删：选中清空、编辑器清空。
-                note_window.delete_current(window, cx);
-                assert_eq!(note_window.pending_delete_id, Some(n2.id));
-                note_window.notes = Vec::new();
-                note_window.delete_current(window, cx);
-                assert_eq!(note_window.selected_id, None);
-                assert_eq!(note_window.pending_delete_id, None);
-                assert_eq!(note_window.content_state.read(cx).value().to_string(), "");
-            })
-            .unwrap();
-    }
-
-    #[gpui::test]
-    fn note_move_selection_clamps_and_focuses(cx: &mut TestAppContext) {
-        let window = cx.add_window(NoteWindow::new_for_test);
-        cx.run_until_parked();
-        window
-            .update(cx, |note_window, window, cx| {
-                let n1 = sample_note(1, "first");
-                let n2 = sample_note(2, "second");
-                note_window.notes = vec![n1.clone(), n2.clone()];
-                note_window.selected_id = None;
-                note_window.move_selection(1, window, cx);
-                assert_eq!(note_window.selected_id, Some(n1.id));
-                note_window.move_selection(1, window, cx);
-                assert_eq!(note_window.selected_id, Some(n2.id));
-                // 越界钳制：已在末尾则不动。
-                note_window.move_selection(1, window, cx);
-                assert_eq!(note_window.selected_id, Some(n2.id));
-                note_window.move_selection(-1, window, cx);
-                assert_eq!(note_window.selected_id, Some(n1.id));
-                // 越界钳制：已在开头则不动。
-                note_window.move_selection(-1, window, cx);
-                assert_eq!(note_window.selected_id, Some(n1.id));
-                assert_eq!(
-                    note_window.content_state.read(cx).value().to_string(),
-                    "first"
-                );
-                assert!(
-                    note_window
-                        .content_state
-                        .read(cx)
-                        .focus_handle(cx)
-                        .is_focused(window)
-                );
-                // 空列表直接忽略，不 panic。
-                note_window.notes = Vec::new();
-                note_window.selected_id = None;
-                note_window.move_selection(1, window, cx);
-                assert_eq!(note_window.selected_id, None);
-            })
-            .unwrap();
-    }
-
-    #[gpui::test]
-    fn note_store_error_shows_in_title(cx: &mut TestAppContext) {
-        let window = cx.add_window(NoteWindow::new_for_test);
-        cx.run_until_parked();
-        window
-            .update(cx, |note_window, _window, cx| {
-                note_window.store_error = Some("笔记库打开失败：测试".to_string());
-                note_window.notes = Vec::new();
-                note_window.selected_id = None;
-                assert_eq!(note_window.status_title(cx), "笔记库打开失败");
-            })
-            .unwrap();
-    }
-
-    #[gpui::test]
-    fn note_search_reload_is_debounced(cx: &mut TestAppContext) {
-        use std::time::Duration;
-
-        // 用临时库而不是真实笔记库：断言要确定，且不污染用户数据。
-        let dir = tempfile::TempDir::new().unwrap();
-        let store = NoteStore::open(dir.path().join("note.db")).unwrap();
-        store.create("alpha").unwrap();
-
-        let window = cx.add_window(NoteWindow::new_for_test);
-        cx.run_until_parked();
-        window
-            .update(cx, |note_window, window, cx| {
-                note_window.store = Some(store);
-                note_window.refresh_list();
-                // 塞入哨兵：同步 reload 会立刻把它清掉。
-                note_window.notes.push(sample_note(-999, "哨兵"));
-                note_window.search_query = TextEditingState::new("zzz-无匹配");
-                window.focus(&note_window.search_focus, cx);
-                note_window.on_search_changed(cx);
-            })
-            .unwrap();
-        cx.run_until_parked();
-        window
-            .update(cx, |note_window, _window, _cx| {
-                // 代际已推进，但防抖期内未查库：哨兵仍在。
-                assert_eq!(note_window.search_generation, 1);
-                assert_eq!(note_window.search_query.value, "zzz-无匹配");
-                assert!(note_window.notes.iter().any(|n| n.id == -999));
-            })
-            .unwrap();
-        cx.executor().advance_clock(Duration::from_millis(500));
-        cx.run_until_parked();
-        window
-            .update(cx, |note_window, _window, _cx| {
-                // 防抖到期后 reload 生效：哨兵被查询结果取代（此处无匹配，故为空）。
-                assert!(
-                    !note_window.notes.iter().any(|n| n.id == -999),
-                    "防抖到期后应重新查库，哨兵不再留在列表里"
-                );
-            })
-            .unwrap();
-    }
-
-    #[gpui::test]
-    fn note_search_escape_clears_before_close(cx: &mut TestAppContext) {
-        let window = cx.add_window(NoteWindow::new_for_test);
-        cx.run_until_parked();
-        window
-            .update(cx, |note_window, window, cx| {
-                note_window.search_query = TextEditingState::new("abc");
-                window.focus(&note_window.search_focus, cx);
-                // 有内容：清空并截断（不关窗口）。
-                assert!(note_window.clear_search_on_escape(window, cx));
-                assert!(note_window.search_query.value.is_empty());
-                // 已空：放行冒泡（关窗口逻辑不变）。
-                assert!(!note_window.clear_search_on_escape(window, cx));
-            })
-            .unwrap();
-    }
-
-    #[gpui::test]
-    fn note_find_toggles_and_matches_content(cx: &mut TestAppContext) {
-        let window = cx.add_window(NoteWindow::new_for_test);
-        cx.run_until_parked();
-        window
-            .update(cx, |note_window, window, cx| {
-                note_window
-                    .content_state
-                    .update(cx, |s, cx| s.set_value_simple("alpha beta alpha", cx));
-                assert!(!note_window.find_open);
-
-                // 开面板：查询为空时不产生匹配。
-                note_window.toggle_find(window, cx);
-                assert!(note_window.find_open);
-                assert!(note_window.content_state.read(cx).search_session().open);
-
-                // 敲入查询 -> 引擎算出 2 处匹配。
-                note_window.find_query = TextEditingState::new("alpha");
-                note_window.apply_find_query(cx);
-                assert_eq!(
-                    note_window
-                        .content_state
-                        .read(cx)
-                        .search_session()
-                        .matcher
-                        .matched_ranges()
-                        .len(),
-                    2
-                );
-
-                // 翻到下一处：选中区间应落在第二个 alpha。
-                note_window.find_next(cx);
-                let selected = note_window.content_state.read(cx).selected_range();
-                assert_eq!(selected, 11..16);
-
-                // 无匹配的查询不产生命中，选区也不应被改动。
-                note_window.find_query = TextEditingState::new("zzz");
-                note_window.apply_find_query(cx);
-                assert!(
-                    note_window
-                        .content_state
-                        .read(cx)
-                        .search_session()
-                        .matcher
-                        .matched_ranges()
-                        .is_empty()
-                );
-                note_window.find_next(cx);
-                assert_eq!(
-                    note_window.content_state.read(cx).selected_range(),
-                    11..16,
-                    "无匹配时 find_next 不得改写选区"
-                );
-
-                // 关面板：匹配会话关闭。
-                note_window.close_find(window, cx);
-                assert!(!note_window.find_open);
-                assert!(!note_window.content_state.read(cx).search_session().open);
-            })
-            .unwrap();
-    }
-
-    #[gpui::test]
-    fn note_switching_notes_resets_find(cx: &mut TestAppContext) {
-        init_editor_state(cx);
-        let window = cx.add_window(NoteWindow::new_for_test);
-        cx.run_until_parked();
-        window
-            .update(cx, |note_window, window, cx| {
-                let n1 = sample_note(1, "first note");
-                let n2 = sample_note(2, "second note");
-                note_window.notes = vec![n1.clone(), n2.clone()];
-                note_window.selected_id = Some(n1.id);
-                note_window
-                    .content_state
-                    .update(cx, |s, cx| s.set_value_simple(n1.content.clone(), cx));
-                note_window.toggle_find(window, cx);
-                note_window.find_query = TextEditingState::new("note");
-                note_window.apply_find_query(cx);
-
-                // 换笔记：查询与匹配必须一并重置，否则高亮落在旧文本的位置上。
-                note_window.select_note(n2.id, cx);
-                assert!(!note_window.find_open);
-                assert!(note_window.find_query.value.is_empty());
-                assert!(!note_window.content_state.read(cx).search_session().open);
-            })
-            .unwrap();
-    }
-
-    #[gpui::test]
-    fn note_find_closes_when_entering_preview(cx: &mut TestAppContext) {
-        init_editor_state(cx);
-        let window = cx.add_window(NoteWindow::new_for_test);
-        cx.run_until_parked();
-        window
-            .update(cx, |note_window, window, cx| {
-                note_window.toggle_find(window, cx);
-                assert!(note_window.find_open);
-                note_window.toggle_preview(window, cx);
-                assert!(note_window.preview);
-                assert!(!note_window.find_open, "预览是只读视图，不该留着查找会话");
-            })
-            .unwrap();
-    }
-
-    #[gpui::test]
-    fn note_editor_uses_inner_padding_not_outer_card(cx: &mut TestAppContext) {
-        // 回归：编辑区原先在 Textarea 外面套 `p_2` + 边框 + 圆角做"卡片"，
-        // 于是分隔线与行号之间空出 8px，且多出一圈与左侧列表冲突的圆角框。
-        // 现在外壳是齐边的，呼吸空间由 `set_editor_paddings` 提供。
-        let window = cx.add_window(NoteWindow::new_for_test);
-        cx.run_until_parked();
-        window
-            .update(cx, |note_window, _window, cx| {
-                let paddings = note_window.content_state.read(cx).editor_paddings();
-                assert_eq!(
-                    paddings.left,
-                    px(EDITOR_PADDING_X),
-                    "行号栏左侧应留出与其它编辑器一致的呼吸空间"
-                );
-                assert_eq!(paddings.top, px(EDITOR_PADDING_Y));
-                // 右侧比左侧宽，给滚动条让位，滚动条不会压住文字。
-                assert!(
-                    paddings.right > paddings.left,
-                    "右侧需额外给滚动条留位，实际 {:?}",
-                    paddings
-                );
-            })
-            .unwrap();
-    }
-
-    #[test]
-    fn list_pane_width_clamps_to_bounds() {
-        assert_eq!(
-            clamp_list_pane_width(LIST_PANE_DEFAULT_WIDTH),
-            LIST_PANE_DEFAULT_WIDTH
-        );
-        assert_eq!(
-            clamp_list_pane_width(10.),
-            LIST_PANE_MIN_WIDTH,
-            "窄窗下不得低于最小宽度，否则搜索框和置顶按钮会被压没"
-        );
-        assert_eq!(
-            clamp_list_pane_width(9999.),
-            LIST_PANE_MAX_WIDTH,
-            "过宽会挤掉正文区"
-        );
-    }
-}
+mod tests;

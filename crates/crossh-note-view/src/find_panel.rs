@@ -3,6 +3,7 @@
 //! 匹配引擎（`TextareaState::search_session`，含 AhoCorasick 匹配与命中高亮）
 //! 由 `crossh-editor` 提供；本文件只负责浮层 UI、查询输入和上下一个匹配的分发。
 
+use crossh_core::i18n::text;
 use crossh_core::text_editing::{EditingKeystroke, TextEditingState, handle_text_editing_key};
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{Button, ButtonSize, ButtonVariant, filter_text_input};
@@ -144,10 +145,10 @@ impl NoteWindow {
             if self.find_query.value.is_empty() {
                 String::new()
             } else {
-                "无匹配".to_string()
+                text("note.find.no_matches")
             }
         } else {
-            format!("{current}/{total}")
+            rust_i18n::t!("note.find.counter", current = current, total = total).to_string()
         };
 
         div()
@@ -176,7 +177,7 @@ impl NoteWindow {
                             "note-find-input",
                             self.find_focus.clone(),
                             self.find_query.value.clone(),
-                            "查找...",
+                            text("note.find.placeholder"),
                             self.find_query.ime_marked_text.clone(),
                             self.find_query.selection(),
                             self.find_query.cursor,
@@ -212,7 +213,7 @@ impl NoteWindow {
                                 icons::icon(icons::IconName::ArrowLeft, 12.)
                                     .text_color(theme::muted_text()),
                             )
-                            .tooltip("上一个匹配")
+                            .tooltip(text("note.find.previous"))
                             .disabled(total == 0)
                             .on_click(cx.listener(|this, _, _, cx| this.find_prev(cx))),
                     )
@@ -224,7 +225,7 @@ impl NoteWindow {
                                 icons::icon(icons::IconName::ArrowUp, 12.)
                                     .text_color(theme::muted_text()),
                             )
-                            .tooltip("下一个匹配")
+                            .tooltip(text("note.find.next"))
                             .disabled(total == 0)
                             .on_click(cx.listener(|this, _, _, cx| this.find_next(cx))),
                     )
@@ -236,7 +237,7 @@ impl NoteWindow {
                                 icons::icon(icons::IconName::X, 12.)
                                     .text_color(theme::muted_text()),
                             )
-                            .tooltip("关闭查找")
+                            .tooltip(text("note.find.close"))
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.close_find(window, cx)),
                             ),

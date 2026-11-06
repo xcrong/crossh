@@ -317,3 +317,66 @@ compose:
 scratch:
   title: Scratch Terminal
   close: Close scratch terminal
+
+note:
+  title: Note
+  list:
+    empty: No notes yet — create one
+    no_matches: No matches — create one
+    search_placeholder: Search…
+    meta: "%{time} · %{count} chars"
+    empty_note: Empty note
+  editor:
+    placeholder: "Write a note… (Markdown supported)"
+    preview_empty: Nothing to preview
+  status:
+    no_store: Note library unavailable
+    new_note: New note
+    no_notes: No notes
+    no_selection: No selection
+    note_count: "%{count} notes"
+    char_count: "%{count} chars"
+    unsaved: Unsaved
+    confirm_delete: Press delete again to confirm
+    deleted_undoable: Deleted · can undo
+  action:
+    new_note: New note
+    save: Save
+    delete: Delete
+    confirm_delete: Click again to confirm delete
+    undo_delete: Undo delete
+    preview: Preview
+    edit: Edit
+  find:
+    placeholder: Find…
+    no_matches: No matches
+    counter: "%{current}/%{total}"
+    previous: Previous match
+    next: Next match
+    close: Close find
+  menu:
+    copy: Copy
+    cut: Cut
+    paste: Paste
+    select_all: Select All
+    undo: Undo
+    redo: Redo
+  error:
+    store_open: "Could not open the note library: %{error}"
+    query_failed: Query failed — showing stale results
+    delete_failed: Delete failed — please try again
+    undo_failed: Undo failed — that note no longer exists
+    restored_hidden: Restored — clear the search to see it
+    recovered_backup: "Note library was corrupted; the old library was backed up to %{path}"
+    store_unavailable: The note library is unavailable, so changes cannot be saved; restore the library and try again
+    too_large: "Content is over the %{mb} MB limit and was not saved; trim it and try again"
+    empty_content: An empty note cannot be saved
+    save_failed: "Save failed: %{error}"
+    note_deleted: This note was deleted and cannot be saved
+  time:
+    unknown: Unknown time
+    just_now: Just now
+    minutes_ago: "%{count} minutes ago"
+    hours_ago: "%{count} hours ago"
+    yesterday: Yesterday
+    days_ago: "%{count} days ago"

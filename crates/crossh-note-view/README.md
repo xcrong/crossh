@@ -9,7 +9,9 @@
 
 模块划分：
 
-- `window.rs` — 窗口状态、脏保护、列表与编辑区渲染、快捷键分发。
+- `window.rs` — 窗口状态、脏保护与自动保存、软删与撤销、列表与编辑区渲染、快捷键分发。
+- `context_menu.rs` — 编辑区右键菜单的构建与动作分发（平台快捷键文案集中在一张表里）。
+- `window/tests.rs` — `window.rs` 的单元测试（`#[cfg(test)] mod tests;`）。
 - `find_panel.rs` — 笔记内查找浮层（面板 UI + 查询输入 + 上下一个匹配）。
   匹配引擎与命中高亮由 `crossh-editor` 的 `TextareaState::search_session` 提供。
 - `format.rs` — 纯格式化逻辑（标题截断、相对时间、错误码文案），零 `gpui` 依赖。

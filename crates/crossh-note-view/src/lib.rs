@@ -1,5 +1,7 @@
 //! Note Viewer UI：由独立的 `crossh-note` 进程承载。
 
+rust_i18n::i18n!("../../locales", fallback = "en");
+
 use gpui::{App, KeyBinding, actions};
 
 /// 查找面板自己的 key context。查找框获得焦点后，Enter / Shift+Enter / Escape
@@ -81,8 +83,25 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("escape", CloseFind, Some(FIND_CONTEXT)),
     ]);
 }
+mod context_menu;
 mod find_panel;
 mod format;
 mod markdown;
 mod window;
 pub use window::open_note_window;
+
+/// 测试用的期望文案。
+///
+/// 不走这一步就是假绿：`t!` 查不到键时**原样回吐键名**，而期望值若也调同一个
+/// `t!(key)`，两边同时变成键名，断言就成了自我满足——生产里把键名显示给用户，
+/// 测试却全绿。所以先取值、再断言键确实在 `locales/*.yml` 里，最后才返回。
+#[cfg(test)]
+pub(crate) mod test_support {
+    /// 与生产代码同形：不显式传 locale（测试里没人改全局 `set_locale`，默认 en），
+    /// 断言因此不绑定某一种语言的原文。
+    pub(crate) fn expected(key: &str) -> String {
+        let value = rust_i18n::t!(key).to_string();
+        assert_ne!(value, key, "locales/ 缺少键：{key}");
+        value
+    }
+}
