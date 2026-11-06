@@ -10,10 +10,10 @@ Git 视图静止时仍周期性卡顿；打开多个本地终端后 CPU 与 `git
 
 ## 持久规则
 
-后台轮询必须合并在途请求，只在可见状态实际变化时 `notify`。同一份 Git porcelain 输出应同时提供变更列表和分支状态，避免重复进程。手动刷新可以强制重读 diff；周期刷新只在当前选中条目的元数据变化时重读。长且固定行高的内容使用 `UniformList`，并开启 `Unconstrained` 水平尺寸以保留横向滚动；不能为每一行做同步文本测量。
+后台轮询必须合并在途请求，只在可见状态实际变化时 `notify`。同一份 Git porcelain 输出应同时提供变更列表和分支状态，避免重复进程。周期刷新应始终重读当前选中条目的 diff，但只在 `FileDiff` 内容变化时 `notify`；`FileChange` 元数据不能当作内容指纹（见 [Git 查看器看不到新增文件内容](git-view-stale-diff.md)）。长且固定行高的内容使用 `UniformList`，并开启 `Unconstrained` 水平尺寸以保留横向滚动；不能为每一行做同步文本测量。
 
 ## 验证
 
-用单元测试验证刷新状态机合并重复请求、未变化扫描不触发 diff 重读、合并扫描仍包含分支信息。检查 Git diff 视图使用 `UniformList`，并以长行回归测试确认横向滚动范围存在。运行 `cargo test --bin crossh`、`cargo clippy --bin crossh --all-targets -- -D warnings` 和 `scripts/check-architecture.sh`。
+用单元测试验证刷新状态机合并重复请求、内容未变化的 diff 不触发重绘、未变化的扫描仍然重读当前 diff、合并扫描仍包含分支信息。检查 Git diff 视图使用 `UniformList`，并以长行回归测试确认横向滚动范围存在。运行 `cargo test --bin crossh`、`cargo clippy --bin crossh --all-targets -- -D warnings` 和 `scripts/check-architecture.sh`。
 
 关键词：`GPUI`、`Git`、`polling`、`notify`、`UniformList`、`diff`、卡顿、性能、横向滚动

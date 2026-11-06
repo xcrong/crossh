@@ -9,6 +9,7 @@
 | GPUI 首窗口与 CLI 生命周期 | Dock 有图标但没有窗口；GUI 命令阻塞终端；关闭隐藏窗口后命令才退出 | `GPUI`, `open_window`, `defer`, `Dock`, `CLI`, `detached process`, `cold start` | [GPUI 窗口启动生命周期](gpui-window-startup.md) |
 | GPUI Flex 滚动容器 | 设置 `max_h` 和 `overflow_y_scroll` 后滚轮仍无效；长列表被压缩 | `GPUI`, `flex_shrink_0`, `overflow_y_scroll`, `max_h`, 滚轮无效 | [GPUI Flex 滚动容器](gpui-flex-scroll.md) |
 | GPUI 轮询与大列表性能 | Git 视图静止时周期性卡顿；多终端持续启动 Git；长 diff 滚动变慢 | `GPUI`, `Git`, `polling`, `notify`, `UniformList`, `diff`, 卡顿 | [GPUI 轮询与大列表性能](gpui-polling-performance.md) |
+| Git 查看器新增/未跟踪文件看不到内容；写入后 diff 不刷新 | `Git`, `git viewer`, 未跟踪文件, 新增文件, 看不到内容, diff 不刷新, `reload_diff`, `apply_diff`, 元数据 | [Git 查看器看不到新增文件内容](git-view-stale-diff.md) |
 | Cargo 发布后 workspace 版本与锁文件不一致；tag 发布漏提交 `Cargo.lock` | `Cargo.lock`, `release.sh`, `cargo metadata`, 版本发布 | [Cargo 锁文件发布同步](cargo-lock-release-sync.md) |
 | 命令历史测试只在 windows-latest 上断言 2 vs 3 | `commands.rs`, `aggregates_commands_and_returns_top_thirty`, `last_used`, 秒级时间戳, 时间竞态 | [命令历史测试的时间精度竞态](command-history-test-timing.md) |
 | 跨终端 TUI splash 颜色对不上;白色刺眼、阴影过渡"细线"消失,但字节流一致 | `opencode`, `VT Code`, `OSC 11`, `38;2 真彩`, `canvas`, 自适应主题, `splashShadow`, `ColorRequest`, 256 色, 细线消失 | [终端自适应颜色与主题底色偏差](terminal-adaptive-colors.md) |

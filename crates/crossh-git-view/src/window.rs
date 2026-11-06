@@ -387,11 +387,30 @@ impl GitWindow {
     }
 
     pub(super) fn refresh_list(&mut self, cx: &mut Context<Self>) {
-        self.refresh_list_with_diff_reload(false, cx);
-    }
+        let Some(request) = self.session.begin_refresh() else {
+            return;
+        };
+        let cwd = request.cwd.clone();
 
-    pub(super) fn force_refresh_list(&mut self, cx: &mut Context<Self>) {
-        self.refresh_list_with_diff_reload(true, cx);
+        cx.spawn(async move |weak, cx| {
+            let scan = cx
+                .background_executor()
+                .spawn(async move { scan_changes(&cwd) })
+                .await;
+            let _ = weak.update(cx, |this, cx| {
+                let completion = this.session.apply_scan(request, scan);
+                if completion.reload_diff {
+                    this.refresh_diff(cx);
+                }
+                if completion.refresh_again {
+                    this.refresh_list(cx);
+                }
+                if completion.state_changed {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     pub(super) fn refresh_current_page(&mut self, cx: &mut Context<Self>) {
@@ -404,7 +423,7 @@ impl GitWindow {
         } else if self.is_remote_page() {
             self.refresh_remotes(true, cx);
         } else {
-            self.force_refresh_list(cx);
+            self.refresh_list(cx);
         }
     }
 
@@ -1002,33 +1021,6 @@ impl GitWindow {
             false,
             cx,
         );
-    }
-
-    fn refresh_list_with_diff_reload(&mut self, force_diff_reload: bool, cx: &mut Context<Self>) {
-        let Some(request) = self.session.begin_refresh(force_diff_reload) else {
-            return;
-        };
-        let cwd = request.cwd.clone();
-
-        cx.spawn(async move |weak, cx| {
-            let scan = cx
-                .background_executor()
-                .spawn(async move { scan_changes(&cwd) })
-                .await;
-            let _ = weak.update(cx, |this, cx| {
-                let completion = this.session.apply_scan(request, scan);
-                if completion.reload_diff {
-                    this.refresh_diff(cx);
-                }
-                if completion.refresh_again {
-                    this.refresh_list(cx);
-                }
-                if completion.state_changed {
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
     }
 
     pub(super) fn refresh_diff(&mut self, cx: &mut Context<Self>) {

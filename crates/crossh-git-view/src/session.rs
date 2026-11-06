@@ -105,26 +105,6 @@ fn reconcile_selection(
     Some(ChangeKey::from(&changes[index]))
 }
 
-fn should_refresh_diff(
-    force: bool,
-    previous_changes: &[FileChange],
-    next_changes: &[FileChange],
-    previous_selected: Option<&ChangeKey>,
-    next_selected: Option<&ChangeKey>,
-) -> bool {
-    if force {
-        return true;
-    }
-    selected_change(previous_changes, previous_selected)
-        != selected_change(next_changes, next_selected)
-}
-
-fn selected_change<'a>(
-    changes: &'a [FileChange],
-    selected: Option<&ChangeKey>,
-) -> Option<&'a FileChange> {
-    selected_index(changes, selected).and_then(|index| changes.get(index))
-}
 fn operation_affects_path(operation: &GitOperation, path: &str) -> bool {
     match operation {
         GitOperation::Stage(paths)
@@ -204,16 +184,14 @@ pub(super) struct GitSession {
     pub(super) list_generation: u64,
     pub(super) diff_generation: u64,
     pub(super) operation_generation: u64,
-    pub(super) force_diff_refresh_pending: bool,
+    /// 正在读取 diff 的条目：周期刷新不对同一文件重复排队。
+    pub(super) diff_in_flight: Option<ChangeKey>,
 }
 
 pub(super) struct RefreshRequest {
     pub(super) generation: u64,
     pub(super) cwd: PathBuf,
     pub(super) previous_index: Option<usize>,
-    pub(super) previous_changes: Vec<FileChange>,
-    pub(super) previous_selected: Option<ChangeKey>,
-    pub(super) force_diff_reload: bool,
     pub(super) was_initial_loading: bool,
 }
 
@@ -265,21 +243,17 @@ impl GitSession {
             list_generation: 0,
             diff_generation: 0,
             operation_generation: 0,
-            force_diff_refresh_pending: false,
+            diff_in_flight: None,
         }
     }
 
-    pub(super) fn begin_refresh(&mut self, force_diff_reload: bool) -> Option<RefreshRequest> {
-        self.force_diff_refresh_pending |= force_diff_reload;
+    pub(super) fn begin_refresh(&mut self) -> Option<RefreshRequest> {
         if !self.refresh.request() {
             return None;
         }
-        let force_diff_reload = std::mem::take(&mut self.force_diff_refresh_pending);
         self.list_generation = self.list_generation.wrapping_add(1);
         let generation = self.list_generation;
         let previous_index = selected_index(&self.changes, self.selected.as_ref());
-        let previous_changes = self.changes.clone();
-        let previous_selected = self.selected.clone();
         let was_initial_loading = self.initial_loading;
         self.initial_loading = self.changes.is_empty();
 
@@ -287,9 +261,6 @@ impl GitSession {
             generation,
             cwd: self.cwd.clone(),
             previous_index,
-            previous_changes,
-            previous_selected,
-            force_diff_reload,
             was_initial_loading,
         })
     }
@@ -309,7 +280,7 @@ impl GitSession {
         }
 
         let mut state_changed = request.was_initial_loading;
-        let reload_diff;
+        let mut reload_diff = false;
         match scan {
             Ok(scan) => {
                 let next_selected = reconcile_selection(
@@ -327,13 +298,10 @@ impl GitSession {
                 if let Some(selected) = &next_selected {
                     next_selected_changes.insert(selected.clone());
                 }
-                reload_diff = should_refresh_diff(
-                    request.force_diff_reload,
-                    &request.previous_changes,
-                    &scan.changes,
-                    request.previous_selected.as_ref(),
-                    next_selected.as_ref(),
-                );
+                // 变更条目的元数据不足以判断内容是否变动：未跟踪文件永远 +0/−0，
+                // 等行数改写也不会改变增删统计。扫描成功后一律重读 diff，
+                // 由 apply_diff 比较内容来决定要不要重绘。
+                reload_diff = true;
                 state_changed |= self.changes != scan.changes;
                 state_changed |= self.selected != next_selected;
                 state_changed |= self.selected_changes != next_selected_changes;
@@ -345,7 +313,6 @@ impl GitSession {
                 self.status = scan.status;
             }
             Err(error) => {
-                reload_diff = false;
                 let error = error.to_string();
                 state_changed |= self.load_error.as_deref() != Some(error.as_str());
                 self.load_error = Some(error);
@@ -472,6 +439,11 @@ impl GitSession {
         };
         let entry = self.changes[index].clone();
         let key = ChangeKey::from(&entry);
+        // 一次读取还没落地时不重复发起：慢盘上每 2 秒重排一次会让旧结果永远过期。
+        if self.diff_in_flight.as_ref() == Some(&key) {
+            return None;
+        }
+        self.diff_in_flight = Some(key.clone());
         self.diff_generation = self.diff_generation.wrapping_add(1);
         let generation = self.diff_generation;
         let keep_current_diff = matches!(
@@ -495,15 +467,23 @@ impl GitSession {
         request: DiffRequest,
         result: Result<Option<FileDiff>, GitError>,
     ) -> bool {
+        if self.diff_in_flight.as_ref() == Some(&request.key) {
+            self.diff_in_flight = None;
+        }
         if self.diff_generation != request.generation
             || self.selected.as_ref() != Some(&request.key)
         {
             return false;
         }
-        self.diff = match result {
+        let next = match result {
             Ok(file_diff) => DiffState::Ready(request.key, file_diff),
             Err(error) => DiffState::Error(request.key, error.to_string()),
         };
+        // 周期刷新会一直重读 diff：内容未变时保持原状态，避免无谓重绘。
+        if next == self.diff {
+            return false;
+        }
+        self.diff = next;
         true
     }
 
@@ -600,10 +580,7 @@ mod tests {
     };
     use crossh_core::git_status::GitStatus;
 
-    use super::{
-        ChangeKey, DiffState, GitOperation, GitSession, OperationState, selected_index,
-        should_refresh_diff,
-    };
+    use super::{ChangeKey, DiffState, GitOperation, GitSession, OperationState, selected_index};
 
     fn change(path: &str, staged: bool) -> FileChange {
         FileChange {
@@ -621,7 +598,7 @@ mod tests {
         let mut session = GitSession::new(PathBuf::from("/tmp/repository"));
 
         let request = session
-            .begin_refresh(false)
+            .begin_refresh()
             .expect("the first refresh should start");
 
         assert_eq!(request.generation, 1);
@@ -634,15 +611,78 @@ mod tests {
     fn overlapping_refresh_requests_are_coalesced() {
         let mut session = GitSession::new(PathBuf::from("/tmp/repository"));
 
-        assert!(session.begin_refresh(false).is_some());
-        assert!(session.begin_refresh(true).is_none());
-        assert!(session.force_diff_refresh_pending);
+        assert!(session.begin_refresh().is_some());
+        assert!(session.begin_refresh().is_none());
+        assert!(session.refresh.in_flight());
+    }
+
+    #[test]
+    fn unchanged_scan_still_reloads_the_selected_diff() {
+        let mut session = GitSession::new(PathBuf::from("/tmp/repository"));
+        // 未跟踪文件的元数据不随内容变化，扫描结果前后完全一致。
+        let mut untracked = change("new.rs", false);
+        untracked.status = ChangeStatus::Untracked;
+        untracked.insertions = 0;
+        let scan = ChangeScan {
+            changes: vec![untracked],
+            status: None,
+        };
+        let request = session.begin_refresh().unwrap();
+        assert!(session.apply_scan(request, Ok(scan.clone())).reload_diff);
+        let request = session.begin_diff().unwrap();
+        session.apply_diff(request, Ok(Some(FileDiff::default())));
+
+        let request = session.begin_refresh().unwrap();
+        let completion = session.apply_scan(request, Ok(scan));
+
+        assert!(completion.reload_diff);
+    }
+
+    #[test]
+    fn diff_reads_are_not_queued_twice_for_the_same_entry() {
+        let mut session = GitSession::new(PathBuf::from("/tmp/repository"));
+        session.changes = vec![change("a.rs", false)];
+        session.selected = Some(ChangeKey {
+            path: "a.rs".to_string(),
+            staged: false,
+        });
+
+        let request = session.begin_diff().unwrap();
+        assert!(session.begin_diff().is_none());
+        assert!(session.apply_diff(request, Ok(None)));
+        assert!(session.begin_diff().is_some());
+    }
+
+    #[test]
+    fn unchanged_diff_content_is_not_republished() {
+        let key = ChangeKey {
+            path: "a.rs".to_string(),
+            staged: false,
+        };
+        let mut session = GitSession::new(PathBuf::from("/tmp/repository"));
+        session.changes = vec![change("a.rs", false)];
+        session.selected = Some(key);
+        let diff = FileDiff {
+            lines: vec![DiffLine {
+                kind: DiffLineKind::Added,
+                hunk_index: None,
+                old_ln: None,
+                new_ln: Some(1),
+                text: "line".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        let request = session.begin_diff().unwrap();
+        assert!(session.apply_diff(request, Ok(Some(diff.clone()))));
+        let request = session.begin_diff().unwrap();
+        assert!(!session.apply_diff(request, Ok(Some(diff))));
     }
 
     #[test]
     fn scan_reconciles_selection_and_requests_the_selected_diff() {
         let mut session = GitSession::new(PathBuf::from("/tmp/repository"));
-        let request = session.begin_refresh(false).unwrap();
+        let request = session.begin_refresh().unwrap();
         let completion = session.apply_scan(
             request,
             Ok(ChangeScan {
@@ -749,7 +789,7 @@ mod tests {
             })
         );
 
-        let refresh = session.begin_refresh(false).unwrap();
+        let refresh = session.begin_refresh().unwrap();
         session.apply_scan(
             refresh,
             Ok(ChangeScan {
@@ -829,20 +869,6 @@ mod tests {
         };
 
         assert_eq!(selected_index(&changes, Some(&selected)), Some(1));
-        assert!(!should_refresh_diff(
-            false,
-            &changes,
-            &changes,
-            Some(&selected),
-            Some(&selected),
-        ));
-        assert!(should_refresh_diff(
-            true,
-            &changes,
-            &changes,
-            Some(&selected),
-            Some(&selected),
-        ));
     }
 
     #[test]
