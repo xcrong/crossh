@@ -1,10 +1,11 @@
 //! 纯逻辑笔记存储：SQLite + FTS5，零 gpui 依赖
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 /// 单条笔记的字节上限。SQLite TEXT 本身能存到 1 GB，这里只挡病态输入；
 /// 超限一律**拒绝**而非截断——静默砍掉用户写了一半的内容比报错糟糕得多。
 /// 早期版本用 8 KB + 截断，导致长笔记被砍一半且 `is_dirty` 永久为真（存进去的
@@ -383,6 +384,73 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// 把查询按空白切成检索词；纯空白返回空列表（= 不检索）。
+fn search_terms(query: &str) -> Vec<String> {
+    query.split_whitespace().map(str::to_string).collect()
+}
+
+/// LIKE 通配符按字面匹配（反斜杠先转义，否则 `ESCAPE '\\'` 会被查询里的 `\` 破坏）。
+fn escape_like(term: &str) -> String {
+    term.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// 一条正文在本次查询上的命中证据：命中次数与首次命中位置（字节下标）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct MatchEvidence {
+    hits: usize,
+    first_index: Option<usize>,
+}
+
+/// 只用正文能算出的证据。大小写折叠限定 ASCII，与 SQLite `LIKE` 和 FTS tokenizer
+/// 的范围一致；用 `to_lowercase()` 做全 Unicode 折叠会出现「证据说有命中、SQL 说没有」的
+/// 隐形偏差，排序结果就会取决于哪条路径先把笔记送进候选集。
+fn match_evidence(content: &str, terms: &[String]) -> MatchEvidence {
+    let haystack = content.to_ascii_lowercase();
+    let mut evidence = MatchEvidence::default();
+    for term in terms {
+        let needle = term.to_ascii_lowercase();
+        if needle.is_empty() {
+            continue;
+        }
+        for (index, _) in haystack.match_indices(&needle) {
+            evidence.hits += 1;
+            evidence.first_index = Some(match evidence.first_index {
+                Some(first) => first.min(index),
+                None => index,
+            });
+        }
+    }
+    evidence
+}
+
+/// 统一排序：置顶 → 命中次数 → 首次命中位置 → 最近更新 → id。
+///
+/// 只用两条检索路径都能算出的证据：FTS 的 `bm25` 只在 FTS 命中的行上有分值，
+/// 拿它排序会让中文命中永久排在后面。
+fn rank_notes(notes: Vec<Note>, terms: &[String]) -> Vec<Note> {
+    let mut ranked = notes
+        .into_iter()
+        .map(|note| (match_evidence(&note.content, terms), note))
+        .collect::<Vec<_>>();
+    ranked.sort_by(|(left_evidence, left), (right_evidence, right)| {
+        right
+            .pinned
+            .cmp(&left.pinned)
+            .then_with(|| right_evidence.hits.cmp(&left_evidence.hits))
+            .then_with(|| {
+                left_evidence
+                    .first_index
+                    .unwrap_or(usize::MAX)
+                    .cmp(&right_evidence.first_index.unwrap_or(usize::MAX))
+            })
+            .then_with(|| right.updated_at.cmp(&left.updated_at))
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    ranked.into_iter().map(|(_, note)| note).collect()
+}
+
 pub struct NoteStore {
     pub path: PathBuf,
     /// 本次打开时若把损坏的旧库备份走了，这里是被备份文件的实际路径
@@ -475,32 +543,44 @@ impl NoteStore {
         Ok(out)
     }
 
+    /// 检索：FTS 候选与正文子串候选的并集，再按 [`rank_notes`] 统一排序。
+    ///
+    /// ponytail: 子串路径是随「笔记数 × 正文大小」线性增长的扫描，而且每条查询都会跑
+    /// （纯 ASCII 查询也一样，否则 `wor` 命中 `world` 这类子串匹配会漏）。个人笔记库规模下
+    /// 够用；变大时的升级路径是加一列影子 bigram 索引（`SCHEMA_VERSION` +1 并重建），
+    /// 而不是给这里加缓存。
     pub fn search(&self, query: &str) -> Result<Vec<Note>, String> {
-        let q = query.trim();
-        if q.is_empty() {
+        let terms = search_terms(query);
+        if terms.is_empty() {
             return self.list();
         }
-        // 优先 FTS5；成功但结果为空时回退 LIKE（中文在 unicode61 下 FTS 命中不了）
-        match self.search_fts(q) {
-            Ok(res) if !res.is_empty() => Ok(res),
-            // FTS 出错或结果为空：回退 LIKE，两边都空才返回空
-            _ => self.search_like(q),
+        let mut notes = match self.search_fts(&terms) {
+            Ok(found) => found,
+            Err(error) => {
+                // 索引不可用不该让用户看到「查询失败」：子串路径仍能给出结果。
+                log::warn!("note fts query failed, using substring scan: {error}");
+                Vec::new()
+            }
+        };
+        let mut seen: HashSet<i64> = notes.iter().map(|note| note.id).collect();
+        for note in self.search_like(&terms)? {
+            if seen.insert(note.id) {
+                notes.push(note);
+            }
         }
+        Ok(rank_notes(notes, &terms))
     }
-    fn search_fts(&self, query: &str) -> Result<Vec<Note>, String> {
-        // 将查询转为 FTS5 合法：用双引号包裹每个词，避免特殊字符
-        // 简化：对单引号转义，空格分词后用 OR 连接
-        let escaped = query.replace('"', "\"\"");
-        // 使用 FTS5 的简单匹配：直接用用户输入，失败则抛错回退
+
+    fn search_fts(&self, terms: &[String]) -> Result<Vec<Note>, String> {
+        // 每个词包成双引号字面量，避免 FTS5 把 `*`、`NEAR(` 等当语法。
+        let match_expr = terms
+            .iter()
+            .map(|term| format!("\"{}\"", term.replace('\"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(" OR ");
         let conn = self.conn.lock();
         let sql = "SELECT n.id, n.content, n.pinned, n.created_at, n.updated_at FROM notes n JOIN notes_fts f ON n.id = f.rowid WHERE notes_fts MATCH ? AND n.deleted_at IS NULL ORDER BY n.pinned DESC, n.updated_at DESC, n.id DESC";
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-        // 构造 MATCH 表达式：对空格分词，用 OR 连接以实现宽松匹配
-        let match_expr = escaped
-            .split_whitespace()
-            .map(|w| format!("\"{}\"", w))
-            .collect::<Vec<_>>()
-            .join(" OR ");
         let rows = stmt
             .query_map(params![match_expr], |row| {
                 Ok(Note {
@@ -519,16 +599,20 @@ impl NoteStore {
         Ok(out)
     }
 
-    fn search_like(&self, query: &str) -> Result<Vec<Note>, String> {
+    /// 子串路径：任一词出现在正文即命中（`OR`）。中文在 FTS 上零命中，靠这条路径。
+    fn search_like(&self, terms: &[String]) -> Result<Vec<Note>, String> {
         let conn = self.conn.lock();
-        // 转义 LIKE 通配符
-        let esc = query.replace('%', "\\%").replace('_', "\\_");
-        let pat = format!("%{}%", esc);
-        let mut stmt = conn
-            .prepare("SELECT id, content, pinned, created_at, updated_at FROM notes WHERE content LIKE ? ESCAPE '\\' AND deleted_at IS NULL ORDER BY pinned DESC, updated_at DESC, id DESC")
-            .map_err(|e| e.to_string())?;
+        let clause = vec!["content LIKE ? ESCAPE '\\'"; terms.len()].join(" OR ");
+        let sql = format!(
+            "SELECT id, content, pinned, created_at, updated_at FROM notes WHERE deleted_at IS NULL AND ({clause}) ORDER BY pinned DESC, updated_at DESC, id DESC"
+        );
+        let patterns = terms
+            .iter()
+            .map(|term| format!("%{}%", escape_like(term)))
+            .collect::<Vec<_>>();
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![pat], |row| {
+            .query_map(params_from_iter(patterns), |row| {
                 Ok(Note {
                     id: row.get(0)?,
                     content: row.get(1)?,
@@ -815,9 +899,11 @@ mod tests {
     fn spec_20260827_note__search_like_escape() {
         let (store, _dir) = tmp_store();
         store.create("a%b").unwrap();
-        // 搜索含 % 的内容，不应注入
+        store.create("axb").unwrap();
+        // 搜索含 % 的内容按字面匹配：不能把 % 当通配符
         let res = store.search("a%b").unwrap();
         assert_eq!(res.len(), 1);
+        assert_eq!(res[0].content, "a%b");
     }
 
     #[test]
@@ -827,8 +913,13 @@ mod tests {
         store.delete(n.id).unwrap();
         // 删除后对用户不可见：列表 / FTS / LIKE 三条路径都得过滤
         assert!(store.list().unwrap().is_empty());
-        assert!(store.search_fts("hello").unwrap().is_empty());
-        assert!(store.search_like("hello").unwrap().is_empty());
+        assert!(store.search_fts(&search_terms("hello")).unwrap().is_empty());
+        assert!(
+            store
+                .search_like(&search_terms("hello"))
+                .unwrap()
+                .is_empty()
+        );
         assert!(store.search("hello").unwrap().is_empty());
         // get 不过滤：恢复与校验需要读到已删行
         assert_eq!(store.get(n.id).unwrap().unwrap().content, "hello world");
@@ -883,29 +974,218 @@ mod tests {
     }
 
     #[test]
-    fn spec_20260903_note__chinese_search_fallback_like() {
-        // 中文在 unicode61 下 FTS 命中不了，应回退 LIKE 搜到
+    fn spec_20261107_note_search__cjk_query_hits() {
+        // 中文在 FTS 上零命中，靠子串路径，但不该被描述成「回退」：两条路径是并集。
         let (store, _dir) = tmp_store();
         store.create("今天天气不错，适合散步").unwrap();
         store.create("other english note").unwrap();
-        let res = store.search("天气").unwrap();
-        assert_eq!(res.len(), 1);
-        assert!(res[0].content.contains("天气"));
-        // LIKE 只查 content 即可搜到中文
-        let like = store.search_like("天气").unwrap();
-        assert_eq!(like.len(), 1);
+        let two = store.search("天气").unwrap();
+        assert_eq!(two.len(), 1);
+        assert!(two[0].content.contains("天气"));
+        // 单字也要能命中：
+        let one = store.search("气").unwrap();
+        assert_eq!(one.len(), 1);
     }
 
     #[test]
-    fn spec_20260903_note__fts_hit_preferred() {
-        // 英文 FTS 能命中时，search 直接返回 FTS 结果
+    fn spec_20261107_note_search__mixed_query_returns_union() {
+        let (store, _dir) = tmp_store();
+        let english = store.create("hello world").unwrap();
+        let chinese = store.create("今天天气不错，适合散步").unwrap();
+        let res = store.search("hello 天气").unwrap();
+        assert_eq!(res.len(), 2);
+        let ids: Vec<i64> = res.iter().map(|note| note.id).collect();
+        assert!(ids.contains(&english.id));
+        assert!(ids.contains(&chinese.id));
+        // 并集不能把同一条笔记放两次
+        let mut unique = ids.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), ids.len());
+    }
+
+    #[test]
+    fn spec_20261107_note_search__blank_query_matches_list() {
+        let (store, _dir) = tmp_store();
+        store.create("alpha").unwrap();
+        store.create("beta").unwrap();
+        let listed = store.list().unwrap();
+        let searched = store.search("   ").unwrap();
+        let listed_ids: Vec<i64> = listed.iter().map(|note| note.id).collect();
+        let searched_ids: Vec<i64> = searched.iter().map(|note| note.id).collect();
+        assert_eq!(searched_ids, listed_ids);
+    }
+
+    #[test]
+    fn spec_20261107_note_search__no_match_is_empty() {
         let (store, _dir) = tmp_store();
         store.create("hello world").unwrap();
-        store.create("other").unwrap();
-        let fts = store.search_fts("hello").unwrap();
-        assert_eq!(fts.len(), 1);
+        assert!(store.search("zzz-无匹配").unwrap().is_empty());
+    }
+
+    #[test]
+    fn spec_20261107_note_search__ascii_case_insensitive() {
+        let (store, _dir) = tmp_store();
+        store.create("hello world").unwrap();
+        assert_eq!(store.search("HELLO").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn spec_20261107_note_search__soft_deleted_note_is_not_returned() {
+        let (store, _dir) = tmp_store();
+        let deleted = store.create("hello 已删").unwrap();
+        let kept = store.create("hello 保留").unwrap();
+        store.delete(deleted.id).unwrap();
         let res = store.search("hello").unwrap();
-        assert_eq!(res, fts);
+        let ids: Vec<i64> = res.iter().map(|note| note.id).collect();
+        assert_eq!(ids, vec![kept.id]);
+    }
+
+    #[test]
+    fn spec_20261107_note_search__pinned_outranks_more_hits() {
+        let (store, _dir) = tmp_store();
+        let noisy = store.create("work work work").unwrap();
+        let pinned = store.create("work").unwrap();
+        store.set_pinned(pinned.id, true).unwrap();
+        let res = store.search("work").unwrap();
+        let ids: Vec<i64> = res.iter().map(|note| note.id).collect();
+        assert_eq!(ids, vec![pinned.id, noisy.id]);
+    }
+
+    #[test]
+    fn spec_20261107_note_search__hits_outrank_newer_updates() {
+        let (store, _dir) = tmp_store();
+        let many_hits = store.create("work work work").unwrap();
+        // 等到下一秒，让后创建的笔记 updated_at 严格更新
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let newer = store.create("work").unwrap();
+        assert!(newer.updated_at > many_hits.updated_at);
+        let res = store.search("work").unwrap();
+        let ids: Vec<i64> = res.iter().map(|note| note.id).collect();
+        assert_eq!(ids, vec![many_hits.id, newer.id]);
+    }
+
+    #[test]
+    fn spec_20261107_note_search__fts_syntax_chars_do_not_error() {
+        let (store, _dir) = tmp_store();
+        store.create("work item").unwrap();
+        // 未配对引号 / NEAR( / 单个引号都不应让查询变成 Err
+        assert!(store.search("\"work").is_ok());
+        assert!(store.search("NEAR( work").is_ok());
+        assert!(store.search("\"").is_ok());
+    }
+
+    #[test]
+    fn spec_20261107_note_search__fts_unavailable_falls_back_to_substring() {
+        let (store, _dir) = tmp_store();
+        store.create("hello world").unwrap();
+        // 索引表没了是真实可能的损坏形态：此时仍要靠子串路径出结果，而不是报错
+        store
+            .conn
+            .lock()
+            .execute_batch("DROP TABLE notes_fts")
+            .unwrap();
+        let res = store.search("hello").unwrap();
+        assert_eq!(res.len(), 1);
+    }
+
+    #[test]
+    fn match_evidence_counts_hits_and_first_index() {
+        let terms = search_terms("work 天气");
+        let evidence = match_evidence("xx work yy work 天气", &terms);
+        assert_eq!(evidence.hits, 3);
+        assert_eq!(evidence.first_index, Some(3));
+        assert_eq!(match_evidence("nothing", &terms).hits, 0);
+        assert_eq!(match_evidence("nothing", &terms).first_index, None);
+        // 空词不参与统计
+        assert_eq!(match_evidence("aaa", &search_terms("   ")).hits, 0);
+    }
+
+    #[test]
+    fn match_evidence_folds_ascii_case_only() {
+        let terms = search_terms("HELLO");
+        assert_eq!(match_evidence("say hello", &terms).hits, 1);
+        // 非 ASCII 不折叠：与 SQLite LIKE / FTS tokenizer 的范围保持一致
+        let umlaut = search_terms("Ä");
+        assert_eq!(match_evidence("Ä", &umlaut).hits, 1);
+        assert_eq!(match_evidence("ä", &umlaut).hits, 0);
+    }
+
+    #[test]
+    fn rank_notes_orders_by_pinned_hits_position_updated_and_id() {
+        let terms = search_terms("work");
+        let notes = vec![
+            Note {
+                id: 1,
+                content: "work".to_string(),
+                pinned: false,
+                created_at: 0,
+                updated_at: 10,
+            },
+            Note {
+                id: 2,
+                content: "work work".to_string(),
+                pinned: false,
+                created_at: 0,
+                updated_at: 5,
+            },
+            Note {
+                id: 3,
+                content: "work".to_string(),
+                pinned: true,
+                created_at: 0,
+                updated_at: 0,
+            },
+            Note {
+                id: 4,
+                content: "xx work".to_string(),
+                pinned: false,
+                created_at: 0,
+                updated_at: 99,
+            },
+            Note {
+                id: 5,
+                content: "a work work".to_string(),
+                pinned: false,
+                created_at: 0,
+                updated_at: 50,
+            },
+        ];
+        let ranked = rank_notes(notes, &terms);
+        // 置顶 → 命中次数 → 首次位置（同为 2 次时靠前者先） → 最近更新 → id
+        let ids: Vec<i64> = ranked.iter().map(|note| note.id).collect();
+        assert_eq!(ids, vec![3, 2, 5, 1, 4]);
+    }
+
+    #[test]
+    fn rank_notes_is_deterministic_for_equal_evidence() {
+        let terms = search_terms("work");
+        let notes = vec![
+            Note {
+                id: 7,
+                content: "work".to_string(),
+                pinned: false,
+                created_at: 0,
+                updated_at: 1,
+            },
+            Note {
+                id: 9,
+                content: "work".to_string(),
+                pinned: false,
+                created_at: 0,
+                updated_at: 1,
+            },
+        ];
+        let first: Vec<i64> = rank_notes(notes.clone(), &terms)
+            .iter()
+            .map(|note| note.id)
+            .collect();
+        let second: Vec<i64> = rank_notes(notes, &terms)
+            .iter()
+            .map(|note| note.id)
+            .collect();
+        assert_eq!(first, second);
+        assert_eq!(first, vec![9, 7]);
     }
 
     #[test]
@@ -1059,10 +1339,10 @@ mod tests {
                     params![note.id, note.content.as_str()],
                 )
                 .unwrap();
-            assert!(store.search_fts("hello").unwrap().is_empty());
+            assert!(store.search_fts(&search_terms("hello")).unwrap().is_empty());
         }
         let store = NoteStore::open(&path).unwrap();
-        assert!(store.search_fts("hello").unwrap().is_empty());
+        assert!(store.search_fts(&search_terms("hello")).unwrap().is_empty());
         // 数据本身仍在，只是索引没被无条件重建
         assert_eq!(store.list().unwrap().len(), 1);
     }
@@ -1259,14 +1539,14 @@ mod tests {
                 params![note.id, note.content.as_str()],
             )
             .unwrap();
-        assert!(store.search_fts("hello").unwrap().is_empty());
+        assert!(store.search_fts(&search_terms("hello")).unwrap().is_empty());
         store.set_pinned(note.id, true).unwrap();
         // 不带 `OF content` 时，置顶会让 trigger 把正文重新写回索引
-        assert!(store.search_fts("hello").unwrap().is_empty());
+        assert!(store.search_fts(&search_terms("hello")).unwrap().is_empty());
         // 改正文照常同步索引（换一条没被手动去同步的行，否则 FTS5 会报 image is malformed）
         let other = store.create("second note").unwrap();
         store.update(other.id, "second shifted").unwrap();
-        assert_eq!(store.search_fts("shifted").unwrap().len(), 1);
+        assert_eq!(store.search_fts(&search_terms("shifted")).unwrap().len(), 1);
     }
 
     #[test]
@@ -1296,7 +1576,7 @@ mod tests {
         store.delete(note.id).unwrap();
         assert_eq!(store.purge_deleted(0).unwrap(), 1);
         assert!(store.get(note.id).unwrap().is_none());
-        assert!(store.search_like("bye").unwrap().is_empty());
+        assert!(store.search_like(&search_terms("bye")).unwrap().is_empty());
     }
 
     #[test]

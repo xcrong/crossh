@@ -33,8 +33,9 @@ crossh-update     -> no GPUI, release/download/install implementation
 crossh-assets     -> no GPUI, embedded Crossh icon assets and icon identifiers
 crossh-ui         -> GPUI primitives, renderer-independent palette (ex crossh-theme), icon rendering, and the asset-source adapter
 crossh-ui-component -> GPUI widgets on top of crossh-ui
-crossh-note       -> no GPUI, SQLite note store (WAL, FTS5 with a LIKE fallback for
-                      CJK text, pinned ordering) and its content-size limit
+crossh-note       -> no GPUI, SQLite note store (WAL, FTS5 unioned with a content
+                      substring scan so CJK matches, ranked ordering) and its
+                      content-size limit
 shared resources  -> external `crossh-assets` directory loaded by every binary
 ```
 
