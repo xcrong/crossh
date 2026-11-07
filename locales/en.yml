@@ -119,6 +119,8 @@ tooltip:
   compose_bar: Toggle independent input bar
   system_monitor: System monitor
   scratch_terminal: Scratch terminal
+  link_preview: Temporary webview (restore the last page)
+  link_preview_empty: Temporary webview (open the start page)
   note: Note
   update_check: Check for updates
   update_download: Download update %{version}
@@ -317,6 +319,13 @@ compose:
 scratch:
   title: Scratch Terminal
   close: Close scratch terminal
+
+link_preview:
+  address_placeholder: Type a URL and press Enter
+  back: Back
+  forward: Forward
+  open_in_browser: Open in browser
+  close: Close link preview
 
 note:
   title: Note

@@ -51,6 +51,8 @@ use crossh_ui_component::context_menu::{ContextMenuState, MenuEntry, render_cont
 use super::local_paths::{current_local_cwd, normalize_local_cwd, normalize_recent_dirs};
 
 mod compose;
+#[cfg(target_os = "macos")]
+pub(crate) mod link_preview;
 mod notifications;
 mod quit;
 pub(crate) mod scratch;
@@ -205,6 +207,11 @@ pub struct AppShell {
     pub(crate) scratch_height: Rc<Cell<f32>>,
     pub(crate) scratch_dragging: Rc<Cell<bool>>,
     scratch_subscription: Option<Subscription>,
+    /// 链接预览的原生 WebView 单例（仅 macOS），见 `link_preview`。
+    #[cfg(target_os = "macos")]
+    pub(crate) link_preview: Option<link_preview::LinkPreview>,
+    #[cfg(target_os = "macos")]
+    pub(crate) link_preview_visible: bool,
     quit_confirmation_open: bool,
     shutdown_in_progress: bool,
     /// 标签页关闭确认框是否已打开，防止重复弹出。
@@ -299,6 +306,10 @@ impl AppShell {
                 scratch_height: Rc::new(Cell::new(0.)),
                 scratch_dragging: Rc::new(Cell::new(false)),
                 scratch_subscription: None,
+                #[cfg(target_os = "macos")]
+                link_preview: None,
+                #[cfg(target_os = "macos")]
+                link_preview_visible: false,
                 quit_confirmation_open: false,
                 shutdown_in_progress: false,
                 tab_close_confirmation_open: false,
@@ -382,6 +393,13 @@ impl AppShell {
             return;
         }
         if self.rename_editor.is_some() || self.default_command_editor.is_some() {
+            return;
+        }
+        // 链接预览悬浮层在最上层：Esc 先关它，再轮到临时终端抽屉。
+        #[cfg(target_os = "macos")]
+        if self.link_preview_visible && ev.keystroke.key == "escape" {
+            self.hide_link_preview(cx);
+            cx.stop_propagation();
             return;
         }
         // Scratch 抽屉的 Esc 隐藏：优先级高于全局快捷键，但低于模态
@@ -1258,6 +1276,25 @@ pub fn open_main_window(cx: &mut App) {
             let weak = shell.downgrade();
             let notification_weak = shell.downgrade();
             let window_handle = window.window_handle();
+            // 终端链接：优先开在临时 WebView 预览里，失败或非 macOS 时回退系统浏览器。
+            #[cfg(target_os = "macos")]
+            {
+                let opener_shell = weak.clone();
+                crossh_terminal_view::set_link_opener(
+                    crossh_terminal_view::LinkOpener(std::rc::Rc::new(move |url, cx| {
+                        window_handle
+                            .update(cx, |_, window, cx| {
+                                opener_shell
+                                    .update(cx, |shell, cx| {
+                                        shell.open_link_preview(url, window, cx)
+                                    })
+                                    .unwrap_or(false)
+                            })
+                            .unwrap_or(false)
+                    })),
+                    cx,
+                );
+            }
             cx.on_system_notification_response(move |response, cx| {
                 let handled = notification_weak
                     .update(cx, |shell, cx| {

@@ -119,6 +119,8 @@ tooltip:
   compose_bar: 切换独立输入栏
   system_monitor: 系统监视器
   scratch_terminal: 临时终端
+  link_preview: 临时网页（点击找回上次的网页）
+  link_preview_empty: 临时网页（点击打开起始页）
   note: 笔记
   update_check: 检查更新
   update_download: 下载更新 %{version}
@@ -317,6 +319,13 @@ compose:
 scratch:
   title: 临时终端
   close: 关闭临时终端
+
+link_preview:
+  address_placeholder: 输入网址，回车打开
+  back: 后退
+  forward: 前进
+  open_in_browser: 在浏览器打开
+  close: 关闭链接预览
 
 note:
   title: 笔记

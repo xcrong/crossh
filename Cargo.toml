@@ -63,6 +63,10 @@ schemars = "1"
 unicode-width = "0.2"
 pulldown-cmark = "0.13"
 
+# 链接预览的原生 WKWebView（仅 macOS 首发；其他平台回退系统浏览器）。
+[target.'cfg(target_os = "macos")'.dependencies]
+wry = { version = "0.57", default-features = false }
+
 [build-dependencies]
 embed-resource = "3"
 

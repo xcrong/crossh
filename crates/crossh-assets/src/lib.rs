@@ -188,6 +188,7 @@ macro_rules! define_icons {
 define_icons! {
     ArrowLeft => "icons/arrow-left.svg",
     ArrowLeftRight => "icons/arrow-left-right.svg",
+    ArrowRight => "icons/arrow-right.svg",
     ArrowUp => "icons/arrow-up.svg",
     Activity => "icons/activity.svg",
     Check => "icons/check.svg",
@@ -199,6 +200,7 @@ define_icons! {
     Crosshair => "icons/crosshair.svg",
     Rows2 => "icons/rows-2.svg",
     Download => "icons/download.svg",
+    ExternalLink => "icons/external-link.svg",
     FileText => "icons/file-text.svg",
     Folder => "icons/folder.svg",
     FolderOpen => "icons/folder-open.svg",

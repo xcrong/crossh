@@ -2736,7 +2736,7 @@ impl Terminal {
         }
     }
 
-    pub fn mouse_up(&mut self, e: &MouseUpEvent, cx: &Context<Self>) {
+    pub fn mouse_up(&mut self, e: &MouseUpEvent, cx: &mut Context<Self>) {
         let setting = TerminalSettings::get_global(cx);
 
         let position = e.position - self.last_content.terminal_bounds.bounds.origin;
@@ -2795,7 +2795,10 @@ impl Terminal {
                     .get(mouse_cell_index)
                     .and_then(|cell| cell.hyperlink())
                 {
-                    cx.open_url(link.uri());
+                    // OSC 8 链接也走 `Event::Open`：由视图层决定开在预览器还是系统浏览器。
+                    cx.emit(Event::Open(MaybeNavigationTarget::Url(
+                        link.uri().to_string(),
+                    )));
                 } else if e.modifiers.secondary(cx) {
                     self.events
                         .push_back(InternalEvent::FindHyperlink(position, true));

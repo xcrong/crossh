@@ -136,7 +136,7 @@ fn shell_lifecycle_markers(
 
 fn open_navigation_target(target: &zed_terminal::MaybeNavigationTarget, cx: &mut App) {
     if let zed_terminal::MaybeNavigationTarget::Url(url) = target {
-        cx.open_url(url);
+        crate::link_opener::open_link(url, cx);
     }
 }
 

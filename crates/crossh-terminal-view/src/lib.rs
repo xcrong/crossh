@@ -6,11 +6,13 @@
 //! ([`set_text_resolver`]).
 
 pub mod item;
+pub mod link_opener;
 mod text;
 pub mod view;
 
 pub use crossh_terminal::{ConnState, TerminalEvent};
 pub use item::TerminalItem;
+pub use link_opener::{LinkOpener, open_link, set_link_opener};
 pub use text::set_text_resolver;
 pub use view::TerminalView;
 
