@@ -26,6 +26,13 @@
 - Reusable debugging findings live under `docs/engineering-notes/`. Start with `docs/engineering-notes/README.md`, then load only the topic note whose keywords match the current symptom; do not load the whole collection by default.
 - After resolving a non-obvious, reproducible failure, add or update a concise note with the symptom, root cause, durable rule, verification method, and search keywords.
 
+## OpenSpec Change Review Gate
+
+- Every change under `openspec/changes/<name>/` must be reviewed before implementation. Reading the artifacts does not count as review: the verdict must be written to `openspec/changes/<name>/review.md`.
+- `review.md` records the verdict (`通过` / `带条件通过` / `不通过`), the review date, findings with file-and-line references, and the must-fix conditions for a conditional pass. Keep it in the change directory so it travels with the change into the archive.
+- A missing review, or a `不通过` verdict, blocks the apply workflow and any implementation commit for that change. A `带条件通过` only unblocks apply for the conditions it names; every condition must be closed and marked in `review.md` before archive.
+- The reviewer checks the artifacts against the real code: behavior claims must be verifiable with `rg` / `ast-grep` or a test, specs must state observable behavior instead of implementation steps, and proposal / specs / design / tasks must not restate each other.
+
 ## Engineering Rules (derived from Zed's architecture)
 
 - **Logic must not depend on UI.** Pure-logic modules (`shared/terminal/`, protocols, engines) must contain zero `gpui` imports. GPUI views depend on logic; logic never depends on views. To verify, treat any `gpui` import in a logic module as a layering violation.

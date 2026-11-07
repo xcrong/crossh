@@ -18,11 +18,11 @@ context: |
 # Per-operation guidance (optional)
 # Add advisory guidance for how apply and archive work should be conducted.
 # This is separate from artifact rules above.
-# Example:
-#   operations:
-#     apply:
-#       guidance:
-#         - Keep test summaries concise
-#     archive:
-#       guidance:
-#         - Summarize the archive outcome before finishing
+operations:
+  apply:
+    guidance:
+      - 进入 apply 前必须存在 openspec/changes/<name>/review.md，且结论为「通过」或「带条件通过」；缺失或「不通过」时停止实现，请用户安排评审。
+      - 「带条件通过」的必改项必须在实现中逐条落实，并在 review.md 里标记关闭状态。
+  archive:
+    guidance:
+      - 归档前确认 review.md 的必改项全部关闭，未关闭的不归档。
