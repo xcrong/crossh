@@ -1,4 +1,9 @@
-//! 链接预览：把终端里的链接开在临时 WebView 悬浮层里（当前仅 macOS）。
+//! 链接预览：把终端里的链接开在临时 WebView 悬浮层里（macOS / Windows）。
+//!
+//! Linux 不接：X11 下 wry 原则上能嵌（拿 `RawWindowHandle::Xlib` 就行），但要求
+//! 先 `gtk::init()` 并在 GPUI 事件循环里推进 GTK 主循环，还要背 GTK / WebKitGTK
+//! 依赖；Wayland 则无路径。本仓库不为预览引入这些，编译的是
+//! `link_preview_unsupported.rs` 的占位实现，链接回退系统浏览器。
 //!
 //! 形态照 `scratch_bar` 的抽屉：整窗 scrim + 居中卡片，卡片内容区承载 `wry`
 //! 的 WKWebView 原生子视图。原生子视图恒在 GPUI 之上、且无法被 GPUI 裁剪，

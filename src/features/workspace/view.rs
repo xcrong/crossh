@@ -948,7 +948,7 @@ pub(crate) fn render_workspace_status_bar(
                 }))
                 .into_any_element(),
         )
-        .children(render_link_preview_toggle(shell, cx))
+        .children(crate::features::workspace::shell::link_preview::render_status_toggle(shell, cx))
         .child(
             Button::new("status-system-monitor")
                 .size(ButtonSize::Icon(px(22.)))
@@ -986,17 +986,6 @@ pub(crate) fn render_workspace_status_bar(
         .child(left)
         .child(right)
         .into_any_element()
-}
-
-/// 状态栏的链接预览入口：仅 macOS 存在原生 WebView 预览。
-fn render_link_preview_toggle(shell: &AppShell, cx: &mut Context<AppShell>) -> Option<AnyElement> {
-    #[cfg(target_os = "macos")]
-    return crate::features::workspace::shell::link_preview::render_status_toggle(shell, cx);
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (shell, cx);
-        None
-    }
 }
 
 /// 状态栏更新指示器：检查 → 下载 → 重启，随更新状态切换图标与点击动作。

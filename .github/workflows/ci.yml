@@ -1,0 +1,56 @@
+name: CI
+
+# PR 级编译门禁。仓库原来只有 tag 触发的 release.yml，Windows / Linux 的编译回归
+# 要等到发版才暴露；这里补上这两条通道（macOS 由本机与 release.yml 覆盖）。
+#
+# Linux 的 apt 列表与 release.yml 的 Linux job 保持一致，否则 gpui 的 x11/wayland
+# 依赖装不上，检查会在编译期就失败。
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  windows-check:
+    name: Windows check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo check
+        run: cargo check --target x86_64-pc-windows-msvc
+
+  linux-check:
+    name: Linux check
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config \
+            libxcb1-dev libxcb-composite0-dev libxcb-dri3-dev libxcb-icccm4-dev \
+            libxcb-keysyms1-dev libxcb-present-dev libxcb-render-util0-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-shm0-dev libxcb-xfixes0-dev \
+            libxcb-xkb-dev libxcb-util-dev libxcb-xinerama0-dev libxcb-xinput-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev libwayland-dev wayland-protocols
+
+      - name: cargo check
+        run: cargo check --target x86_64-unknown-linux-gnu
