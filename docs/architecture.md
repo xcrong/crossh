@@ -79,3 +79,5 @@ and quick verification command for focused validation.
 ## 决策记录
 
 已移除独立  目录。架构以代码（crate 依赖图 + `scripts/check-architecture.sh`）为准。
+
+分屏固定为每属主 2×2 四格（`TerminalSplitState` 的四个槽位），不做递归 pane tree——四格已够用。要支持嵌套需要先改数据结构，届时应作为独立变更立项。
