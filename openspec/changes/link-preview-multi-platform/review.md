@@ -84,7 +84,7 @@ D6 明确「先接线后观察」，没有预先把 `GPUI_DISABLE_DIRECT_COMPOSI
 
 ## 条件状态
 
-- **C1（Windows/Linux PR CI）**：工作流已落地（`.github/workflows/ci.yml`），**未关闭** —— 需要首次在 PR 上跑绿。
+- **C1（Windows/Linux PR CI）**：**已关闭**（2026-11-10）。工作流 `.github/workflows/ci.yml` 首次运行就抓到真实回归：`shell/link_preview_unsupported.rs:48` 的 `div().into_any_element()` 缺 `IntoElement` 导入，Linux `cargo check` 报 E0599（run `42542315773`；macOS 因 `#[path]` 换成另一份实现，从不编译该文件，所以本地一直是绿的）；补导入后 main push 上 Windows / Linux check 双绿（run `42733714933`）。仓库目前没有 PR 流程，绿的是 main push 运行；发布链路也由此恢复，v0.43.0 三个平台六个构建全部成功（run `42734925271`）。
 - **C2（Windows 冒烟结论回写工程笔记）**：清单已写入 `docs/engineering-notes/gpui-native-webview-overlay.md`，**未关闭** —— 需实机执行并回写结论。
 - **C3（DirectComposition 冲突另立变更）**：约束有效，尚未触发。
 
