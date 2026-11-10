@@ -11,7 +11,7 @@
 //!
 //! 决策背景见 `openspec/changes/link-preview-multi-platform/design.md` 的 D1 / D3。
 
-use gpui::{AnyElement, Context, Window, div};
+use gpui::{AnyElement, Context, IntoElement as _, Window, div};
 
 use super::AppShell;
 
