@@ -42,7 +42,7 @@ GPUI 的 `overflow_hidden` / `content_mask` / `rounded` 影响**，位置只能�
   语义，同一实体二次 lease 会 panic（`cannot ... during another update`）。
   因此回车提交时地址归一化（补 `https://`）在 `LinkAddress` 自己的 lease 内完成并
   写入自身状态，只把归一化后的 URL 交给 `navigate_link_preview`；
-  页面回调那一路（`with_on_page_load_handler` → `sync_link_preview_url`）先 lease
+  页面回调那一路（`with_on_page_load_handler` → `sync_link_preview_page`）先 lease
   `AppShell` 再 lease `LinkAddress`，无嵌套冲突。
 - **状态栏入口常驻**：与“临时终端”并列的图标不随 `link_preview` 是否存在而隐藏
   （否则新会话里永远看不到这张入口）。还没有预览时点它开起始页 `https://cn.bing.com`
@@ -50,6 +50,18 @@ GPUI 的 `overflow_hidden` / `content_mask` / `rounded` 影响**，位置只能�
 - **页面自身导航会改写 `preview.url`**：重定向/页内链接后“在浏览器打开”与状态栏
   要跟当前页，所以 `with_on_page_load_handler` 回写 `preview.url`；地址栏只在
   用户未改写（`state.value == page`）时跟随，避免吞掉正在输入的网址。
+- **加载状态只有二态，且失败时收不到结束事件**：wry 只给
+  `PageLoadEvent::{Started, Finished}`，没有进度百分比。macOS 上 `Started` 来自
+  `did_commit_navigation`、`Finished` 来自 `did_finish_navigation`
+  （`wry-0.57.1/src/wkwebview/navigation.rs:17-60`），**没有转发
+  `didFailProvisionalNavigation`**：断网 / 域名打错时 `Finished` 永不出现。
+  Windows 侧 `NavigationCompleted` 成败都会回（`webview2/mod.rs:745`）。
+  所以 UI 不能只靠事件：刷新与“停止加载”共用一个按钮位置，加载中换成停止图标，
+  点击 `window.stop()` 并清标志（`stop_link_preview_loading`），让卡住的状态可恢复。
+  另：`load_url` 前先清标志，别把上一次的“加载中”带到新链接。
+- **刷新/后退/前进都用 wry 原生方法**（`reload()` / `go_back()` / `go_forward()`），
+  不要注入 `history.back()` 之类的脚本：原生方法走 WebView 自己的会话历史，
+  不会被页面对 `history` 的覆写或 SPA 路由拦截。
 - **平台**：`build_as_child` 在 Wayland 明确不支持；Windows 需要 child HWND 且
   示例要关 `GPUI_DISABLE_DIRECT_COMPOSITION`。本仓库在 macOS 与 Windows 编译该依赖
   （`[target.'cfg(any(target_os = "macos", windows))'.dependencies] wry`）。
@@ -75,6 +87,7 @@ GPUI 的 `overflow_hidden` / `content_mask` / `rounded` 影响**，位置只能�
 - 手动（macOS）：终端里 `echo https://example.com` 后点链接 → 卡片弹出并渲染；
   后退/在浏览器打开/关闭按钮；地址栏点击可编辑（选区/IME/⌘V 粘贴），
   输 `example.com` 回车补成 `https://example.com`，页面内跳转后地址栏跟随；
+  刷新按钮重载当前页、加载中图标变成停止且点了立刻回到刷新图标（断网点一下能恢复）；
   状态栏“临时网页”图标常驻：没预览过时点它打开 cn.bing.com 起始页，有预览后
   点击显示/隐藏且保留页面状态；
   Esc 关闭；拖动缩放窗口时网页跟随；`⌘⇧P` 打开
@@ -92,5 +105,7 @@ GPUI 的 `overflow_hidden` / `content_mask` / `rounded` 影响**，位置只能�
 `ipc`, `Wayland 不支持`, `enable_window_composition`, `WindowCompositionSurface`,
 `EntityInputHandler`, `TextEditingState`, `地址栏可输入`, `first responder`, `lease`,
 `during another update`, `address.update`, `normalize_address`, `with_on_page_load_handler`,
+`PageLoadEvent`, `Started`, `Finished`, `did_finish_navigation`, `didFailProvisionalNavigation`,
+`加载状态卡住`, `window.stop`, `reload`,
 `WebView2`, `HWND`, `DirectComposition`, `hwnd_dpi`, `gtk::init`, `main_iteration_do`,
 `gdk_x11_window_foreign_new_for_display`, `build_gtk`, `Linux 回退浏览器`

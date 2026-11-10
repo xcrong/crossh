@@ -324,6 +324,8 @@ link_preview:
   address_placeholder: 输入网址，回车打开
   back: 后退
   forward: 前进
+  reload: 刷新
+  stop: 停止加载
   open_in_browser: 在浏览器打开
   close: 关闭链接预览
 

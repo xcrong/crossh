@@ -324,6 +324,8 @@ link_preview:
   address_placeholder: Type a URL and press Enter
   back: Back
   forward: Forward
+  reload: Reload
+  stop: Stop loading
   open_in_browser: Open in browser
   close: Close link preview
 

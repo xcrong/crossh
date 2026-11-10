@@ -281,6 +281,8 @@ pub(crate) struct LinkPreview {
     address: Entity<LinkAddress>,
     /// 上次同步给原生视图的窗口坐标，避免每帧重复 `set_bounds`。
     last_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// 页面正在加载：wry 只给 `PageLoadEvent::Started/Finished` 二态，没有进度。
+    loading: bool,
 }
 
 impl LinkPreview {
@@ -293,11 +295,15 @@ impl LinkPreview {
         let page_cx = async_cx.clone();
         let webview = wry::WebViewBuilder::new()
             .with_url(url.as_ref())
-            // 页面自己跳转（重定向 / 页内链接）后把 shell 记录与地址栏同步回真实地址。
-            .with_on_page_load_handler(move |_event, url| {
+            // 页面自己跳转（重定向 / 页内链接）后把 shell 记录与地址栏同步回真实地址，
+            // 顺带把加载状态二态写回卡片（按钮图标据此在刷新/停止之间切换）。
+            .with_on_page_load_handler(move |event, url| {
+                let loading = matches!(event, wry::PageLoadEvent::Started);
                 let shell = page_shell.clone();
                 page_cx.update(move |cx| {
-                    let _ = shell.update(cx, |shell, cx| shell.sync_link_preview_url(&url, cx));
+                    let _ = shell.update(cx, |shell, cx| {
+                        shell.sync_link_preview_page(&url, loading, cx)
+                    });
                 });
             })
             // 只放行 http(s)：页面里的其他 scheme（file:/自定义）交回系统处理。
@@ -323,6 +329,8 @@ impl LinkPreview {
             webview: Rc::new(webview),
             address,
             last_bounds: Rc::new(Cell::new(None)),
+            // 不信自身猜测：由 `Started/Finished` 驱动，避免加载失败时卡在“加载中”。
+            loading: false,
         })
     }
 
@@ -355,6 +363,7 @@ impl AppShell {
             Some(preview) if preview.url == url => preview.show(),
             Some(preview) => {
                 preview.url = url.clone();
+                preview.loading = false;
                 let _ = preview.webview.load_url(url.as_ref());
                 preview.show();
             }
@@ -375,10 +384,12 @@ impl AppShell {
     }
 
     /// 页面自身导航后的同步：`url` 作为新的“当前页”（后退/前进、外部打开、状态栏都看它）。
-    fn sync_link_preview_url(&mut self, url: &str, cx: &mut Context<Self>) {
+    /// `loading` 直接来自 `PageLoadEvent`：`Started` 为真，`Finished` 为假。
+    fn sync_link_preview_page(&mut self, url: &str, loading: bool, cx: &mut Context<Self>) {
         let Some(preview) = self.link_preview.as_mut() else {
             return;
         };
+        preview.loading = loading;
         preview.url = SharedString::from(url.to_string());
         let address = preview.address.clone();
         address.update(cx, |address, cx| address.set_page_url(url, cx));
@@ -392,10 +403,24 @@ impl AppShell {
         };
         if preview.url.as_ref() != url {
             preview.url = SharedString::from(url.to_string());
+            preview.loading = false;
             let _ = preview.webview.load_url(url);
         }
         preview.show();
         self.link_preview_visible = true;
+        cx.notify();
+    }
+
+    /// 刷新 / 停止加载共用一个按钮位置：加载中变成“停止”，点完立刻清标志。
+    ///
+    /// 停止是必需的兜底：macOS 上 wry 不转发 `didFailProvisionalNavigation`，
+    /// 加载失败（断网 / 域名打错）收不到 `Finished`，“加载中”会一直亮着。
+    fn stop_link_preview_loading(&mut self, cx: &mut Context<Self>) {
+        let Some(preview) = self.link_preview.as_mut() else {
+            return;
+        };
+        let _ = preview.webview.evaluate_script("window.stop()");
+        preview.loading = false;
         cx.notify();
     }
 
@@ -470,6 +495,7 @@ pub(crate) fn render_link_preview(
     let address = preview.address.clone();
     let webview = preview.webview.clone();
     let last_bounds = preview.last_bounds.clone();
+    let loading = preview.loading;
     // 原生视图会盖住与它矩形重叠的 GPUI 内容，这些浮层打开时先把它藏起来。
     let covered = shell.command_palette.is_some()
         || shell.context_menu.is_some()
@@ -482,6 +508,7 @@ pub(crate) fn render_link_preview(
 
     let back = webview.clone();
     let forward = webview.clone();
+    let reload = webview.clone();
     let focus_view = webview.clone();
     let external = url.clone();
 
@@ -520,7 +547,7 @@ pub(crate) fn render_link_preview(
                         "link_preview.back",
                     )
                     .on_click(move |_ev, _window, _cx| {
-                        let _ = back.evaluate_script("history.back()");
+                        let _ = back.go_back();
                     }),
                 )
                 .child(
@@ -530,9 +557,29 @@ pub(crate) fn render_link_preview(
                         "link_preview.forward",
                     )
                     .on_click(move |_ev, _window, _cx| {
-                        let _ = forward.evaluate_script("history.forward()");
+                        let _ = forward.go_forward();
                     }),
                 )
+                // 刷新与停止占同一个位置：加载中没有进度可展示，只换图标。
+                .child(if loading {
+                    icon_button(
+                        "link-preview-stop",
+                        icons::IconName::CircleX,
+                        "link_preview.stop",
+                    )
+                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                        this.stop_link_preview_loading(cx);
+                    }))
+                } else {
+                    icon_button(
+                        "link-preview-reload",
+                        icons::IconName::RefreshCw,
+                        "link_preview.reload",
+                    )
+                    .on_click(move |_ev, _window, _cx| {
+                        let _ = reload.reload();
+                    })
+                })
                 .child(
                     icon_button(
                         "link-preview-external",
@@ -781,6 +828,16 @@ mod tests {
             Some("http://a.b")
         );
         assert_eq!(normalize_address("   "), None);
+    }
+
+    #[test]
+    fn reload_and_stop_tooltips_resolve_in_both_locales() {
+        for locale in ["en", "zh-CN"] {
+            for key in ["link_preview.reload", "link_preview.stop"] {
+                let text = rust_i18n::t!(key, locale = locale).to_string();
+                assert_ne!(text, key, "locales/ 缺少键 {key}（{locale}）");
+            }
+        }
     }
 
     #[test]
