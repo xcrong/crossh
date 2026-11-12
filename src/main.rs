@@ -44,7 +44,7 @@ fn main() {
         std::env::args().skip(1),
         std::env::current_dir().map_err(|error| error.to_string()),
     );
-    // `crossh [PATH]` 的启动目录：有运行实例时已在上游转发，本变量只服务于
+    // `crossh open <path>` 的启动目录：有运行实例时已在上游转发本变量只服务于
     // 主实例启动（首屏激活）与前台投递循环。
     let mut initial_dir: Option<std::path::PathBuf> = None;
     match cli {
@@ -110,6 +110,7 @@ fn main() {
         }
         app::cli::CliCommand::Unknown(argument) => {
             eprintln!("unknown argument: {argument}\n");
+            eprintln!("try `crossh open <path>` or `crossh --help`");
             std::process::exit(2);
         }
         app::cli::CliCommand::Main { path } => {
@@ -123,7 +124,7 @@ fn main() {
                     }
                 }
             }
-            // 运行中实例优先：在 crossh 内置终端里 `crossh ../other`
+            // 运行中实例优先：在 crossh 内置终端里 `crossh open ../other`
             // 直接复用当前窗口；无实例时落空继续走主实例启动。
             match app::single_instance::try_forward(initial_dir.as_deref()) {
                 app::single_instance::ForwardOutcome::Forwarded => {

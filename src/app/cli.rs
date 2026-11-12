@@ -41,12 +41,10 @@ pub(crate) enum CliCommand {
     },
 }
 
-/// 解析顶层参数。
-///
 /// `args` 为 `std::env::args().skip(1)` 的迭代器；`current_dir` 仅在
-/// `crossh git` 分支需要，用于相对路径解析，与 `git_launcher::parse_cli`
-/// 保持一致以便可测试。主窗口的 `[PATH]` 参数保持原样透传，不在此
-/// 触碰文件系统，存在性校验归 `main`（见 `single_instance::resolve_open_path`）。
+/// `crossh git` 分支需要，用于相对路径解析与 `git_launcher::parse_cli`
+/// 保持一致以便可测试。开目录唯一入口是 `crossh open <path>`原样透传，
+/// 不在此触碰文件系统，存在性校验归 `main`（见 `single_instance::resolve_open_path`）。
 pub(crate) fn parse_cli(
     mut args: impl Iterator<Item = String>,
     current_dir: Result<PathBuf, String>,
@@ -84,29 +82,25 @@ pub(crate) fn parse_cli(
             Some(id) => CliCommand::Capture(id),
             None => CliCommand::Unknown("capture".to_string()),
         },
-        Some("--") => match args.next() {
-            None => CliCommand::Main { path: None },
+        // 开目录唯一入口：`crossh open <path>`（与子命令同名也无需转义）。
+        // 缺参数/多余参数都回到未知参数，与其它子命令一致。
+        Some("open") => match args.next() {
             Some(path) if args.next().is_none() => CliCommand::Main {
                 path: Some(PathBuf::from(path)),
             },
-            Some(argument) => CliCommand::Unknown(argument),
+            _ => CliCommand::Unknown("open".to_string()),
         },
         // 首个 `-` 开头参数不在已知集合中：保持未知参数行为。
         Some(argument) if argument.starts_with('-') => CliCommand::Unknown(argument.to_string()),
-        Some(argument) => match args.next() {
-            None => CliCommand::Main {
-                path: Some(PathBuf::from(argument)),
-            },
-            // 与 `git_launcher` 一致：多余参数时报错首个参数。
-            Some(_) => CliCommand::Unknown(argument.to_string()),
-        },
+        // 裸路径已取消：开目录必须显式 `crossh open <path>`。
+        Some(argument) => CliCommand::Unknown(argument.to_string()),
     }
 }
 
 /// 返回与 `print_help` 打印内容一致的帮助文本，便于测试与复用。
 pub(crate) fn help_text() -> String {
     format!(
-        "Crossh {} — Local-first terminal workspace (GPUI)\n\nUsage: crossh [COMMAND]\n       crossh [PATH]\n\nLocal-first terminal workspace — manage projects, terminals and notes locally.\n\nArguments:\n  [PATH]      Open a project directory (reuses the running instance when present,\n              otherwise starts a new instance).\n              To open a directory named \"git\"/\"note\"/\"help\"/\"daemon\"/\"ls\"/\"run\"/\"capture\", use:\n              crossh ./git  or:  crossh -- git\n\nCommands:\n  git         Open the Git Viewer for a directory\n  note        Open the Note Viewer\n  daemon      Manage the session daemon (status|start|stop)\n  ls          List daemon sessions (second frontend needs no GUI)\n  run         Run a command in a new session, stream output, return its exit code\n  capture     Print a session's replay buffer\n  help        Print help\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version",
+        "Crossh {} — Local-first terminal workspace (GPUI)\n\nUsage: crossh [COMMAND]\n       crossh open <path>\n\nLocal-first terminal workspace — manage projects, terminals and notes locally.\n\nCommands:\n  open        Open a project directory (reuses the running instance when present,\n              otherwise starts a new instance).\n              Directories named like subcommands need no escaping: crossh open git\n  git         Open the Git Viewer for a directory\n  note        Open the Note Viewer\n  daemon      Manage the session daemon (status|start|stop)\n  ls          List daemon sessions (second frontend needs no GUI)\n  run         Run a command in a new session, stream output, return its exit code\n  capture     Print a session's replay buffer\n  help        Print help\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -134,72 +128,73 @@ mod tests {
     }
 
     #[test]
-    fn single_path_argument_maps_to_main_with_raw_path() {
+    fn open_takes_exactly_one_raw_path() {
         // 相对路径保持原样透传，不在此 join，存在性校验归 main。
-        let command = parse_cli(["other"].into_iter().map(str::to_string), cwd_ok("/repo"));
-        assert_eq!(
-            command,
-            CliCommand::Main {
-                path: Some(PathBuf::from("other"))
-            }
-        );
-
+        // `open` 后直接跟路径：`-` 开头也不再需要 `--` 转义。
+        for path in ["other", "/repo/other", "-weird", "git"] {
+            let command = parse_cli(
+                ["open", path].into_iter().map(str::to_string),
+                cwd_ok("/repo"),
+            );
+            assert_eq!(
+                command,
+                CliCommand::Main {
+                    path: Some(PathBuf::from(path))
+                },
+                "path: {path}"
+            );
+        }
+        // 缺参数/多余参数都回到未知参数。
+        let command = parse_cli(["open"].into_iter().map(str::to_string), cwd_ok("/repo"));
+        assert_eq!(command, CliCommand::Unknown("open".to_string()));
         let command = parse_cli(
-            ["/repo/other"].into_iter().map(str::to_string),
+            ["open", "a", "b"].into_iter().map(str::to_string),
             cwd_ok("/repo"),
         );
-        assert_eq!(
-            command,
-            CliCommand::Main {
-                path: Some(PathBuf::from("/repo/other"))
-            }
-        );
+        assert_eq!(command, CliCommand::Unknown("open".to_string()));
     }
 
     #[test]
-    fn dash_separator_allows_dash_prefixed_paths() {
-        let command = parse_cli(
-            ["--", "-weird"].into_iter().map(str::to_string),
-            cwd_ok("/repo"),
-        );
-        assert_eq!(
-            command,
-            CliCommand::Main {
-                path: Some(PathBuf::from("-weird"))
-            }
-        );
-
-        let command = parse_cli(["--"].into_iter().map(str::to_string), cwd_ok("/repo"));
-        assert_eq!(command, CliCommand::Main { path: None });
+    fn bare_paths_and_separator_are_rejected() {
+        // 裸路径已取消：开目录必须显式 `crossh open <path>`。
+        for args in [
+            vec!["other"],
+            vec!["/repo/other"],
+            vec!["./git"],
+            vec!["--", "-weird"],
+            vec!["--"],
+        ] {
+            let command = parse_cli(args.into_iter().map(str::to_string), cwd_ok("/repo"));
+            assert!(
+                matches!(command, CliCommand::Unknown(_)),
+                "bare path must not open a directory"
+            );
+        }
     }
 
     #[test]
-    fn shadowed_names_need_dot_slash_or_separator() {
-        // 与子命令同名的目录必须转义，裸写永远进对应子命令。
-        for name in ["git", "note", "help", "daemon", "ls", "run", "capture"] {
+    fn shadowed_names_stay_subcommands() {
+        // 与子命令同名的目录裸写永远进对应子命令（含新增的 `open` 自身）；
+        // 开目录走 `crossh open <name>` 无需转义。
+        for name in [
+            "git", "note", "help", "daemon", "ls", "run", "capture", "open",
+        ] {
             let shadowed = parse_cli([name].into_iter().map(str::to_string), cwd_ok("/repo"));
             assert!(
                 !matches!(shadowed, CliCommand::Main { .. }),
                 "bare {name} must not open a directory"
             );
 
-            let command = parse_cli([format!("./{name}")].into_iter(), cwd_ok("/repo"));
-            assert_eq!(
-                command,
-                CliCommand::Main {
-                    path: Some(PathBuf::from(format!("./{name}")))
-                }
-            );
-
             let command = parse_cli(
-                ["--", name].into_iter().map(str::to_string),
+                ["open", name].into_iter().map(str::to_string),
                 cwd_ok("/repo"),
             );
             assert_eq!(
                 command,
                 CliCommand::Main {
                     path: Some(PathBuf::from(name))
-                }
+                },
+                "open {name} must open a directory"
             );
         }
     }
@@ -343,10 +338,10 @@ mod tests {
         assert!(text.contains(env!("CARGO_PKG_VERSION")));
         assert!(text.contains("Local-first terminal workspace"));
         assert!(text.contains("Usage: crossh [COMMAND]"));
-        assert!(text.contains("crossh [PATH]"));
+        assert!(text.contains("crossh open <path>"));
+        assert!(text.contains("crossh open git"));
         assert!(text.contains("git"));
         assert!(text.contains("note"));
         assert!(text.contains("--help"));
-        assert!(text.contains("crossh ./git"));
     }
 }

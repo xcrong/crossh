@@ -24,10 +24,10 @@ cargo run --release  # 发布模式
 crossh git
 crossh git ~/Code/draw-backend
 
-# 在已运行实例中打开项目（无实例时启动新实例）；裸 `crossh` 仅聚焦已有实例
-crossh ~/Code/draw-backend
-# 与子命令同名的目录（git/note/help）用 ./ 或 -- 转义
-crossh ./git
+ # 在已运行实例中打开项目（无实例时启动新实例）；裸 `crossh` 仅聚焦已有实例
+ crossh open ~/Code/draw-backend
+ # 与子命令同名也无需转义
+ crossh open git
 ```
 
 Git Viewer 提供变更列表、staging/unstage、commit、push/pull 与刷新，状态栏同步显示与远端的分歧；`cmd-r` 刷新。
