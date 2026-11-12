@@ -16,6 +16,7 @@ doctest = false
 async-channel = "2.5.0"
 alacritty_terminal = { git = "https://github.com/zed-industries/alacritty", rev = "4c129667ce56611becdc82de6e28218c80e2e88f" }
 anyhow = "1.0.86"
+crossh-core = { path = "../crossh-core" }
 crossh-terminal = { path = "../crossh-terminal" }
 futures = "0.3.32"
 futures-lite = "2"

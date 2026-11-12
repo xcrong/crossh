@@ -1,41 +1,11 @@
-//! AppShell shutdown confirmation and cleanup.
-
-use gpui::{PromptButton, PromptLevel};
+//! AppShell shutdown: detach from the daemon, never confirm.
+//!
+//! 会话归属 daemon，关窗口/退出 GUI 不结束任何会话（只 detach），
+//! 因此不再为"有命令在跑"弹关闭确认（标签关闭仍保留确认，
+//! 见 `tabs.rs`，它确实会结束会话）。
 
 use super::*;
 
-#[derive(Clone, Copy)]
-enum ExitIntent {
-    QuitApp,
-    CloseWindow,
-}
-
-#[derive(Default)]
-struct QuitRiskSummary {
-    running_commands: usize,
-    unsaved_editors: usize,
-}
-
-impl QuitRiskSummary {
-    fn needs_confirmation(&self) -> bool {
-        self.running_commands > 0 || self.unsaved_editors > 0
-    }
-
-    fn detail(&self) -> String {
-        let mut lines = vec![i18n::text("quit.warning")];
-        if self.running_commands > 0 {
-            lines.push(rust_i18n::t!("quit.commands", count = self.running_commands).to_string());
-        }
-        if self.unsaved_editors > 0 {
-            lines.push(
-                rust_i18n::t!("quit.unsaved_editors", count = self.unsaved_editors).to_string(),
-            );
-        }
-        lines.push(String::new());
-        lines.push(i18n::text("quit.cleanup"));
-        lines.join("\n")
-    }
-}
 impl AppShell {
     pub(super) fn handle_quit(
         &mut self,
@@ -46,90 +16,26 @@ impl AppShell {
         self.request_app_quit(window, cx);
     }
 
-    pub(crate) fn request_app_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.request_exit(ExitIntent::QuitApp, window, cx);
+    pub(crate) fn request_app_quit(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.shutdown_in_progress {
+            return;
+        }
+        self.begin_shutdown(cx);
+        cx.quit();
     }
 
     pub(crate) fn request_close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.should_close_window(window, cx) {
+        if self.should_close_window(cx) {
             window.remove_window();
         }
     }
 
-    pub(super) fn should_close_window(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
+    pub(super) fn should_close_window(&mut self, cx: &mut Context<Self>) -> bool {
         if self.shutdown_in_progress {
             return true;
         }
-        if !self.quit_risks(cx).needs_confirmation() {
-            self.begin_shutdown(cx);
-            return true;
-        }
-        self.request_exit(ExitIntent::CloseWindow, window, cx);
-        false
-    }
-
-    fn request_exit(&mut self, intent: ExitIntent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.shutdown_in_progress || self.quit_confirmation_open {
-            return;
-        }
-
-        let risks = self.quit_risks(cx);
-        if !risks.needs_confirmation() {
-            self.begin_shutdown(cx);
-            match intent {
-                ExitIntent::QuitApp => cx.quit(),
-                ExitIntent::CloseWindow => window.remove_window(),
-            }
-            return;
-        }
-
-        self.quit_confirmation_open = true;
-        let answers = [
-            PromptButton::ok(i18n::text("quit.confirm")),
-            PromptButton::cancel(i18n::text("quit.cancel")),
-        ];
-        let answer = window.prompt(
-            PromptLevel::Warning,
-            &i18n::text("quit.title"),
-            Some(&risks.detail()),
-            &answers,
-            cx,
-        );
-        cx.spawn_in(window, async move |this, cx| {
-            let confirmed = answer.await == Ok(0);
-            let _ = this.update(cx, |this, cx| {
-                this.quit_confirmation_open = false;
-                if confirmed {
-                    this.begin_shutdown(cx);
-                }
-            });
-            if !confirmed {
-                return;
-            }
-
-            cx.background_executor()
-                .timer(Duration::from_millis(400))
-                .await;
-            let _ = cx.update(|window, cx| match intent {
-                ExitIntent::QuitApp => cx.quit(),
-                ExitIntent::CloseWindow => window.remove_window(),
-            });
-        })
-        .detach();
-    }
-
-    fn quit_risks(&self, cx: &Context<Self>) -> QuitRiskSummary {
-        let mut risks = QuitRiskSummary::default();
-        for session in self.workspace.sessions.local_sessions.values() {
-            if session.terminal.is_command_running(cx) {
-                risks.running_commands += 1;
-            }
-        }
-        risks
+        self.begin_shutdown(cx);
+        true
     }
 
     pub(super) fn begin_shutdown(&mut self, cx: &mut Context<Self>) {
@@ -138,42 +44,8 @@ impl AppShell {
         }
         self.shutdown_in_progress = true;
         self.status = Some(i18n::text("quit.closing"));
-
-        let terminals = self
-            .workspace
-            .sessions
-            .local_sessions
-            .values()
-            .map(|session| session.terminal.clone())
-            .collect::<Vec<_>>();
-
-        for terminal in terminals {
-            terminal.request_close(cx);
-        }
+        // 会话归属 daemon：关窗口/退出 GUI 只 detach，不断开远端，
+        // 正在跑的命令随 daemon 存活。显式结束会话走 `close_local_session`。
         cx.notify();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::QuitRiskSummary;
-
-    #[test]
-    fn quit_confirmation_is_only_required_for_material_activity() {
-        assert!(!QuitRiskSummary::default().needs_confirmation());
-        assert!(
-            QuitRiskSummary {
-                running_commands: 1,
-                ..Default::default()
-            }
-            .needs_confirmation()
-        );
-        assert!(
-            QuitRiskSummary {
-                unsaved_editors: 2,
-                ..Default::default()
-            }
-            .needs_confirmation()
-        );
     }
 }

@@ -43,7 +43,7 @@ shared resources  -> external `crossh-assets` directory loaded by every binary
 
 - `crossh-core`: terminal-neutral contracts and title helpers, command history/background tasks, Git command/diff parsing, local branch inspection/switching, stash and conflict operations, the shared `git_status`, `git_branch`, `git_history`, `git_stash`, and `git_conflict` parsers. Also owns the app-wide shared logic: the process-wide `logging` sink (file + stderr tee, panic hook) used by the `crossh` and `crossh-note` binaries, the text-editing state machine (`text_editing`), the IME/selection input pipeline (`input_handler`), the locale table with `LanguagePreference` (`i18n`), and the lightweight CLI launchers (`git_launcher`, `note_launcher`, `editor_launcher`) shared by the main binary and the standalone viewers.
 - `crossh-terminal`: terminal-owned settings and events. It is the model boundary consumed by the GPUI terminal view.
-- `crossh-terminal-view`: the GPUI terminal feature. It owns the `terminal_view`-style host, the terminal keymap, the forked Zed terminal element, and the `TerminalItem` abstraction the workspace consumes instead of the concrete view type.
+- `crossh-session`: the session owner process (`crossh-daemon` binary in the same crate). Owns PTYs, the per-session output ring, input forwarding, resize arbitration, and session metadata. Does no VT grid parsing. Zero `gpui`/`gpui_platform` dependency; GUI attaches as a byte-stream client (`TerminalType::Remote`), so closing windows never ends sessions.
 - `crossh-update`: release manifest validation, HTTPS downloads, checksum verification, archive installation, and the standalone updater hand-off.
 - `crossh-assets`: UI-neutral Lucide SVG storage, OFL fonts vendored from Zed, shared external-resource discovery, debug embedded fallback, shared icon identifiers, and asset integrity tests. Its files live under `crates/crossh-assets/assets/icons/` and `crates/crossh-assets/assets/fonts/`.
 - `crossh-ui`: reusable GPUI widgets, context menus, renderer-independent palette (`palette.rs`, migrated from `crossh-theme`), icon rendering, the `AssetSource` adapter backed by the shared external resource directory and the fonts embedded in `crossh-assets`, and `theme::install_crossh_theme`, the sole writer stamping the Crossh palette onto `terminal::theme::CrosshTheme`.
@@ -60,7 +60,7 @@ collections and terminal split state live in `WorkspaceState` and
 
 ## Boundary Rules
 
-1. `crossh-core`, `crossh-assets`, `crossh-terminal`, and `crossh-update` must not import `gpui`, `gpui_platform`, or `crossh-ui`. `crossh-ui-base` must not import `crossh-ui`, `crossh-ui-component`, or any application crate.
+1. `crossh-core`, `crossh-assets`, `crossh-terminal`, `crossh-session`, and `crossh-update` must not import `gpui`, `gpui_platform`, or `crossh-ui`. `crossh-ui-base` must not import `crossh-ui`, `crossh-ui-component`, or any application crate.
 2. Feature views consume crate-root APIs, not private implementation modules from `crossh-update`.
 3. Feature settings stay next to the feature that owns their behavior; the persistence layer composes snapshots without becoming the settings owner.
 4. `main.rs` is assembly only: logging, runtime warm-up, platform setup, Crossh theme installation, key bindings, and window boot.

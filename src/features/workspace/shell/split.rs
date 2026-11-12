@@ -28,7 +28,7 @@ impl AppShell {
         cwd: PathBuf,
         cx: &mut Context<Self>,
     ) -> Option<ActiveView> {
-        let view = self.create_local_session(project_dir, cwd, cx)?;
+        let view = self.create_local_session(project_dir, cwd, None, cx)?;
         let ActiveView::LocalSession(session_id) = view;
         self.refresh_git_status(session_id, false, cx);
         self.status = None;

@@ -56,6 +56,7 @@ mod tests {
             cwd: PathBuf::from(cwd),
             custom_name: None,
             default_command: None,
+            daemon_session_id: None,
         }
     }
 

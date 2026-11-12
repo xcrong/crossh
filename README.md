@@ -5,7 +5,7 @@
 
 ## 特性
 
-- **本地终端 / 项目管理**：以项目目录组织多会话本地终端（`LocalSession` / `LocalDir` 一等公民，见 `src/features/workspace/view.rs`），Zed `TerminalBuilder` 创建本地 PTY，Crossh 叠加项目目录、当前 `cwd`、多会话标签与 Git 状态联动；侧栏以项目为核心，隐藏主机分组（见 `src/features/workspace/sidebar.rs:188`）。
+- **本地终端 / 项目管理**：以项目目录组织多会话本地终端（`LocalSession` / `LocalDir` 一等公民，见 `src/features/workspace/view.rs`），会话归属常驻进程 `crossh-daemon`（零 `gpui` 依赖的 `crossh-session` crate，拥有 PTY 与输出环形缓冲），GUI 只解析字节流；关窗口/退出 GUI 不结束会话（只 detach），显式关闭标签才发 Close；固定标签按 daemon 会话 id 恢复；侧栏以项目为核心，隐藏主机分组（见 `src/features/workspace/sidebar.rs:188`）。CLI：`crossh ls` 列会话、`crossh run -- <cmd>` 跑一次性命令并原样返回退出码、`crossh capture <id>` 抓取回放、`crossh daemon [status|start|stop]` 管理属主进程（stop 结束全部会话）。
 - **Git Viewer**：独立二进制 `crossh-git`，提供变更列表、staging/unstage、commit、push/pull 与远端分歧同步，状态栏实时展示 Git 状态，`cmd-r` 刷新。
 - **Note**：独立二进制 `crossh-note`，本地 SQLite（WAL + FTS5 + 触发器同步，见 `crates/crossh-note/src/lib.rs`）存储，全文检索把 FTS 与正文子串两条路径取并集（中文无需专用索引），再按置顶 → 命中次数 → 首次命中位置 → 更新时间排序；支持置顶，零 `gpui` 依赖的纯逻辑层。
 - **系统监视 / Scratch 终端**：系统指标常驻面板与随手 Scratch 终端，作为工作区内置视图，不阻塞主工作区。

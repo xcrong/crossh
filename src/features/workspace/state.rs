@@ -35,6 +35,8 @@ pub struct LocalSession {
     pub custom_name: Option<String>,
     /// 固定标签的默认命令；`Some` 时恢复/重载自动执行。
     pub default_command: Option<String>,
+    /// daemon 会话 id；附着成功后由 `SessionAttached` 回填，固定标签按它恢复。
+    pub daemon_session_id: Option<String>,
 }
 
 /// 每个本地会话最多运行一个 Git 状态查询；期间的刷新请求只合并为一次后续检查。

@@ -20,6 +20,10 @@ pub(crate) struct PinnedLocalTab {
     pub(crate) custom_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) default_command: Option<String>,
+    /// 附着恢复用的 daemon 会话 id；`None` 时回退为新建会话。
+    /// daemon 重启后旧 id 失效，恢复走接入失败的显式错误路径。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) daemon_session_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -184,6 +188,7 @@ mod tests {
                 cwd: PathBuf::from("/a"),
                 custom_name: Some("   ".into()),
                 default_command: Some("   ".into()),
+                daemon_session_id: None,
             },
             PinnedLocalTab {
                 pin_id: 1,
@@ -191,6 +196,7 @@ mod tests {
                 cwd: PathBuf::from("/b"),
                 custom_name: Some("work".into()),
                 default_command: Some("  opencode  ".into()),
+                daemon_session_id: None,
             },
             PinnedLocalTab {
                 pin_id: 2,
@@ -198,6 +204,7 @@ mod tests {
                 cwd: PathBuf::from("/c"),
                 custom_name: None,
                 default_command: None,
+                daemon_session_id: None,
             },
             PinnedLocalTab {
                 pin_id: 3,
@@ -206,6 +213,7 @@ mod tests {
                 custom_name: Some("  dev  ".into()),
                 // 本地优先：默认不预设远程命令
                 default_command: None,
+                daemon_session_id: None,
             },
         ];
         let normalized = WorkspaceSettings {
@@ -235,5 +243,34 @@ mod tests {
         );
         // 本地优先：不再默认填充远程命令，应为 None
         assert_eq!(normalized.pinned_local_tabs[2].default_command, None);
+    }
+
+    #[test]
+    fn pinned_tab_daemon_session_id_survives_normalization_and_toml_roundtrip() {
+        // 按 id 恢复的前提：归一化不丢 id，TOML 持久化往返不丢 id。
+        let tab = PinnedLocalTab {
+            pin_id: 7,
+            project_dir: PathBuf::from("/a"),
+            cwd: PathBuf::from("/a"),
+            custom_name: None,
+            default_command: None,
+            daemon_session_id: Some("sess-abc".to_string()),
+        };
+        let normalized = WorkspaceSettings {
+            pinned_local_tabs: vec![tab],
+            ..WorkspaceSettings::default()
+        }
+        .normalized();
+        assert_eq!(
+            normalized.pinned_local_tabs[0].daemon_session_id,
+            Some("sess-abc".to_string())
+        );
+        let encoded = toml::to_string(&normalized).expect("settings should serialize");
+        let decoded: WorkspaceSettings =
+            toml::from_str(&encoded).expect("settings should deserialize");
+        assert_eq!(
+            decoded.pinned_local_tabs[0].daemon_session_id,
+            Some("sess-abc".to_string())
+        );
     }
 }

@@ -5,6 +5,7 @@
 //! application injects the localization resolver at boot
 //! ([`set_text_resolver`]).
 
+pub mod daemon_link;
 pub mod item;
 pub mod link_opener;
 mod text;

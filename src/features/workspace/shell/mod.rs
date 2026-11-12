@@ -214,7 +214,6 @@ pub struct AppShell {
     /// 链接预览的原生 WebView 单例（macOS / Windows），见 `link_preview`。
     pub(crate) link_preview: Option<link_preview::LinkPreview>,
     pub(crate) link_preview_visible: bool,
-    quit_confirmation_open: bool,
     shutdown_in_progress: bool,
     /// 标签页关闭确认框是否已打开，防止重复弹出。
     pub(crate) tab_close_confirmation_open: bool,
@@ -310,7 +309,6 @@ impl AppShell {
                 scratch_subscription: None,
                 link_preview: None,
                 link_preview_visible: false,
-                quit_confirmation_open: false,
                 shutdown_in_progress: false,
                 tab_close_confirmation_open: false,
             }
@@ -423,7 +421,19 @@ impl AppShell {
         cwd: PathBuf,
         cx: &mut Context<Self>,
     ) -> Option<LocalSessionId> {
-        let Some(view) = self.create_local_session(project_dir, cwd, cx) else {
+        self.open_local_session_with_attach(project_dir, cwd, None, cx)
+    }
+
+    /// 打开本地会话；`attach` 为 `Some` 时按 daemon 会话 id 接入既有会话
+    /// （固定标签恢复），否则新建 daemon 会话。
+    pub(crate) fn open_local_session_with_attach(
+        &mut self,
+        project_dir: PathBuf,
+        cwd: PathBuf,
+        attach: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Option<LocalSessionId> {
+        let Some(view) = self.create_local_session(project_dir, cwd, attach, cx) else {
             self.sync_local_dirs(cx);
             cx.notify();
             return None;
@@ -440,14 +450,27 @@ impl AppShell {
         &mut self,
         project_dir: PathBuf,
         cwd: PathBuf,
+        attach: Option<String>,
         cx: &mut Context<Self>,
     ) -> Option<ActiveView> {
         let project_dir = normalize_local_cwd(project_dir)?;
         let cwd = normalize_local_cwd(cwd)?;
         self.remember_local_dir(&project_dir, cx);
         let cwd_text = cwd.to_string_lossy().to_string();
-        let terminal =
-            TerminalView::from_local_zed(cwd.clone(), self.terminal_settings.clone(), cx);
+        let terminal = match attach {
+            Some(id) => {
+                log::info!("local session attaching to daemon session {id} for {cwd_text}");
+                TerminalView::from_daemon_attach(
+                    id,
+                    cwd.clone(),
+                    self.terminal_settings.clone(),
+                    cx,
+                )
+            }
+            None => {
+                TerminalView::from_daemon_create(cwd.clone(), self.terminal_settings.clone(), cx)
+            }
+        };
         let session_id = self.workspace.sessions.allocate_local_session_id();
         log::info!("local session {session_id} opened for {}", cwd_text);
         // Zed's local PTY process tracking reports the current cwd; keep it
@@ -500,6 +523,33 @@ impl AppShell {
                         );
                     }
                     TerminalEvent::TitleChanged | TerminalEvent::Notification => cx.notify(),
+                    TerminalEvent::SessionAttached { id } => {
+                        if let Some(session_id) =
+                            this.local_session_id_for_terminal(terminal.entity_id())
+                        {
+                            let pin_id = this
+                                .workspace
+                                .sessions
+                                .local_sessions
+                                .get_mut(&session_id)
+                                .and_then(|session| {
+                                    session.daemon_session_id = Some(id.clone());
+                                    session.pin_id
+                                });
+                            // 固定记录的 id 随附着收敛：下次恢复直接回到同一会话。
+                            if let Some(pin_id) = pin_id {
+                                if let Some(tab) = this
+                                    .workspace_settings
+                                    .pinned_local_tabs
+                                    .iter_mut()
+                                    .find(|tab| tab.pin_id == pin_id)
+                                {
+                                    tab.daemon_session_id = Some(id.clone());
+                                }
+                                this.persist_settings();
+                            }
+                        }
+                    }
                     TerminalEvent::ProgramStatusChanged => cx.notify(),
                 },
             );
@@ -518,6 +568,7 @@ impl AppShell {
                 pin_id: None,
                 custom_name: None,
                 default_command: None,
+                daemon_session_id: None,
             },
         );
         self.ensure_git_status_refresh_task(cx);
@@ -562,6 +613,9 @@ impl AppShell {
         if !has_session_now {
             let _ = self.open_local_session(project_dir.clone(), project_dir.clone(), cx);
         }
+        // 认领孤儿会话：重启后 daemon 里活着但没被任何窗口接入的会话，
+        // 按原 cwd 接回本项目（只收本项目子树，避免把别处会话拖进本窗）。
+        self.adopt_orphan_daemon_sessions(Some(project_dir), cx);
     }
 
     pub(crate) fn select_local_session(
@@ -647,6 +701,12 @@ impl AppShell {
         } else {
             false
         };
+        // 显式结束会话：向 daemon 发 Close（关窗口/退出 GUI 只 detach 不走这里）。
+        if let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) {
+            session.terminal.update(cx, |terminal, cx| {
+                terminal.request_close(cx);
+            });
+        }
         self.workspace.sessions.local_sessions.remove(&session_id);
         self.workspace
             .remove_compose_for_view(ActiveView::LocalSession(session_id));
@@ -1272,6 +1332,10 @@ pub fn open_main_window(cx: &mut App) {
         },
         |window, cx| {
             let shell = AppShell::new(cx);
+            // 窗口级兜底：无项目激活时也认领孤儿（各按会话自身 cwd 建项目）。
+            shell.update(cx, |shell, cx| {
+                shell.adopt_orphan_daemon_sessions(None, cx);
+            });
             let weak = shell.downgrade();
             let notification_weak = shell.downgrade();
             let window_handle = window.window_handle();
@@ -1303,8 +1367,8 @@ pub fn open_main_window(cx: &mut App) {
                     let _ = window_handle.update(cx, |_, window, _| window.activate_window());
                 }
             });
-            window.on_window_should_close(cx, move |window, cx| {
-                weak.update(cx, |shell, cx| shell.should_close_window(window, cx))
+            window.on_window_should_close(cx, move |_window, cx| {
+                weak.update(cx, |shell, cx| shell.should_close_window(cx))
                     .unwrap_or(true)
             });
             shell

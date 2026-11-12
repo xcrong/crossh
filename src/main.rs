@@ -92,9 +92,24 @@ fn main() {
                 std::process::exit(2);
             }
         },
+        app::cli::CliCommand::Daemon(action) => {
+            std::process::exit(run_daemon_command(action));
+        }
+        app::cli::CliCommand::Ls => {
+            std::process::exit(run_ls_command());
+        }
+        app::cli::CliCommand::Run(argv) => {
+            if argv.is_empty() {
+                eprintln!("usage: crossh run -- <command> [args...]");
+                std::process::exit(2);
+            }
+            std::process::exit(run_run_command(&argv));
+        }
+        app::cli::CliCommand::Capture(id) => {
+            std::process::exit(run_capture_command(&id));
+        }
         app::cli::CliCommand::Unknown(argument) => {
             eprintln!("unknown argument: {argument}\n");
-            app::cli::print_help();
             std::process::exit(2);
         }
         app::cli::CliCommand::Main { path } => {
@@ -159,6 +174,9 @@ fn main() {
             gpui::KeyBinding::new("cmd-j", ToggleScratchTerminal, Some("AppShell")),
         ]);
         infrastructure::app_menu::install(cx);
+        // 菜单栏 tray（仅 macOS）：主线程任务驱动，失败只记日志。
+        #[cfg(target_os = "macos")]
+        crate::infrastructure::tray::spawn(cx);
         // 单实例投递桥：监听线程只做阻塞收包（serve），前台消费与项目激活
         // 收敛在 app_menu，main 只做装配。
         let (open_tx, open_rx) =
@@ -173,4 +191,119 @@ fn main() {
         infrastructure::app_menu::activate_project(cx, initial_dir);
         infrastructure::app_menu::serve_project_requests(cx, open_rx);
     });
+}
+
+/// 会话类 CLI 的 tokio 执行器（一次性短进程，current-thread 即可）。
+fn session_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("session cli runtime")
+}
+
+fn run_daemon_command(action: app::cli::DaemonAction) -> i32 {
+    use app::cli::DaemonAction;
+    let rt = session_runtime();
+    match action {
+        DaemonAction::Status => match crossh_session::instance::read_daemon_addr() {
+            Some(addr) => match rt.block_on(crossh_session::Client::connect_to(&addr)) {
+                Ok(mut client) => match rt.block_on(client.list()) {
+                    Ok(sessions) => {
+                        println!("running ({} sessions, port {})", sessions.len(), addr.port);
+                        0
+                    }
+                    Err(error) => {
+                        eprintln!("crossh daemon: {error}");
+                        1
+                    }
+                },
+                Err(_) => {
+                    println!("not running (stale port file)");
+                    1
+                }
+            },
+            None => {
+                println!("not running");
+                1
+            }
+        },
+        DaemonAction::Start => match rt.block_on(crossh_session::ensure_daemon()) {
+            Ok(addr) => {
+                println!("started (port {})", addr.port);
+                0
+            }
+            Err(error) => {
+                eprintln!("crossh daemon: {error}");
+                1
+            }
+        },
+        DaemonAction::Stop => match rt.block_on(crossh_session::daemon_stop()) {
+            Ok(()) => {
+                println!("stopped");
+                0
+            }
+            Err(error) => {
+                eprintln!("crossh daemon: {error}");
+                1
+            }
+        },
+    }
+}
+
+fn run_ls_command() -> i32 {
+    let rt = session_runtime();
+    let mut client = match rt.block_on(crossh_session::Client::connect()) {
+        Ok(client) => client,
+        Err(error) => {
+            eprintln!("crossh ls: {error}");
+            return 1;
+        }
+    };
+    match rt.block_on(client.list()) {
+        Ok(sessions) => {
+            println!(
+                "{:<8} {:<10} {:<5} {:<7} CWD",
+                "ID", "ROLE", "ALIVE", "PROGRAM"
+            );
+            for session in &sessions {
+                println!(
+                    "{:<8} {:<10} {:<5} {:<7} {}",
+                    session.id,
+                    crossh_session::role_of(session, client.client_id),
+                    session.alive,
+                    session.program.as_deref().unwrap_or("-"),
+                    session.cwd.as_deref().unwrap_or("-"),
+                );
+            }
+            0
+        }
+        Err(error) => {
+            eprintln!("crossh ls: {error}");
+            1
+        }
+    }
+}
+
+fn run_run_command(argv: &[String]) -> i32 {
+    let rt = session_runtime();
+    let mut out = std::io::stdout().lock();
+    match rt.block_on(crossh_session::run_command(argv, &mut out)) {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("crossh run: {error}");
+            1
+        }
+    }
+}
+
+fn run_capture_command(id: &str) -> i32 {
+    let rt = session_runtime();
+    let mut out = std::io::stdout().lock();
+    match rt.block_on(crossh_session::capture_session(id, &mut out)) {
+        Ok(_) => 0,
+        Err(error) => {
+            eprintln!("crossh capture: {error}");
+            1
+        }
+    }
 }

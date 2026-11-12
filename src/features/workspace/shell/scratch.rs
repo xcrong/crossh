@@ -44,7 +44,8 @@ impl AppShell {
             return;
         }
         let cwd = self.scratch_initial_cwd(cx);
-        let terminal = TerminalViewEntity::from_local_zed(cwd, self.terminal_settings.clone(), cx);
+        let terminal =
+            TerminalViewEntity::from_daemon_create(cwd, self.terminal_settings.clone(), cx);
         let subscription = cx.subscribe(&terminal, |this, _terminal, event, cx| {
             if matches!(event, crossh_terminal_view::TerminalEvent::Closed) {
                 this.scratch_terminal = None;

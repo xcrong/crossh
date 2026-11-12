@@ -2,7 +2,14 @@
 use std::num::NonZeroU32;
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
-use std::{borrow::Cow, io, ops::RangeInclusive, path::PathBuf, sync::Arc};
+use std::{
+    borrow::Cow,
+    io,
+    ops::RangeInclusive,
+    path::PathBuf,
+    sync::Arc,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 mod hyperlinks;
 
@@ -55,7 +62,13 @@ pub(super) type AlacrittyGridIterator<'a> = GridIterator<'a, AlacCell>;
 pub(super) type AlacrittyHyperlink = AlacHyperlink;
 
 #[derive(Clone)]
-pub(super) struct ZedListener(UnboundedSender<PtyEvent>);
+pub(super) struct ZedListener {
+    tx: UnboundedSender<PtyEvent>,
+    /// 回放抑制门：重放旧查询（OSC 11/`CSI?$p`/DA）会重解析，
+    /// 置位时在产生瞬间直接丢弃回包类事件，不进队列——消费侧再拦有竞态
+    /// （`ReplayDone` 先到、异步 drain 后到），见 `Terminal::replaying_remote`。
+    suppress_replies: Arc<AtomicBool>,
+}
 
 #[derive(Clone, Debug)]
 pub(super) struct AlacrittySearch {
@@ -190,8 +203,16 @@ pub(super) fn new_term(
     bounds: TerminalBounds,
     events_tx: UnboundedSender<PtyEvent>,
     alternate_scroll: AlternateScroll,
+    suppress_replies: Arc<AtomicBool>,
 ) -> Arc<AlacrittyTermLock> {
-    let mut term = Term::new(config.clone(), &bounds, ZedListener(events_tx));
+    let mut term = Term::new(
+        config.clone(),
+        &bounds,
+        ZedListener {
+            tx: events_tx,
+            suppress_replies,
+        },
+    );
 
     if let AlternateScroll::Off = alternate_scroll {
         term.unset_private_mode(PrivateMode::Named(NamedPrivateMode::AlternateScroll));
@@ -208,8 +229,18 @@ pub(super) fn spawn_event_loop(
 ) -> Result<PtySender> {
     // 用 TeePty 包装后在读路径旁路收集 OSC 7501 状态报告
     let pty = crate::pty_tap::TeePty::new(pty, events_tx.clone());
-    let event_loop = EventLoop::new(term, ZedListener(events_tx), pty, drain_on_exit, false)
-        .context("failed to create event loop")?;
+    let event_loop = EventLoop::new(
+        term,
+        ZedListener {
+            tx: events_tx,
+            // 本地 PTY 无重放：永不抑制。
+            suppress_replies: Arc::new(AtomicBool::new(false)),
+        },
+        pty,
+        drain_on_exit,
+        false,
+    )
+    .context("failed to create event loop")?;
     let pty_tx = event_loop.channel();
     let _io_thread = event_loop.spawn();
 
@@ -327,7 +358,19 @@ impl From<AlacTermEvent> for TerminalBackendEvent {
 
 impl EventListener for ZedListener {
     fn send_event(&self, event: AlacTermEvent) {
-        self.0.unbounded_send(PtyEvent::Event(event.into())).ok();
+        // 回放中的查询（OSC 11/`CSI?$p`/DA/剪贴板）重解析会在此产生应答；
+        // 发射时直接丢弃：应答一旦进队列，异步 drain 与 `ReplayDone` 清旗存在竞态。
+        // 状态类事件（Title/Wakeup/Bell/…）无 PTY 副作用，照常放行。
+        if self.suppress_replies.load(Ordering::Relaxed) {
+            match event {
+                AlacTermEvent::PtyWrite(_)
+                | AlacTermEvent::ColorRequest(..)
+                | AlacTermEvent::ClipboardStore(..)
+                | AlacTermEvent::ClipboardLoad(..) => return,
+                _ => {}
+            }
+        }
+        self.tx.unbounded_send(PtyEvent::Event(event.into())).ok();
     }
 }
 
@@ -1190,7 +1233,14 @@ mod tests {
     fn semantic_selection_stops_at_tree_branch() {
         let config = pty_term_config(1000, SettingsCursorShape::default());
         let (events_tx, _events_rx) = futures::channel::mpsc::unbounded();
-        let mut term = Term::new(config, &TerminalBounds::default(), ZedListener(events_tx));
+        let mut term = Term::new(
+            config,
+            &TerminalBounds::default(),
+            ZedListener {
+                tx: events_tx,
+                suppress_replies: Arc::new(AtomicBool::new(false)),
+            },
+        );
         for character in "└─zms-demo.target".chars() {
             term.input(character);
         }
@@ -1203,5 +1253,37 @@ mod tests {
         set_selection(&mut term, Some(&selection));
 
         assert_eq!(selection_text(&term).as_deref(), Some("zms-demo.target"));
+    }
+    #[test]
+    fn zed_listener_drops_replies_at_emit_time_while_replaying() {
+        // 发射侧门控：置位期间产生的回包事件直接丢弃不进队列。
+        // 消费侧（`process_event`）再拦拦不住：`ReplayDone` 清旗跑在异步 drain 前面。
+        let (events_tx, mut events_rx) = futures::channel::mpsc::unbounded();
+        let suppress_replies = Arc::new(AtomicBool::new(true));
+        let listener = ZedListener {
+            tx: events_tx,
+            suppress_replies: suppress_replies.clone(),
+        };
+        listener.send_event(AlacTermEvent::PtyWrite("\x1b[?6c".into()));
+        listener.send_event(AlacTermEvent::Title("kept".into()));
+        // 只有 Title 到达；PtyWrite 在发射瞬间已被丢弃（清旗后再消费也拿不回来）。
+        suppress_replies.store(false, Ordering::Relaxed);
+        let mut got_title = false;
+        while let Ok(PtyEvent::Event(event)) = events_rx.try_recv() {
+            match event {
+                TerminalBackendEvent::Title(_) => got_title = true,
+                TerminalBackendEvent::PtyWrite(_) => {
+                    panic!("replayed query reply escaped the emit-time gate")
+                }
+                _ => {}
+            }
+        }
+        assert!(got_title);
+        // 清旗后恢复：实时回包照常放行。
+        listener.send_event(AlacTermEvent::PtyWrite("\x1b[?6c".into()));
+        assert!(matches!(
+            events_rx.try_recv(),
+            Ok(PtyEvent::Event(TerminalBackendEvent::PtyWrite(_)))
+        ));
     }
 }

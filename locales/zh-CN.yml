@@ -268,6 +268,11 @@ git:
   conflict_use_ours: 使用当前版本
   conflict_use_theirs: 使用目标版本
   conflict_mark_resolved: 标记已解决
+tray:
+  running: "%{count} 个会话"
+  stopped: Daemon 未运行
+  open_window: 打开终端窗口
+  stop_daemon: 停止 Daemon 并退出
 
 empty_state:
   title: 准备开始
@@ -298,6 +303,7 @@ terminal:
   connecting: 连接中…
   closed: 会话已关闭。
   bell: 终端响铃。
+  readonly: 只读——另一前端正在输入。
 rename_tab:
   title: 重命名标签
   name_placeholder: 标签名称（留空恢复默认）

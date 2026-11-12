@@ -341,10 +341,7 @@ impl AppShell {
         cx: &mut Context<Self>,
         on_confirm: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
     ) {
-        if self.tab_close_confirmation_open
-            || self.quit_confirmation_open
-            || self.shutdown_in_progress
-        {
+        if self.tab_close_confirmation_open || self.shutdown_in_progress {
             return;
         }
         self.tab_close_confirmation_open = true;
@@ -490,14 +487,17 @@ impl AppShell {
         }
         let pin_id = next_pin_id(&self.workspace_settings.pinned_local_tabs);
         session.pin_id = Some(pin_id);
+        let daemon_session_id = session.daemon_session_id.clone();
+        let project_dir = session.project_dir.clone();
         self.workspace_settings
             .pinned_local_tabs
             .push(PinnedLocalTab {
                 pin_id,
-                project_dir: session.project_dir.clone(),
+                project_dir,
                 cwd: self.local_session_cwd(session_id, cx),
                 custom_name: None,
                 default_command: None,
+                daemon_session_id,
             });
         self.persist_settings();
         cx.notify();
@@ -768,9 +768,14 @@ impl AppShell {
             let pin_id = tab.pin_id;
             let custom_name = tab.custom_name.clone();
             let default_command = tab.default_command.clone();
-            let Some(session_id) =
-                self.open_local_session(tab.project_dir.clone(), tab.cwd.clone(), cx)
-            else {
+            // 有 daemon 会话 id 即按 id 接入（daemon 存活时回到同一会话）；
+            // id 缺失或 daemon 已重启时接入失败走终端 Error 状态，不静默新建。
+            let Some(session_id) = self.open_local_session_with_attach(
+                tab.project_dir.clone(),
+                tab.cwd.clone(),
+                tab.daemon_session_id.clone(),
+                cx,
+            ) else {
                 // 记录目录已失效（删除/改名/不可访问）：跳过恢复并即时
                 // 清理，等价契约 8 的关闭清理，不等待下次启动。
                 self.workspace_settings
@@ -781,8 +786,7 @@ impl AppShell {
             };
             self.apply_pin_to_session(session_id, pin_id, custom_name, default_command.clone(), cx);
             // 自动执行默认命令（契约 4）：恢复后若配置了 default_command，延迟到终端 Connected 再执行
-            // `open_local_session` 创建的 TerminalView 初始为 Connecting（display-only），立即 send_input 会丢失；
-            // 需等待 Zed TerminalBuilder 完成 attach 后再投递。
+            // daemon 接入完成前（Connecting）立即 send_input 会丢失，需等待 SessionAttached 后再投递。
             if let Some(cmd) = default_command
                 && !cmd.trim().is_empty()
             {
@@ -851,6 +855,79 @@ impl AppShell {
                 .cloned()
                 .collect::<Vec<_>>();
         self.restore_pinned_local_tabs(pending, cx);
+    }
+    /// 认领孤儿会话：daemon 里活着、无输入者、且未被任何标签/pin 认领的
+    /// 会话，按原 cwd 接回。`project_filter` 为 `Some` 时只收本项目子树
+    /// （项目切换），`None` 时全收、各按会话自身 cwd 建项目（窗口打开时
+    /// 兜底）。幂等：已认领或 pin 覆盖的不再打开。
+    pub(super) fn adopt_orphan_daemon_sessions(
+        &mut self,
+        project_filter: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        let bound = self
+            .workspace
+            .sessions
+            .local_sessions
+            .values()
+            .filter_map(|session| session.daemon_session_id.clone())
+            .collect::<BTreeSet<_>>();
+        let pinned = self
+            .workspace_settings
+            .pinned_local_tabs
+            .iter()
+            .filter_map(|tab| tab.daemon_session_id.clone())
+            .collect::<BTreeSet<_>>();
+        cx.spawn(async move |this, cx| {
+            // 网络段放 background：主线程只做呈现。
+            let listed = cx
+                .background_executor()
+                .spawn(async {
+                    let addr = crossh_session::instance::read_daemon_addr()?;
+                    crate::app::bootstrap::runtime().block_on(async {
+                        let mut client = crossh_session::Client::connect_to(&addr).await.ok()?;
+                        client.list().await.ok()
+                    })
+                })
+                .await;
+            let Some(sessions) = listed else { return };
+            this.update(cx, |this, cx| {
+                for session in sessions {
+                    if !session.alive || session.controller.is_some() {
+                        continue;
+                    }
+                    if bound.contains(&session.id) || pinned.contains(&session.id) {
+                        continue;
+                    }
+                    let Some(cwd) = session
+                        .cwd
+                        .clone()
+                        .map(PathBuf::from)
+                        .and_then(normalize_local_cwd)
+                    else {
+                        continue;
+                    };
+                    let project_dir = match &project_filter {
+                        Some(dir) => {
+                            if cwd != *dir && !cwd.starts_with(dir) {
+                                continue;
+                            }
+                            dir.clone()
+                        }
+                        None => cwd.clone(),
+                    };
+                    log::info!("adopting orphan daemon session {}", session.id);
+                    this.open_local_session_with_attach(
+                        project_dir,
+                        cwd,
+                        Some(session.id.clone()),
+                        cx,
+                    );
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// 把固定记录的状态应用到指定的本地会话（恢复路径专用；会话创建由

@@ -48,6 +48,7 @@ check_absent \
     "$repo_root/crates/crossh-core" \
     "$repo_root/crates/crossh-assets" \
     "$repo_root/crates/crossh-terminal" \
+    "$repo_root/crates/crossh-session" \
     "$repo_root/crates/crossh-update"
 
 check_absent \
@@ -56,6 +57,7 @@ check_absent \
     "$repo_root/crates/crossh-core" \
     "$repo_root/crates/crossh-assets" \
     "$repo_root/crates/crossh-terminal" \
+    "$repo_root/crates/crossh-session" \
     "$repo_root/crates/crossh-update"
 
 check_absent \

@@ -32,7 +32,7 @@ use async_channel::{Receiver, Sender};
 use futures::StreamExt;
 use pty_info::{ProcessIdGetter, PtyProcessInfo};
 use serde::{Deserialize, Serialize};
-use shell::{HideStrategy, Shell, ShellKind, SpawnInTerminal};
+use shell::{HideStrategy, Shell, ShellKind, SpawnInTerminal, insert_zed_terminal_env};
 use std::collections::{HashMap, VecDeque};
 use terminal_settings::{AlternateScroll, CursorShape as SettingsCursorShape, TerminalSettings};
 use theme::CrosshTheme;
@@ -48,7 +48,7 @@ use std::{
     process::ExitStatus,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -655,19 +655,6 @@ const DEBUG_TERMINAL_HEIGHT: Pixels = px(30.);
 const DEBUG_CELL_WIDTH: Pixels = px(5.);
 const DEBUG_LINE_HEIGHT: Pixels = px(5.);
 
-/// Inserts Zed-specific environment variables for terminal sessions.
-/// Used by both local terminals and remote terminals (via SSH).
-pub fn insert_zed_terminal_env(
-    env: &mut HashMap<String, String>,
-    version: &impl std::fmt::Display,
-) {
-    env.insert("ZED_TERM".to_string(), "true".to_string());
-    env.insert("TERM_PROGRAM".to_string(), "zed".to_string());
-    env.insert("TERM".to_string(), "xterm-256color".to_string());
-    env.insert("COLORTERM".to_string(), "truecolor".to_string());
-    env.insert("TERM_PROGRAM_VERSION".to_string(), version.to_string());
-}
-
 ///Upward flowing events, for changing the title and such
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
@@ -1004,7 +991,7 @@ impl TerminalBuilder {
         cursor_shape: SettingsCursorShape,
         alternate_scroll: AlternateScroll,
         max_scroll_history_lines: Option<usize>,
-        window_id: u64,
+        _window_id: u64,
         background_executor: &BackgroundExecutor,
         path_style: PathStyle,
         terminal_bounds: TerminalBounds,
@@ -1017,7 +1004,14 @@ impl TerminalBuilder {
         let config = display_only_term_config(scrolling_history, cursor_shape);
 
         let (events_tx, events_rx) = unbounded();
-        let term = new_term(&config, terminal_bounds, events_tx, alternate_scroll);
+        let reply_gate = Arc::new(AtomicBool::new(false));
+        let term = new_term(
+            &config,
+            terminal_bounds,
+            events_tx,
+            alternate_scroll,
+            reply_gate.clone(),
+        );
 
         let terminal = Terminal {
             task: None,
@@ -1046,21 +1040,16 @@ impl TerminalBuilder {
             hyperlink_regex_searches: RegexSearches::default(),
             vi_mode_enabled: false,
             is_remote_terminal: false,
+            remote_working_directory: None,
+            replaying_remote: false,
+            reply_gate,
             last_mouse_move_time: Instant::now(),
             last_hyperlink_search_position: None,
             mouse_down_hyperlink: None,
             #[cfg(windows)]
             shell_program: None,
-            activation_script: Vec::new(),
             template: CopyTemplate {
                 shell: Shell::System,
-                env: HashMap::default(),
-                cursor_shape,
-                alternate_scroll,
-                max_scroll_history_lines,
-                path_hyperlink_regexes: Vec::default(),
-                path_hyperlink_timeout: Duration::ZERO,
-                window_id,
             },
             child_exited: None,
             keyboard_input_sent: false,
@@ -1083,6 +1072,33 @@ impl TerminalBuilder {
             terminal,
             events_rx,
         }
+    }
+
+    /// daemon 远端终端：与 display-only 同体的 VT 画面，无本地 PTY，
+    /// 出向经 `tx` 交 daemon 连接转发（D2）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_remote_with_bounds(
+        cursor_shape: SettingsCursorShape,
+        alternate_scroll: AlternateScroll,
+        max_scroll_history_lines: Option<usize>,
+        window_id: u64,
+        background_executor: &BackgroundExecutor,
+        path_style: PathStyle,
+        terminal_bounds: TerminalBounds,
+        tx: async_channel::Sender<Vec<u8>>,
+    ) -> TerminalBuilder {
+        let mut builder = Self::new_display_only_with_bounds(
+            cursor_shape,
+            alternate_scroll,
+            max_scroll_history_lines,
+            window_id,
+            background_executor,
+            path_style,
+            terminal_bounds,
+        );
+        builder.terminal.terminal_type = TerminalType::Remote { tx };
+        builder.terminal.is_remote_terminal = true;
+        builder
     }
 
     // 14 args is the upstream builder shape; callers pass whole config rows
@@ -1219,12 +1235,14 @@ impl TerminalBuilder {
             //Spawn a task so the Alacritty EventLoop (or the subprocess reader) can communicate with us
             //TODO: Remove with a bounded sender which can be dispatched on &self
             let (events_tx, events_rx) = unbounded();
+            let reply_gate = Arc::new(AtomicBool::new(false));
             //Set up the terminal...
             let term = new_term(
                 &config,
                 TerminalBounds::default(),
                 events_tx.clone(),
                 alternate_scroll,
+                reply_gate.clone(),
             );
 
             // When `no_pty` is set (headless hosts), run the task as a plain
@@ -1337,22 +1355,15 @@ impl TerminalBuilder {
                 ),
                 vi_mode_enabled: false,
                 is_remote_terminal,
+                remote_working_directory: None,
+                replaying_remote: false,
+                reply_gate,
                 last_mouse_move_time: Instant::now(),
                 last_hyperlink_search_position: None,
                 mouse_down_hyperlink: None,
                 #[cfg(windows)]
                 shell_program,
-                activation_script: activation_script.clone(),
-                template: CopyTemplate {
-                    shell,
-                    env,
-                    cursor_shape,
-                    alternate_scroll,
-                    max_scroll_history_lines,
-                    path_hyperlink_regexes,
-                    path_hyperlink_timeout,
-                    window_id,
-                },
+                template: CopyTemplate { shell },
                 child_exited: None,
                 keyboard_input_sent: false,
                 init_command_startup_marker: None,
@@ -1508,6 +1519,10 @@ enum TerminalType {
         info: Arc<PtyProcessInfo>,
     },
     DisplayOnly,
+    /// Daemon 会话远端：无本地 PTY，出向字节经 `tx` 交 daemon 连接转发。
+    Remote {
+        tx: async_channel::Sender<Vec<u8>>,
+    },
 }
 
 pub struct Terminal {
@@ -1540,13 +1555,21 @@ pub struct Terminal {
     task: Option<TaskState>,
     vi_mode_enabled: bool,
     is_remote_terminal: bool,
+    /// daemon 下发的当前工作目录（仅 `Remote` 有意义，见 `working_directory`）。
+    remote_working_directory: Option<PathBuf>,
+    /// 正在喂回放字节：抑制副作用回写（查询应答、剪贴板、响铃），
+    /// 否则重放里的旧查询会被重解析、回包灌回 shell 当输入执行。
+    /// 视图在接入完成（`ReplayEnd`）后置回 false。
+    replaying_remote: bool,
+    /// 发射侧门控：与 `replaying_remote` 同步翻转，供 `ZedListener` 在事件产生瞬间
+    /// 直接丢弃（消费侧 `process_event` 再拦有竞态：`ReplayDone` 先到、异步 drain 后到）。
+    reply_gate: Arc<AtomicBool>,
     last_mouse_move_time: Instant,
     last_hyperlink_search_position: Option<GpuiPoint<Pixels>>,
     mouse_down_hyperlink: Option<HyperlinkMatch>,
     #[cfg(windows)]
     shell_program: Option<String>,
     template: CopyTemplate,
-    activation_script: Vec<String>,
     child_exited: Option<ExitStatus>,
     keyboard_input_sent: bool,
     init_command_startup_marker: Option<String>,
@@ -1573,13 +1596,6 @@ struct CwdHistoryEntry {
 
 struct CopyTemplate {
     shell: Shell,
-    env: HashMap<String, String>,
-    cursor_shape: SettingsCursorShape,
-    alternate_scroll: AlternateScroll,
-    max_scroll_history_lines: Option<usize>,
-    path_hyperlink_regexes: Vec<String>,
-    path_hyperlink_timeout: Duration,
-    window_id: u64,
 }
 
 /// Runtime state for a task-backed terminal.
@@ -1657,21 +1673,35 @@ impl Terminal {
                 cx.emit(Event::BreadcrumbsChanged);
             }
             TerminalBackendEvent::ClipboardStore(data) => {
-                cx.write_to_clipboard(ClipboardItem::new_string(data))
+                // 回放窗口内不碰剪贴板：环里的旧 OSC 52 会覆盖用户当前剪贴板。
+                if !self.replaying_remote {
+                    cx.write_to_clipboard(ClipboardItem::new_string(data))
+                }
             }
             TerminalBackendEvent::ClipboardLoad(format) => {
-                self.write_to_pty(
-                    match &cx.read_from_clipboard().and_then(|item| item.text()) {
-                        // The terminal only supports pasting strings, not images.
-                        Some(text) => format(text),
-                        _ => format(""),
-                    }
-                    .into_bytes(),
-                )
+                if !self.replaying_remote {
+                    self.write_to_pty(
+                        match &cx.read_from_clipboard().and_then(|item| item.text()) {
+                            // The terminal only supports pasting strings, not images.
+                            Some(text) => format(text),
+                            _ => format(""),
+                        }
+                        .into_bytes(),
+                    )
+                }
             }
-            TerminalBackendEvent::PtyWrite(out) => self.write_to_pty(out.into_bytes()),
+            TerminalBackendEvent::PtyWrite(out) => {
+                // 回放窗口内不回写：重放里的旧查询（OSC 11/DA）会被重解析，
+                // 回包灌回 shell 当输入执行。实时查询不受影响。
+                if !self.replaying_remote {
+                    self.write_to_pty(out.into_bytes())
+                }
+            }
             TerminalBackendEvent::TextAreaSizeRequest(format) => {
-                self.write_to_pty(format(self.last_content.terminal_bounds).into_bytes())
+                // 尺寸权威在服务端：Remote 终端不得用本地格子回答远端查询。
+                if !matches!(self.terminal_type, TerminalType::Remote { .. }) {
+                    self.write_to_pty(format(self.last_content.terminal_bounds).into_bytes())
+                }
             }
             TerminalBackendEvent::CursorBlinkingChange => {
                 let terminal = self.term.lock();
@@ -1693,7 +1723,12 @@ impl Terminal {
                 }
                 // 特性探测必须回复，否则按规范视为协议不支持，程序不再上报
                 StatusUpdate::Query => {
-                    self.write_to_pty(crossh_terminal::FEATURE_DETECTION_REPLY.as_bytes().to_vec());
+                    // 回放窗口内不回写：理由同 `PtyWrite` 门。
+                    if !self.replaying_remote {
+                        self.write_to_pty(
+                            crossh_terminal::FEATURE_DETECTION_REPLY.as_bytes().to_vec(),
+                        );
+                    }
                 }
             },
             TerminalBackendEvent::Exit => self.register_task_finished(None, cx),
@@ -1720,7 +1755,10 @@ impl Terminal {
 
                 let color = self.term.lock().colors()[index]
                     .unwrap_or_else(|| to_vte_rgb(get_color_at_index(index, CrosshTheme::get(cx))));
-                self.write_to_pty(format(color).into_bytes());
+                // 回放窗口内不回写：实时颜色查询（如 TUI 主题适配）不受影响。
+                if !self.replaying_remote {
+                    self.write_to_pty(format(color).into_bytes());
+                }
             }
             TerminalBackendEvent::ChildExit(exit_status) => {
                 self.register_task_finished(Some(exit_status), cx);
@@ -1748,6 +1786,8 @@ impl Terminal {
                     self.last_content.terminal_bounds.num_columns() != new_bounds.num_columns();
                 self.last_content.terminal_bounds = new_bounds;
 
+                // 本地 PTY 才需要内核 resize；Remote 的尺寸由服务端 PTY 持有，
+                // 视图侧上报后等 daemon 回流（D8）。
                 if let TerminalType::Pty {
                     resources: PtyResources::Active(pty_tx),
                     ..
@@ -2000,6 +2040,18 @@ impl Terminal {
         cx.emit(Event::Wakeup);
     }
 
+    /// daemon 远端入向：PTY 原始字节直达 VT，不经 `convert_lf_to_crlf`。
+    ///
+    /// daemon 送来的就是服务端 PTY 的原始字节，再补 `\r` 会改变 raw 模式
+    /// 程序的语义（D2 通道 1）；display-only 的本地用例继续用 `write_output`。
+    pub fn write_remote_output(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
+        let mut term = self.term.lock();
+        self.output_processor.advance(&mut *term, bytes);
+        drop(term);
+        self.detect_init_command_startup_marker();
+        cx.emit(Event::Wakeup);
+    }
+
     pub fn total_lines(&self) -> usize {
         total_lines(&self.term.lock_unfair())
     }
@@ -2136,23 +2188,33 @@ impl Terminal {
 
     /// Write the Input payload to the PTY, if applicable.
     /// (This is a no-op for display-only terminals.)
+    ///
+    /// `Remote` 终端的出向字节不进本地 PTY，而是经 channel 交 daemon 连接
+    /// 转发（D2 出向通道；覆盖按键/鼠标/滚轮/焦点/`PtyWrite`/特性探测与
+    /// 颜色应答——它们全部经此漏斗）。
     fn write_to_pty(&self, input: impl Into<Cow<'static, [u8]>>) {
         let input = input.into();
         #[cfg(any(test, feature = "test-support"))]
         self.pty_write_log.borrow_mut().push(input.to_vec());
-        if let TerminalType::Pty {
-            resources: PtyResources::Active(pty_tx),
-            ..
-        } = &self.terminal_type
-        {
-            if log::log_enabled!(log::Level::Debug) {
-                if let Ok(str) = str::from_utf8(&input) {
-                    log::debug!("Writing to PTY: {:?}", str);
-                } else {
-                    log::debug!("Writing to PTY: {:?}", input);
+        match &self.terminal_type {
+            TerminalType::Pty {
+                resources: PtyResources::Active(pty_tx),
+                ..
+            } => {
+                if log::log_enabled!(log::Level::Debug) {
+                    if let Ok(str) = str::from_utf8(&input) {
+                        log::debug!("Writing to PTY: {:?}", str);
+                    } else {
+                        log::debug!("Writing to PTY: {:?}", input);
+                    }
                 }
+                pty_tx.notify(input);
             }
-            pty_tx.notify(input);
+            TerminalType::Remote { tx } => {
+                // 视图侧排空进 daemon socket；背压不阻塞按键处理。
+                let _ = tx.try_send(input.into_owned());
+            }
+            _ => {}
         }
     }
 
@@ -2887,6 +2949,11 @@ impl Terminal {
 
     pub fn working_directory(&self) -> Option<PathBuf> {
         if self.is_remote_terminal {
+            // daemon 远端：返回服务端下发的 cwd（D2 通道 3）；
+            // SSH 远端沿用旧行为（不可靠嗅探直接给 `None`）。
+            if matches!(self.terminal_type, TerminalType::Remote { .. }) {
+                return self.remote_working_directory.clone();
+            }
             // We can't yet reliably detect the working directory of a shell on the
             // SSH host. Until we can do that, it doesn't make sense to display
             // the working directory on the client and persist that.
@@ -2894,6 +2961,20 @@ impl Terminal {
         } else {
             self.client_side_working_directory()
         }
+    }
+
+    /// daemon 下发 cwd（D2 通道 3）：视图侧收到会话元数据更新时调用。
+    pub fn set_remote_working_directory(&mut self, cwd: Option<PathBuf>) {
+        self.remote_working_directory = cwd;
+    }
+
+    /// 标记回放喂养中（接入时）/ 结束（`ReplayEnd` 后）：回放窗口内
+    /// 抑制副作用回写，见 `replaying_remote` 字段注释。
+    /// 同步翻转 `reply_gate`：发射侧在事件产生瞬间丢弃，不进队列，
+    /// 否则 `ReplayDone` 清旗与异步 drain 之间存在竞态，拦不住。
+    pub fn set_remote_replaying(&mut self, replaying: bool) {
+        self.replaying_remote = replaying;
+        self.reply_gate.store(replaying, Ordering::Relaxed);
     }
 
     /// Normalizes the command name of the foreground process, if one is known.
@@ -2904,7 +2985,7 @@ impl Terminal {
                 .read()
                 .as_ref()
                 .and_then(|process| foreground_process_command_from_argv(&process.argv)),
-            TerminalType::DisplayOnly => None,
+            TerminalType::DisplayOnly | TerminalType::Remote { .. } => None,
         }
     }
 
@@ -2921,7 +3002,7 @@ impl Terminal {
                 .read()
                 .as_ref()
                 .map(|process| process.cwd.clone()),
-            TerminalType::DisplayOnly => None,
+            TerminalType::DisplayOnly | TerminalType::Remote { .. } => None,
         }
     }
 
@@ -3023,7 +3104,9 @@ impl Terminal {
                             format!("{process_file} — {process_name}")
                         })
                         .unwrap_or_else(|| "Terminal".to_string()),
-                    TerminalType::DisplayOnly => "Terminal".to_string(),
+                    TerminalType::DisplayOnly | TerminalType::Remote { .. } => {
+                        "Terminal".to_string()
+                    }
                 }),
         }
     }
@@ -3040,7 +3123,7 @@ impl Terminal {
                     // and wait_for_completed_task can complete
                     info.kill_child_process();
                 }
-                TerminalType::DisplayOnly => {
+                TerminalType::DisplayOnly | TerminalType::Remote { .. } => {
                     // Non-PTY task terminals own their subprocess directly.
                     if let Some(subprocess) = &self.subprocess {
                         subprocess.kill();
@@ -3089,14 +3172,14 @@ impl Terminal {
     pub fn pid(&self) -> Option<sysinfo::Pid> {
         match &self.terminal_type {
             TerminalType::Pty { info, .. } => info.pid(),
-            TerminalType::DisplayOnly => None,
+            TerminalType::DisplayOnly | TerminalType::Remote { .. } => None,
         }
     }
 
     pub fn pid_getter(&self) -> Option<&ProcessIdGetter> {
         match &self.terminal_type {
             TerminalType::Pty { info, .. } => Some(info.pid_getter()),
-            TerminalType::DisplayOnly => None,
+            TerminalType::DisplayOnly | TerminalType::Remote { .. } => None,
         }
     }
 
@@ -3205,26 +3288,6 @@ impl Terminal {
     /// 最近一次 OSC 7501 报告的根记录状态（供 tab 状态点等 UI 消费）。
     pub fn program_status(&self) -> Option<&ProgramStatus> {
         self.program_status.as_ref()
-    }
-
-    pub fn clone_builder(&self, cx: &App, cwd: Option<PathBuf>) -> Task<Result<TerminalBuilder>> {
-        let working_directory = self.working_directory().or(cwd);
-        TerminalBuilder::new(
-            working_directory,
-            TerminalMode::interactive(),
-            self.template.shell.clone(),
-            self.template.env.clone(),
-            self.template.cursor_shape,
-            self.template.alternate_scroll,
-            self.template.max_scroll_history_lines,
-            self.template.path_hyperlink_regexes.clone(),
-            self.template.path_hyperlink_timeout,
-            self.is_remote_terminal,
-            self.template.window_id,
-            cx,
-            self.activation_script.clone(),
-            self.path_style,
-        )
     }
 }
 
@@ -5649,7 +5712,7 @@ mod tests {
                 info.pid_getter().fallback_pid(),
                 info.current.read().is_some()
             ),
-            TerminalType::DisplayOnly => "display-only".to_string(),
+            TerminalType::DisplayOnly | TerminalType::Remote { .. } => "display-only".to_string(),
         });
         panic!(
             "Expected foreground process command name to be {expected:?}, got {command_name:?}; process info: {process_info:?}"
@@ -5839,6 +5902,221 @@ mod tests {
         .terminal
     }
 
+    fn make_remote_terminal() -> (Terminal, async_channel::Receiver<Vec<u8>>) {
+        let dispatcher = gpui::TestDispatcher::new(rand::random());
+        let executor = gpui::BackgroundExecutor::new(std::sync::Arc::new(dispatcher));
+        let (tx, rx) = async_channel::unbounded();
+        let builder = TerminalBuilder::new_remote_with_bounds(
+            SettingsCursorShape::default(),
+            AlternateScroll::On,
+            None,
+            0,
+            &executor,
+            PathStyle::local(),
+            TerminalBounds::default(),
+            tx,
+        );
+        (builder.terminal, rx)
+    }
+
+    /// D2 出向通道：按键/焦点（无 cx 即可驱动的路径）必须进 daemon channel，
+    /// 且绝不进本地 PTY（Remote 根本没有）。
+    #[test]
+    fn remote_outbound_input_and_focus_go_to_channel() {
+        let (mut terminal, rx) = make_remote_terminal();
+        assert!(!terminal.is_pty());
+        terminal.input(b"hello".to_vec());
+        assert_eq!(rx.try_recv().unwrap(), b"hello".to_vec());
+        // 焦点进出只有开了 FOCUS_IN_OUT 才上报。
+        terminal.last_content.mode.insert(Modes::FOCUS_IN_OUT);
+        terminal.focus_in();
+        terminal.focus_out();
+        assert_eq!(rx.try_recv().unwrap(), b"\x1b[I".to_vec());
+        assert_eq!(rx.try_recv().unwrap(), b"\x1b[O".to_vec());
+        assert!(rx.try_recv().is_err());
+        // daemon 下发的 cwd 经 working_directory 可见。
+        assert_eq!(terminal.working_directory(), None);
+        terminal.set_remote_working_directory(Some(PathBuf::from("/tmp/work")));
+        assert_eq!(
+            terminal.working_directory(),
+            Some(PathBuf::from("/tmp/work"))
+        );
+    }
+
+    /// D2 出向通道全覆盖：按键/鼠标/滚轮/焦点之外的后端事件
+    ///（`PtyWrite`/特性探测/颜色应答/尺寸查询）同样经 daemon channel，
+    /// 其中尺寸查询必须被吞掉（权威在服务端）。
+    #[gpui::test]
+    async fn remote_backend_events_route_to_daemon(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (tx, rx) = async_channel::unbounded::<Vec<u8>>();
+        let terminal = cx.new(|cx| {
+            TerminalBuilder::new_remote_with_bounds(
+                SettingsCursorShape::default(),
+                AlternateScroll::On,
+                None,
+                0,
+                cx.background_executor(),
+                PathStyle::local(),
+                TerminalBounds::new(
+                    px(10.),
+                    px(5.),
+                    bounds(point(px(0.), px(0.)), size(px(400.), px(120.))),
+                ),
+                tx,
+            )
+            .subscribe(cx)
+        });
+        // 按键：try_keystroke → input → channel。
+        terminal.update(cx, |terminal, _| {
+            let keystroke = Keystroke::parse("up").unwrap();
+            assert!(terminal.try_keystroke(&keystroke, false));
+        });
+        assert_eq!(rx.try_recv().unwrap(), b"\x1b[A".to_vec());
+        // 后端直写与特性探测应答。
+        terminal.update(cx, |terminal, cx| {
+            terminal.process_event(TerminalBackendEvent::PtyWrite("Z".to_string()), cx);
+            terminal.process_event(TerminalBackendEvent::ProgramStatus(StatusUpdate::Query), cx);
+            terminal.process_event(
+                TerminalBackendEvent::ColorRequest(
+                    0,
+                    std::sync::Arc::new(|color: Rgb| {
+                        format!(
+                            "\x1b]11;rgb:{:02x}/{:02x}/{:02x}\x1b\\",
+                            color.r, color.g, color.b
+                        )
+                    }),
+                ),
+                cx,
+            );
+            // 尺寸查询必须被吞掉。
+            terminal.process_event(
+                TerminalBackendEvent::TextAreaSizeRequest(std::sync::Arc::new(|_| {
+                    "SIZE".to_string()
+                })),
+                cx,
+            );
+        });
+        assert_eq!(rx.try_recv().unwrap(), b"Z".to_vec());
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            crossh_terminal::FEATURE_DETECTION_REPLY.as_bytes().to_vec()
+        );
+        let color_reply = rx.try_recv().unwrap();
+        assert!(color_reply.starts_with(b"\x1b]11;"), "got {color_reply:?}");
+        assert!(
+            rx.try_recv().is_err(),
+            "TextAreaSizeRequest must be swallowed"
+        );
+        // 鼠标上报：开跟踪后 mouse_down 产生 SGR 报告（mode 直接置位，
+        // last_content.mode 平时由 sync() 从 VT 刷新，单测跳过渲染同步）。
+        terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = Modes::MOUSE_MODE | Modes::SGR_MOUSE;
+            left_mouse_down_at(terminal, point(px(7.), px(7.)), cx);
+        });
+        let mouse = rx.try_recv().unwrap();
+        assert!(mouse.starts_with(b"\x1b[<"), "got {mouse:?}");
+        // alternate 滚轮：在 alt screen 下转成方向键上报（mode 直接置位，
+        // 与鼠标跟踪互斥避免走 wheel 分支）。
+        terminal.update(cx, |terminal, _cx| {
+            terminal.last_content.mode = Modes::ALT_SCREEN | Modes::ALTERNATE_SCROLL;
+            let scroll = ScrollEvent {
+                position: point(px(7.), px(7.)),
+                delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-30.))),
+                touch_phase: TouchPhase::Moved,
+                ..Default::default()
+            };
+            terminal.scroll_wheel(&scroll, 1.0);
+        });
+        let scrolled = rx.try_recv().unwrap();
+        assert!(
+            {
+                // 方向由滚轮符号与光标键模式决定；单支方向键序列即路由正确。
+                (scrolled.starts_with(b"\x1b[") || scrolled.starts_with(b"\x1bO"))
+                    && matches!(scrolled.last(), Some(b'A') | Some(b'B'))
+            },
+            "got {scrolled:?}"
+        );
+        // 本地 PTY 尺寸事件：Remote 不碰内核，只调 VT 网格（不崩即过）。
+        terminal.update(cx, |terminal, _| {
+            terminal.set_size(TerminalBounds::new(
+                px(10.),
+                px(5.),
+                bounds(point(px(0.), px(0.)), size(px(400.), px(120.))),
+            ));
+        });
+    }
+
+    /// 回放抑制：重放旧查询（`PtyWrite`/颜色/特性探测）不得回写，
+    /// 否则回包灌回 shell 当输入执行（认领旧会话复现过）；
+    /// `ReplayEnd` 后恢复正常回写，实时查询不受影响。
+    #[gpui::test]
+    async fn remote_replay_suppresses_stale_query_replies(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (tx, rx) = async_channel::unbounded::<Vec<u8>>();
+        let terminal = cx.new(|cx| {
+            TerminalBuilder::new_remote_with_bounds(
+                SettingsCursorShape::default(),
+                AlternateScroll::On,
+                None,
+                0,
+                cx.background_executor(),
+                PathStyle::local(),
+                TerminalBounds::new(
+                    px(10.),
+                    px(5.),
+                    bounds(point(px(0.), px(0.)), size(px(400.), px(120.))),
+                ),
+                tx,
+            )
+            .subscribe(cx)
+        });
+        terminal.update(cx, |terminal, _| terminal.set_remote_replaying(true));
+        terminal.update(cx, |terminal, cx| {
+            terminal.process_event(TerminalBackendEvent::PtyWrite("Z".to_string()), cx);
+            terminal.process_event(
+                TerminalBackendEvent::ColorRequest(
+                    11,
+                    std::sync::Arc::new(|color: Rgb| {
+                        format!(
+                            "\x1b]11;rgb:{:02x}/{:02x}/{:02x}\x1b\\",
+                            color.r, color.g, color.b
+                        )
+                    }),
+                ),
+                cx,
+            );
+            terminal.process_event(TerminalBackendEvent::ProgramStatus(StatusUpdate::Query), cx);
+        });
+        assert!(
+            rx.try_recv().is_err(),
+            "replay must not answer stale queries"
+        );
+        terminal.update(cx, |terminal, _| terminal.set_remote_replaying(false));
+        terminal.update(cx, |terminal, cx| {
+            terminal.process_event(TerminalBackendEvent::PtyWrite("Z".to_string()), cx);
+            terminal.process_event(
+                TerminalBackendEvent::ColorRequest(
+                    11,
+                    std::sync::Arc::new(|color: Rgb| {
+                        format!(
+                            "\x1b]11;rgb:{:02x}/{:02x}/{:02x}\x1b\\",
+                            color.r, color.g, color.b
+                        )
+                    }),
+                ),
+                cx,
+            );
+            terminal.process_event(TerminalBackendEvent::ProgramStatus(StatusUpdate::Query), cx);
+        });
+        assert_eq!(rx.try_recv().unwrap(), b"Z".to_vec());
+        let color_reply = rx.try_recv().unwrap();
+        assert!(color_reply.starts_with(b"\x1b]11;"), "got {color_reply:?}");
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            crossh_terminal::FEATURE_DETECTION_REPLY.as_bytes().to_vec()
+        );
+    }
     #[test]
     fn test_cwd_at_line_empty_history_returns_none() {
         let terminal = make_display_only_terminal();

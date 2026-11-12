@@ -21,6 +21,7 @@ use terminal::shell::Shell;
 use terminal::terminal_settings::CursorShape;
 use terminal::theme::CrosshTheme;
 
+use crate::daemon_link::{DaemonLink, LinkCmd, LinkMode, UiMsg};
 use crate::text;
 use crossh_core::terminal::{
     LocalShellEnvironment, ShellCommandMarker, ShellPromptMarker, command_marker_from_title,
@@ -182,6 +183,14 @@ pub struct TerminalView {
     last_bell_notification: Option<Instant>,
     timestamp_state: TerminalTimestampState,
     pending_timestamp: Option<String>,
+    /// daemon 接入链路（`None` = 未建立/已结束）。
+    daemon_link: Option<DaemonLink>,
+    /// daemon 会话 id（固定标签按 id 恢复用）。
+    pub daemon_session_id: Option<String>,
+    /// 是否持有输入权（`false` 显示只读标记；尺寸不上报）。
+    has_input_rights: bool,
+    /// 已上报的尺寸（去重避免每帧 Resize）。
+    last_reported_size: Option<(u16, u16)>,
 }
 
 impl TerminalView {
@@ -195,51 +204,44 @@ impl TerminalView {
         cx.set_global(zed_settings);
     }
 
-    pub fn from_local_zed(cwd: PathBuf, settings: TerminalSettings, cx: &mut App) -> Entity<Self> {
-        let initial_cwd = cwd.to_string_lossy().into_owned();
-        let system_shell = Shell::default().program();
-        let shell_environment = match LocalShellEnvironment::create(&system_shell) {
-            Ok(environment) => environment,
-            Err(error) => {
-                log::warn!("failed to prepare local shell integration: {error}");
-                None
-            }
+    /// 新建 daemon 会话并接入（替代本地 spawn PTY）。
+    pub fn from_daemon_create(
+        cwd: PathBuf,
+        settings: TerminalSettings,
+        cx: &mut App,
+    ) -> Entity<Self> {
+        let mode = LinkMode::Create {
+            cwd: cwd.clone(),
+            cols: INITIAL_COLUMNS as u16,
+            rows: INITIAL_ROWS as u16,
         };
-        let shell = shell_environment
-            .as_ref()
-            .map_or(Shell::System, |environment| {
-                if environment.use_system_shell() {
-                    return Shell::System;
-                }
-                Shell::WithArguments {
-                    program: environment.program().to_string(),
-                    args: environment.args().to_vec(),
-                    title_override: None,
-                }
-            });
-        Self::from_zed_shell_with_environment(
-            Some(cwd),
-            Some(initial_cwd),
-            shell,
-            settings,
-            shell_environment,
-            cx,
-        )
+        Self::from_daemon(mode, Some(cwd.to_string_lossy().into_owned()), settings, cx)
     }
 
-    fn from_zed_shell_with_environment(
-        working_directory: Option<PathBuf>,
-        initial_cwd: Option<String>,
-        shell: Shell,
+    /// 接入既有 daemon 会话（固定标签按 id 恢复）。
+    pub fn from_daemon_attach(
+        session_id: String,
+        cwd: PathBuf,
         settings: TerminalSettings,
-        shell_environment: Option<LocalShellEnvironment>,
+        cx: &mut App,
+    ) -> Entity<Self> {
+        let mode = LinkMode::Attach { id: session_id };
+        Self::from_daemon(mode, Some(cwd.to_string_lossy().into_owned()), settings, cx)
+    }
+
+    fn from_daemon(
+        mode: LinkMode,
+        initial_cwd: Option<String>,
+        settings: TerminalSettings,
         cx: &mut App,
     ) -> Entity<Self> {
         let settings = settings.normalized();
         Self::apply_zed_settings(&settings, cx);
         let zed_settings = terminal::terminal_settings::TerminalSettings::get_global(cx).clone();
 
-        let display_builder = zed_terminal::TerminalBuilder::new_display_only_with_bounds(
+        // 先建 Remote VT 占位（无本地 PTY）；出向经 channel 交接入链路。
+        let (tx, out_rx) = async_channel::unbounded();
+        let display_builder = zed_terminal::TerminalBuilder::new_remote_with_bounds(
             zed_settings.cursor_shape,
             zed_settings.alternate_scroll,
             Some(settings.scrollback),
@@ -252,37 +254,17 @@ impl TerminalView {
                 px(DEFAULT_CELL_WIDTH),
                 px(settings.font_size * zed_settings.line_height.value()),
             ),
-        );
-
-        let shell_env = shell_environment
-            .as_ref()
-            .map(|environment| environment.env().iter().cloned().collect())
-            .unwrap_or_default();
-        let builder = zed_terminal::TerminalBuilder::new(
-            working_directory,
-            zed_terminal::TerminalMode::interactive(),
-            shell,
-            shell_env,
-            zed_settings.cursor_shape,
-            zed_settings.alternate_scroll,
-            Some(settings.scrollback),
-            Vec::new(),
-            Duration::from_millis(0),
-            false,
-            0,
-            cx,
-            Vec::new(),
-            zed_terminal::paths::PathStyle::local(),
+            tx,
         );
 
         let entity = cx.new(|cx| {
-            let zed_terminal = cx.new(|terminal_cx| display_builder.subscribe(terminal_cx));
-            Self {
-                zed_terminal,
+            let remote = cx.new(|terminal_cx| display_builder.subscribe(terminal_cx));
+            let mut this = Self {
+                zed_terminal: remote.clone(),
                 pending_builder: None,
                 builder_error: None,
                 builder_task: None,
-                shell_environment,
+                shell_environment: None,
                 blink_task: None,
                 terminal_subscription: None,
                 focus: cx.focus_handle(),
@@ -294,7 +276,7 @@ impl TerminalView {
                 cursor_blink_pause_until: Instant::now(),
                 blinking_terminal_enabled: false,
                 cursor_shape: zed_settings.cursor_shape,
-                state: ConnState::default(),
+                state: ConnState::Connecting,
                 cwd: initial_cwd,
                 title: None,
                 program_status: None,
@@ -307,37 +289,102 @@ impl TerminalView {
                 last_bell_notification: None,
                 timestamp_state: TerminalTimestampState::default(),
                 pending_timestamp: None,
-            }
+                daemon_link: None,
+                daemon_session_id: None,
+                has_input_rights: true,
+                last_reported_size: None,
+            };
+            this.attach_terminal(remote, cx);
+            this.state = ConnState::Connecting;
+            this
         });
 
-        let weak = entity.downgrade();
-        let builder_task = cx.spawn(async move |cx| match builder.await {
-            Ok(builder) => {
-                let _ = weak.update(cx, |this, cx| {
-                    this.pending_builder = Some(builder);
-                    cx.notify();
-                });
-            }
-            Err(error) => {
-                let message = error.to_string();
-                let _ = weak.update(cx, |this, cx| {
-                    this.builder_error = Some(message.clone());
-                    this.shell_environment = None;
-                    this.state = ConnState::Error(message);
-                    cx.notify();
-                });
-            }
+        // 接入链路 + 服务端事件转发。
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel::<UiMsg>();
+        let link = DaemonLink::spawn(mode, out_rx, ui_tx);
+        entity.update(cx, |this, _| {
+            this.daemon_link = Some(link);
+        });
+        entity.update(cx, |_, cx| {
+            cx.spawn(async move |this, cx| {
+                while let Some(msg) = ui_rx.recv().await {
+                    let end = this
+                        .update(cx, |this, cx| match msg {
+                            UiMsg::Attached { id, has_input, cwd } => {
+                                this.daemon_session_id = Some(id.clone());
+                                this.has_input_rights = has_input;
+                                // 回放开始：抑制重放字节触发的副作用回写。
+                                this.zed_terminal.update(cx, |terminal, _| {
+                                    terminal.set_remote_replaying(true);
+                                });
+                                this.apply_daemon_cwd(cwd.as_deref(), cx);
+                                this.state = ConnState::Connected;
+                                cx.emit(TerminalEvent::SessionAttached { id });
+                                cx.notify();
+                                false
+                            }
+                            UiMsg::Bytes(bytes) => {
+                                log::debug!("gui-recv {}B", bytes.len());
+                                this.zed_terminal.update(cx, |terminal, cx| {
+                                    terminal.write_remote_output(&bytes, cx)
+                                });
+                                false
+                            }
+                            UiMsg::ReplayDone => {
+                                // 回放喂完：恢复查询应答等副作用回写。
+                                this.zed_terminal.update(cx, |terminal, _| {
+                                    terminal.set_remote_replaying(false);
+                                });
+                                // 重放字节自带旧几何（p10k 右提示绝对定位），首帧可能错位；
+                                // 抖一下尺寸逼 shell 重画当前行，无需用户回车。两次上报，
+                                // 落点回到真实尺寸（`last_reported_size` 不动，下次 paint 照常用）。
+                                if let (Some(link), Some((cols, rows))) =
+                                    (&this.daemon_link, this.last_reported_size)
+                                {
+                                    link.send(LinkCmd::Resize(cols.saturating_add(1), rows));
+                                    link.send(LinkCmd::Resize(cols, rows));
+                                }
+                                false
+                            }
+                            UiMsg::Exited => {
+                                // 自然结束：本地标记 + 上报，workspace 侧关闭标签。
+                                this.state = ConnState::Closed;
+                                cx.emit(TerminalEvent::Closed);
+                                cx.notify();
+                                true
+                            }
+                            UiMsg::Meta { has_input, cwd } => {
+                                if this.has_input_rights != has_input {
+                                    this.has_input_rights = has_input;
+                                    cx.notify();
+                                }
+                                if let Some(cwd) = cwd.as_deref() {
+                                    this.apply_daemon_cwd(Some(cwd), cx);
+                                }
+                                false
+                            }
+                            UiMsg::Dead(reason) => {
+                                this.state = ConnState::Error(reason);
+                                cx.notify();
+                                true
+                            }
+                        })
+                        .unwrap_or(true);
+                    if end {
+                        break;
+                    }
+                }
+            })
+            .detach();
         });
 
+        // 光标闪烁。
         let weak = entity.downgrade();
         let blink_task = cx.spawn(async move |cx| {
             loop {
                 cx.background_executor().timer(CURSOR_BLINK_INTERVAL).await;
                 if weak
                     .update(cx, |this, cx| {
-                        // P0: only notify when the visible cursor state actually
-                        // changes. Unfocused / non-blinking terminals used to
-                        // re-render the whole view every 530ms for nothing.
                         let next = if this.focused
                             && this.blinking_terminal_enabled
                             && Instant::now() >= this.cursor_blink_pause_until
@@ -357,12 +404,38 @@ impl TerminalView {
                 }
             }
         });
-
         entity.update(cx, |this, _| {
-            this.builder_task = Some(builder_task);
             this.blink_task = Some(blink_task);
         });
         entity
+    }
+
+    /// daemon 下发 cwd：同步到终端实体与视图状态。
+    fn apply_daemon_cwd(&mut self, cwd: Option<&str>, cx: &mut Context<Self>) {
+        let cwd = cwd.map(str::to_string);
+        if self.cwd == cwd {
+            return;
+        }
+        self.cwd = cwd.clone();
+        self.zed_terminal.update(cx, |terminal, _| {
+            terminal.set_remote_working_directory(cwd.map(PathBuf::from));
+        });
+        cx.emit(TerminalEvent::CwdChanged);
+        cx.notify();
+    }
+
+    /// 视口变化时上报 daemon（仅持有输入权时；服务端静默忽略 observer 上报）。
+    pub(crate) fn note_viewport(&mut self, cols: u16, rows: u16) {
+        if self.state != ConnState::Connected || !self.has_input_rights {
+            return;
+        }
+        if self.last_reported_size == Some((cols, rows)) {
+            return;
+        }
+        self.last_reported_size = Some((cols, rows));
+        if let Some(link) = &self.daemon_link {
+            link.send(LinkCmd::Resize(cols, rows));
+        }
     }
 
     fn attach_terminal(
@@ -786,13 +859,16 @@ impl TerminalView {
         // 不请求焦点，保持独立输入栏持有焦点
     }
 
+    /// 显式结束会话：向 daemon 发 Close（关窗口/退出 GUI 不走这里，
+    /// 只 detach；自然退出走 `UiMsg::Exited`）。
     pub fn request_close(&mut self, cx: &mut Context<Self>) {
         if self.state == ConnState::Closed {
             return;
         }
+        if let Some(link) = &self.daemon_link {
+            link.send(LinkCmd::Close);
+        }
         self.state = ConnState::Closed;
-        self.zed_terminal
-            .update(cx, |terminal, _| terminal.input(vec![0x04]));
         cx.notify();
     }
 
@@ -1038,6 +1114,20 @@ impl Render for TerminalView {
                     .py_1()
                     .text_xs()
                     .child(SharedString::from(message)),
+            );
+        }
+
+        // 失去输入权时显示只读标记（输入本身仍直达服务端并触发接管）。
+        if self.state == ConnState::Connected && !self.has_input_rights {
+            root = root.child(
+                div()
+                    .absolute()
+                    .top_2()
+                    .right_2()
+                    .px_2()
+                    .py_1()
+                    .text_xs()
+                    .child(text::text("terminal.readonly")),
             );
         }
 

@@ -247,7 +247,7 @@ impl TerminalSettings {
     }
 
     /// Bridge from Crossh's own terminal settings (font / scrollback) — kept
-    /// separate from Zed's global so `TerminalView::from_local_zed` can stay
+    /// separate from Zed's global so `TerminalView::from_daemon_*` can stay
     /// self-contained.
     pub fn from_crossh(crossh: &crossh_terminal::TerminalSettings) -> Self {
         Self {

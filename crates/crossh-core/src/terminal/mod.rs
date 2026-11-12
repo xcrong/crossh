@@ -3,6 +3,7 @@
 pub mod program_status;
 pub mod session;
 pub mod shell;
+pub mod shell_select;
 pub mod title;
 
 pub use program_status::{
@@ -13,6 +14,10 @@ pub use shell::{
     LocalShellEnvironment, RemoteShell, ShellCommandMarker, ShellPromptMarker,
     command_marker_from_title, prompt_marker_from_title, remote_shell_bootstrap_command,
     remote_shell_from_path, remote_shell_setup_script, shell_quote,
+};
+pub use shell_select::{
+    Shell, ShellBuilder, ShellKind, get_system_shell, get_windows_system_shell,
+    insert_zed_terminal_env,
 };
 pub use title::{
     local_terminal_tab_title, local_terminal_title, path_display_name, remote_pane_title,

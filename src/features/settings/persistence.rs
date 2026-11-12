@@ -130,6 +130,7 @@ mod tests {
                         cwd: PathBuf::from("/a"),
                         custom_name: Some("work".into()),
                         default_command: Some("opencode".into()),
+                        daemon_session_id: None,
                     },
                     crate::features::workspace::settings::PinnedLocalTab {
                         pin_id: 2,
@@ -137,6 +138,7 @@ mod tests {
                         cwd: PathBuf::from("/b"),
                         custom_name: None,
                         default_command: None,
+                        daemon_session_id: None,
                     },
                 ],
             },

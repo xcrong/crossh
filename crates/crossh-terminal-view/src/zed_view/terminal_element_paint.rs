@@ -404,6 +404,12 @@ impl Element for TerminalElement {
                     .then(|| terminal.last_content.last_hovered_word.clone())
                     .flatten()
                 });
+                // daemon 远端：视口变化且持有输入权时上报服务端（D2 通道 4）。
+                let cols = u16::try_from(dimensions.num_columns()).unwrap_or(u16::MAX);
+                let rows = u16::try_from(dimensions.num_lines()).unwrap_or(u16::MAX);
+                self.terminal_view.update(cx, |view, _| {
+                    view.note_viewport(cols, rows);
+                });
                 let hovered_link = last_hovered_word.is_some();
 
                 let (mode, display_offset, cursor_char, selection, cursor, row_snapshots) = {

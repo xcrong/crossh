@@ -10,6 +10,14 @@ use crossh_core::{
     note_launcher::{self, NoteCliCommand},
 };
 
+/// `daemon` 子命令动作。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DaemonAction {
+    Status,
+    Start,
+    Stop,
+}
+
 /// 顶层 CLI 分发结果，由 `main` 负责副作用（打印、退出、启动窗口）。
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum CliCommand {
@@ -18,6 +26,14 @@ pub(crate) enum CliCommand {
     Git(Result<GitCliCommand, String>),
     Note(Result<NoteCliCommand, String>),
     Unknown(String),
+    /// 会话属主管理：`daemon [status|start|stop]`（缺省 `status`）。
+    Daemon(DaemonAction),
+    /// 列出 daemon 上的会话（含输入权角色）。
+    Ls,
+    /// 在新会话中运行一次性命令，转发输出并原样返回退出码。
+    Run(Vec<String>),
+    /// 输出指定会话的回放字节。
+    Capture(String),
     /// 启动主窗口。`path` 为原始参数（相对路径不解析），由 `main`
     /// 结合进程工作目录校验为项目目录；`None` 为裸启动。
     Main {
@@ -47,6 +63,27 @@ pub(crate) fn parse_cli(
             let result = note_launcher::parse_cli(args);
             CliCommand::Note(result)
         }
+        Some("daemon") => match args.next().as_deref() {
+            None | Some("status") => CliCommand::Daemon(DaemonAction::Status),
+            Some("start") => CliCommand::Daemon(DaemonAction::Start),
+            Some("stop") => CliCommand::Daemon(DaemonAction::Stop),
+            Some(other) => CliCommand::Unknown(other.to_string()),
+        },
+        Some("ls") => match args.next() {
+            None => CliCommand::Ls,
+            Some(extra) => CliCommand::Unknown(extra),
+        },
+        Some("run") => {
+            let mut rest: Vec<String> = args.collect();
+            if rest.first().is_some_and(|s| s == "--") {
+                rest.remove(0);
+            }
+            CliCommand::Run(rest)
+        }
+        Some("capture") => match args.next() {
+            Some(id) => CliCommand::Capture(id),
+            None => CliCommand::Unknown("capture".to_string()),
+        },
         Some("--") => match args.next() {
             None => CliCommand::Main { path: None },
             Some(path) if args.next().is_none() => CliCommand::Main {
@@ -69,7 +106,7 @@ pub(crate) fn parse_cli(
 /// 返回与 `print_help` 打印内容一致的帮助文本，便于测试与复用。
 pub(crate) fn help_text() -> String {
     format!(
-        "Crossh {} — Local-first terminal workspace (GPUI)\n\nUsage: crossh [COMMAND]\n       crossh [PATH]\n\nLocal-first terminal workspace — manage projects, terminals and notes locally.\n\nArguments:\n  [PATH]      Open a project directory (reuses the running instance when present,\n              otherwise starts a new instance).\n              To open a directory named \"git\"/\"note\"/\"help\", use:\n              crossh ./git  or:  crossh -- git\n\nCommands:\n  git         Open the Git Viewer for a directory\n  note        Open the Note Viewer\n  help        Print help\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version",
+        "Crossh {} — Local-first terminal workspace (GPUI)\n\nUsage: crossh [COMMAND]\n       crossh [PATH]\n\nLocal-first terminal workspace — manage projects, terminals and notes locally.\n\nArguments:\n  [PATH]      Open a project directory (reuses the running instance when present,\n              otherwise starts a new instance).\n              To open a directory named \"git\"/\"note\"/\"help\"/\"daemon\"/\"ls\"/\"run\"/\"capture\", use:\n              crossh ./git  or:  crossh -- git\n\nCommands:\n  git         Open the Git Viewer for a directory\n  note        Open the Note Viewer\n  daemon      Manage the session daemon (status|start|stop)\n  ls          List daemon sessions (second frontend needs no GUI)\n  run         Run a command in a new session, stream output, return its exit code\n  capture     Print a session's replay buffer\n  help        Print help\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -139,7 +176,7 @@ mod tests {
     #[test]
     fn shadowed_names_need_dot_slash_or_separator() {
         // 与子命令同名的目录必须转义，裸写永远进对应子命令。
-        for name in ["git", "note", "help"] {
+        for name in ["git", "note", "help", "daemon", "ls", "run", "capture"] {
             let shadowed = parse_cli([name].into_iter().map(str::to_string), cwd_ok("/repo"));
             assert!(
                 !matches!(shadowed, CliCommand::Main { .. }),
@@ -165,6 +202,52 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn session_subcommands_parse() {
+        use super::DaemonAction;
+        // `daemon` 缺省 status。
+        let command = parse_cli(["daemon"].into_iter().map(str::to_string), cwd_ok("/repo"));
+        assert_eq!(command, CliCommand::Daemon(DaemonAction::Status));
+        for (arg, want) in [
+            ("status", DaemonAction::Status),
+            ("start", DaemonAction::Start),
+            ("stop", DaemonAction::Stop),
+        ] {
+            let command = parse_cli(
+                ["daemon", arg].into_iter().map(str::to_string),
+                cwd_ok("/repo"),
+            );
+            assert_eq!(command, CliCommand::Daemon(want), "arg: {arg}");
+        }
+        // `daemon bogus` 回到未知参数。
+        let command = parse_cli(
+            ["daemon", "bogus"].into_iter().map(str::to_string),
+            cwd_ok("/repo"),
+        );
+        assert_eq!(command, CliCommand::Unknown("bogus".to_string()));
+        // `ls` 无参数；`capture` 必须带 id。
+        let command = parse_cli(["ls"].into_iter().map(str::to_string), cwd_ok("/repo"));
+        assert_eq!(command, CliCommand::Ls);
+        let command = parse_cli(
+            ["capture", "s1"].into_iter().map(str::to_string),
+            cwd_ok("/repo"),
+        );
+        assert_eq!(command, CliCommand::Capture("s1".to_string()));
+        let command = parse_cli(["capture"].into_iter().map(str::to_string), cwd_ok("/repo"));
+        assert_eq!(command, CliCommand::Unknown("capture".to_string()));
+        // `run` 吃掉 `--`，空参数由执行层报用法错误。
+        let command = parse_cli(
+            ["run", "--", "echo", "hi"].into_iter().map(str::to_string),
+            cwd_ok("/repo"),
+        );
+        assert_eq!(
+            command,
+            CliCommand::Run(vec!["echo".to_string(), "hi".to_string()])
+        );
+        let command = parse_cli(["run"].into_iter().map(str::to_string), cwd_ok("/repo"));
+        assert_eq!(command, CliCommand::Run(vec![]));
     }
 
     #[test]

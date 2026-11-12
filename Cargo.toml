@@ -30,6 +30,7 @@ members = [
     "crates/crossh-note",
     "crates/crossh-editor",
     "crates/terminal",
+    "crates/crossh-session",
 ]
 resolver = "2"
 
@@ -46,6 +47,7 @@ crossh-ui-component = { path = "crates/crossh-ui-component" }
 crossh-editor = { path = "crates/crossh-editor" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1478fb5e60f8b7852a2b0da32aa3da5cd9bb6954" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1478fb5e60f8b7852a2b0da32aa3da5cd9bb6954", features = ["font-kit", "wayland", "x11"] }
+crossh-session = { path = "crates/crossh-session" }
 itertools = "0.15"
 semver = "1"
 terminal = { path = "crates/terminal" }
@@ -63,9 +65,13 @@ schemars = "1"
 unicode-width = "0.2"
 pulldown-cmark = "0.13"
 
-# 链接预览的原生 WebView（macOS / Windows；Linux 不引 GTK/WebKitGTK，回退系统浏览器）。
-[target.'cfg(any(target_os = "macos", windows))'.dependencies]
-wry = { version = "0.57", default-features = false }
+ # 菜单栏 tray（仅 macOS；Linux 不引 GTK/AppIndicator，Windows 后续跟进）。
+ [target.'cfg(target_os = "macos")'.dependencies]
+ tray-icon = "0.26"
+
+ # 链接预览的原生 WebView（macOS / Windows；Linux 不引 GTK/WebKitGTK，回退系统浏览器）。
+ [target.'cfg(any(target_os = "macos", windows))'.dependencies]
+ wry = { version = "0.57", default-features = false }
 
 [build-dependencies]
 embed-resource = "3"
@@ -74,6 +80,7 @@ embed-resource = "3"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1478fb5e60f8b7852a2b0da32aa3da5cd9bb6954", features = ["test-support"] }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1478fb5e60f8b7852a2b0da32aa3da5cd9bb6954", features = ["font-kit", "test-support", "wayland", "x11"] }
 terminal = { path = "crates/terminal" }
+async-channel = "2"
 
 [profile.dev]
 incremental = true
