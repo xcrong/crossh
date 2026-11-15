@@ -33,7 +33,7 @@ if [ -n "$TARGET" ]; then
 fi
 
 echo "==> cargo build --release${TARGET:+ --target $TARGET}"
-cargo build "${CARGO_ARGS[@]}" --bin crossh --bin crossh-git --bin crossh-note --bin crossh-updater
+cargo build "${CARGO_ARGS[@]}" --bin crossh --bin crossh-git --bin crossh-note --bin crossh-updater --bin crossh-daemon
 
 echo "==> assembling $APP_DIR"
 rm -rf "$APP_DIR"
@@ -44,6 +44,7 @@ cp "$BIN_DIR/$APP_NAME" "$MACOS/$APP_NAME"
 cp "$BIN_DIR/crossh-git" "$MACOS/crossh-git"
 cp "$BIN_DIR/crossh-note" "$MACOS/crossh-note"
 cp "$BIN_DIR/crossh-updater" "$MACOS/crossh-updater"
+cp "$BIN_DIR/crossh-daemon" "$MACOS/crossh-daemon"
 cp assets/appicon/AppIcon.icns "$RESOURCES/AppIcon.icns"
 
 cat > "$CONTENTS/Info.plist" <<PLIST
@@ -88,6 +89,7 @@ echo "==> signing nested executable"
 codesign --force --sign - --identifier "$BUNDLE_ID.git" "$MACOS/crossh-git"
 codesign --force --sign - --identifier "$BUNDLE_ID.note" "$MACOS/crossh-note"
 codesign --force --sign - --identifier "$BUNDLE_ID.updater" "$MACOS/crossh-updater"
+codesign --force --sign - --identifier "$BUNDLE_ID.daemon" "$MACOS/crossh-daemon"
 
 echo "==> signing app bundle"
 codesign --force --sign - --identifier "$BUNDLE_ID" "$APP_DIR"

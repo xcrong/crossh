@@ -35,12 +35,13 @@ BIN="target/$TARGET/release/$APP_NAME"
 GIT_BIN="target/$TARGET/release/crossh-git"
 NOTE_BIN="target/$TARGET/release/crossh-note"
 UPDATER_BIN="target/$TARGET/release/crossh-updater"
+DAEMON_BIN="target/$TARGET/release/crossh-daemon"
 
 echo "==> rustup target add $TARGET"
 rustup target add "$TARGET"
 
 echo "==> cargo build --release --target $TARGET"
-cargo build --release --target "$TARGET" --bin crossh --bin crossh-git --bin crossh-note --bin crossh-updater
+cargo build --release --target "$TARGET" --bin crossh --bin crossh-git --bin crossh-note --bin crossh-updater --bin crossh-daemon
 
 mkdir -p "$DIST"
 
@@ -48,7 +49,7 @@ mkdir -p "$DIST"
 echo "==> tar.gz"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/$APP_NAME-$VERSION-linux-$ARCH"
-cp "$BIN" "$GIT_BIN" "$NOTE_BIN" "$UPDATER_BIN" README.md LICENSE "$STAGE/$APP_NAME-$VERSION-linux-$ARCH/"
+cp "$BIN" "$GIT_BIN" "$NOTE_BIN" "$UPDATER_BIN" "$DAEMON_BIN" README.md LICENSE "$STAGE/$APP_NAME-$VERSION-linux-$ARCH/"
 bash scripts/copy-shared-assets.sh "$STAGE/$APP_NAME-$VERSION-linux-$ARCH/resources/crossh-assets"
 TARBALL="$DIST/$APP_NAME-$VERSION-linux-$ARCH.tar.gz"
 rm -f "$TARBALL"
@@ -66,6 +67,7 @@ cp "$BIN" "$APPDIR/usr/bin/$APP_NAME"
 cp "$GIT_BIN" "$APPDIR/usr/bin/crossh-git"
 cp "$NOTE_BIN" "$APPDIR/usr/bin/crossh-note"
 cp "$UPDATER_BIN" "$APPDIR/usr/bin/crossh-updater"
+cp "$DAEMON_BIN" "$APPDIR/usr/bin/crossh-daemon"
 cp README.md LICENSE "$APPDIR/"
 
 cat > "$APPDIR/usr/share/applications/me.xcrong.crossh.desktop" <<EOF
@@ -117,6 +119,7 @@ APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" VERSION="$VERSION" \
     -e "$APPDIR/usr/bin/crossh-git" \
     -e "$APPDIR/usr/bin/crossh-note" \
     -e "$APPDIR/usr/bin/crossh-updater" \
+    -e "$APPDIR/usr/bin/crossh-daemon" \
     -d "$APPDIR/usr/share/applications/$APP_ID.desktop" \
     -i "$APPDIR/usr/share/icons/hicolor/512x512/apps/$APP_ID.png" \
     --exclude-library='libwayland*.so*' \
@@ -164,6 +167,7 @@ install -m755 "$BIN" "$DEB_STAGE/usr/bin/$APP_NAME"
 install -m755 "$GIT_BIN" "$DEB_STAGE/usr/bin/crossh-git"
 install -m755 "$NOTE_BIN" "$DEB_STAGE/usr/bin/crossh-note"
 install -m755 "$UPDATER_BIN" "$DEB_STAGE/usr/bin/crossh-updater"
+install -m755 "$DAEMON_BIN" "$DEB_STAGE/usr/bin/crossh-daemon"
 bash scripts/copy-shared-assets.sh "$DEB_STAGE/usr/share/$APP_NAME/crossh-assets"
 install -m644 README.md "$DEB_STAGE/usr/share/doc/$APP_NAME/README.md"
 install -m644 LICENSE "$DEB_STAGE/usr/share/doc/$APP_NAME/LICENSE"
@@ -258,6 +262,7 @@ cp -a $RPM_TOPDIR/root/usr %{buildroot}/
 /usr/bin/crossh-git
 /usr/bin/crossh-note
 /usr/bin/crossh-updater
+/usr/bin/crossh-daemon
 /usr/share/$APP_NAME/
 /usr/share/doc/$APP_NAME/
 /usr/share/applications/$APP_ID.desktop

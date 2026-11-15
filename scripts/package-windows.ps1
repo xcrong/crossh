@@ -26,7 +26,7 @@ Write-Host "==> rustup target add $Target"
 rustup target add $Target | Out-Null
 
 Write-Host "==> cargo build --release --target $Target"
-cargo build --release --target $Target --bin crossh --bin crossh-git --bin crossh-note --bin crossh-updater
+cargo build --release --target $Target --bin crossh --bin crossh-git --bin crossh-note --bin crossh-updater --bin crossh-daemon
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $BinDir = Join-Path "target" (Join-Path $Target "release")
@@ -48,6 +48,7 @@ Copy-Item (Join-Path $BinDir "crossh.exe") $Stage
 Copy-Item (Join-Path $BinDir "crossh-git.exe") $Stage
 Copy-Item (Join-Path $BinDir "crossh-note.exe") $Stage
 Copy-Item (Join-Path $BinDir "crossh-updater.exe") $Stage
+Copy-Item (Join-Path $BinDir "crossh-daemon.exe") $Stage
 Copy-Item "README.md" $Stage
 Copy-Item "LICENSE" $Stage
 

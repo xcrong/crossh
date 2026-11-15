@@ -372,7 +372,7 @@ fn install_zip_payload(staging: &Path, target: &Path) -> Result<(), InstallerErr
 }
 
 /// Windows zip 的顶层结构（`crossh.exe`、`crossh-git.exe`、`crossh-note.exe`、
-/// `crossh-updater.exe`、`resources/`、README、LICENSE）与安装目录一一对应，
+/// `crossh-updater.exe`、`crossh-daemon.exe`、`resources/`、README、LICENSE）与安装目录一一对应，
 /// 见 `scripts/crossh.iss` 的 `[Files]`。只换主程序会让附属二进制和 resources
 /// 停在旧版本，因此这里把整个顶层载荷合并进安装目录。
 fn replace_payload_directory(staging: &Path, target: &Path) -> Result<(), InstallerError> {
