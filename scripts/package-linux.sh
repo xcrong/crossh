@@ -41,7 +41,7 @@ echo "==> rustup target add $TARGET"
 rustup target add "$TARGET"
 
 echo "==> cargo build --release --target $TARGET"
-cargo build --release --target "$TARGET" --bin crossh --bin crossh-git --bin crossh-note --bin crossh-updater --bin crossh-daemon
+cargo build --release --target "$TARGET" -p crossh --bin crossh --bin crossh-git --bin crossh-note --bin crossh-updater -p crossh-session --bin crossh-daemon
 
 mkdir -p "$DIST"
 

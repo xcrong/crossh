@@ -26,7 +26,7 @@ Write-Host "==> rustup target add $Target"
 rustup target add $Target | Out-Null
 
 Write-Host "==> cargo build --release --target $Target"
-cargo build --release --target $Target --bin crossh --bin crossh-git --bin crossh-note --bin crossh-updater --bin crossh-daemon
+cargo build --release --target $Target -p crossh --bin crossh --bin crossh-git --bin crossh-note --bin crossh-updater -p crossh-session --bin crossh-daemon
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $BinDir = Join-Path "target" (Join-Path $Target "release")

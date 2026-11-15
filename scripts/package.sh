@@ -33,7 +33,7 @@ if [ -n "$TARGET" ]; then
 fi
 
 echo "==> cargo build --release${TARGET:+ --target $TARGET}"
-cargo build "${CARGO_ARGS[@]}" --bin crossh --bin crossh-git --bin crossh-note --bin crossh-updater --bin crossh-daemon
+cargo build "${CARGO_ARGS[@]}" -p crossh --bin crossh --bin crossh-git --bin crossh-note --bin crossh-updater -p crossh-session --bin crossh-daemon
 
 echo "==> assembling $APP_DIR"
 rm -rf "$APP_DIR"
