@@ -256,6 +256,7 @@ impl Client {
             cols,
             rows,
             command: None,
+            env: Some(caller_env()),
         })
         .await
     }
@@ -394,6 +395,18 @@ fn client_error(payload: &[u8]) -> io::Error {
     io::Error::other(msg)
 }
 
+/// 调用方环境快照：daemon 侧以此为会话基线，而非 daemon 自身冻结的环境。
+fn caller_env() -> Vec<(String, String)> {
+    std::env::vars_os()
+        .map(|(k, v)| {
+            (
+                k.to_string_lossy().into_owned(),
+                v.to_string_lossy().into_owned(),
+            )
+        })
+        .collect()
+}
+
 /// `run -- <argv...>`：建裸命令会话 → 流式转发输出 → 原样返回退出码。
 /// 不转发 stdin（一次性命令）；`cwd` 为调用方当前目录。
 pub async fn run_command(argv: &[String], out: &mut dyn Write) -> io::Result<i32> {
@@ -414,6 +427,7 @@ pub async fn run_command(argv: &[String], out: &mut dyn Write) -> io::Result<i32
             cols: 80,
             rows: 24,
             command: Some(argv.to_vec()),
+            env: Some(caller_env()),
         })
         .await
         .map(|_| ())?;

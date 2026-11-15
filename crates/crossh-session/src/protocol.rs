@@ -184,6 +184,11 @@ pub struct CreateRequest {
     /// 脚本（`run --` 一次性命令用；无 prompt、无 cwd 嗅探）。
     #[serde(default)]
     pub command: Option<Vec<String>>,
+    /// 调用方进程环境快照（`None` = 老客户端：沿用 daemon 自身环境）。
+    /// 常驻单实例的 daemon 环境冻结在首次拉起时；切分前是进程内 spawn，
+    /// 用的是调用方的新鲜环境，此处显式传过来恢复原语义。
+    #[serde(default)]
+    pub env: Option<Vec<(String, String)>>,
 }
 
 /// 会话信息（`Created`/`Listed`/`Attached` 共用）。

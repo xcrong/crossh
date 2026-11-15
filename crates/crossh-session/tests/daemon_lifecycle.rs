@@ -218,6 +218,7 @@ async fn daemon_full_cycle() {
         cols: 80,
         rows: 24,
         command: None,
+        env: None,
     };
     send(&mut c1.writer, MessageKind::Create, &json(&create))
         .await
@@ -345,6 +346,7 @@ async fn daemon_full_cycle() {
             cols: 80,
             rows: 24,
             command: None,
+            env: None,
         }),
     )
     .await
@@ -368,16 +370,18 @@ async fn daemon_full_cycle() {
     // GUI 退出只 detach 不杀会话：建会话后直接断开 TCP（不发 Close，
     // 模拟 view 销毁时 `cmd` 通道关闭），会话必须仍在且可被新连接列出。
     // 若客户端在断开时误发 Close，这里会直接断言失败。
+    // 老客户端线形：无 env 字段，daemon 回落自身环境（必须继续建会话成功）。
     send(
         &mut c1.writer,
         MessageKind::Create,
-        &json(&CreateRequest {
-            shell: Some("/bin/sh".to_string()),
-            cwd: None,
-            cols: 80,
-            rows: 24,
-            command: None,
-        }),
+        &serde_json::to_vec(&serde_json::json!({
+            "shell": "/bin/sh",
+            "cwd": null,
+            "cols": 80,
+            "rows": 24,
+            "command": null
+        }))
+        .unwrap(),
     )
     .await
     .unwrap();

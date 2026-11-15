@@ -1,6 +1,7 @@
 //! Shell snippets used to instrument interactive PTYs without changing shell configuration.
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use std::collections::HashMap;
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
@@ -45,7 +46,13 @@ pub struct LocalShellEnvironment {
 
 impl LocalShellEnvironment {
     pub fn create(path: &str) -> io::Result<Option<Self>> {
-        Self::create_with_zdotdir(path, env::var_os("ZDOTDIR").as_deref())
+        Self::create_with_env(path, &std::env::vars().collect())
+    }
+
+    /// 调用方 env 版装配：daemon 侧传请求方的环境快照，而非 daemon 自身
+    /// 冻结的环境（单实例常驻的首启环境会被所有会话继承）。
+    pub fn create_with_env(path: &str, base: &HashMap<String, String>) -> io::Result<Option<Self>> {
+        Self::create_with_zdotdir_env(path, base.get("ZDOTDIR").map(OsStr::new), base)
     }
 
     pub fn program(&self) -> &str {
@@ -64,9 +71,18 @@ impl LocalShellEnvironment {
         self.use_system_shell
     }
 
+    #[cfg(test)]
     fn create_with_zdotdir(
         path: &str,
         original_zdotdir: Option<&OsStr>,
+    ) -> io::Result<Option<Self>> {
+        Self::create_with_zdotdir_env(path, original_zdotdir, &std::env::vars().collect())
+    }
+
+    fn create_with_zdotdir_env(
+        path: &str,
+        original_zdotdir: Option<&OsStr>,
+        base: &HashMap<String, String>,
     ) -> io::Result<Option<Self>> {
         let Some(shell) = remote_shell_from_path(path) else {
             return Ok(None);
@@ -158,9 +174,9 @@ builtin source {}
                 fs::create_dir_all(&conf_dir)?;
                 fs::write(conf_dir.join("crossh.fish"), format!("{setup}\n"))?;
                 let mut data_dirs = path_to_string(&data_dir)?;
-                if let Some(existing) = std::env::var_os("XDG_DATA_DIRS") {
+                if let Some(existing) = base.get("XDG_DATA_DIRS") {
                     data_dirs.push(':');
-                    data_dirs.push_str(&os_str_to_string(&existing)?);
+                    data_dirs.push_str(existing);
                 }
                 Self {
                     program: path.to_owned(),
@@ -173,7 +189,7 @@ builtin source {}
         };
         if let Some(binary_dir) = env::current_exe()?.parent() {
             let mut paths = vec![binary_dir.to_path_buf()];
-            if let Some(existing) = env::var_os("PATH") {
+            if let Some(existing) = base.get("PATH") {
                 paths.extend(env::split_paths(&existing));
             }
             let path = env::join_paths(paths)
@@ -185,7 +201,7 @@ builtin source {}
         #[cfg(target_os = "linux")]
         {
             for (key, value) in gnome_proxy_env() {
-                if env::var_os(&key).is_some() {
+                if base.contains_key(key.as_str()) {
                     continue;
                 }
                 if environment.env.iter().any(|(k, _)| k == &key) {
@@ -685,7 +701,10 @@ mod tests {
 
     #[test]
     fn local_bash_environment_loads_user_config_and_cleans_up() {
-        let environment = LocalShellEnvironment::create_with_zdotdir("/bin/bash", None)
+        // 调用方基线参与 PATH 烘焙：daemon 自身 PATH 不得混入。
+        let mut base = HashMap::new();
+        base.insert("PATH".to_string(), "/base-bin:/usr/bin".to_string());
+        let environment = LocalShellEnvironment::create_with_env("/bin/bash", &base)
             .unwrap()
             .unwrap();
         let temp_path = environment._temp_dir.as_ref().unwrap().path().to_path_buf();
@@ -705,8 +724,8 @@ mod tests {
             .map(|(_, value)| value)
             .unwrap();
         assert_eq!(
-            env::split_paths(OsStr::new(injected_path)).next(),
-            Some(binary_dir)
+            env::split_paths(OsStr::new(injected_path)).collect::<Vec<_>>()[..2],
+            [binary_dir, std::path::PathBuf::from("/base-bin")]
         );
         assert!(!environment.use_system_shell());
         assert!(

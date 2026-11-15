@@ -491,17 +491,37 @@ async fn spawn_session(req: &CreateRequest) -> io::Result<Handle> {
     let cwd = req.cwd.clone().map(std::path::PathBuf::from);
     let cols = req.cols.max(1);
     let rows = req.rows.max(1);
+    // 基线环境：调用方快照优先（`run --` 在哪调起就用哪的环境）；
+    // 老客户端不带 env 时回落 daemon 自身（0.44.x 行为）。
+    let mut base: HashMap<String, String> = match &req.env {
+        Some(env) => env.iter().cloned().collect(),
+        None => std::env::vars_os()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.to_string_lossy().into_owned(),
+                )
+            })
+            .collect(),
+    };
+    // PWD 跟随请求的 cwd（调用方 PWD 是旧的）；OLDPWD 丢弃。
+    if let Some(cwd) = &cwd {
+        base.insert("PWD".to_string(), cwd.to_string_lossy().into_owned());
+        base.remove("OLDPWD");
+    }
     // `run --` 一次性命令走裸启动（无集成脚本）；否则按 shell 装配集成。
     let raw_cmd = req.command.clone().filter(|c| !c.is_empty());
     let shell_prog = req
         .shell
         .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| base.get("SHELL").cloned().filter(|s| !s.is_empty()))
         .unwrap_or_else(crossh_core::terminal::get_system_shell);
     let id = new_session_id();
     let spawn_id = id.clone();
     let opt = tokio::task::spawn_blocking(move || match raw_cmd {
-        Some(argv) => SpawnOptions::raw(&argv, cwd, cols, rows),
-        None => SpawnOptions::interactive_shell(&shell_prog, cwd, cols, rows),
+        Some(argv) => SpawnOptions::raw(&argv, cwd, cols, rows, base),
+        None => SpawnOptions::interactive_shell(&shell_prog, cwd, cols, rows, base),
     })
     .await
     .map_err(|e| io::Error::other(e.to_string()))??;

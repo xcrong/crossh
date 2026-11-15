@@ -31,6 +31,8 @@ pub struct SpawnOptions {
     pub cols: u16,
     pub rows: u16,
     pub env: Vec<(String, String)>,
+    /// 会话基线环境（调用方快照；`env` 的集成/标识变量覆盖其上）。
+    pub base_env: HashMap<String, String>,
     /// 交互 shell 集成脚本的守卫（拥有 rcfile 临时目录，`None` = 非集成 shell）。
     /// 随会话持有，`Drop` 时删除临时文件。
     pub shell_env: Option<LocalShellEnvironment>,
@@ -45,8 +47,10 @@ impl SpawnOptions {
         cwd: Option<PathBuf>,
         cols: u16,
         rows: u16,
+        base_env: HashMap<String, String>,
     ) -> std::io::Result<Self> {
-        let shell_env = LocalShellEnvironment::create(program).map_err(io_err)?;
+        let shell_env =
+            LocalShellEnvironment::create_with_env(program, &base_env).map_err(io_err)?;
         let (program, args, mut env): (String, Vec<String>, HashMap<String, String>) =
             match &shell_env {
                 Some(env) => (
@@ -67,17 +71,19 @@ impl SpawnOptions {
             cols,
             rows,
             env: env.into_iter().collect(),
+            base_env,
             shell_env,
         })
     }
 
     /// 一次性命令：直接执行 `argv[0]` + 参数，不装配交互 shell 集成脚本。
-    /// 仍继承 daemon 环境并注入终端标识变量。
+    /// 仍继承调用方环境并注入终端标识变量。
     pub fn raw(
         argv: &[String],
         cwd: Option<PathBuf>,
         cols: u16,
         rows: u16,
+        base_env: HashMap<String, String>,
     ) -> std::io::Result<Self> {
         let program = argv
             .first()
@@ -87,7 +93,7 @@ impl SpawnOptions {
                 std::io::Error::new(std::io::ErrorKind::InvalidInput, "empty command")
             })?;
         let mut env: HashMap<String, String> = HashMap::new();
-        if std::env::var_os("TERM").is_none() {
+        if !base_env.contains_key("TERM") {
             env.insert("TERM".to_string(), "xterm-256color".to_string());
         }
         insert_zed_terminal_env(&mut env, &env!("CARGO_PKG_VERSION"));
@@ -98,6 +104,7 @@ impl SpawnOptions {
             cols,
             rows,
             env: env.into_iter().collect(),
+            base_env,
             shell_env: None,
         })
     }
@@ -133,6 +140,11 @@ impl ChildSession {
         cmd.args(&opt.args);
         if let Some(cwd) = &opt.cwd {
             cmd.cwd(cwd);
+        }
+        // 基线先清零再装调用方快照：daemon 自身冻结的环境不得泄漏进会话。
+        cmd.env_clear();
+        for (k, v) in &opt.base_env {
+            cmd.env(k, v);
         }
         for (k, v) in &opt.env {
             cmd.env(k, v);
@@ -263,12 +275,13 @@ mod tests {
 
     fn sh_opts(cmd: &str) -> SpawnOptions {
         SpawnOptions {
-            program: "sh".to_string(),
+            program: "/bin/sh".to_string(),
             args: vec!["-c".to_string(), cmd.to_string()],
             cwd: None,
             cols: 80,
             rows: 24,
             env: vec![("TERM".to_string(), "xterm-256color".to_string())],
+            base_env: HashMap::new(),
             shell_env: None,
         }
     }
@@ -297,6 +310,26 @@ mod tests {
     }
 
     #[test]
+    fn caller_env_replaces_daemon_env() {
+        // 复现：Finder 拉起的 daemon（PATH=/usr/bin:/bin:…）污染所有会话；
+        // 基线必须是调用方快照，daemon 自身环境不得泄漏。
+        let mut base = HashMap::new();
+        base.insert("CROSSH_ENV_PROBE".to_string(), "probe-ok".to_string());
+        base.insert("PATH".to_string(), "/probe-bin".to_string());
+        let mut opt = sh_opts(
+            "echo \"probe=$CROSSH_ENV_PROBE\"; echo \"path=$PATH\"; echo \"cargo=$CARGO_MANIFEST_DIR\"",
+        );
+        opt.base_env = base;
+        let (code, out) = run_to_exit("spawn-env", opt);
+        assert_eq!(code, 0);
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("probe=probe-ok"), "got {text:?}");
+        assert!(text.contains("path=/probe-bin"), "got {text:?}");
+        // cargo test 必然带 CARGO_*：出现即基线替换失败。
+        assert!(!text.contains("cargo=/"), "daemon env leaked: {text:?}");
+    }
+
+    #[test]
     fn ring_truncation_keeps_tail_only() {
         // 600 KiB 输出 → 环只保留最近 512 KiB。
         let (code, out) = run_to_exit("spawn-truncate", sh_opts("head -c 614400 /dev/zero"));
@@ -316,7 +349,9 @@ mod tests {
         // 交互 shell 必须装上集成脚本：输出里出现 `crossh-command=` 标记（2.3）。
         let shell = ["/bin/bash", "/bin/zsh", "/bin/sh"]
             .into_iter()
-            .find_map(|p| SpawnOptions::interactive_shell(p, None, 80, 24).ok())
+            .find_map(|p| {
+                SpawnOptions::interactive_shell(p, None, 80, 24, std::env::vars().collect()).ok()
+            })
             .filter(|o| o.shell_env.is_some())
             .expect("an integrated shell");
         assert!(
