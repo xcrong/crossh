@@ -577,6 +577,8 @@ impl AppShell {
     }
 
     pub(crate) fn activate_local_dir(&mut self, project_dir: PathBuf, cx: &mut Context<Self>) {
+        // 项目切换后工作区整体换内容，悬浮的临时终端抽屉随之收起（PTY 保持存活）。
+        self.hide_scratch_terminal(cx);
         self.sync_local_dirs(cx);
         let Some(project_dir) = normalize_local_cwd(project_dir) else {
             cx.notify();
