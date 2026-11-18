@@ -51,7 +51,7 @@ use crate::{
     terminal_settings::{AlternateScroll, CursorShape as SettingsCursorShape},
 };
 
-pub(super) use hyperlinks::{HyperlinkMatch, RegexSearches};
+pub(super) use hyperlinks::{HyperlinkMatch, RegexSearches, sanitize_url_text};
 
 pub(super) type AlacrittyPty = tty::Pty;
 pub(super) type AlacrittyTerm = Term<ZedListener>;

@@ -69,12 +69,12 @@ use crate::alacritty::{
     AlacrittyTermConfig, AlacrittyTermLock, HyperlinkMatch, PtySender, RegexSearches,
     append_text_to_term, apply_config, clear_saved_screen, content_text, display_offset,
     display_only_term_config, find_from_terminal_point, full_content_range, last_non_empty_lines,
-    make_content, new_term, open_pty, pty_options, pty_term_config, resize, screen_lines,
-    scroll_display, scroll_to_point, search_matches, selection_text, set_default_cursor_style,
-    set_selection as set_term_selection, shrink_to_used, spawn_event_loop,
-    toggle_vi_mode as toggle_term_vi_mode, total_lines, update_selection as update_term_selection,
-    update_selection_to_vi_cursor, update_vi_cursor_for_scroll, used_lines, vi_goto_point,
-    vi_motion,
+    make_content, new_term, open_pty, pty_options, pty_term_config, resize, sanitize_url_text,
+    screen_lines, scroll_display, scroll_to_point, search_matches, selection_text,
+    set_default_cursor_style, set_selection as set_term_selection, shrink_to_used,
+    spawn_event_loop, toggle_vi_mode as toggle_term_vi_mode, total_lines,
+    update_selection as update_term_selection, update_selection_to_vi_cursor,
+    update_vi_cursor_for_scroll, used_lines, vi_goto_point, vi_motion,
 };
 use crate::mappings::colors::to_vte_rgb;
 use crate::mappings::keys::to_esc_str;
@@ -2857,9 +2857,10 @@ impl Terminal {
                     .get(mouse_cell_index)
                     .and_then(|cell| cell.hyperlink())
                 {
-                    // OSC 8 链接也走 `Event::Open`：由视图层决定开在预览器还是系统浏览器。
+                    // OSC 8 链接同样清洗尾部标点/不平衡括号，与悬停预览共用一套口径；
+                    // 由视图层决定开在预览器还是系统浏览器。
                     cx.emit(Event::Open(MaybeNavigationTarget::Url(
-                        link.uri().to_string(),
+                        sanitize_url_text(link.uri()).into_owned(),
                     )));
                 } else if e.modifiers.secondary(cx) {
                     self.events

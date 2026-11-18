@@ -12,6 +12,7 @@ use alacritty_terminal::{
 use log::{info, warn};
 use regex::Regex;
 use std::{
+    borrow::Cow,
     ops::{Index, Range as StdRange},
     time::{Duration, Instant},
 };
@@ -121,7 +122,9 @@ pub(crate) fn find_from_grid_point<T: EventListener>(
             }
         }
 
-        let url = url.uri().to_owned();
+        // OSC 8 的 URI 同样清洗尾部标点/不平衡括号：Grok 等 TUI 会把
+        // `链接（说明` 的括号并进 URI，与普通文本路径保持同一口径。
+        let url = sanitize_url_text(url.uri()).into_owned();
         let url_match = min_index..=max_index;
 
         Some((url, true, url_match))
@@ -238,13 +241,11 @@ fn try_osc8_url_to_path(url: url::Url) -> Option<String> {
     bytes.try_into().ok()
 }
 
-fn sanitize_url_punctuation<T: EventListener>(
-    url: String,
-    url_match: Match,
-    term: &Term<T>,
-) -> (String, Match) {
-    let mut sanitized_url = url;
-    let original_len = sanitized_url.len();
+pub(crate) fn sanitize_url_text(url: &str) -> Cow<'_, str> {
+    if !has_known_url_scheme(url) {
+        return Cow::Borrowed(url);
+    }
+    let mut sanitized_url = url.to_owned();
 
     // Count parentheses in the URL
     let (open_parens, mut close_parens, open_fw_parens, mut close_fw_parens) =
@@ -298,22 +299,50 @@ fn sanitize_url_punctuation<T: EventListener>(
         sanitized_url.truncate(cut);
     }
 
-    if sanitized_url.len() == original_len {
-        (sanitized_url, url_match)
+    if sanitized_url.len() == url.len() {
+        Cow::Borrowed(url)
     } else {
-        // 按字符前向重走定位新末端：全角字符占两格，不能按字符数 sub。
-        let mut end = *url_match.start();
-        for _ in sanitized_url.chars() {
-            end = term
-                .expand_wide(end, AlacDirection::Right)
-                .add(term, Boundary::Grid, 1);
-        }
-        let new_end = term
-            .expand_wide(end, AlacDirection::Left)
-            .sub(term, Boundary::Grid, 1);
-        let sanitized_match = Match::new(*url_match.start(), new_end);
-        (sanitized_url, sanitized_match)
+        Cow::Owned(sanitized_url)
     }
+}
+
+/// 只清洗 URL_REGEX 覆盖的已知 scheme；OSC 8 等外部来源的未知 scheme 原样返回。
+fn has_known_url_scheme(url: &str) -> bool {
+    let Some((scheme, _)) = url.split_once(':') else {
+        return false;
+    };
+    [
+        "ipfs", "ipns", "magnet", "mailto", "gemini", "gopher", "https", "http", "news", "file",
+        "git", "ssh", "ftp", "zed",
+    ]
+    .iter()
+    .any(|known| scheme.eq_ignore_ascii_case(known))
+}
+
+fn sanitize_url_punctuation<T: EventListener>(
+    url: String,
+    url_match: Match,
+    term: &Term<T>,
+) -> (String, Match) {
+    let sanitized_url = sanitize_url_text(&url);
+    let unchanged = sanitized_url.len() == url.len();
+    let sanitized_url = sanitized_url.into_owned();
+    if unchanged {
+        return (url, url_match);
+    }
+
+    // 按字符前向重走定位新末端：全角字符占两格，不能按字符数 sub。
+    let mut end = *url_match.start();
+    for _ in sanitized_url.chars() {
+        end = term
+            .expand_wide(end, AlacDirection::Right)
+            .add(term, Boundary::Grid, 1);
+    }
+    let new_end = term
+        .expand_wide(end, AlacDirection::Left)
+        .sub(term, Boundary::Grid, 1);
+    let sanitized_match = Match::new(*url_match.start(), new_end);
+    (sanitized_url, sanitized_match)
 }
 
 /// 返回首个不平衡的 `(` / `（` 的字节下标；平衡时返回 `None`。
@@ -790,6 +819,52 @@ mod tests {
                 input
             );
         }
+    }
+
+    #[test]
+    fn osc8_uri_text_is_sanitized_without_a_term() {
+        for (input, expected) in [
+            (
+                "https://github.com/xcrong/crossh/issues/9（标签",
+                "https://github.com/xcrong/crossh/issues/9",
+            ),
+            (
+                "https://zh.wikipedia.org/wiki/範例_（消歧義）",
+                "https://zh.wikipedia.org/wiki/範例_（消歧義）",
+            ),
+            (
+                "https://en.wikipedia.org/wiki/Example_(disambiguation)",
+                "https://en.wikipedia.org/wiki/Example_(disambiguation)",
+            ),
+            // 未知 scheme 原样返回。
+            ("vscode://file/foo(bar", "vscode://file/foo(bar"),
+        ] {
+            assert_eq!(sanitize_url_text(input).as_ref(), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn osc8_hyperlink_uri_uses_the_plain_text_sanitizer() {
+        let mut term = Term::new(Config::default(), &TermSize::new(200, 24), VoidListener);
+        let mut processor = alacritty_terminal::vte::ansi::Processor::new();
+        processor.advance(
+            &mut term,
+            "\x1b]8;;https://github.com/xcrong/crossh/issues/9（标签\x07\
+             https://github.com/xcrong/crossh/issues/9（标签\x1b]8;;\x07"
+                .as_bytes(),
+        );
+
+        let mut searches = RegexSearches::default();
+        let found = find_from_grid_point(
+            &term,
+            AlacPoint::new(Line(0), Column(0)),
+            &mut searches,
+            PathStyle::local(),
+        )
+        .expect("OSC 8 link");
+
+        assert!(found.is_url);
+        assert_eq!(found.text, "https://github.com/xcrong/crossh/issues/9");
     }
 
     macro_rules! test_hyperlink {
