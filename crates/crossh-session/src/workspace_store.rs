@@ -794,12 +794,22 @@ mod tests {
     fn migration_imports_fixed_then_recent_and_marks_once() {
         let root = temp_root("migrate");
         let source = root.join("settings.toml");
+        // 用测试目录构造绝对路径：迁移到 Windows 时不会退化成 `/tmp/...`。
+        let pinned = root.join("pinned-project");
+        let pinned_cwd = pinned.join("sub");
+        let recent = root.join("recent-project");
+        let toml_path = |path: &Path| path.to_string_lossy().replace('\\', "\\\\");
         std::fs::write(
             &source,
-            r#"
-recent_local_dirs = ["/tmp/crossh-recent-a"]
-pinned_local_tabs = [{ pin_id = 1, project_dir = "/tmp/crossh-pinned", cwd = "/tmp/crossh-pinned/sub", custom_name = "work", default_command = "echo hi", daemon_session_id = "s1" }]
+            format!(
+                r#"
+recent_local_dirs = ["{recent}"]
+pinned_local_tabs = [{{ pin_id = 1, project_dir = "{pinned}", cwd = "{cwd}", custom_name = "work", default_command = "echo hi", daemon_session_id = "s1" }}]
 "#,
+                recent = toml_path(&recent),
+                pinned = toml_path(&pinned),
+                cwd = toml_path(&pinned_cwd),
+            ),
         )
         .unwrap();
         let legacy: LegacySettings =
@@ -809,10 +819,7 @@ pinned_local_tabs = [{ pin_id = 1, project_dir = "/tmp/crossh-pinned", cwd = "/t
         let mut candidate = import_legacy(&workspace, &legacy, &source).unwrap();
         assert!(candidate.legacy_imported.is_some());
         assert_eq!(candidate.projects.len(), 2);
-        assert_eq!(
-            candidate.projects[0].root,
-            PathBuf::from("/tmp/crossh-pinned")
-        );
+        assert_eq!(candidate.projects[0].root, pinned);
         assert_eq!(candidate.projects[0].tabs.len(), 1);
         assert_eq!(
             candidate.projects[0].tabs[0].default_command.as_deref(),

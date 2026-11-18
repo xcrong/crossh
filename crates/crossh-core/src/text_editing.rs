@@ -379,10 +379,7 @@ impl TextEditingState {
             return true;
         }
         // 垂直未移动，但若刚刚坍缩过选区则视为已处理（与 move_horizontal 一致）
-        if had_selection {
-            return true;
-        }
-        false
+        had_selection
     }
 
     /// 全选。
