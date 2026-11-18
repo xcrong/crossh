@@ -1,0 +1,131 @@
+# Tasks
+
+> 顺序按依赖排列。每个任务自带验证方式；本机不运行任何 Cargo 命令（磁盘约束），`cargo` 类验证统一由 CI 承接并在 7.1–7.3 回填。
+
+## 1. 工作区模型（零 `gpui`）
+
+- [ ] 1.1 新增 `crates/crossh-session/src/workspace.rs`：定义 `Workspace`、`Project`、`Tab`、`PaneNode`、`Pane`、`Axis`、`TermSize`、`ProjectId`/`TabId`/`PaneId`/`SplitId`、`LegacyImport`，保持零 `gpui` 依赖；实现 `normalize_project_root` 与 `normalize_pane_cwd`（绝对化 + 词法清理，存在时 canonicalize，缺失时保留，不调用 `normalize_local_cwd`/`normalize_recent_dirs`）。验证：单元测试覆盖 serde 往返、ID 单调、`format_version` 默认值、相对路径绝对化、缺失根与缺失 cwd 保留。
+- [ ] 1.2 实现树操作：查找 pane、枚举 leaves、读取/设置活跃 pane、`SplitPane` 替换叶子、`ClosePane` 折叠父 split、空 tab 删除、tab 重排、比例 clamp 到 `0.05..=0.95`、焦点迁移到兄弟子树第一个 leaf。验证：单元测试覆盖 2×2、三层嵌套、关闭根节点、关闭非活跃 pane；另加 `legacy_2x2_shape_is_expressible`：把旧 `TerminalSplitState` 四槽位映射为 `Split(Row, Split(Column, left, bottom_left), Split(Column, right, bottom_right))`，断言遍历顺序与焦点顺序——这是模型表达能力测试，旧 2×2 从未持久化，不是迁移路径。
+- [ ] 1.3 实现 `WorkspaceOp` 与纯函数 `apply`，按 design D5 表格逐项落地：`OpenProject`（去重；已存在则激活并保证至少一个 tab；新项目且根存在则建 tab + 单 pane；缺失根建 `available=false` 的项目 + tab + `Unavailable` pane）、`StopProject`、`ForgetProject`、`ActivateProject`（只切换活跃项目，不建 tab）、`CreateTab`（默认 cwd 取活跃 pane cwd 否则项目根；无活跃项目且未给项目 → `no_active_project`）、`CloseTab`（关闭全部 pane 并激活后一个、没有则前一个）、`ActivateTab`、`ReorderTabs`（`before_tab_id: Option<TabId>`，`None` 表示末尾）、`RenameTab`、`SetTabCommand`、`SplitPane`（cwd 默认继承目标 pane）、`ClosePane`、`ActivatePane`（同步三级活跃字段）、`SetSplitRatio`、`SetPaneCwd`（仅 `Dormant`/`Unavailable`；`Starting` → `pane_starting`、`Live` → `pane_live`）、`EnsurePaneSession`、`RefreshAvailability`。验证：每个 op 至少一条 serde 往返与一条 apply 测试，覆盖 `Applied`/`Unchanged`/`Rejected` 与错误码；断言 revision 仅在状态实际变化时 +1。
+- [ ] 1.4 实现项目顺序：打开已有项目移到最前、新项目插到最前、`ForgetProject` 后活跃项目回退到顺序最前的另一个项目；`last_opened_at` 只写不排序。验证：纯函数测试覆盖三种顺序变化与空列表回退。
+- [ ] 1.5 实现持久模型到快照的投影：`ProjectSnapshot.available`、`TabSnapshot`、`PaneSnapshot { id, cwd, size, session: Option<SessionId>, cwd_available, status }`、`PaneStatus::{Starting,Live,Dormant,Unavailable}`（`Live` 不内嵌会话 id；`reason` 取稳定枚举 `not_started`/`spawn_failed`/`project_root_missing`/`cwd_missing`）、`StorageErrorInfo { kind, message, path }`；快照不设 workspace 级 `active_pane`，活跃 pane 由 `active_project → active_tab → active_pane` 投影；运行时字段不得进入持久模型。验证：纯函数测试断言快照与树遍历一致；覆盖四态与判定顺序（有会话 → `Live` 且 `session = Some`，即使项目根或 cwd 缺失；无会话 → `Starting` → 可物化 `Dormant` → `Unavailable`），以及 `cwd_available` 与项目 `available` 独立变化；断言同一 tab 只有一个 `active_pane`，跨 tab 激活会同步 `active_tab` 与 `active_project`。
+
+## 2. 持久化、配置根与迁移输入
+
+- [ ] 2.1 在 `crates/crossh-core/src/config/mod.rs`（当前只有模块注释）新增共享 `config_root()`、`settings_path()`、`settings_read_path()` 与 `workspace_path()`：`CROSSH_CONFIG_DIR` 的值**直接作为 crossh 配置根**，不再拼接 `crossh`（debug/release 都不加后缀）；未设置时取 `dirs::home_dir().join(".config/crossh[-dev]")`（debug 加 `-dev`，**不使用 `dirs::config_dir()`**）。`settings_path()` 是新写入落点 `config_root()/settings.toml`；`settings_read_path()` 在它存在时返回它，否则在未设置 `CROSSH_CONFIG_DIR` 且旧路径 `~/.config/crossh/settings.toml` 存在时返回旧文件（只读回退，不回退写入）；workspace 为 `config_root()/daemon/workspace.json`；Unix 目录 `0700`、文件 `0600`。`crates/crossh-core/src/locale.rs:41-43` 的 `settings_path()`、新增的 `crates/crossh-session/src/workspace_store.rs` 与 `src/features/settings/persistence.rs` 全部改调这个解析器（读取用 `settings_read_path()`，保存用 `settings_path()`）。验证：单元测试注入 home 与 env，覆盖 macOS/Linux/Windows 路径拼接、debug/release 默认后缀、`CROSSH_CONFIG_DIR` 指到临时根时 settings 为 `<root>/settings.toml`、workspace 为 `<root>/daemon/workspace.json` 且不出现重复 `crossh` 目录、权限位、`locale.rs` 与 GUI 读到同一路径、debug 在 `crossh-dev/settings.toml` 不存在时回退读 `~/.config/crossh/settings.toml` 且 `settings_path()` 仍指向 `crossh-dev`、debug 回退只读且旧文件不被新版写入、release 的 `settings_path()` 与迁移源同路径、`CROSSH_CONFIG_DIR` 设置时不回退；集成测试同时设置 `CROSSH_CONFIG_DIR` 与 `CROSSH_CACHE_DIR` 指向临时目录后起 daemon，断言 detached 进程继承两个变量、不连接真实 daemon、不读写真实用户目录。
+- [ ] 2.2 实现加载：主文件 → 备份 → 空工作区；主文件解析失败改名为 `workspace.json.corrupt-<timestamp>` 并保留备份；主文件与备份都损坏时两者改名隔离后空启动；`format_version` 高于当前返回 `FormatTooNew`，不改写、不重命名、不发布端口文件，退出前尽力写 `config_root()/daemon/daemon.error`（一行原因、`0600`），成功启动后删除陈旧的 `daemon.error`，删除失败只记日志且不影响启动。验证：单元测试覆盖主文件损坏、备份损坏、双损坏、版本过高；对版本过高的文件做逐字节断言（前后哈希一致）；断言错误文件内容、成功启动后的删除，以及删除失败（只读目录或注入 fs 错误）时启动照常成功。
+- [ ] 2.3 实现原子保存与单一 writer：临时文件 + `sync_all` + 主文件转 `workspace.json.bak` + `rename` + Unix 目录同步；writer task 串行写，写入期间到达的新载荷覆盖待写槽（整份状态，天然合并），但带 ack 的结构请求不得被后续 debounce 载荷吞掉：writer 为每个带 ack 的请求在其 revision 已包含于某次完成写入后单独 ack，可以合并写入、不能跳过 ack。验证：用可注入的 writer 钩子在 rename 前后断言 tmp/bak 状态，不依赖真实进程 kill 时序；断言结构写入进行中再次 dirty 时两个 ack 都在包含对应 revision 的写入完成后返回。
+- [ ] 2.4 实现写入调度与耐久性：结构变更等 writer ack 后才向请求方回执，比例/焦点/cwd/尺寸 debounce 300 ms、入队后即可回执；写失败设置 `storage_error`、按 1 s→2 s→4 s…30 s 退避重试并保留最新载荷，成功后清除；失败期间的结构回执为 `Applied` + `durable=false` + `storage_error`，元数据回执为 `Applied` + `durable=false` + `storage_error=None`，`Unchanged`/`Conflict`/`Rejected` 不改变持久性且不带 `storage_error`；writer 每次写入尝试后向 actor 投 `PersistenceResult { revision, result }`，成功与失败都触发同 revision 快照重发（失败记录错误、成功清除错误），不推进 revision；shutdown 取消 debounce、flush 并等待 writer ack（上限 5 s）。验证：用可控时钟 + 注入 store 断言合并次数、单次写内容为最新全量、结构回执在 ack 之后、元数据回执不等待写入、写失败回执的 `durable`/`storage_error` 组合、错误清除后的同 revision 快照不带错误、恢复后不丢修改、flush 顺序与 ack、退避序列；断言崩溃语义边界为“已回执结构变更不丢（未落盘回执除外）、未回执视为未发生、最近 500 ms 元数据可丢”。
+- [ ] 2.5 实现迁移读取：确定迁移源（`settings_path()` 存在时用它，否则按 2.1 的只读回退用 `~/.config/crossh/settings.toml`，`CROSSH_CONFIG_DIR` 设置时不回退）；首次迁移前把源文件逐字节复制为源文件旁的 `<源文件>.pre-workspace`（`0600`，同一源文件的多次启动共享），复制失败则不迁移；独立的 legacy 反序列化结构（`recent_local_dirs`、`recent_local_dirs_max`、`pinned_local_tabs` 与 `PinnedLocalTab` 的 `pin_id`/`project_dir`/`cwd`/`custom_name`/`default_command`/`daemon_session_id`）从快照读取（快照不存在时读源文件）；工作区内 `legacy_imported` 标记；候选工作区构造成功且持久化成功后才采纳；固定标签在前、最近目录在后，活跃项目取第一个固定标签项目、否则第一个最近目录；缺失根保留与项目去重按规范化根；迁移读取不得在迁移完成前改写源文件，debug 回退源不被新 debug 写入，release 的首次保存 MAY 重写同路径的 `~/.config/crossh/settings.toml` 并删除旧字段，旧值由 `<源文件>.pre-workspace` 快照保留。验证：旧 TOML fixture 覆盖 pinned 名称/默认命令/cwd、缺失目录、`daemon_session_id` 丢弃、CLI 先 `crossh open` 后再迁移、写失败不设标记且下次重试、只导入一次、debug 与 release 各自配置根各导入一次；旧 debug fixture 放在 `~/.config/crossh/settings.toml`，新 debug 首次启动导入到 `crossh-dev` workspace，旧文件逐字节不变，快照为 `~/.config/crossh/settings.toml.pre-workspace`，`crossh-dev/settings.toml` 出现后不再读旧文件；release fixture 首次保存后 `~/.config/crossh/settings.toml` 不再含旧字段，`.pre-workspace` 存在且旧字段可从快照恢复。
+
+## 3. Daemon 运行时
+
+- [ ] 3.1 新增 `WorkspaceActor`：独占 `Workspace` 与 `Runtime`（`pane_session`、`session_pane`、`starting`、`attached_clients`），接收 `Mutate`/`Get`/`Attach`/`AttachEnded`/`PersistenceResult`/`BindSession`/`UnbindSession`/`SessionSpawnFailed`/`SessionExited`/`PaneCwdChanged`/`ResizePane`/`ClosePane`/`CloseTab`/`SetPaneCwd`/`RefreshAvailability`/`Shutdown`；副作用通过 `Spawn`/`CloseSession`/`ResizeSession` 效果投给运行时任务，actor 内不得 spawn PTY 或持会话锁。验证：单元测试断言命令串行、`Starting` 去重、`attached_clients` 在 attach/断连上正确增减、`PersistenceResult` 不推进 revision、效果只在 actor 外执行；`rg` 证明 `Workspace`、`Runtime` 与归属镜像的可变访问只出现在 `workspace_actor.rs`，其余模块只持有快照或克隆条目。
+- [ ] 3.2 实现回执与 revision：`request_id`、`outcome`、`revision`、`created` ids、`OpError`、`durable`、`storage_error`；`expected_revision` 做 CAS，未携带时 last-writer-wins；revision 只在持久布局状态（项目、tab、pane、分屏、顺序、名称、cwd、尺寸、焦点与活跃位置）实际变化时 +1，仅运行时字段（`available`、`PaneStatus`、`session`、`cwd_available`、`storage_error`）变化的操作（休眠 `EnsurePaneSession`、有变化的 `RefreshAvailability`、`BindSession`/`UnbindSession`、`PersistenceResult`）返回 `Applied` 且 revision 不变，并重发同 revision 快照；时序为“应用 → 序列化 → 投 writer →（结构变更）等 writer ack → 回执 → 广播快照”，元数据在入队后回执；回执与快照同 revision；`PersistenceResult` 更新 `storage_error` 后按同 revision 规则重发快照（成功清除错误时也必须重发）。验证：单元测试覆盖四种 outcome 与 revision 规则；集成测试断言结构回执不早于 `fsync`、回执 revision 与随后快照相同、客户端不依赖到达顺序（先到回执或先到快照两种交错都通过）；休眠 `EnsurePaneSession` 回执 `Applied` 且 revision 不变、快照转 `Starting`，`Live`/`Starting`/`Dormant` 且 0 attach/`Unavailable` 回执 `Unchanged`，`RefreshAvailability` 有变化回执 `Applied`（revision 不变）、无变化回执 `Unchanged`；同 revision 重发快照只合并运行时字段、布局字段不一致时丢弃；结构写失败回执为 `Applied` + `durable=false` + `storage_error`，恢复后同 revision 快照的 `storage_error=None`。
+- [ ] 3.3 实现关闭路由与副作用顺序：连接任务收到 `Close` 时经归属镜像解析，命中则投 `ClosePane`，未命中按临时会话走 kill；actor 先解绑（清运行时映射、写镜像、pane 转休眠），更新布局，完成结构持久化，再投 `CloseSession`，最后回执（回执 MUST NOT 等待会话结束）；`StopProject`/`ForgetProject`/`CloseTab` 按同一顺序——先解绑全部目标 pane、更新布局并完成结构持久化，再逐个投 `CloseSession`，最后回执；自然退出用 `SessionExited`，已解绑的旧 session 与重复事件被忽略；`shutting_down` 后忽略退出事件。验证：集成测试覆盖显式关闭、自然退出、重复退出、关闭后迟到的旧 session 事件，以及注入延迟退出会话时回执不等待退出、回执快照不含目标 pane、随后迟到的 `SessionExited` 不改布局、不重复删 pane；停止/忘记/关闭 tab 三条路径行为一致。
+- [ ] 3.4 实现尺寸与比例：`Resize` 只在 controller 校验通过后投 `ResizePane`，actor 写 `pane.size`、debounce 持久化并投 `ResizeSession`；`SetSplitRatio` 只改 `Split.ratio`，不触发 PTY resize。验证：集成测试断言 observer 的 resize 被拒且 `pane.size` 不变；调整比例后 PTY 尺寸不变、`pane.size` 不变。
+- [ ] 3.5 实现归属镜像与 `List`/`Attach` 合并：归属镜像只由 actor 在 bind/unbind 时写；`List`/`Attach` 在 `Sessions` 锁内只构造 `SessionInfo` 快照，释放锁后合并 `project_id`/`tab_id`/`pane_id`；`info_of` 不再在锁内拼接归属。验证：并发 `List`/`Attach` 与 mutate 压测无死锁；`rg` 证明持 `Sessions` 锁期间没有 actor 调用。
+- [ ] 3.6 实现可用性刷新与 pane 状态投影：`Get`、`Attach`、`ActivateProject`、显式 `RefreshAvailability` 重新计算 `available`、`cwd_available`、`session` 与 pane 状态；判定顺序为有会话 → `Live` 且 `session=Some`（项目根或 cwd 缺失也不降级）、否则 `Starting`、否则项目可用且 cwd 存在 → `Dormant`、否则 `Unavailable`（项目根缺失或 cwd 缺失）；布局未变时 revision 不变；运行时字段有变化时 `RefreshAvailability` 回执 `Applied` 并重发快照，无变化时回执 `Unchanged`，但仍重发同 revision 快照。验证：集成测试断言目录删除后快照 `available=false`、无会话 pane 一律 `Unavailable`，而 live pane 仍给 `session` 且 GUI 可 attach；目录恢复后无需任何布局操作即变 `true`；断言 `RefreshAvailability` 有变化时回执 `Applied` 且 revision 不变、无变化时回执 `Unchanged`；断言 cwd 缺失的 dormant pane 不被 spawn，`SetPaneCwd` 到存在目录后可重新物化，对 live pane 仍返回 `pane_live`。
+- [ ] 3.7 实现物化时序：daemon 启动只加载与发布快照、不创建会话；首个 `WorkspaceAttach` 物化活跃 tab 中每个可物化 leaf（无会话、项目可用、cwd 存在），`Live` 不重复 spawn、`Starting` 不重复投递、`Unavailable` 不 spawn；非活跃 tab 仅在 `attached_clients > 0` 时于 `ActivateTab`/`ActivateProject` 按同一规则物化；`OpenProject`/`CreateTab`/`SplitPane`/`EnsurePaneSession` 仅在 `attached_clients > 0` 时立即物化其新建或新激活的可物化 pane，为 0 时只改布局与活跃位置；休眠物化的 `EnsurePaneSession` 回执 `Applied`（revision 不变），0 attach 时回执 `Unchanged` 并保持 `Dormant`；`OpenProject` 的缺失根分支保持 `Unavailable` 且不 spawn；spawn 在 actor 外执行，成功后 `BindSession`，失败 `SessionSpawnFailed` 并保持 dormant。验证：集成测试在重启后先断言 `List` 为空、`daemon status` 仍有项目/tab/pane 计数，再 attach 并断言活跃 tab 的可物化 pane 有会话、后台 tab 没有；断言活跃 tab 同时含 Live/Dormant/Unavailable 时只 spawn Dormant；GUI 已 attach 时 `crossh open` 新项目/空项目补 tab 后 pane 不停在 `Dormant`；无 attach 客户端时 `crossh open` 后 pane 保持 `Dormant`，GUI attach 后才物化；0 attach 时 `ActivateTab`/`ActivateProject` 不 spawn，休眠 `EnsurePaneSession` 回执 `Unchanged`，有 attach 时回执 `Applied` 且 revision 不变。
+- [ ] 3.8 改写 daemon 停止路径：`Shutdown` 置位 `shutting_down` → 取消 debounce 并等待 flush ack → 投递关闭会话效果 → 删除端口文件 → 退出，替换 `serve.rs:329-333` 的“删端口后立即 `process::exit(0)`”；停止期间的会话结束 MAY 延迟完成，`SessionExited` MUST NOT 改树。验证：集成测试断言停止期间延迟退出与重复 `SessionExited` 都不改树、停止不等待会话真正结束、停止后工作区文件与停止前一致。
+- [ ] 3.9 新增 daemon 集成测试 `crates/crossh-session/tests/workspace_lifecycle.rs`：打开项目 → 建 tab/分屏 → 客户端断开重连（布局与绑定不变）；杀 daemon 重启（布局不变、pane id 不变、session id 更新、物化按 3.7 时序）；`cd` 到子目录后项目数量不变；已有 attach 客户端时 `crossh open` 新项目/空项目会物化其可物化 pane，缺失根项目仍不 spawn；无 attach 客户端时 `crossh open` 后 pane 保持 `Dormant`。验证：CI 运行 `cargo test -p crossh-session --test workspace_lifecycle`。
+
+## 4. 协议与客户端
+
+- [ ] 4.1 把 `PROTOCOL_VERSION` 升到 2，追加 `WorkspaceGet = 17`、`WorkspaceAttach = 18`、`WorkspaceMutate = 19`、`WorkspaceSnapshot = 20`、`WorkspaceMutateReply = 21`，新增 `workspace-v1` 能力标志。验证：协议单元测试覆盖每个 kind 的往返、未知 kind 拒绝、版本不匹配文案包含 `crossh daemon stop`；断言服务端未声明 `workspace-v1` 时客户端拒绝使用工作区且不静默降级。
+- [ ] 4.2 定义载荷：`WorkspaceMutateRequest`/`WorkspaceMutateReply`（含 `created`、`OpError`、`durable`、`storage_error`）、`WorkspaceSnapshot`（不设 workspace 级 `active_pane`）/`ProjectSnapshot`/`TabSnapshot`/`PaneNodeSnapshot`/`PaneSnapshot`（含 `session: Option<SessionId>` 与 `cwd_available`）/`PaneStatus`（`Starting`/`Live`/`Dormant`/`Unavailable`，不内嵌会话 id；`reason` 为稳定枚举）/`StorageErrorInfo { kind, message, path: Option<PathBuf> }`；`SessionInfo` 追加 `project_id`/`tab_id`/`pane_id`，临时会话三项为 `None`；从协议删除 `ImportLegacy`。验证：serde 往返测试覆盖有归属与无归属会话、四种 `PaneStatus`、四种 `MutateOutcome`、`durable` 与 `storage_error` 的四种组合（含 `storage_error` 有/无 path 两种形态）、`session` 的有/无两种形态、`cwd_available` 的两种取值；断言快照序列化结果不含 workspace 级 `active_pane`。
+- [ ] 4.3 扩展 `client.rs`：`workspace_get`、`workspace_attach`（返回快照订阅）、`workspace_mutate`（等待并返回回执，带超时）、服务端快照推送处理。验证：集成测试用真实 daemon 完成 get/attach/mutate 闭环；断言回执超时返回错误而不是成功。
+- [ ] 4.4 改造 `ensure_daemon`（`client.rs:162`）与 `daemon_stop`（`client.rs:456`）：probe 返回 `Absent`/`Ready`/`Incompatible`，`Incompatible` 不删 `daemon.port`、不 spawn；`daemon_stop` 先 `read_daemon_addr()`，当前版本握手失败且为版本错误时用 v1 握手重试，再发 `Shutdown`；两种握手都失败时给可执行错误并非零退出，任何分支都不拉起新实例。验证：用一个伪造的 v1 握手应答器（或旧二进制）跑 `crossh daemon stop`，断言退出 0、旧实例消失、端口文件由旧属主删除；断言 v2 客户端连 v1 时系统中仍只有一个 daemon；断言两次握手都失败时错误包含端口文件路径与匹配版本提示。
+- [ ] 4.5 更新 `List`/`Created`/`Attached` 的归属合并与 CLI 消费点；确保临时会话仍可列表与接入。验证：集成测试断言 `crossh run` 的临时会话三项归属为 `None`，布局 pane 的三项与快照一致。
+- [ ] 4.6 删除 `ImportLegacy` 的协议 kind、client API 与 GUI 触发路径（含 `WorkspaceGet` 为空才导入的分支）。验证：`rg -n 'ImportLegacy' src crates` 无输出。
+
+## 5. GUI 投影与渲染
+
+- [ ] 5.1 新增纯投影模块：快照 → 项目/tab 行、树遍历、活跃 pane 查找（`active_project → active_tab → active_pane`）、关闭 pane/tab 后的焦点迁移、同 revision 快照的运行时字段合并（`available`、`session`、`cwd_available`、`PaneStatus`、`storage_error`）、git 状态按 `PaneId` 重绑。验证：单元测试覆盖空工作区、多项目、2×2、三层嵌套、关闭根节点、daemon 重启后 git 状态仍落在同一 pane；断言同一 tab 只有一个活动 pane，跨 tab 激活同步 `active_tab`，同 revision 只合并上述运行时字段而不改布局，live pane 在项目根或 cwd 缺失时仍保留 `session`。
+- [ ] 5.2 重构 `WorkspaceState`：持有 `WorkspaceSnapshot`、`BTreeMap<PaneId, Entity<TerminalView>>`、`compose: BTreeMap<PaneId, ComposeEntry>`、`git_status`/`git_refresh: BTreeMap<PaneId, _>`、`connection`、拖拽预览；删除 `ActiveView`/`active_view`、`LocalSession`、`LocalSessionId`、`SessionRegistry.local_sessions`；活动位置由三级字段投影得出，不读不存在的 workspace 级 `active_pane`。验证：纯逻辑测试覆盖视图复用、重新 attach、移除；`rg` 确认上述符号无残留（见 5.6）。
+- [ ] 5.3 实现递归分屏渲染：`PaneNodeSnapshot` 的 `Row`/`Column` 映射到 `flex_row`/`flex_col`，分隔条按 `ratio` 布局；拖动只更新本地预览，松手发 `SetSplitRatio`。验证：比例计算纯函数测试覆盖 clamp、嵌套与最小尺寸；手动检查分屏拖动。
+- [ ] 5.4 改造 tab strip：读取活跃项目的 `TabSnapshot`，点击发 `ActivateTab`，拖拽发 `ReorderTabs`，新建/关闭/重命名/默认命令发对应 op；`default_command` 仍由 GUI 在 pane 首次空闲（attach 且回放完成）时执行，daemon 只持久化；删除 pin 相关分支。验证：投影单元测试覆盖 tab 顺序、活跃标记、关闭后的相邻激活；断言 daemon 侧不会自动执行默认命令。
+- [ ] 5.5 改造 sidebar/empty state：读取 `projects` 顺序，点击发 `ActivateProject`，停止/忘记发 `StopProject`/`ForgetProject`，缺失根显示不可用标记；empty state 的“继续”入口改读项目顺序；删除 `recent_dirs` 列表。验证：投影单元测试覆盖顺序、重复 basename、缺失根与空项目。
+- [ ] 5.6 删除旧路径并可机械验证。验证：以下三组 `rg` 结果写入实现说明。
+  - **A 组（全仓必须 0 命中）**：`ActiveView`、`active_view`、`LocalSessionId`、`local_sessions`、`LocalDir`、`local_dirs`、`rebuild_local_dirs`、`sync_local_dirs`、`restore_pinned_local_tabs`、`restore_pinned_tabs_for_project`、`adopt_orphan_daemon_sessions`、`TerminalSplitState`、`SplitSide`、`split_widths`、`split_heights`、`split_heights_right`、`activate_local_dir`、`ImportLegacy`、`custom_name`。
+  - **B 组（只允许出现在 `crates/crossh-session/src/workspace_store.rs` 的 legacy 模块与其测试夹具）**：`recent_local_dirs`、`recent_dirs_max`、`pinned_local_tabs`、`pin_id`、`daemon_session_id`。
+  - **C 组（允许清单，逐项核对，其余命中即失败）**：
+    - 定义：`crates/crossh-core/src/single_instance.rs` 的 `try_forward`（`:88`）、`try_forward_to`（`:102`）、`write_request`（`:139`）、`read_and_validate`（`:214`）与该文件的单元测试；`resolve_open_path`（`:74`）同样只允许留在该文件与它的测试里。
+    - re-export：`src/app/single_instance.rs:7-8` 的 `pub(crate) use crossh_core::single_instance::{...}`。
+    - 调用：`src/main.rs` 的 `resolve_open_path`（`:119`）与 `try_forward(None)`（`:129`，或改用的主窗口专用入口 `try_forward_window()`）；`src/app/cli.rs:47` 只有注释提及。
+    - git/note：`src/bin/crossh-git.rs:35` 的 `try_forward_git` 与 `src/bin/crossh-note.rs:46` 的 `try_forward_note`，目录语义不变。
+    - 检查命令只看真实调用与定义：`rg -n 'try_forward\(|resolve_open_path' src crates`。它不命中 `src/infrastructure/tray.rs:199` 注释里的 `` `try_forward` ``、`try_forward_to`、`try_forward_git`/`try_forward_note`；命中必须全部落在上面的允许清单内。核对主窗口只以 `None` 调用、单实例载荷为空。
+- [ ] 5.7 改造终端视图生命周期：`TerminalEvent::Closed` 不再触发 `close_local_session`，布局变化只由快照 diff 处理；`TerminalEvent::SessionAttached` 不再写已删除的 `daemon_session_id`，只解除输入门控；`TerminalEvent::CwdChanged` 只刷新链接解析与 git；布局 pane 的关闭统一发 `ClosePane`/`CloseTab`，除 design D15 的六个调用点外还包括分屏折叠与退休的三条路径：`shell/split.rs:39-78` 的 `toggle_terminal_split`（批量关闭在 `:66`/`:72`，入口 `view.rs:722`、`command_palette.rs:313`）保留焦点 pane、其余发 `ClosePane` 并把 tab 留作单 pane；`shell/split.rs:156-168` 的 `retire_split_pane` 发 `ClosePane`（`KeepAsTab` 分支不发）；`shell/split.rs:172-220` 的 `prepare_terminal_split_view_close` 对布局 pane 发 `ClosePane`、临时终端仍本地 detach。验证：单元测试覆盖 daemon 重启时同一 pane id 重新 attach 不删除视图；`rg -n 'close_local_session|request_close_local_session' src/features/workspace/shell/split.rs` 只命中临时终端或非布局分支；`rg -n 'toggle_terminal_split|retire_split_pane|prepare_terminal_split_view_close' src/features/workspace` 命中的关闭分支均发 `ClosePane`，且“退出分屏”后 tab 仍存在（折叠而非结束 tab）。
+- [ ] 5.8 启动与重连：读 settings（只读）→ `ensure_daemon` → 连接 → `WorkspaceAttach`；断开时保留最后快照、显示重连状态、禁用布局修改，重连后重新 attach；窗口重新获得焦点时发 `RefreshAvailability`；首次 attach 成功前不得保存 settings。验证：纯状态机测试覆盖 connecting/connected/reconnecting；`rg` 确认 settings 保存点都在 attach 之后或由用户操作触发。
+- [ ] 5.9 更新 `settings.rs` / `persistence.rs`：删除 `recent_dirs`、`recent_dirs_max`、`pinned_local_tabs` 与 `PinnedLocalTab`，保留展示与终端设置；`persistence.rs` 的 `settings_path()`/`settings_path_from_home` 改为调用 `crates/crossh-core/src/config` 的共享解析器（与 `crates/crossh-core/src/locale.rs` 同一函数），加载用 `settings_read_path()`、保存用 `settings_path()`，因此 debug 首次启动能读到旧 `~/.config/crossh/settings.toml` 而写入仍落在 `crossh-dev`。验证：用旧 settings fixture 反序列化并断言新结构（未知键被忽略）；保存后 `rg` 确认旧键消失；路径单测随 2.1，并断言 GUI 与 `locale.rs` 读同一文件；debug 保存只写 `crossh-dev/settings.toml` 且旧回退文件逐字节不变；release 首次保存重写 `~/.config/crossh/settings.toml`，旧键消失但 `.pre-workspace` 快照仍含旧字段。
+- [ ] 5.10 更新 i18n 与上下文菜单：新增停止/忘记项目、重试物化、缺失项目根、重连状态、存储错误、版本不兼容文案，两个 locale 同步。验证：两个语言文件键集合一致；手动浏览相关菜单。
+
+## 6. CLI、单实例、迁移落点与文档
+
+- [ ] 6.1 改造 `crossh open <path>`：解析路径（非法或不存在路径在 CLI 侧报错退出）→ 确保兼容 daemon（版本不兼容或启动失败直接报错、不启动 GUI）→ 连接 → `WorkspaceMutate(OpenProject)` 并等待回执（10 s）→ 成功后才确保 GUI。验证覆盖：GUI 已运行、GUI 未运行、非法路径、daemon 启动失败或 `daemon.error` 指示的启动失败、版本不兼容、回执超时；每一个拒绝分支都由真实 CLI 或假 daemon 触发，后四种断言非零退出且 GUI 未被启动、错误信息包含可执行原因。`OpenProject` 无目标对象且 `expected_revision: None`，因此 `not_found` 与 `Conflict` 不在此验证；`Conflict` 的 CAS 测试放在 7.5，用直接携带 `expected_revision` 的 `WorkspaceMutate`，不经过 `crossh open`。
+- [ ] 6.2 收敛单实例通道：真实实现在 `crates/crossh-core/src/single_instance.rs`（`src/app/single_instance.rs` 只是 re-export）。`src/main.rs:129` 的 `try_forward(initial_dir)` 改为 `try_forward(None)`（或新增只接受无载荷的 `try_forward_window()` 包装），`serve` 回调忽略 `Some` 目录；`try_forward_git`/`try_forward_note` 与 `read_and_validate` 的目录语义保持不变。`src/infrastructure/app_menu.rs:223-231` 的 `activate_project(cx, directory)` 改为 `show_main_window(cx)`，删除 `activate_local_dir`（`shell/mod.rs:579`）及其调用点。验证：GUI 已运行时 `crossh open` 只唤起窗口、不新建本地会话（`rg` 转发路径无目录参数 + 手测）；GUI 未运行时 spawn 后通过 attach 看到项目；旧版客户端发带目录载荷时 GUI 忽略目录、只 attach 工作区。
+- [ ] 6.3 改造 `crossh ls` 与 `crossh daemon status`：`ls` 输出 `ID ROLE ALIVE PROGRAM PROJECT TAB PANE CWD`，前四列顺序与宽度不变，`PROJECT`/`TAB`/`PANE` 输出稳定 id（无空格，临时会话为 `-`），`CWD` 保持最后一列；`status` 复用同一套三态分类，但通过无副作用只读 probe `probe_daemon()` 实现（只读取 `daemon.port`、连接与握手；不删除端口文件、不 spawn、不调用 `ensure_daemon`）：端口文件缺失或端口不可连接时输出 `not running` / `not running (stale port file)`，端口可达但握手版本不兼容时输出 `incompatible: found vN, expected vM; run crossh daemon stop` 并非零退出（不得降级为陈旧端口），端口可达且握手成功时保留第一行 `running (N sessions, port P)` 原文并追加第二行 `workspace: N projects, N tabs, N panes`；`config_root()/daemon/daemon.error` 只在没有可达且兼容的 daemon 时读取，存在时输出 `not running: <原因>` 并非零退出，不存在时按 `workspace.json` 的 `format_version` 推断“升级 crossh”；同步 `src/app/cli.rs` 的 `help_text` 与发布说明中的列顺序。验证：集成测试构造布局会话与临时会话，断言列、占位符、controller/observer 易手后 ROLE 变化；构造含空格的 cwd，断言按前七列之后的剩余字段解析；断言 `status` 第一行格式未变；v1 假 daemon 运行时输出 `incompatible:` 与 stop 命令且退出非零，并断言系统中只有一个 daemon、`daemon.port` 未被删除；格式过新且无 live daemon 时输出 `not running:` 原因；无端口文件时 status 不 spawn；成功启动后残留的 `daemon.error` 被忽略；端口文件缺失且无错误文件时输出原文；`--help` 文本与输出一致。
+- [ ] 6.4 更新文档：`docs/architecture.md` 增加工作区所有权、actor 边界与配置根（`crates/crossh-core/src/config` 是唯一解析器，settings 与 workspace 两个文件族、`CROSSH_CONFIG_DIR` 的值直接是根、`daemon.error` 的写入与读取路径）；`docs/engineering-notes/session-daemon-protocol.md` 增加 v2 消息、快照、revision 与回执，并**顺手修正其中过时的“重连带 `since_seq`”表述**（当前 `AttachRequest` 不带该字段）；`docs/engineering-notes/README.md` 索引同步；`README.md` 与发布说明写清 `crossh open`、`crossh ls` 的新列顺序、`crossh daemon stop` 的新语义、`CROSSH_CONFIG_DIR` 与回滚数据损失。验证：按 README 在干净 `CROSSH_CONFIG_DIR` 下走一遍；`rg -n 'since_seq' docs/` 无残留。
+- [ ] 6.5 处理 `session-host` delta 的合入顺序：代码实施可在 `session-daemon` 归档前开始，但本变更归档前必须确认 `specs/session-host/spec.md` 已作为 MODIFIED 合入主规格（当前 `openspec validate --strict` 提示 `target spec does not exist`）。验证：`openspec validate daemon-workspace --strict` 无该提示，且主规格中不再出现“固定标签重新接入同一个会话”。
+
+## 7. 集成验证
+
+- [ ] 7.1 CI 运行 `cargo test -p crossh-session`、相关 `cargo test --bin crossh`、`cargo clippy`、`cargo fmt --check` 与 `scripts/check-architecture.sh`；确认 `crossh-session` 无 `gpui` 导入、无源文件超过 2000 行。验证：CI 绿灯并回填；本机因磁盘限制不执行。
+- [ ] 7.2 macOS 实机冒烟：项目内二分屏且 cwd 不同 → 关 GUI 重开（布局/会话/cwd 原样）；重启 daemon 后布局保留、无客户端时 `crossh ls` 为空且 `daemon status` 仍有计数、attach 后只为活跃 tab 的可物化 pane 重建 shell；`crossh daemon stop` 后布局不丢且再启动时不产生双 daemon；退出分屏后 tab 保留为单 pane 且原会话未被结束；缺失项目根仍显示、live 会话仍可接入、目录恢复后刷新即可用；旧 settings 迁移只发生一次；`crossh open` 在 GUI 已运行/未运行两种情况下都只经 daemon（已 attach 时新 pane 不停在 `Dormant`，未 attach 时保持 `Dormant`）；手工制造格式过新文件后 `crossh daemon status` 输出 `not running: <原因>`；用旧二进制起 v1 daemon 后 `crossh daemon status` 输出 `incompatible:`。
+- [ ] 7.3 Windows/Linux CI：daemon 启动、配置根与权限、ConPTY 下的物化与退出、协议 v2 握手、`CROSSH_CONFIG_DIR` 与 `CROSSH_CACHE_DIR` 的继承与隔离。验证：对应 Actions 任务绿灯后回填；本机不跑跨平台构建。
+- [ ] 7.4 回归检查：A 组 `rg` 必须 0 命中，B/C 两组按 5.6 的允许清单逐项核对（C 组用 `rg -n 'try_forward\(|resolve_open_path' src crates`，其余命中即失败），结果附在实现说明；确认 `crossh git` / `crossh note` 端口文件与路由未变，`crates/crossh-core/src/single_instance.rs` 的 `try_forward_git`/`try_forward_note` 目录语义未变、主窗口 `serve` 忽略目录载荷；确认 `daemon.port` 与三份既有端口文件互不影响；`rg -n 'settings.toml' src crates` 只剩 `crates/crossh-core/src/config`、`locale.rs` 与迁移读取，没有第二处路径拼接。
+- [ ] 7.5 故障与并发验证：两个客户端并发 mutate、no-op、拒绝、新建 ID 回执；`Conflict` 用直接携带 `expected_revision` 的 `WorkspaceMutate` 触发（不经 `crossh open`）；结构回执在 `fsync` 之后、元数据回执不等待写入；结构写失败回执为 `Applied` + `durable=false` + `storage_error`，恢复后同 revision 快照清除错误；`format_version` 过新时文件逐字节不变、daemon 非零退出、`daemon.error` 写入且 `daemon status` 输出原因；pane 状态判定（有会话 → `Live` 且 `session=Some`，即使项目根或 cwd 缺失；无会话才按 Starting → Dormant → Unavailable）；停止/忘记/关闭 tab 后延迟退出与重复 `SessionExited` 不改布局；debounce 窗口内崩溃（可控时钟 + 注入 store）；v2 客户端连 v1 不产生第二个 daemon；`crossh daemon stop` 停止 v1；`daemon status` 对 v1 报 `incompatible:`，且不得产生第二个 daemon、不得删除端口文件；无端口文件时 `daemon status` 不 spawn。验证：每条对应一个测试名，列入 CI 报告。
+- [ ] 7.6 单实例与 CLI 组合：GUI 已运行、GUI 未运行、旧 GUI 混合版本（空载荷只聚焦、带目录载荷被忽略）、daemon 拒绝、单实例只唤起窗口；`crossh ls` 列（含含空格 cwd）与 `daemon status` 的三态（运行两行、`incompatible:`、`not running: <原因>`）；已 attach 时 `crossh open` 触发物化、未 attach 时只改布局。验证：集成测试 + 7.2 手测。
+
+## 8. 覆盖对照
+
+### 规格 requirement → 任务
+
+| Requirement | 任务 |
+| --- | --- |
+| 工作区由常驻进程持有并串行仲裁 | 3.1、3.2、5.2 |
+| 项目归属与 shell cwd 解耦 | 3.5、5.7、7.2 |
+| 布局身份跨重启稳定 | 1.1、3.7、5.1 |
+| 工作区持久化、耐久性与损坏恢复 | 2.2、2.3、2.4、7.5 |
+| 持久化失败与格式过新的可观察性 | 2.2、2.4、3.2、6.3、7.5 |
+| GUI 重启恢复完整布局 | 5.2、5.3、5.8、7.2 |
+| 常驻进程重启后布局立即可读、会话按 attach 物化 | 3.7、7.2 |
+| pane 与 session 生命周期分离 | 3.3、3.4、3.8 |
+| 关闭窗口只断开客户端 | 5.7、7.2 |
+| 项目生命周期操作语义明确 | 1.3、5.5 |
+| 布局修改有回执与可判定的 revision | 1.3、3.2、4.2、4.3、7.5 |
+| 布局操作的目标与默认值明确 | 1.3、1.4、5.4、5.5 |
+| pane 运行状态与错误可观察 | 1.5、3.6、5.10 |
+| 旧设置一次性迁移 | 2.5、6.1 |
+| 设置路径的旧版本只读回退 | 2.1、2.5、5.9、7.5 |
+| 协议版本与能力不匹配时明确拒绝 | 4.1、4.4、7.5 |
+| 缺失项目根时保留布局并可按需刷新 | 1.1、3.6、5.5 |
+| 任意前端可以读写工作区 | 4.3、6.1、6.3 |
+
+### 设计决策 → 任务
+
+| Decision | 任务 |
+| --- | --- |
+| D1 Workspace 模型 | 1.1、1.5 |
+| D2 布局身份与会话身份分离 | 1.1、3.4 |
+| D3 递归分屏树 | 1.2、5.3 |
+| D4 actor 命令集与锁顺序 | 3.1、3.3、3.4、3.5、3.6 |
+| D5 操作 schema | 1.3、1.4 |
+| D6 回执与 revision | 3.2、4.2、4.3 |
+| D7 持久化 writer 与格式保护 | 2.2、2.3、2.4、3.8 |
+| D8 配置根 | 2.1、5.9 |
+| D9 协议 v2 | 4.1、4.2、4.5 |
+| D10 物化时序 | 3.7 |
+| D11 旧设置迁移 | 2.5、4.6 |
+| D12 GUI 投影 | 5.1–5.10 |
+| D13 CLI、单实例与旧 daemon | 4.4、6.1、6.2、6.3 |
+| D14 缺失根与可用性刷新 | 3.6、5.5 |
+| D15 session-daemon 衔接 | 6.5、7.4 |
+| D16 测试与验证边界 | 7.1–7.6 |
+
+## Workflow follow-up
+
+- 进入 apply 前按 `AGENTS.md` 的 OpenSpec Change Review Gate 完成复审；`review.md` 由复审方更新，本变更不修改它。
+- 归档阻断条件：`session-daemon` 尚未归档时，本变更不得归档（`session-host` delta 的 `target spec does not exist`）；`crossh daemon stop` 对 v1 的支持、`format_version` 保护与 `daemon.error` 提示、结构变更的回执前 `fsync` 与 shutdown flush 未实现前不得发布。
+- 归档前确认复审的 must-fix 条件全部关闭、7.1–7.3 的 CI 结论已回填、6.5 的顺序条件已满足。
+- 发布说明写清：固定标签迁移为普通 tab；`crossh daemon stop` 结束会话但保留布局；回滚会丢失最近目录与固定标签，升级前备份 `settings.toml`。
