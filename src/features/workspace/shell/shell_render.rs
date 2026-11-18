@@ -125,7 +125,6 @@ impl Render for AppShell {
                 crate::features::workspace::scratch_bar::render_scratch_panel(self, window, cx),
             );
         }
-        #[cfg(target_os = "macos")]
         if self.link_preview_visible {
             root = root.child(super::link_preview::render_link_preview(self, window, cx));
         }
