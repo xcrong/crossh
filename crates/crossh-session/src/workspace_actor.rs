@@ -918,3 +918,445 @@ fn node_equal(
 pub fn empty_mirror() -> OwnershipMirror {
     Arc::new(RwLock::new(BTreeMap::new()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::oneshot;
+
+    struct OkSaver;
+
+    impl WorkspaceSaver for OkSaver {
+        fn save_bytes(&self, _bytes: &[u8]) -> Result<(), StorageErrorInfo> {
+            Ok(())
+        }
+    }
+
+    struct ToggleSaver {
+        fail: AtomicBool,
+    }
+
+    impl ToggleSaver {
+        fn new(fail: bool) -> Self {
+            Self {
+                fail: AtomicBool::new(fail),
+            }
+        }
+
+        fn set_fail(&self, fail: bool) {
+            self.fail.store(fail, Ordering::SeqCst);
+        }
+    }
+
+    impl WorkspaceSaver for ToggleSaver {
+        fn save_bytes(&self, _bytes: &[u8]) -> Result<(), StorageErrorInfo> {
+            if self.fail.load(Ordering::SeqCst) {
+                Err(StorageErrorInfo {
+                    kind: StorageErrorKind::Io,
+                    message: "disk full".to_string(),
+                    path: None,
+                })
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    struct GatedSaver {
+        started: mpsc::UnboundedSender<()>,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl WorkspaceSaver for GatedSaver {
+        fn save_bytes(&self, _bytes: &[u8]) -> Result<(), StorageErrorInfo> {
+            let _ = self.started.send(());
+            let _ = self.release.lock().unwrap().recv();
+            Ok(())
+        }
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "crossh-actor-{name}-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn spawn(store: Arc<dyn WorkspaceSaver>) -> (WorkspaceHandle, mpsc::UnboundedReceiver<Effect>) {
+        let (effects, effects_rx) = mpsc::unbounded_channel();
+        (
+            spawn_workspace_actor(Workspace::new(), store, effects, empty_mirror()),
+            effects_rx,
+        )
+    }
+
+    async fn mutate(
+        handle: &WorkspaceHandle,
+        op: WorkspaceOp,
+        expected_revision: Option<u64>,
+    ) -> WorkspaceMutateReply {
+        let (reply, reply_rx) = oneshot::channel();
+        handle
+            .commands
+            .send(WorkspaceCommand::Mutate {
+                request: WorkspaceMutateRequest {
+                    request_id: 1,
+                    expected_revision,
+                    op,
+                },
+                reply,
+            })
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), reply_rx)
+            .await
+            .expect("mutate reply timed out")
+            .expect("mutate reply dropped")
+    }
+
+    fn project(snapshot: &WorkspaceSnapshot, id: ProjectId) -> &crate::workspace::ProjectSnapshot {
+        snapshot
+            .projects
+            .iter()
+            .find(|project| project.id == id)
+            .expect("project in snapshot")
+    }
+
+    fn pane(snapshot: &WorkspaceSnapshot, id: PaneId) -> &crate::workspace::PaneSnapshot {
+        snapshot
+            .projects
+            .iter()
+            .flat_map(|project| &project.tabs)
+            .flat_map(|tab| tab.layout.leaves())
+            .find(|pane| pane.id == id)
+            .expect("pane in snapshot")
+    }
+
+    async fn wait_for(
+        handle: &mut WorkspaceHandle,
+        what: &str,
+        pred: impl Fn(&WorkspaceSnapshot) -> bool,
+    ) -> Arc<WorkspaceSnapshot> {
+        for _ in 0..200 {
+            let current = handle.snapshots.borrow().clone();
+            if pred(&current) {
+                return current;
+            }
+            if tokio::time::timeout(Duration::from_millis(50), handle.snapshots.changed())
+                .await
+                .is_err()
+            {
+                continue;
+            }
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn structural_reply_waits_for_durable_save() {
+        let root = temp_dir("durable");
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let store = Arc::new(GatedSaver {
+            started: started_tx,
+            release: Mutex::new(release_rx),
+        });
+        let (handle, _effects) = spawn(store);
+
+        let (reply_tx, mut reply_rx) = oneshot::channel();
+        handle
+            .commands
+            .send(WorkspaceCommand::Mutate {
+                request: WorkspaceMutateRequest {
+                    request_id: 1,
+                    expected_revision: None,
+                    op: WorkspaceOp::OpenProject { root: root.clone() },
+                },
+                reply: reply_tx,
+            })
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
+            .await
+            .expect("writer must start saving")
+            .expect("saver alive");
+        assert!(
+            reply_rx.try_recv().is_err(),
+            "structural reply must wait for the durable save"
+        );
+
+        release_tx.send(()).unwrap();
+        let reply = tokio::time::timeout(Duration::from_secs(5), reply_rx)
+            .await
+            .expect("reply after release")
+            .expect("reply dropped");
+        assert_eq!(reply.outcome, MutateOutcome::Applied);
+        assert!(reply.durable);
+        assert_eq!(reply.revision, 1);
+        assert!(reply.storage_error.is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn stale_expected_revision_is_a_conflict() {
+        let first_root = temp_dir("cas-first");
+        let second_root = temp_dir("cas-second");
+        let (handle, _effects) = spawn(Arc::new(OkSaver));
+
+        let first = mutate(
+            &handle,
+            WorkspaceOp::OpenProject {
+                root: first_root.clone(),
+            },
+            None,
+        )
+        .await;
+        assert_eq!(first.outcome, MutateOutcome::Applied);
+        assert_eq!(first.revision, 1);
+
+        let stale = mutate(
+            &handle,
+            WorkspaceOp::OpenProject {
+                root: second_root.clone(),
+            },
+            Some(0),
+        )
+        .await;
+        assert_eq!(stale.outcome, MutateOutcome::Conflict);
+        assert_eq!(stale.revision, 1);
+        assert_eq!(stale.error.as_ref().unwrap().code, "conflict");
+
+        let fresh = mutate(
+            &handle,
+            WorkspaceOp::OpenProject {
+                root: second_root.clone(),
+            },
+            Some(1),
+        )
+        .await;
+        assert_eq!(fresh.outcome, MutateOutcome::Applied);
+        assert_eq!(fresh.revision, 2);
+
+        let _ = std::fs::remove_dir_all(first_root);
+        let _ = std::fs::remove_dir_all(second_root);
+    }
+
+    #[tokio::test]
+    async fn failed_structural_write_reports_storage_error_and_recovers() {
+        let root = temp_dir("storage");
+        let store = Arc::new(ToggleSaver::new(true));
+        let (mut handle, _effects) = spawn(store.clone());
+
+        let reply = mutate(
+            &handle,
+            WorkspaceOp::OpenProject { root: root.clone() },
+            None,
+        )
+        .await;
+        assert_eq!(reply.outcome, MutateOutcome::Applied);
+        assert!(!reply.durable);
+        assert_eq!(reply.revision, 1);
+        assert_eq!(
+            reply.storage_error.as_ref().unwrap().kind,
+            StorageErrorKind::Io
+        );
+
+        let failed = wait_for(&mut handle, "storage error snapshot", |snapshot| {
+            snapshot.storage_error.is_some()
+        })
+        .await;
+        assert_eq!(failed.storage_error.as_ref().unwrap().message, "disk full");
+        assert_eq!(failed.revision, 1);
+
+        store.set_fail(false);
+        let recovered = wait_for(&mut handle, "storage error cleared", |snapshot| {
+            snapshot.storage_error.is_none()
+        })
+        .await;
+        assert_eq!(recovered.revision, 1, "recovery must not advance revision");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn live_pane_survives_missing_project_root() {
+        let root = temp_dir("missing-root");
+        let (mut handle, _effects) = spawn(Arc::new(OkSaver));
+        let created = mutate(
+            &handle,
+            WorkspaceOp::OpenProject { root: root.clone() },
+            None,
+        )
+        .await;
+        let project_id = created.created.project.expect("project id");
+        let pane_id = created.created.pane.expect("pane id");
+        handle
+            .commands
+            .send(WorkspaceCommand::BindSession {
+                pane_id,
+                session_id: "s1".to_string(),
+            })
+            .unwrap();
+        wait_for(&mut handle, "pane live", |snapshot| {
+            pane(snapshot, pane_id).status == PaneStatus::Live
+        })
+        .await;
+
+        std::fs::remove_dir_all(&root).unwrap();
+        let revision = handle.snapshots.borrow().revision;
+        let refresh = mutate(&handle, WorkspaceOp::RefreshAvailability, None).await;
+        assert_eq!(refresh.outcome, MutateOutcome::Applied);
+        assert_eq!(refresh.revision, revision);
+
+        let snapshot = handle.snapshots.borrow().clone();
+        assert!(!project(&snapshot, project_id).available);
+        let live = pane(&snapshot, pane_id);
+        assert_eq!(live.status, PaneStatus::Live);
+        assert_eq!(live.session.as_deref(), Some("s1"));
+
+        handle
+            .commands
+            .send(WorkspaceCommand::SessionExited {
+                session_id: "s1".to_string(),
+            })
+            .unwrap();
+        let exited = wait_for(&mut handle, "pane unavailable after exit", |snapshot| {
+            matches!(
+                pane(snapshot, pane_id).status,
+                PaneStatus::Unavailable {
+                    reason: PaneStatusReason::ProjectRootMissing
+                }
+            )
+        })
+        .await;
+        assert_eq!(exited.revision, revision);
+        assert!(pane(&exited, pane_id).session.is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn late_session_exit_after_close_tab_keeps_layout() {
+        let root = temp_dir("late-exit");
+        let (mut handle, mut effects) = spawn(Arc::new(OkSaver));
+        let created = mutate(
+            &handle,
+            WorkspaceOp::OpenProject { root: root.clone() },
+            None,
+        )
+        .await;
+        let tab_id = created.created.tab.expect("tab id");
+        let pane_id = created.created.pane.expect("pane id");
+        handle
+            .commands
+            .send(WorkspaceCommand::BindSession {
+                pane_id,
+                session_id: "s1".to_string(),
+            })
+            .unwrap();
+        wait_for(&mut handle, "pane bound", |snapshot| {
+            pane(snapshot, pane_id).session.as_deref() == Some("s1")
+        })
+        .await;
+
+        handle
+            .commands
+            .send(WorkspaceCommand::CloseTab { tab_id })
+            .unwrap();
+        let closed = wait_for(&mut handle, "tab closed", |snapshot| {
+            snapshot.projects[0].tabs.is_empty()
+        })
+        .await;
+        let revision = closed.revision;
+        assert!(matches!(
+            effects.try_recv(),
+            Ok(Effect::CloseSession { session_id }) if session_id == "s1"
+        ));
+
+        for _ in 0..2 {
+            handle
+                .commands
+                .send(WorkspaceCommand::SessionExited {
+                    session_id: "s1".to_string(),
+                })
+                .unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let after = handle.snapshots.borrow().clone();
+        assert!(after.projects[0].tabs.is_empty());
+        assert_eq!(after.revision, revision);
+        assert!(effects.try_recv().is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn ensure_session_respects_attach_and_spawn_failure() {
+        let root = temp_dir("ensure");
+        let (mut handle, mut effects) = spawn(Arc::new(OkSaver));
+        let created = mutate(
+            &handle,
+            WorkspaceOp::OpenProject { root: root.clone() },
+            None,
+        )
+        .await;
+        let pane_id = created.created.pane.expect("pane id");
+        let revision = created.revision;
+        let initial = handle.snapshots.borrow().clone();
+        assert!(matches!(
+            pane(&initial, pane_id).status,
+            PaneStatus::Dormant {
+                reason: PaneStatusReason::NotStarted
+            }
+        ));
+
+        let detached = mutate(&handle, WorkspaceOp::EnsurePaneSession { pane_id }, None).await;
+        assert_eq!(detached.outcome, MutateOutcome::Unchanged);
+        assert_eq!(detached.revision, revision);
+
+        let (reply, reply_rx) = oneshot::channel();
+        handle
+            .commands
+            .send(WorkspaceCommand::Attach { reply })
+            .unwrap();
+        reply_rx.await.unwrap();
+        wait_for(&mut handle, "pane starting after attach", |snapshot| {
+            pane(snapshot, pane_id).status == PaneStatus::Starting
+        })
+        .await;
+        assert!(matches!(
+            effects.try_recv(),
+            Ok(Effect::Spawn { pane_id: spawned, .. }) if spawned == pane_id
+        ));
+
+        handle
+            .commands
+            .send(WorkspaceCommand::SessionSpawnFailed { pane_id })
+            .unwrap();
+        let failed = wait_for(
+            &mut handle,
+            "pane dormant after spawn failure",
+            |snapshot| {
+                matches!(
+                    pane(snapshot, pane_id).status,
+                    PaneStatus::Dormant {
+                        reason: PaneStatusReason::SpawnFailed
+                    }
+                )
+            },
+        )
+        .await;
+        assert_eq!(failed.revision, revision);
+
+        let retry = mutate(&handle, WorkspaceOp::EnsurePaneSession { pane_id }, None).await;
+        assert_eq!(retry.outcome, MutateOutcome::Applied);
+        assert_eq!(retry.revision, revision);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}

@@ -632,6 +632,16 @@ async fn writer_loop(
                         revision: current.revision,
                         result: Err(error.clone()),
                     });
+                    // 结构回执立即报告未持久化；载荷留在后台继续按退避重试。
+                    let mut remaining = Vec::new();
+                    for (revision, ack) in acks.acks.drain(..) {
+                        if revision <= current.revision {
+                            let _ = ack.send(Err(error.clone()));
+                        } else {
+                            remaining.push((revision, ack));
+                        }
+                    }
+                    acks.acks = remaining;
                     // 退避期间继续接收新请求：用更新的整份载荷替换当前重试内容。
                     let sleep = tokio::time::sleep(backoff);
                     tokio::pin!(sleep);

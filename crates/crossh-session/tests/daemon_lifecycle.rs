@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! daemon 生命周期集成测试（3.4）：spawn 二进制 → 握手 → 建会话 → 输入输出 → 结束。
 //!
 //! 同时覆盖 2.4（observer 首输入丢弃+接管）、2.5（observer resize 静默忽略、
