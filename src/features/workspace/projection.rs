@@ -71,6 +71,15 @@ pub(crate) fn project_pane_count(project: &ProjectSnapshot) -> usize {
         .sum()
 }
 
+/// 项目内任一 pane 持有会话；`Starting` 也算活跃，避免拉起会话的瞬间 rail 头像闪烁。
+pub(crate) fn project_has_live_session(project: &ProjectSnapshot) -> bool {
+    project.tabs.iter().any(|tab| {
+        tab.layout
+            .leaves()
+            .any(|pane| matches!(pane.status, PaneStatus::Live | PaneStatus::Starting))
+    })
+}
+
 /// tab 的稳定显示标题：自定义标题 > 活跃 pane cwd 的目录名 > 序号。
 pub(crate) fn tab_title(tab: &TabSnapshot, index: usize) -> String {
     if let Some(title) = tab
@@ -259,6 +268,18 @@ mod tests {
         }
     }
 
+    fn project_with_pane_status(status: PaneStatus) -> ProjectSnapshot {
+        let mut project = snapshot().projects.remove(0);
+        let PaneNodeSnapshot::Split { first, .. } = &mut project.tabs[0].layout else {
+            unreachable!()
+        };
+        let PaneNodeSnapshot::Leaf(first) = first.as_mut() else {
+            unreachable!()
+        };
+        first.status = status;
+        project
+    }
+
     #[test]
     fn active_location_is_projected_through_three_levels() {
         let snapshot = snapshot();
@@ -355,5 +376,24 @@ mod tests {
         let mut titled = tab.clone();
         titled.title = Some("work".into());
         assert_eq!(tab_title(&titled, 0), "work");
+    }
+
+    #[test]
+    fn project_without_sessions_is_not_live() {
+        let snapshot = snapshot();
+        assert!(!project_has_live_session(&snapshot.projects[0]));
+        assert!(!project_has_live_session(&snapshot.projects[1]));
+    }
+
+    #[test]
+    fn project_with_live_pane_is_live() {
+        let project = project_with_pane_status(PaneStatus::Live);
+        assert!(project_has_live_session(&project));
+    }
+
+    #[test]
+    fn project_with_starting_pane_is_live() {
+        let project = project_with_pane_status(PaneStatus::Starting);
+        assert!(project_has_live_session(&project));
     }
 }

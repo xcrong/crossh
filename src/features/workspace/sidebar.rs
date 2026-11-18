@@ -182,7 +182,13 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
         .items_center()
         .gap_1()
         .overflow_y_scroll();
-    for project in &shell.workspace.snapshot.projects {
+    for project in shell
+        .workspace
+        .snapshot
+        .projects
+        .iter()
+        .filter(|project| projection::project_has_live_session(project))
+    {
         let root = project.root.clone();
         let label = project_display_name(project);
         let duplicate = name_counts
