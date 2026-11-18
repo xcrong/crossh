@@ -159,9 +159,17 @@ builtin source {}
                         shell_quote(&path_to_string(&integration_path)?),
                     ),
                 )?;
+                // macOS GUI 进程从 Finder/Dock 启动时只有最小 PATH；拆分前
+                // Alacritty 用 `/usr/bin/login` 把 zsh 变成登录 shell，由
+                // `.zprofile` 补 Homebrew 等环境。daemon 直接 spawn 后必须显式
+                // `-l` 才能保持同一启动语义（Linux 拆分前本就不是登录 shell）。
+                #[cfg(target_os = "macos")]
+                let args = vec!["-l".to_string()];
+                #[cfg(not(target_os = "macos"))]
+                let args = Vec::new();
                 Self {
                     program: path.to_owned(),
-                    args: Vec::new(),
+                    args,
                     env: vec![("ZDOTDIR".to_string(), path_to_string(temp_dir.path())?)],
                     use_system_shell: true,
                     _temp_dir: Some(temp_dir),
@@ -747,6 +755,9 @@ mod tests {
         let zshenv = fs::read_to_string(temp_path.join(".zshenv")).unwrap();
         let integration = fs::read_to_string(temp_path.join("crossh-integration.zsh")).unwrap();
 
+        #[cfg(target_os = "macos")]
+        assert_eq!(environment.args(), ["-l".to_string()].as_slice());
+        #[cfg(not(target_os = "macos"))]
         assert!(environment.args().is_empty());
         assert!(environment.use_system_shell());
         assert_eq!(environment.env()[0].0, "ZDOTDIR");
@@ -935,7 +946,9 @@ mod tests {
             .unwrap();
         let integration_dir = environment._temp_dir.as_ref().unwrap().path().to_path_buf();
         let mut child = Command::new(environment.program())
-            .args(["-l", "-i"])
+            // 用生产参数验证登录启动；`-i` 仅补齐管道 stdin 缺失的交互性。
+            .args(environment.args())
+            .arg("-i")
             .env("HOME", user_home.path())
             .envs(environment.env().iter().cloned())
             .stdin(Stdio::piped())
