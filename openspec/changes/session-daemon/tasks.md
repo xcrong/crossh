@@ -26,7 +26,7 @@
 - [x] 3.3 `crates/crossh-session/src/main.rs` 提供 `[[bin]] crossh-daemon`：日志（复用 `crossh_core::logging`）、locale、tokio 运行时、`run()`；**以 detached 方式启动**——unix 在 `pre_exec` 里 `libc::setsid()`，Windows 用 `creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)`，环境照常继承。验证：`cargo build -p crossh-session` 产出二进制；`./target/debug/crossh-daemon --version` 输出一行版本号后退出；从 shell 启动 daemon 后 `ps -o sid= -p <pid>` 与该 shell 的 sid 不同。
 - [x] 3.4 daemon 集成测试（`crates/crossh-session/tests/`）：spawn 二进制 → 读 `daemon.port` → 令牌握手 → 建会话 → 写输入 → 读输出 → 结束会话；另断言无令牌握手拿不到会话列表。验证：`cargo test -p crossh-session --test daemon_lifecycle`。
 - [x] 3.5 `docs/architecture.md` 加入 `crossh-session` 的所有权、边界规则与 `crossh-daemon` 的进程角色（含 detached 启动），crate 图段落同步。验证：段落与 `cargo tree` 实际依赖一致（人工对照一次），`scripts/check-architecture.sh` 通过。
-- [ ] 3.6 Windows / Linux 的 daemon 行为（ConPTY、`DETACHED_PROCESS`、令牌文件权限、单实例竞态）本机不验证，由 PR CI 的 `cargo check` + `cargo test -p crossh-session` 承接。验证：CI 绿灯后回填此处。
+- [ ] 3.6 Windows / Linux 的 daemon 行为（ConPTY、`DETACHED_PROCESS`、令牌文件权限、单实例竞态）本机不验证，由 PR CI 的 `cargo check` + `cargo test -p crossh-session` 承接。2026-11-18 已把 `cargo test -p crossh-session` 加进 Windows / Linux job；Unix 专属的 `daemon_lifecycle` / `workspace_lifecycle` 已加 `#![cfg(unix)]`，Windows 侧跑 `cli_sessions` / `daemon_upgrade` / `daemon_status`。验证：CI 绿灯后回填此处。
 
 ## 4. GUI 成为客户端
 
@@ -37,9 +37,9 @@
   4. 尺寸：`set_size`（`:2114`）后仅 controller 上报。
   同时删除 `clone_builder`（`:3210-3229`，当前无调用点，daemon 化后是绕过属主的死路径）。验证：`cargo test --test terminal_replay` 与新增单元测试；逐类 VT 事件注入后断言"远程出口收到对应字节"（缺任何一类都算未完成）；`git diff --stat crates/terminal/src/terminal.rs` 不含渲染/选择/vi 相关改动。
 - [x] 4.2 扩展 `tests/terminal_replay.rs`：同一段固定字节分别经"本地 PTY 直连"与"远程回放路径"进入 VT，断言画面与 `Modes` 一致；夹具必须包含 raw 模式裸 `\n` 片段，用来证明两条路径的字节保真一致。验证：`cargo test --test terminal_replay`。
-- [ ] 4.3 `crates/crossh-terminal-view/src/view.rs`：会话建立从 spawn PTY 改为向 daemon 申请会话并接入；按键走新出口，resize 只在持有输入权时上报；失去输入权时显示只读标记。验证：本机跑 GUI，确认键入、粘回显、`Ctrl-C`、窗口缩放后 `stty size` 与窗口一致；`crossh ls` 从 CLI 侧抢走输入权后 GUI 出现只读标记。
-- [ ] 4.4 `src/features/workspace/state.rs`、`registry.rs`：`LocalSession` 增加 daemon 会话 id 并与视图绑定；固定标签（`pinned.rs`）按 id 恢复而不是按目录重开。验证：固定两个标签 → 关闭 GUI → 重新打开，两个标签回到各自会话；`cargo test --bin crossh` 补一条按 id 恢复的纯逻辑测试。
-- [ ] 4.5 退出与结束语义拆分（`src/features/workspace/shell/quit.rs`）：关窗口与退出 GUI 都不再 `begin_shutdown`/`request_close`；有命令在跑时不再弹关闭确认；"结束会话"改为向 daemon 发 close 请求并断开连接，且必须穷举 GUI 侧调用点——`crates/crossh-terminal-view/src/view.rs:789` 的 `request_close`、`shell/tabs.rs:208/217`、`shell/split.rs:127`、`tab_strip.rs:301/373`、`shell/mod.rs:365`、`quit.rs:135/151`。关闭标签仍保留"有命令在跑"的确认（它确实会结束会话）。验证：起长命令 → 关窗口 → GUI 退出、命令仍在该会话中运行（重新打开可见）；关标签有确认；`cargo test --bin crossh quit` 断言"关窗口不需要确认"。
+- [x] 4.3 `crates/crossh-terminal-view/src/view.rs`：已由 daemon-workspace 落地——`from_daemon_create` / `from_daemon_attach`（`view.rs:206`/`220`）替代本地 spawn PTY；尺寸仅在持有输入权且 `daemon_link` 存在时上报（`note_viewport`，`view.rs:424`）；失去输入权显示 `terminal.readonly`（`view.rs:1126`）。实机键入、粘回显、`Ctrl-C`、`stty size` 与输入权移交并入 6.3。
+- [x] 4.4 `LocalSession` 与 `pinned.rs` 已由 daemon-workspace 5.2 删除；布局身份由 daemon 快照的 `PaneId` 承担，固定标签恢复改为按 daemon 会话 id 走 `from_daemon_attach`。验证：`workspace_lifecycle` 覆盖 daemon 重启后 pane id 与布局不变、会话按 attach 重建；运行时字段合并的纯逻辑测试在 `src/features/workspace/projection.rs`。
+- [x] 4.5 退出与结束语义拆分：`quit.rs` 只 detach（`begin_shutdown` 不调用 `request_close`，`should_close_window` 恒为真），关标签仍有命令运行确认（`shell/tabs.rs:196`），显式结束会话走 `TerminalView::request_close` → daemon `Close`（`view.rs:860`）。关窗口不弹确认由代码结构保证；原计划的 `cargo test --bin crossh quit` 目标已不存在，实机验证并入 6.3。
 - [x] 4.6 记录工程笔记 `docs/engineering-notes/session-daemon-protocol.md`：帧格式、`TCP_NODELAY` 与小帧风暴、回放入口与边界帧、`write_to_pty` 两类写入的划分、令牌与权限、detached 启动并更新 `docs/engineering-notes/README.md` 索引行。验证：按索引关键词能在不读代码的情况下解释一次重连失败的排查路径。
 - [x] 4.7 孤儿认领（新增）：`activate_local_dir` 后认领 daemon 里活着、无输入者、未被任何标签/pin 认领的会话，按原 cwd 接回本项目（只收本项目子树）。验证：杀 GUI 前不 pin → 重启后原会话自动出现；`crossh ls` 角色变为 controller。
 
@@ -58,7 +58,7 @@
 - [x] 6.2 定向测试：`cargo test -p crossh-session`、`cargo test -p crossh-core`、`cargo test --bin crossh`、`cargo test --test terminal_replay`、`cargo test -p crossh-session --test cli_sessions`（按 `AGENTS.md` 不跑 `--workspace` 全量）。
 - [ ] 6.3 macOS 实机冒烟：关窗口后长命令继续；重开回到原会话；GUI + CLI 同时接入时 CLI 只观察、发送一次输入即接管；`ALT_SCREEN` 程序在 observer 窗口重排错位（D8 已知 artefact，判定为可接受而非回归）；`crossh daemon stop` 后会话消失且下次调用重新拉起；**从终端启动 crossh → 关窗口 → 关闭该终端 → 会话仍在**（验证 detached）。
 - [x] 6.4 `openspec validate session-daemon --strict` 通过。
-- [ ] 6.5 本机不跑 Windows/Linux 目标构建；两者的 daemon 与协议行为由 PR CI（Windows 与 Linux 各跑 `cargo test -p crossh-session`）承接，绿灯后回填。
+- [ ] 6.5 本机不跑 Windows/Linux 目标构建；两者的 daemon 与协议行为由 PR CI（Windows 与 Linux 各跑 `cargo test -p crossh-session`）承接。2026-11-18 已把测试加进两个 job，待首跑绿灯后回填。
 
 ## Workflow follow-up
 
