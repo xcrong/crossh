@@ -1,7 +1,9 @@
-//! Lightweight Git worktree inspection shared by the workspace and Git Viewer.
+//! Lightweight Git worktree inspection for the workspace bottom bar.
 //!
-//! This module owns the porcelain-v2 status contract. Consumers may choose
-//! their own refresh cadence, but they must not implement a second parser.
+//! This module owns the porcelain-v2 status contract. The Git window reuses
+//! [`parse_status`] on its own `--untracked-files=all` scan output. Consumers
+//! may choose their own refresh cadence, but they must not implement a second
+//! parser.
 
 use std::path::Path;
 
@@ -34,7 +36,7 @@ pub fn inspect(cwd: &Path) -> Option<GitStatus> {
             "--porcelain=v2",
             "--branch",
             "-z",
-            "--untracked-files=normal",
+            "--untracked-files=all",
         ],
     )?;
     parse_status(&output)
@@ -151,5 +153,33 @@ u UU N... 100644 100644 100644 100644 aaa bbb ccc conflict.txt\0\
         assert_eq!(status.branch, "main");
         assert!(status.commit.is_empty());
         assert!(status.is_clean());
+    }
+
+    #[test]
+    fn counts_each_untracked_file_in_a_new_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}: {:?}", output.stderr);
+        };
+        run(&["init", "-q"]);
+        std::fs::create_dir_all(dir.path().join("new/sub")).unwrap();
+        for (path, content) in [
+            ("new/a.txt", "a"),
+            ("new/b.txt", "b"),
+            ("new/sub/c.txt", "c"),
+        ] {
+            std::fs::write(dir.path().join(path), content).unwrap();
+        }
+
+        // `--untracked-files=normal` 会把整个目录折叠成一条 `? new/`，
+        // 与 Git 窗口的逐文件口径不一致。
+        let status = inspect(dir.path()).expect("git status");
+        assert_eq!(status.untracked, 3);
     }
 }
