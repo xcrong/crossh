@@ -1,7 +1,10 @@
 name: CI
 
-# PR 级编译门禁。仓库原来只有 tag 触发的 release.yml，Windows / Linux 的编译回归
-# 要等到发版才暴露；这里补上这两条通道（macOS 由本机与 release.yml 覆盖）。
+# PR 级质量门。仓库原来只有 tag 触发的 release.yml，Windows / Linux 的编译回归
+# 要等到发版才暴露；这里补上三条通道：
+# - macOS 跑 fmt / architecture / clippy / 定向测试；
+# - Linux 跑 clippy 与 session 测试（Linux 独有的 stub 只有这里会编译）；
+# - Windows 跑 session 测试（ConPTY、配置根与协议握手）。
 #
 # Linux 的 apt 列表与 release.yml 的 Linux job 保持一致，否则 gpui 的 x11/wayland
 # 依赖装不上，检查会在编译期就失败。
@@ -15,8 +18,40 @@ permissions:
   contents: read
 
 jobs:
+  macos-quality:
+    name: macOS fmt / clippy / test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Architecture checks
+        run: scripts/check-architecture.sh
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Session tests
+        run: cargo test -p crossh-session
+
+      - name: App tests
+        run: cargo test --bin crossh
+
+      - name: Terminal replay
+        run: cargo test --test terminal_replay
+
   windows-check:
-    name: Windows check
+    name: Windows check / test
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -30,14 +65,19 @@ jobs:
       - name: cargo check
         run: cargo check --target x86_64-pc-windows-msvc
 
+      - name: Session tests
+        run: cargo test -p crossh-session
+
   linux-check:
-    name: Linux check
+    name: Linux check / clippy / test
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -54,3 +94,9 @@ jobs:
 
       - name: cargo check
         run: cargo check --target x86_64-unknown-linux-gnu
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Session tests
+        run: cargo test -p crossh-session
