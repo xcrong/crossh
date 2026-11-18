@@ -12,6 +12,7 @@ use crossh_core::text_editing::{
     replace_utf16_range, utf16_len, utf16_offset_for_byte, utf16_slice,
 };
 use crossh_ui::widgets::{printable_char, text_width};
+use crossh_ui_component::{TextPointerEvent, TextPointerPhase};
 
 use super::window::GitWindow;
 use crossh_core::text_editing::selection_bounds;
@@ -43,6 +44,18 @@ impl GitWindow {
             let query = self.history_query.value.clone();
             self.set_history_query(query, cx);
             cx.stop_propagation();
+            cx.notify();
+        }
+    }
+
+    /// 历史搜索框的鼠标选区：只动光标/选区，文本未变，不重跑 `set_history_query`。
+    pub(super) fn handle_history_pointer(
+        &mut self,
+        event: &TextPointerEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if apply_pointer_selection(&mut self.history_query, event) {
             cx.notify();
         }
     }
@@ -79,6 +92,17 @@ impl GitWindow {
         }
     }
 
+    pub(super) fn handle_remote_add_name_pointer(
+        &mut self,
+        event: &TextPointerEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if apply_pointer_selection(&mut self.remote_add_name, event) {
+            cx.notify();
+        }
+    }
+
     pub(super) fn handle_remote_add_url_key(
         &mut self,
         event: &KeyDownEvent,
@@ -106,6 +130,17 @@ impl GitWindow {
         }
         if dispatch_text_editing_key(&mut self.remote_add_url, event, cx) {
             cx.stop_propagation();
+            cx.notify();
+        }
+    }
+
+    pub(super) fn handle_remote_add_url_pointer(
+        &mut self,
+        event: &TextPointerEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if apply_pointer_selection(&mut self.remote_add_url, event) {
             cx.notify();
         }
     }
@@ -187,6 +222,18 @@ impl GitWindow {
             cx.stop_propagation();
             cx.notify();
         }
+    }
+}
+
+/// 单行输入的通用指针分发：按压 / 拖动 / 松开换算成 `TextEditingState` 的选区运算，
+/// 历史搜索与远端添加表单两字段共用。返回渲染是否需要刷新。
+fn apply_pointer_selection(state: &mut TextEditingState, event: &TextPointerEvent) -> bool {
+    match event.phase {
+        TextPointerPhase::Down => {
+            state.pointer_down(event.byte_offset, event.extend, event.click_count)
+        }
+        TextPointerPhase::Drag => state.pointer_drag(event.byte_offset),
+        TextPointerPhase::Up => state.pointer_up(),
     }
 }
 

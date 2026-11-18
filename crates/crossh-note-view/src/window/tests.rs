@@ -1629,3 +1629,179 @@ fn note_empty_hint_clears_when_typing_resumes(cx: &mut TestAppContext) {
         "提示必须随输入消失"
     );
 }
+
+/// 回归（评审轮）：`TextInput` 的鼠标选区必须真的接在 GPUI 事件链上——
+/// 按下、拖动、双击、三击、Shift+点击都要落成 `search_query` 的光标 / 选区。
+///
+/// 坐标取搜索框内容区：`debug_bounds` 给的是边框盒，原点右移 `padding_x`
+/// （`filter_text_input` 用 `TextInput` 默认 8px），纵向取中线。落点一律对齐到
+/// `text_width` 量出的前缀宽度（字符边界），只在确定性位置断言。
+/// 注意：聚焦后 caret 自占 2px，会把它之后的文本整体右移；但坐标换算只用前缀宽度
+/// （不含 caret），所以断言仍是确定的字符边界，只是那一下的视觉落点可能偏 2px。
+#[gpui::test]
+fn note_search_text_input_mouse_places_caret_and_selects(cx: &mut TestAppContext) {
+    use crossh_ui::widgets::text_width;
+    use gpui::{
+        Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, VisualTestContext,
+        point, px,
+    };
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let store = NoteStore::open(dir.path().join("note.db")).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| NoteWindow::with_store_for_test(window, cx, store));
+    cx.run_until_parked();
+
+    // 每一步先写状态、再画一帧：命中测试读的是上一帧的 hitbox / bounds。
+    let reset = |cx: &mut VisualTestContext, value: &str| {
+        view.update_in(cx, |note_window, _window, _cx| {
+            note_window.search_query = TextEditingState::new(value);
+        });
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+    };
+    // 文本起点 + 前缀宽度 → 屏幕坐标（前缀为空即内容区左边界）。
+    let at = |cx: &mut VisualTestContext, prefix: &str| {
+        let input = cx
+            .debug_bounds("note-search")
+            .expect("note-search 输入框应已渲染");
+        let width = cx.update(|window, _cx| text_width(window, prefix, px(12.)));
+        point(input.origin.x + px(8.) + width, input.center().y)
+    };
+    let mouse_down = |cx: &mut VisualTestContext,
+                      position: gpui::Point<gpui::Pixels>,
+                      click_count: usize,
+                      modifiers: Modifiers| {
+        cx.simulate_event(MouseDownEvent {
+            position,
+            button: MouseButton::Left,
+            modifiers,
+            click_count,
+            first_mouse: false,
+        });
+    };
+    let mouse_up = |cx: &mut VisualTestContext,
+                    position: gpui::Point<gpui::Pixels>,
+                    click_count: usize,
+                    modifiers: Modifiers| {
+        cx.simulate_event(MouseUpEvent {
+            position,
+            button: MouseButton::Left,
+            modifiers,
+            click_count,
+        });
+    };
+
+    // 前提：字体给出单调递增的前缀宽度，下面的边界断言都建立在这上面。
+    // 量宽异常（没有可用字体）时先在这里失败，别让人误以为是鼠标链路坏了。
+    let (w_ab, w_abc) = cx.update(|window, _cx| {
+        (
+            text_width(window, "ab", px(12.)),
+            text_width(window, "abc", px(12.)),
+        )
+    });
+    assert!(
+        w_abc > w_ab,
+        "测试字体量宽异常：ab = {w_ab:?}，abc = {w_abc:?}"
+    );
+
+    // 1. 单击：caret 落在 "abc" 之后，松开清掉空锚点。
+    reset(cx, "abcdef");
+    let after_abc = at(cx, "abc");
+    mouse_down(cx, after_abc, 1, Modifiers::default());
+    mouse_up(cx, after_abc, 1, Modifiers::default());
+    view.update_in(cx, |note_window, _window, _cx| {
+        assert_eq!(
+            note_window.search_query.cursor, 3,
+            "单击位置决定了 caret 必须落在 abc 之后"
+        );
+        assert_eq!(note_window.search_query.anchor, None, "松开后不留空锚点");
+        assert_eq!(note_window.search_query.selection(), None);
+    });
+
+    // 2. 拖动：从文本起点拖到末尾，须选出整段。
+    reset(cx, "abcdef");
+    let start = at(cx, "");
+    let end = at(cx, "abcdef");
+    mouse_down(cx, start, 1, Modifiers::default());
+    cx.simulate_event(MouseMoveEvent {
+        position: end,
+        pressed_button: Some(MouseButton::Left),
+        modifiers: Modifiers::default(),
+    });
+    mouse_up(cx, end, 1, Modifiers::default());
+    view.update_in(cx, |note_window, _window, _cx| {
+        assert_eq!(
+            note_window.search_query.selection(),
+            Some((0, 6)),
+            "拖动应选出整段文本"
+        );
+        assert_eq!(
+            note_window.search_query.selected_text().as_deref(),
+            Some("abcdef")
+        );
+    });
+
+    // 3. 双击词内：选中整个词。
+    reset(cx, "foo bar");
+    let inside_foo = at(cx, "fo");
+    mouse_down(cx, inside_foo, 2, Modifiers::default());
+    mouse_up(cx, inside_foo, 2, Modifiers::default());
+    view.update_in(cx, |note_window, _window, _cx| {
+        assert_eq!(
+            note_window.search_query.selected_text().as_deref(),
+            Some("foo"),
+            "双击应选中落点所在的词"
+        );
+        assert_eq!(note_window.search_query.selection(), Some((0, 3)));
+    });
+
+    // 4. 三击：全选。
+    reset(cx, "foo bar");
+    mouse_down(cx, inside_foo, 3, Modifiers::default());
+    mouse_up(cx, inside_foo, 3, Modifiers::default());
+    view.update_in(cx, |note_window, _window, _cx| {
+        assert_eq!(
+            note_window.search_query.selection(),
+            Some((0, 7)),
+            "三击应全选"
+        );
+    });
+
+    // 5. Shift+点击：从已有 caret 扩展选区。
+    reset(cx, "abcdef");
+    let after_ab = at(cx, "ab");
+    mouse_down(cx, after_ab, 1, Modifiers::default());
+    mouse_up(cx, after_ab, 1, Modifiers::default());
+    let after_abcd = at(cx, "abcd");
+    mouse_down(
+        cx,
+        after_abcd,
+        1,
+        Modifiers {
+            shift: true,
+            ..Default::default()
+        },
+    );
+    mouse_up(
+        cx,
+        after_abcd,
+        1,
+        Modifiers {
+            shift: true,
+            ..Default::default()
+        },
+    );
+    view.update_in(cx, |note_window, _window, _cx| {
+        assert_eq!(
+            note_window.search_query.selection(),
+            Some((2, 4)),
+            "Shift+点击应从上一个 caret 扩展到点击位置"
+        );
+        assert_eq!(
+            note_window.search_query.selected_text().as_deref(),
+            Some("cd")
+        );
+    });
+}

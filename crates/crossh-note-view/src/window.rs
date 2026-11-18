@@ -22,6 +22,7 @@ use crossh_ui::widgets::ime_caret_bounds;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
     BadgeTone, Button, ButtonSize, ButtonVariant, SplitResizer, StatusBar, StatusMetric,
+    TextPointerEvent, TextPointerPhase,
     context_menu::{ContextMenuState, render_context_menu},
     filter_row, filter_text_input,
 };
@@ -56,6 +57,21 @@ pub(super) const EDITOR_PADDING_Y: f32 = 12.;
 
 fn clamp_list_pane_width(width: f32) -> f32 {
     width.clamp(LIST_PANE_MIN_WIDTH, LIST_PANE_MAX_WIDTH)
+}
+
+/// 指针事件 → `TextEditingState` 的选区运算；搜索框与查找框共用。
+/// 返回渲染是否需要刷新。
+pub(super) fn apply_pointer_selection(
+    state: &mut TextEditingState,
+    event: &TextPointerEvent,
+) -> bool {
+    match event.phase {
+        TextPointerPhase::Down => {
+            state.pointer_down(event.byte_offset, event.extend, event.click_count)
+        }
+        TextPointerPhase::Drag => state.pointer_drag(event.byte_offset),
+        TextPointerPhase::Up => state.pointer_up(),
+    }
 }
 /// 与 `NoteStore::list` 的排序一致：pinned DESC, updated_at DESC, id DESC。
 /// 就地插入新笔记时要靠它找出与库同样的位置，否则下一次刷新列表顺序会跳一下。
@@ -414,6 +430,18 @@ impl NoteWindow {
             self.on_search_changed(cx);
             cx.notify();
             cx.stop_propagation();
+        }
+    }
+
+    /// 搜索框鼠标选区：查询文本未变，只更新光标/选区并重绘。
+    fn handle_search_pointer(
+        &mut self,
+        event: &TextPointerEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if apply_pointer_selection(&mut self.search_query, event) {
+            cx.notify();
         }
     }
 
@@ -1494,7 +1522,8 @@ impl gpui::Render for NoteWindow {
                 self.search_query.cursor,
             )
             .entity(cx.entity())
-            .on_key_down(cx.listener(Self::handle_search_key)),
+            .on_key_down(cx.listener(Self::handle_search_key))
+            .on_pointer_select(cx.listener(Self::handle_search_pointer)),
         );
         // 列表栏宽度可拖拽（SplitResizer 直接写 list_width，拖拽中每次鼠标移动重绘）。
         let list_width = clamp_list_pane_width(self.list_width.get());

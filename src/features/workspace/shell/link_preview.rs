@@ -22,7 +22,7 @@ use gpui::{
     ElementId, Entity, EntityInputHandler, FocusHandle, GlobalElementId, Hitbox, HitboxBehavior,
     InteractiveElement as _, IntoElement, KeyDownEvent, LayoutId, MouseButton, ParentElement as _,
     Pixels, Render, SharedString, Size, Style, Styled as _, UTF16Selection, WeakEntity, Window,
-    div, px,
+    div, point, px,
 };
 
 use super::AppShell;
@@ -33,11 +33,14 @@ use crossh_core::input_handler::{
 };
 use crossh_core::text_editing::{
     EditingKeystroke, TextEditingState, byte_index_for_utf16, handle_text_editing_key, utf16_len,
-    utf16_slice,
+    utf16_offset_for_byte, utf16_slice,
 };
 use crossh_ui::widgets::ime_caret_bounds;
 use crossh_ui::{icons, theme};
-use crossh_ui_component::{Button, ButtonSize, ButtonVariant, TextInput};
+use crossh_ui_component::{
+    Button, ButtonSize, ButtonVariant, TextInput, TextPointerEvent, TextPointerPhase,
+    text_offset_for_point,
+};
 
 /// 卡片占视口的比例：与临时终端抽屉同一档"大卡片"观感。
 const CARD_WIDTH_RATIO: f32 = 0.78;
@@ -66,6 +69,8 @@ struct LinkAddress {
     page: SharedString,
     focus: FocusHandle,
     shell: WeakEntity<AppShell>,
+    /// 输入框内容区 bounds：IME 命中测试按它把点击坐标换算成字符索引。
+    last_text_bounds: Option<Bounds<Pixels>>,
 }
 
 impl LinkAddress {
@@ -75,6 +80,7 @@ impl LinkAddress {
             page: SharedString::from(url.to_string()),
             focus: cx.focus_handle(),
             shell,
+            last_text_bounds: None,
         }
     }
 
@@ -146,6 +152,31 @@ impl LinkAddress {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
         if result.handled {
+            cx.notify();
+        }
+    }
+
+    /// 地址栏鼠标选区：按压 / 拖动 / 松开交给 `TextEditingState` 的指针方法，
+    /// 顺带缓存内容区 bounds 供 IME 命中测试复用。
+    fn handle_pointer(
+        &mut self,
+        event: &TextPointerEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Up 的 bounds 只是兜底（可能来自 `Bounds::default`），不覆盖按下 / 拖动记下的值。
+        if !matches!(event.phase, TextPointerPhase::Up) {
+            self.last_text_bounds = Some(event.text_bounds);
+        }
+        let changed = match event.phase {
+            TextPointerPhase::Down => {
+                self.state
+                    .pointer_down(event.byte_offset, event.extend, event.click_count)
+            }
+            TextPointerPhase::Drag => self.state.pointer_drag(event.byte_offset),
+            TextPointerPhase::Up => self.state.pointer_up(),
+        };
+        if changed {
             cx.notify();
         }
     }
@@ -221,6 +252,14 @@ impl EntityInputHandler for LinkAddress {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
+        // 平台每次查询都带最新布局，顺手刷新命中测试用的内容区 bounds。
+        self.last_text_bounds = Some(Bounds {
+            origin: point(
+                element_bounds.origin.x + ADDRESS_PADDING_X,
+                element_bounds.origin.y,
+            ),
+            size: element_bounds.size,
+        });
         let cursor = byte_index_for_utf16(&self.state.value, range.start);
         Some(ime_caret_bounds(
             window,
@@ -234,11 +273,18 @@ impl EntityInputHandler for LinkAddress {
 
     fn character_index_for_point(
         &mut self,
-        _point: gpui::Point<Pixels>,
-        _window: &mut Window,
+        point: gpui::Point<Pixels>,
+        window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
-        None
+        let bounds = self.last_text_bounds?;
+        let offset = text_offset_for_point(
+            window,
+            &self.state.value,
+            point.x - bounds.origin.x,
+            ADDRESS_TEXT_SIZE,
+        );
+        Some(utf16_offset_for_byte(&self.state.value, offset))
     }
 
     fn text_length_utf16(
@@ -271,6 +317,7 @@ impl Render for LinkAddress {
             .flex_1()
             .entity(cx.entity())
             .on_key_down(cx.listener(Self::handle_key))
+            .on_pointer_select(cx.listener(Self::handle_pointer))
     }
 }
 

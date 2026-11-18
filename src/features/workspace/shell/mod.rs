@@ -41,6 +41,7 @@ use crossh_terminal_view::{TerminalItem as _, TerminalView};
 use crossh_ui::context_menu::ShellMenuAction;
 use crossh_ui::theme;
 use crossh_ui_component::context_menu::{ContextMenuState, MenuEntry, render_context_menu};
+use crossh_ui_component::{TextPointerEvent, TextPointerPhase};
 
 use super::local_paths::{current_local_cwd, normalize_local_cwd};
 
@@ -471,6 +472,26 @@ impl AppShell {
                     cx.stop_propagation();
                 }
             }
+        }
+    }
+
+    /// 侧栏搜索框的鼠标选区：文本不变，只更新光标/选区，无需重跑过滤。
+    pub(crate) fn handle_search_pointer(
+        &mut self,
+        event: &TextPointerEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let changed = match event.phase {
+            TextPointerPhase::Down => {
+                self.search_query
+                    .pointer_down(event.byte_offset, event.extend, event.click_count)
+            }
+            TextPointerPhase::Drag => self.search_query.pointer_drag(event.byte_offset),
+            TextPointerPhase::Up => self.search_query.pointer_up(),
+        };
+        if changed {
+            cx.notify();
         }
     }
 

@@ -70,7 +70,9 @@ pub use status_dot::StatusDot;
 pub use status_metric::StatusMetric;
 pub use stepper::Stepper;
 pub use tab::{DragLocalTab, TabItem, TabStrip};
-pub use text_input::TextInput;
+pub use text_input::{
+    TextInput, TextPointerEvent, TextPointerPhase, byte_offset_for_x, text_offset_for_point,
+};
 pub use toast::{Toast, ToastTone, Toaster};
 pub use toggle::ToggleSwitch;
 pub use tooltip::Tooltip;

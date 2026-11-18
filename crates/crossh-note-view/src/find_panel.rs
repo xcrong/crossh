@@ -6,14 +6,14 @@
 use crossh_core::i18n::text;
 use crossh_core::text_editing::{EditingKeystroke, TextEditingState, handle_text_editing_key};
 use crossh_ui::{icons, theme};
-use crossh_ui_component::{Button, ButtonSize, ButtonVariant, filter_text_input};
+use crossh_ui_component::{Button, ButtonSize, ButtonVariant, TextPointerEvent, filter_text_input};
 use gpui::{
     AnyElement, ClipboardItem, Context, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
     ParentElement, Styled, Window, div, px,
 };
 
 use super::FIND_CONTEXT;
-use super::window::{EDITOR_PADDING_X, EDITOR_PADDING_Y, NoteWindow};
+use super::window::{EDITOR_PADDING_X, EDITOR_PADDING_Y, NoteWindow, apply_pointer_selection};
 
 impl NoteWindow {
     /// 替换编辑器内容前必须重置查找。
@@ -132,6 +132,18 @@ impl NoteWindow {
         }
     }
 
+    /// 查找框鼠标选区：查询文本未变，不重跑匹配，只更新光标/选区。
+    pub(super) fn handle_find_pointer(
+        &mut self,
+        event: &TextPointerEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if apply_pointer_selection(&mut self.find_query, event) {
+            cx.notify();
+        }
+    }
+
     /// 查找面板浮层：查询框 + 匹配计数 + 上一个/下一个/关闭。
     pub(super) fn render_find_panel(
         &self,
@@ -184,7 +196,8 @@ impl NoteWindow {
                         )
                         .entity(cx.entity())
                         .key_context(FIND_CONTEXT)
-                        .on_key_down(cx.listener(Self::handle_find_key)),
+                        .on_key_down(cx.listener(Self::handle_find_key))
+                        .on_pointer_select(cx.listener(Self::handle_find_pointer)),
                     )
                     .child(
                         div()

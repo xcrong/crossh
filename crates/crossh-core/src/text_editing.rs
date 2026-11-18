@@ -222,6 +222,9 @@ pub struct TextEditingState {
     pub anchor: Option<usize>,
     pub ime_marked_text: String,
     pub ime_replacement: Option<(usize, usize)>,
+    /// 指针按住拖拽中：由 `pointer_down` 打开、`pointer_up` 关闭，
+    /// `pointer_drag` 只在此态下响应。
+    pub selecting: bool,
 }
 
 impl TextEditingState {
@@ -235,6 +238,7 @@ impl TextEditingState {
             anchor: None,
             ime_marked_text: String::new(),
             ime_replacement: None,
+            selecting: false,
         }
     }
 
@@ -247,6 +251,7 @@ impl TextEditingState {
         self.anchor = None;
         self.ime_marked_text.clear();
         self.ime_replacement = None;
+        self.selecting = false;
     }
 
     /// 清除 IME 组合状态（标记文本与替换区间），保留文本与光标。
@@ -391,6 +396,153 @@ impl TextEditingState {
         self.selection()
             .map(|(start, end)| self.value[start..end].to_string())
     }
+
+    /// 鼠标按下：清 IME 组合、进入拖拽选中态，再按点击次数与 Shift 语义落点。
+    ///
+    /// `click_count >= 3` 全选；`== 2` 选中落点所在词（点在文本末尾时取最后一个字符
+    /// 所在的词，无词可落 caret）；`extend`（Shift）保留原锚点只移光标，
+    /// 否则光标与锚点一起落到 `offset`，保证后续拖拽有起点。
+    /// 返回渲染是否需要刷新（光标/选区或 IME 标记变化）。
+    pub fn pointer_down(&mut self, offset: usize, extend: bool, click_count: usize) -> bool {
+        let had_composition = !self.ime_marked_text.is_empty() || self.ime_replacement.is_some();
+        let before = (self.anchor, self.cursor);
+        self.clear_composition();
+        self.selecting = true;
+        let offset = self.clamp_offset(offset);
+        if click_count >= 3 {
+            self.select_all();
+        } else if click_count == 2 {
+            // 文本末尾没有字符可选：双击尾部时回退到最后一个字符，选中末尾整词。
+            let target = if offset >= self.value.len() && !self.value.is_empty() {
+                previous_char_boundary(&self.value, self.value.len())
+            } else {
+                offset
+            };
+            match word_range_at(&self.value, target) {
+                Some(range) => {
+                    self.anchor = Some(range.start);
+                    self.cursor = range.end;
+                }
+                None => self.place_caret(offset),
+            }
+        } else if extend {
+            if self.anchor.is_none() {
+                self.anchor = Some(self.cursor);
+            }
+            self.cursor = offset;
+        } else {
+            self.place_caret(offset);
+        }
+        had_composition || before != (self.anchor, self.cursor)
+    }
+
+    /// 指针拖拽：仅在 `selecting` 为真时生效；锚点缺失时以拖拽前的光标为锚点。
+    /// 返回光标是否实际移动。
+    pub fn pointer_drag(&mut self, offset: usize) -> bool {
+        if !self.selecting {
+            return false;
+        }
+        let offset = self.clamp_offset(offset);
+        if self.anchor.is_none() {
+            self.anchor = Some(self.cursor);
+        }
+        if self.cursor == offset {
+            return false;
+        }
+        self.cursor = offset;
+        true
+    }
+
+    /// 指针松开：结束选中态，锚点与光标重合时清掉锚点避免留下幽灵选区。
+    /// 返回是否真的结束了一次拖拽选中（未处于选中态时为 `false`）。
+    pub fn pointer_up(&mut self) -> bool {
+        if !self.selecting {
+            return false;
+        }
+        self.selecting = false;
+        if self.anchor == Some(self.cursor) {
+            self.anchor = None;
+        }
+        true
+    }
+
+    /// 落 caret：光标与锚点同处 `offset`，拖拽从该点展开。
+    fn place_caret(&mut self, offset: usize) {
+        self.cursor = offset;
+        self.anchor = Some(offset);
+    }
+
+    /// 把字节索引钳到 `value` 内的字符边界上（越界收到末尾，字符内部左移）。
+    fn clamp_offset(&self, offset: usize) -> usize {
+        clip_offset_left(&self.value, offset)
+    }
+}
+
+/// 字符类别：词字符 / 空白 / 换行 / 其它符号。
+#[derive(Clone, Copy)]
+enum CharacterKind {
+    Word,
+    Whitespace,
+    Newline,
+    Other,
+}
+
+impl From<char> for CharacterKind {
+    fn from(character: char) -> Self {
+        if character == '_'
+            || character.is_ascii_alphanumeric()
+            || matches!(
+                character,
+                '\u{00C0}'..='\u{024F}'
+                    | '\u{0400}'..='\u{04FF}'
+                    | '\u{1E00}'..='\u{1EFF}'
+                    | '\u{0300}'..='\u{036F}'
+            )
+        {
+            Self::Word
+        } else if matches!(character, '\n' | '\r') {
+            Self::Newline
+        } else if character.is_whitespace() {
+            Self::Whitespace
+        } else {
+            Self::Other
+        }
+    }
+}
+
+/// `offset` 所在词的字节区间；相邻的同类词字符 / 空白互相连接，长度不设上限
+/// （双击长 URL / token 时整段选中）。`offset` 落在文本末尾或空串时返回 `None`。
+pub fn word_range_at(text: &str, offset: usize) -> Option<Range<usize>> {
+    let offset = clip_offset_left(text, offset);
+    let character = text[offset..].chars().next()?;
+    let end = offset + character.len_utf8();
+    let kind = CharacterKind::from(character);
+    let connects = |next: char| {
+        matches!(
+            (kind, CharacterKind::from(next)),
+            (CharacterKind::Word, CharacterKind::Word)
+                | (CharacterKind::Whitespace, CharacterKind::Whitespace)
+        )
+    };
+    let start = text[..offset]
+        .chars()
+        .rev()
+        .take_while(|character| connects(*character))
+        .fold(offset, |offset, character| offset - character.len_utf8());
+    let end = text[end..]
+        .chars()
+        .take_while(|character| connects(*character))
+        .fold(end, |offset, character| offset + character.len_utf8());
+    Some(start..end)
+}
+
+/// 把字节索引钳到 `text` 内的字符边界上：越界收到末尾，字符内部左移。
+fn clip_offset_left(text: &str, offset: usize) -> usize {
+    let mut offset = offset.min(text.len());
+    while !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
 }
 
 /// `cursor` 前一个 UTF-8 字符边界的字节索引；光标已在开头则返回 0。
@@ -661,5 +813,159 @@ mod tests {
         let mut replaced = text.to_string();
         replace_utf16_range(&mut replaced, 1..3, "中文");
         assert_eq!(replaced, "a中文b");
+    }
+
+    #[test]
+    fn pointer_down_places_caret_and_pointer_up_drops_empty_anchor() {
+        let mut state = TextEditingState::new("hello");
+        assert!(state.pointer_down(2, false, 1));
+        assert_eq!(state.cursor, 2);
+        assert!(state.selecting);
+        assert_eq!(state.selection(), None);
+
+        assert!(state.pointer_up());
+        assert!(!state.selecting);
+        assert_eq!(state.anchor, None);
+        assert_eq!(state.cursor, 2);
+        // 未按下的松开事件不触发重绘，也不会误清锚点。
+        assert!(!state.pointer_up());
+    }
+
+    #[test]
+    fn pointer_drag_orders_selection_in_both_directions() {
+        let mut state = TextEditingState::new("abcdef");
+        state.pointer_down(1, false, 1);
+        assert!(state.pointer_drag(4));
+        assert_eq!(state.selection(), Some((1, 4)));
+
+        state.pointer_down(4, false, 1);
+        assert!(state.pointer_drag(1));
+        assert_eq!(state.selection(), Some((1, 4)));
+        assert_eq!(state.selected_text().as_deref(), Some("bcd"));
+        // 松开时锚点与光标分离，选区保留。
+        assert!(state.pointer_up());
+        assert_eq!(state.selection(), Some((1, 4)));
+
+        // 拖回起点：锚点与光标重合，松开后不留选区。
+        let mut collapsed = TextEditingState::new("abcdef");
+        collapsed.pointer_down(2, false, 1);
+        assert!(!collapsed.pointer_drag(2));
+        collapsed.pointer_up();
+        assert_eq!(collapsed.selection(), None);
+        assert_eq!(collapsed.anchor, None);
+    }
+
+    #[test]
+    fn pointer_drag_ignored_when_not_selecting() {
+        let mut state = TextEditingState::new("abcdef");
+        state.cursor = 2;
+        assert!(!state.pointer_drag(5));
+        assert_eq!(state.cursor, 2);
+        assert_eq!(state.anchor, None);
+    }
+
+    #[test]
+    fn double_click_selects_word_and_triple_click_selects_all() {
+        let mut state = TextEditingState::new("foo bar_baz 中文");
+        state.pointer_down("foo ".len() + 2, false, 2);
+        assert_eq!(state.selected_text().as_deref(), Some("bar_baz"));
+        state.pointer_up();
+
+        state.pointer_down(0, false, 2);
+        assert_eq!(state.selected_text().as_deref(), Some("foo"));
+        state.pointer_up();
+
+        state.pointer_down(3, false, 3);
+        assert_eq!(state.selection(), Some((0, state.value.len())));
+        state.pointer_up();
+    }
+
+    #[test]
+    fn double_click_on_empty_places_caret_and_on_tail_selects_last_word() {
+        let mut state = TextEditingState::new("");
+        state.pointer_down(0, false, 2);
+        assert_eq!((state.cursor, state.anchor), (0, Some(0)));
+        assert_eq!(state.selection(), None);
+        state.pointer_up();
+
+        // 点在文本末尾：回退到最后一个字符，选中末尾整词而不是什么都不选。
+        let mut tail = TextEditingState::new("abc");
+        tail.pointer_down(3, false, 2);
+        assert_eq!(tail.selected_text().as_deref(), Some("abc"));
+        assert_eq!(tail.selection(), Some((0, 3)));
+        tail.pointer_up();
+
+        let mut sentence = TextEditingState::new("foo bar");
+        sentence.pointer_down(7, false, 2);
+        assert_eq!(sentence.selected_text().as_deref(), Some("bar"));
+        assert_eq!(sentence.selection(), Some((4, 7)));
+    }
+
+    #[test]
+    fn shift_click_extends_from_existing_anchor() {
+        let mut state = TextEditingState::new("abcdef");
+        state.pointer_down(1, false, 1);
+        state.pointer_up();
+        assert!(state.pointer_down(4, true, 1));
+        assert_eq!(state.selection(), Some((1, 4)));
+
+        // 无锚点时 Shift+点击以按下前的光标为锚点。
+        let mut fresh = TextEditingState::new("abcdef");
+        fresh.cursor = 5;
+        fresh.pointer_down(2, true, 1);
+        assert_eq!(fresh.selection(), Some((2, 5)));
+    }
+
+    #[test]
+    fn pointer_offsets_snap_to_multibyte_boundaries() {
+        let mut state = TextEditingState::new("a中😀b");
+        // 中 占 1..4，😀 占 4..8：落在字符内部的偏移左移到字符起点。
+        assert!(state.pointer_down(2, false, 1));
+        assert_eq!(state.cursor, 1);
+        assert!(state.pointer_drag(6));
+        assert_eq!(state.cursor, 4);
+        assert!(state.value.is_char_boundary(state.cursor));
+        // 越界偏移收到末尾。
+        assert!(state.pointer_drag(99));
+        assert_eq!(state.cursor, state.value.len());
+    }
+
+    #[test]
+    fn pointer_down_clears_ime_composition() {
+        let mut state = TextEditingState::new("abc");
+        state.ime_marked_text = "中".to_string();
+        state.ime_replacement = Some((0, 0));
+        assert!(state.pointer_down(3, false, 1));
+        assert!(state.ime_marked_text.is_empty());
+        assert_eq!(state.ime_replacement, None);
+    }
+
+    #[test]
+    fn word_range_at_covers_words_whitespace_and_edges() {
+        let text = "foo bar_baz 中文";
+        assert_eq!(word_range_at(text, 0), Some(0..3));
+        assert_eq!(word_range_at(text, 3), Some(3..4));
+        assert_eq!(word_range_at(text, 6), Some(4..11));
+        // CJK 归入 Other，双击只选中单个汉字；落在字符内部先左移到字符起点。
+        assert_eq!(word_range_at(text, 13), Some(12..15));
+        assert_eq!(word_range_at("", 0), None);
+        assert_eq!(word_range_at("abc", 3), None);
+        // 长 token 不截断：双击整段选中。
+        let long = "a".repeat(300);
+        assert_eq!(word_range_at(&long, 150), Some(0..300));
+    }
+
+    #[test]
+    fn keyboard_editing_is_unchanged_by_pointer_support() {
+        let mut state = TextEditingState::new("hello");
+        assert!(!state.selecting);
+        let result = handle_text_editing_key(
+            &mut state,
+            &keystroke("left", false, false, true, None),
+            None,
+        );
+        assert!(result.handled);
+        assert_eq!(state.selection(), Some((4, 5)));
+        assert!(!state.selecting);
     }
 }

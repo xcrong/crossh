@@ -1,27 +1,98 @@
-//! 单行文本输入框外壳:值 / caret / placeholder / IME 标记 / IME 输入 canvas。
+//! 单行文本输入框外壳:值 / caret / placeholder / IME 标记 / IME 输入 canvas / 鼠标选区回调。
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use crossh_ui::icons;
-use crossh_ui::widgets::{ime_input_canvas, marked_text_span, text_caret, text_span};
+use crossh_ui::widgets::{ime_input_canvas, marked_text_span, text_caret, text_span, text_width};
 use crossh_ui_base::{
     clamp_to_char_boundary, is_valid_selection, normalize_selection, should_highlight_selection,
     use_cursor_split,
 };
 use gpui::{
-    App, ElementId, Entity, EntityInputHandler, FocusHandle, InteractiveElement, IntoElement,
-    KeyContext, KeyDownEvent, ParentElement, RenderOnce, Rgba, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
+    App, Bounds, DispatchPhase, ElementId, Entity, EntityInputHandler, FocusHandle,
+    InteractiveElement, IntoElement, KeyContext, KeyDownEvent, MouseButton, MouseMoveEvent,
+    MouseUpEvent, ParentElement, Pixels, RenderOnce, Rgba, SharedString,
+    StatefulInteractiveElement, Styled, Window, canvas, div, point, prelude::FluentBuilder, px,
+    size,
 };
 
 use crate::theme;
 
 type KeyHandler = Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App)>;
+type PointerHandler = Rc<dyn Fn(&TextPointerEvent, &mut Window, &mut App)>;
+
+/// 指针事件的三个阶段;落点语义由调用方的 `TextEditingState::pointer_*` 决定。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextPointerPhase {
+    Down,
+    Drag,
+    Up,
+}
+
+/// 输入框内容区(已去除 `padding_x`)上的指针命中结果。
+#[derive(Clone, Debug)]
+pub struct TextPointerEvent {
+    pub phase: TextPointerPhase,
+    /// 命中位置换算出的 UTF-8 字节偏移,始终落在字符边界上。
+    pub byte_offset: usize,
+    /// 按下时是否按住 Shift(扩展选区)。
+    pub extend: bool,
+    /// 连续点击次数:1 单击、2 双击选词、≥3 三击全选。
+    pub click_count: usize,
+    /// 内容区 bounds:拖拽阶段的偏移换算与 IME 命中测试共用。
+    pub text_bounds: Bounds<Pixels>,
+}
+
+/// 把输入框内容区内的横坐标(`x` 从文本起点算起)换算成最近的 UTF-8 字符边界字节偏移。
+///
+/// 空串或 `x <= 0` 返回 0;`x` 不小于整段宽度返回 `text.len()`;
+/// 其余情况在字符边界上二分,取更近的边界,等距取右侧,绝不返回字符内部偏移。
+pub fn byte_offset_for_x(text: &str, x: Pixels, mut measure: impl FnMut(&str) -> Pixels) -> usize {
+    if text.is_empty() || x <= px(0.) {
+        return 0;
+    }
+    if x >= measure(text) {
+        return text.len();
+    }
+    let boundaries = text
+        .char_indices()
+        .map(|(index, _)| index)
+        .chain([text.len()])
+        .collect::<Vec<_>>();
+    // 第一个前缀宽度不小于 x 的边界;总宽已排除在函数开头,故该边界必落在 (0, len]。
+    let (mut low, mut high) = (1, boundaries.len() - 1);
+    while low < high {
+        let middle = (low + high) / 2;
+        if measure(&text[..boundaries[middle]]) < x {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    let left = boundaries[low - 1];
+    let right = boundaries[low];
+    let right_width = measure(&text[..right]);
+    let left_width = measure(&text[..left]);
+    if x - left_width < right_width - x {
+        left
+    } else {
+        right
+    }
+}
+
+/// 用系统 UI 字体量宽,把窗口坐标下的 x 换算成字节偏移。
+pub fn text_offset_for_point(window: &Window, text: &str, x: Pixels, text_size: Pixels) -> usize {
+    byte_offset_for_x(text, x, |prefix| text_width(window, prefix, text_size))
+}
 
 /// 单行文本输入框外壳,渲染「值 + caret + placeholder + IME 标记 + IME 输入 canvas」。
 ///
 /// 无状态组件:值与 IME 标记文本由调用方传入声明;按键逻辑保留在各 owner
 /// (调用方通过 `cx.listener(...)` 传入 [`TextInput::on_key_down`])。
+/// 鼠标选区同样归各 owner:传入 [`TextInput::on_pointer_select`] 后,本组件只把
+/// 「按下 / 拖动 / 松开」换算成字节偏移与内容区 bounds,落点由 `TextEditingState`
+/// 的 `pointer_*` 方法决定;未传回调时只保留点击聚焦。
 /// 泛型 `V` 是 IME 输入目标,渲染时通过 [`TextInput::entity`] 注册到平台输入系统。
 ///
 /// 内容布局:值为空时显示 caret(聚焦时)+ placeholder 或 IME 标记;
@@ -50,6 +121,7 @@ pub struct TextInput<V> {
     suffix_icon: Option<icons::IconName>,
     entity: Option<Entity<V>>,
     on_key_down: Option<KeyHandler>,
+    on_pointer_select: Option<PointerHandler>,
     key_context: Option<KeyContext>,
 }
 
@@ -76,6 +148,7 @@ impl<V> TextInput<V> {
             suffix_icon: None,
             entity: None,
             on_key_down: None,
+            on_pointer_select: None,
             key_context: None,
         }
     }
@@ -197,6 +270,16 @@ impl<V> TextInput<V> {
         self
     }
 
+    /// 鼠标点击 / 拖拽选区回调;不传则输入框只有点击聚焦。
+    /// 掩码输入(`display` 非空)不会触发,避免用掩码串长度反推原文偏移。
+    pub fn on_pointer_select(
+        mut self,
+        handler: impl Fn(&TextPointerEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_pointer_select = Some(Rc::new(handler));
+        self
+    }
+
     /// Push a key context while this input holds focus, so window-level key
     /// bindings scoped to it (Enter to confirm, Escape to dismiss, …) resolve
     /// here instead of bubbling to an ancestor context.
@@ -241,6 +324,7 @@ impl<V: EntityInputHandler + 'static> RenderOnce for TextInput<V> {
             full_width,
             entity,
             on_key_down,
+            on_pointer_select,
             key_context,
             suffix_icon,
         } = self;
@@ -359,8 +443,17 @@ impl<V: EntityInputHandler + 'static> RenderOnce for TextInput<V> {
         }
 
         let click_focus = focus.clone();
-        div()
+        // 掩码输入不发射指针事件:`value` 与掩码串长度不一致,偏移无法互推。
+        let pointer = on_pointer_select.filter(|_| !masked);
+        // 内容区 bounds 由下方 canvas prepaint 每帧写入,供鼠标监听与 IME 命中测试读取。
+        let text_bounds: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::new(Cell::new(None));
+        let pointer_text = value;
+        // 测试用选择器:元素 id 即 `VisualTestContext::debug_bounds` 的 key(发布构建为空操作)。
+        let debug_selector = id.to_string();
+
+        let mut root = div()
             .id(id)
+            .debug_selector(move || debug_selector)
             .relative()
             .h(height)
             .px(padding_x)
@@ -375,6 +468,7 @@ impl<V: EntityInputHandler + 'static> RenderOnce for TextInput<V> {
             .text_color(text_color)
             .track_focus(&focus)
             .tab_stop(true)
+            .cursor_text()
             .when_some(key_context, |el, context| el.key_context(context))
             .focus(|style| style.border_color(theme::focus_ring()))
             .when(focus_visible_accent, |el| {
@@ -390,11 +484,125 @@ impl<V: EntityInputHandler + 'static> RenderOnce for TextInput<V> {
                     }
                 })
             })
-            .children(children)
-            .child(ime_input_canvas(
-                focus,
-                entity.expect("entity required for IME input"),
-            ))
+            .children(children);
+
+        if let Some(handler) = pointer {
+            let down_bounds = text_bounds.clone();
+            let down_handler = handler.clone();
+            let down_text = pointer_text.clone();
+            root = root.on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                let Some(bounds) = down_bounds.get() else {
+                    return;
+                };
+                down_handler(
+                    &TextPointerEvent {
+                        phase: TextPointerPhase::Down,
+                        byte_offset: text_offset_for_point(
+                            window,
+                            &down_text,
+                            event.position.x - bounds.origin.x,
+                            text_size,
+                        ),
+                        extend: event.modifiers.shift,
+                        click_count: event.click_count,
+                        text_bounds: bounds,
+                    },
+                    window,
+                    cx,
+                );
+            });
+
+            // 在别处按下说明上一次按下已无从松开:补一个 Up,免得选中态一直挂着。
+            let out_bounds = text_bounds.clone();
+            let out_handler = handler.clone();
+            root = root.on_mouse_down_out(move |_, window, cx| {
+                out_handler(
+                    &TextPointerEvent {
+                        phase: TextPointerPhase::Up,
+                        byte_offset: 0,
+                        extend: false,
+                        click_count: 0,
+                        text_bounds: out_bounds.get().unwrap_or_default(),
+                    },
+                    window,
+                    cx,
+                );
+            });
+
+            // 按下后指针可能移出输入框,拖动 / 松开只能走窗口级监听。
+            let capture_bounds = text_bounds.clone();
+            let drag_bounds = text_bounds.clone();
+            let up_bounds = text_bounds.clone();
+            let drag_handler = handler.clone();
+            let up_handler = handler;
+            let drag_text = pointer_text.clone();
+            root = root.child(
+                canvas(
+                    move |bounds, _window, _cx| {
+                        let width = (bounds.size.width - padding_x * 2.).max(px(0.));
+                        capture_bounds.set(Some(Bounds {
+                            origin: point(bounds.origin.x + padding_x, bounds.origin.y),
+                            size: size(width, bounds.size.height),
+                        }));
+                    },
+                    move |_bounds, (), window, _cx| {
+                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                            if !matches!(phase, DispatchPhase::Bubble)
+                                || event.pressed_button != Some(MouseButton::Left)
+                            {
+                                return;
+                            }
+                            let Some(bounds) = drag_bounds.get() else {
+                                return;
+                            };
+                            drag_handler(
+                                &TextPointerEvent {
+                                    phase: TextPointerPhase::Drag,
+                                    byte_offset: text_offset_for_point(
+                                        window,
+                                        &drag_text,
+                                        event.position.x - bounds.origin.x,
+                                        text_size,
+                                    ),
+                                    extend: false,
+                                    click_count: 0,
+                                    text_bounds: bounds,
+                                },
+                                window,
+                                cx,
+                            );
+                        });
+                        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                            if !matches!(phase, DispatchPhase::Bubble)
+                                || event.button != MouseButton::Left
+                            {
+                                return;
+                            }
+                            up_handler(
+                                &TextPointerEvent {
+                                    phase: TextPointerPhase::Up,
+                                    byte_offset: 0,
+                                    extend: false,
+                                    click_count: event.click_count,
+                                    text_bounds: up_bounds.get().unwrap_or_default(),
+                                },
+                                window,
+                                cx,
+                            );
+                        });
+                    },
+                )
+                .absolute()
+                .left_0()
+                .top_0()
+                .size_full(),
+            );
+        }
+
+        root.child(ime_input_canvas(
+            focus,
+            entity.expect("entity required for IME input"),
+        ))
     }
 }
 
@@ -409,9 +617,21 @@ fn marked_element(text: SharedString) -> impl IntoElement {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{FocusHandle, TestAppContext, px};
+    use gpui::{FocusHandle, Pixels, TestAppContext, px};
 
-    use super::{TextInput, theme};
+    use super::{TextInput, byte_offset_for_x, theme};
+
+    /// 等宽假字体:ASCII 10px、非 ASCII 20px,用来覆盖 CJK / emoji 的边界换算。
+    fn wide_measure(text: &str) -> Pixels {
+        px(text
+            .chars()
+            .map(|character| if character.is_ascii() { 10. } else { 20. })
+            .sum::<f32>())
+    }
+
+    fn ascii_measure(text: &str) -> Pixels {
+        px(text.chars().count() as f32 * 10.)
+    }
 
     fn focus(cx: &mut TestAppContext) -> FocusHandle {
         cx.update(|cx| cx.focus_handle())
@@ -438,6 +658,7 @@ mod tests {
         assert!(input.suffix_icon.is_none());
         assert!(input.entity.is_none());
         assert!(input.on_key_down.is_none());
+        assert!(input.on_pointer_select.is_none());
     }
 
     #[gpui::test]
@@ -458,7 +679,8 @@ mod tests {
             .bg(theme::surface())
             .suffix_icon(crossh_ui::icons::IconName::Search)
             .focus_visible_accent()
-            .on_key_down(|_, _, _| {});
+            .on_key_down(|_, _, _| {})
+            .on_pointer_select(|_, _, _| {});
 
         assert_eq!(input.value.as_ref(), "secret");
         assert_eq!(input.display.as_deref(), Some(masked.as_str()));
@@ -475,6 +697,54 @@ mod tests {
         assert!(input.focus_visible_accent);
         assert!(input.suffix_icon.is_some());
         assert!(input.on_key_down.is_some());
+        assert!(input.on_pointer_select.is_some());
+    }
+
+    #[test]
+    fn byte_offset_for_x_handles_empty_and_out_of_range_x() {
+        assert_eq!(byte_offset_for_x("", px(0.), ascii_measure), 0);
+        assert_eq!(byte_offset_for_x("", px(40.), ascii_measure), 0);
+        assert_eq!(byte_offset_for_x("abc", px(-8.), ascii_measure), 0);
+        assert_eq!(byte_offset_for_x("abc", px(0.), ascii_measure), 0);
+        assert_eq!(byte_offset_for_x("abc", px(30.), ascii_measure), 3);
+        assert_eq!(byte_offset_for_x("abc", px(999.), ascii_measure), 3);
+    }
+
+    #[test]
+    fn byte_offset_for_x_picks_nearest_boundary_and_ties_go_right() {
+        // "abc" 每个字符 10px,边界宽度为 0 / 10 / 20 / 30。
+        assert_eq!(byte_offset_for_x("abc", px(4.), ascii_measure), 0);
+        assert_eq!(byte_offset_for_x("abc", px(6.), ascii_measure), 1);
+        // 正好落在边界上取该边界;等距取右。
+        assert_eq!(byte_offset_for_x("abc", px(10.), ascii_measure), 1);
+        assert_eq!(byte_offset_for_x("abc", px(15.), ascii_measure), 2);
+    }
+
+    #[test]
+    fn byte_offset_for_x_never_splits_a_codepoint() {
+        // "a中😀b" 的边界是 0 / 1 / 4 / 8 / 9。
+        let text = "a中😀b";
+        assert_eq!(byte_offset_for_x(text, px(15.), wide_measure), 1);
+        assert_eq!(byte_offset_for_x(text, px(20.), wide_measure), 4);
+        assert_eq!(byte_offset_for_x(text, px(50.), wide_measure), 8);
+        for x in 0..60 {
+            let offset = byte_offset_for_x(text, px(x as f32), wide_measure);
+            assert!(
+                text.is_char_boundary(offset),
+                "x = {x} produced mid-char offset {offset}"
+            );
+        }
+    }
+
+    #[test]
+    fn byte_offset_for_x_maps_cjk_and_emoji_prefixes() {
+        assert_eq!(byte_offset_for_x("中文", px(5.), wide_measure), 0);
+        assert_eq!(byte_offset_for_x("中文", px(25.), wide_measure), 3);
+        // 等距落在两个汉字之间时取右侧边界。
+        assert_eq!(byte_offset_for_x("中文", px(30.), wide_measure), 6);
+        assert_eq!(byte_offset_for_x("😀a", px(8.), wide_measure), 0);
+        assert_eq!(byte_offset_for_x("😀a", px(10.), wide_measure), 4);
+        assert_eq!(byte_offset_for_x("😀a", px(25.), wide_measure), 5);
     }
 
     #[gpui::test]

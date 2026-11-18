@@ -31,7 +31,8 @@ pub fn filter_row(id: impl Into<SharedString>) -> Stateful<Div> {
 /// 筛选框统一样式：值/占位/IME + 选区/光标透传 + 空值颜色 + `surface` 背景 +
 /// 横向撑满 + 框内后缀搜索图标。
 ///
-/// 调用方仍需链式追加 `.entity(...).on_key_down(...)`（`TextInput` 要求 entity 注册 IME）。
+/// 调用方仍需链式追加 `.entity(...).on_key_down(...)`（`TextInput` 要求 entity 注册 IME），
+/// 以及 `.on_pointer_select(...)`（缺省时输入框只有点击聚焦，鼠标无法放置光标或拖选）。
 pub fn filter_text_input<V>(
     id: impl Into<ElementId>,
     focus: FocusHandle,

@@ -106,7 +106,8 @@ pub fn render_sidebar(
             shell.search_query.cursor,
         )
         .entity(cx.entity())
-        .on_key_down(cx.listener(AppShell::handle_search_key)),
+        .on_key_down(cx.listener(AppShell::handle_search_key))
+        .on_pointer_select(cx.listener(AppShell::handle_search_pointer)),
     );
 
     let titlebar = div()

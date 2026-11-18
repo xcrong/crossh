@@ -155,7 +155,8 @@ impl GitWindow {
                             self.history_query.cursor,
                         )
                         .entity(cx.entity())
-                        .on_key_down(cx.listener(Self::handle_history_search_key)),
+                        .on_key_down(cx.listener(Self::handle_history_search_key))
+                        .on_pointer_select(cx.listener(Self::handle_history_pointer)),
                     )
                     .child(
                         Button::new("git-history-refresh")

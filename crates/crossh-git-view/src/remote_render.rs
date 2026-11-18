@@ -157,6 +157,8 @@ impl GitWindow {
                     .value(self.remote_add_name.value.clone())
                     .placeholder(i18n::text("git.remote_name_placeholder"))
                     .ime_marked_text(self.remote_add_name.ime_marked_text.clone())
+                    .selection(self.remote_add_name.selection())
+                    .cursor(self.remote_add_name.cursor)
                     .text_color(if self.remote_add_name.value.is_empty() {
                         theme::faint_text()
                     } else {
@@ -165,7 +167,8 @@ impl GitWindow {
                     .bg(theme::canvas())
                     .flex_1()
                     .entity(cx.entity())
-                    .on_key_down(cx.listener(Self::handle_remote_add_name_key)),
+                    .on_key_down(cx.listener(Self::handle_remote_add_name_key))
+                    .on_pointer_select(cx.listener(Self::handle_remote_add_name_pointer)),
             ))
             .child(labeled_field(
                 "git-remote-add-url-row",
@@ -175,6 +178,8 @@ impl GitWindow {
                     .value(self.remote_add_url.value.clone())
                     .placeholder(i18n::text("git.remote_url_placeholder"))
                     .ime_marked_text(self.remote_add_url.ime_marked_text.clone())
+                    .selection(self.remote_add_url.selection())
+                    .cursor(self.remote_add_url.cursor)
                     .text_color(if self.remote_add_url.value.is_empty() {
                         theme::faint_text()
                     } else {
@@ -183,7 +188,8 @@ impl GitWindow {
                     .bg(theme::canvas())
                     .flex_1()
                     .entity(cx.entity())
-                    .on_key_down(cx.listener(Self::handle_remote_add_url_key)),
+                    .on_key_down(cx.listener(Self::handle_remote_add_url_key))
+                    .on_pointer_select(cx.listener(Self::handle_remote_add_url_pointer)),
             ))
             .child(
                 div()
