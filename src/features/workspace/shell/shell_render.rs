@@ -5,8 +5,8 @@ use super::*;
 impl Render for AppShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // compose 展开时自动聚焦输入框（终端级，仅在对应终端可见性翻转时触发）
-        if let Some(view) = self.workspace.focused_view() {
-            let entry = self.workspace.compose_entry_mut(view);
+        if let Some(pane_id) = self.workspace.focused_pane() {
+            let entry = self.workspace.compose_entry_mut(pane_id);
             if entry.visible && !entry.last_visible {
                 self.compose_focus.focus(window, cx);
             }

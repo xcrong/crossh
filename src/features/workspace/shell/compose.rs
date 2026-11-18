@@ -1,9 +1,8 @@
-//! 独立输入栏的终端级状态与交互（与分栏同为终端级）。
+//! 独立输入栏的终端级状态与交互（与分屏同为 pane 级）。
 //! 逻辑与渲染分离：本模块负责可见性、草稿、发送与按键；渲染在 `compose_bar.rs`。
 
 use gpui::{ClipboardItem, Context, KeyDownEvent, Window};
 
-use crate::features::workspace::view::ActiveView;
 use crossh_core::text_editing::{EditingKeystroke, handle_text_editing_key};
 use crossh_terminal_view::TerminalItem as _;
 
@@ -11,10 +10,10 @@ use super::AppShell;
 
 impl AppShell {
     pub(crate) fn toggle_compose_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(view) = self.workspace.focused_view() else {
+        let Some(pane_id) = self.workspace.focused_pane() else {
             return;
         };
-        let entry = self.workspace.compose_entry_mut(view);
+        let entry = self.workspace.compose_entry_mut(pane_id);
         entry.visible = !entry.visible;
         if entry.visible {
             window.focus(&self.compose_focus, cx);
@@ -25,10 +24,10 @@ impl AppShell {
     }
 
     pub(crate) fn hide_compose_bar(&mut self, cx: &mut Context<Self>) {
-        let Some(view) = self.workspace.focused_view() else {
+        let Some(pane_id) = self.workspace.focused_pane() else {
             return;
         };
-        let Some(entry) = self.workspace.compose.get_mut(&view) else {
+        let Some(entry) = self.workspace.compose.get_mut(&pane_id) else {
             return;
         };
         if !entry.visible {
@@ -40,26 +39,22 @@ impl AppShell {
     }
 
     pub(crate) fn send_compose(&mut self, cx: &mut Context<Self>) {
-        let Some(view) = self.workspace.focused_view() else {
+        let Some(pane_id) = self.workspace.focused_pane() else {
             return;
         };
         let text = self
             .workspace
             .compose
-            .get(&view)
-            .map(|e| e.state.value.trim().to_string())
+            .get(&pane_id)
+            .map(|entry| entry.state.value.trim().to_string())
             .unwrap_or_default();
         if text.is_empty() {
             return;
         }
-        match view {
-            ActiveView::LocalSession(session_id) => {
-                if let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) {
-                    session.terminal.run_command_without_focus(&text, cx);
-                }
-            }
+        if let Some(view) = self.workspace.pane_view(pane_id) {
+            view.run_command_without_focus(&text, cx);
         }
-        if let Some(entry) = self.workspace.compose.get_mut(&view) {
+        if let Some(entry) = self.workspace.compose.get_mut(&pane_id) {
             entry.state.clear();
         }
         self.compose_scroll.set_offset(gpui::Point::default());
@@ -72,26 +67,24 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(view) = self.workspace.focused_view() else {
+        let Some(pane_id) = self.workspace.focused_pane() else {
             return;
         };
         let ks = &ev.keystroke;
         let is_send = (ks.modifiers.control || ks.modifiers.platform) && ks.key == "enter";
         if is_send {
             {
-                let entry = self.workspace.compose_entry_mut(view);
+                let entry = self.workspace.compose_entry_mut(pane_id);
                 entry.state.clear_composition();
             }
             self.send_compose(cx);
-            // 保持焦点在 compose，避免 TerminalView::run_command_without_focus 已避免抢占后，
-            // 仍因其他原因（如 button 点击）丢失；此处显式夺回。
             window.focus(&self.compose_focus, cx);
             cx.stop_propagation();
             return;
         }
         if ks.key == "escape" {
             {
-                let entry = self.workspace.compose_entry_mut(view);
+                let entry = self.workspace.compose_entry_mut(pane_id);
                 entry.state.clear_composition();
             }
             self.hide_compose_bar(cx);
@@ -99,14 +92,14 @@ impl AppShell {
             return;
         }
         if ks.key == "enter" && ks.modifiers.shift {
-            let entry = self.workspace.compose_entry_mut(view);
+            let entry = self.workspace.compose_entry_mut(pane_id);
             entry.state.clear_composition();
             entry.state.replace_selection("\n");
             cx.notify();
             cx.stop_propagation();
             return;
         }
-        let entry = self.workspace.compose_entry_mut(view);
+        let entry = self.workspace.compose_entry_mut(pane_id);
         let state = &mut entry.state;
         let primary = ks.modifiers.control || ks.modifiers.platform;
         let paste_text = if primary && ks.key == "v" {

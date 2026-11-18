@@ -107,5 +107,5 @@ pub enum TerminalEvent {
     /// The shell or remote channel ended.
     Closed,
     /// The view attached to a daemon session (carries the daemon session id).
-    SessionAttached { id: String },
+    SessionAttached,
 }

@@ -44,9 +44,6 @@ fn main() {
         std::env::args().skip(1),
         std::env::current_dir().map_err(|error| error.to_string()),
     );
-    // `crossh open <path>` 的启动目录：有运行实例时已在上游转发本变量只服务于
-    // 主实例启动（首屏激活）与前台投递循环。
-    let mut initial_dir: Option<std::path::PathBuf> = None;
     match cli {
         app::cli::CliCommand::Help => {
             app::cli::print_help();
@@ -113,28 +110,25 @@ fn main() {
             eprintln!("try `crossh open <path>` or `crossh --help`");
             std::process::exit(2);
         }
-        app::cli::CliCommand::Main { path } => {
-            if let Some(raw) = path {
-                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
-                match app::single_instance::resolve_open_path(&raw, &cwd) {
-                    Ok(directory) => initial_dir = Some(directory),
-                    Err(error) => {
-                        eprintln!("crossh: {error}");
-                        std::process::exit(2);
-                    }
+        app::cli::CliCommand::Open(raw) => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
+            let directory = match app::single_instance::resolve_open_path(&raw, &cwd) {
+                Ok(directory) => directory,
+                Err(error) => {
+                    eprintln!("crossh: {error}");
+                    std::process::exit(2);
                 }
+            };
+            if let Err(error) = run_open_command(directory.clone()) {
+                eprintln!("crossh open: {error}");
+                std::process::exit(1);
             }
-            // 运行中实例优先：在 crossh 内置终端里 `crossh open ../other`
-            // 直接复用当前窗口；无实例时落空继续走主实例启动。
-            match app::single_instance::try_forward(initial_dir.as_deref()) {
+            match app::single_instance::try_forward(None) {
                 app::single_instance::ForwardOutcome::Forwarded => {
-                    match &initial_dir {
-                        Some(directory) => println!(
-                            "crossh: opened {} in the running instance",
-                            directory.display()
-                        ),
-                        None => println!("crossh is already running"),
-                    }
+                    println!(
+                        "crossh: opened {} in the running instance",
+                        directory.display()
+                    );
                     return;
                 }
                 app::single_instance::ForwardOutcome::Rejected(error) => {
@@ -144,6 +138,17 @@ fn main() {
                 app::single_instance::ForwardOutcome::NoInstance => {}
             }
         }
+        app::cli::CliCommand::Main => match app::single_instance::try_forward(None) {
+            app::single_instance::ForwardOutcome::Forwarded => {
+                println!("crossh is already running");
+                return;
+            }
+            app::single_instance::ForwardOutcome::Rejected(error) => {
+                eprintln!("crossh: {error}");
+                std::process::exit(2);
+            }
+            app::single_instance::ForwardOutcome::NoInstance => {}
+        },
     };
     app::bootstrap::init();
 
@@ -189,7 +194,7 @@ fn main() {
             log::warn!("single-instance listener unavailable: {error}");
         }
         crate::features::workspace::open_main_window(cx);
-        infrastructure::app_menu::activate_project(cx, initial_dir);
+        infrastructure::app_menu::show_main_window(cx);
         infrastructure::app_menu::serve_project_requests(cx, open_rx);
     });
 }
@@ -202,29 +207,108 @@ fn session_runtime() -> tokio::runtime::Runtime {
         .expect("session cli runtime")
 }
 
+fn run_open_command(root: std::path::PathBuf) -> Result<(), String> {
+    use crossh_session::protocol::WorkspaceMutateRequest;
+    use crossh_session::workspace::{MutateOutcome, WorkspaceOp};
+
+    let rt = session_runtime();
+    rt.block_on(async move {
+        let addr = crossh_session::ensure_daemon()
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut client = crossh_session::Client::connect_to(&addr)
+            .await
+            .map_err(|error| error.to_string())?;
+        let reply = client
+            .workspace_mutate(WorkspaceMutateRequest {
+                request_id: 1,
+                expected_revision: None,
+                op: WorkspaceOp::OpenProject { root },
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        match reply.outcome {
+            MutateOutcome::Applied | MutateOutcome::Unchanged => Ok(()),
+            MutateOutcome::Rejected | MutateOutcome::Conflict => Err(reply
+                .error
+                .map(|error| error.message)
+                .unwrap_or_else(|| format!("workspace mutation {:?}", reply.outcome))),
+        }
+    })
+}
+
 fn run_daemon_command(action: app::cli::DaemonAction) -> i32 {
     use app::cli::DaemonAction;
+    use crossh_session::DaemonState;
     let rt = session_runtime();
     match action {
-        DaemonAction::Status => match crossh_session::instance::read_daemon_addr() {
-            Some(addr) => match rt.block_on(crossh_session::Client::connect_to(&addr)) {
-                Ok(mut client) => match rt.block_on(client.list()) {
-                    Ok(sessions) => {
+        DaemonAction::Status => match rt.block_on(crossh_session::probe_daemon()) {
+            DaemonState::Ready(addr) => {
+                let connected = rt.block_on(async {
+                    let mut client = crossh_session::Client::connect_to(&addr).await?;
+                    let sessions = client.list().await?;
+                    let workspace = client.workspace_get().await?;
+                    Ok::<_, std::io::Error>((sessions, workspace))
+                });
+                match connected {
+                    Ok((sessions, workspace)) => {
                         println!("running ({} sessions, port {})", sessions.len(), addr.port);
+                        let tabs = workspace
+                            .projects
+                            .iter()
+                            .map(|project| project.tabs.len())
+                            .sum::<usize>();
+                        let panes = workspace
+                            .projects
+                            .iter()
+                            .flat_map(|project| &project.tabs)
+                            .map(|tab| tab.layout.leaves().count())
+                            .sum::<usize>();
+                        println!(
+                            "workspace: {} projects, {} tabs, {} panes",
+                            workspace.projects.len(),
+                            tabs,
+                            panes
+                        );
                         0
                     }
                     Err(error) => {
                         eprintln!("crossh daemon: {error}");
                         1
                     }
-                },
-                Err(_) => {
-                    println!("not running (stale port file)");
-                    1
                 }
-            },
-            None => {
-                println!("not running");
+            }
+            DaemonState::Absent { stale } => {
+                let base = if stale {
+                    "not running (stale port file)"
+                } else {
+                    "not running"
+                };
+                match crossh_session::workspace_store::read_daemon_error() {
+                    Some(reason) => println!("{base}: {reason}"),
+                    None => match crossh_session::workspace_store::workspace_format_too_new() {
+                        Some(found) => println!(
+                            "{base}: workspace format v{found} is newer than supported v{}; upgrade crossh",
+                            crossh_session::workspace::WORKSPACE_FORMAT_VERSION
+                        ),
+                        None => println!("{base}"),
+                    },
+                }
+                1
+            }
+            DaemonState::Incompatible { message } => {
+                let found = {
+                    let rest = message.split("daemon ").nth(1).unwrap_or_default();
+                    rest.split(|c: char| !c.is_ascii_digit())
+                        .next()
+                        .filter(|digits| !digits.is_empty())
+                        .map(|digits| format!("v{digits}"))
+                        .unwrap_or_else(|| "unknown".to_string())
+                };
+                println!(
+                    "incompatible: found {found}, expected v{}; run crossh daemon stop",
+                    crossh_session::handshake::PROTOCOL_VERSION
+                );
                 1
             }
         },
@@ -263,16 +347,23 @@ fn run_ls_command() -> i32 {
     match rt.block_on(client.list()) {
         Ok(sessions) => {
             println!(
-                "{:<8} {:<10} {:<5} {:<7} CWD",
-                "ID", "ROLE", "ALIVE", "PROGRAM"
+                "{:<8} {:<10} {:<5} {:<7} {:<8} {:<8} {:<8} CWD",
+                "ID", "ROLE", "ALIVE", "PROGRAM", "PROJECT", "TAB", "PANE"
             );
             for session in &sessions {
+                let id_or_dash = |id: Option<u64>| {
+                    id.map(|id| id.to_string())
+                        .unwrap_or_else(|| "-".to_string())
+                };
                 println!(
-                    "{:<8} {:<10} {:<5} {:<7} {}",
+                    "{:<8} {:<10} {:<5} {:<7} {:<8} {:<8} {:<8} {}",
                     session.id,
                     crossh_session::role_of(session, client.client_id),
                     session.alive,
                     session.program.as_deref().unwrap_or("-"),
+                    id_or_dash(session.project_id),
+                    id_or_dash(session.tab_id),
+                    id_or_dash(session.pane_id),
                     session.cwd.as_deref().unwrap_or("-"),
                 );
             }

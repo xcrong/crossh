@@ -13,7 +13,6 @@ use crossh_ui::{icons, theme};
 use crossh_ui_component::{ModalField, SharedTextState};
 
 use super::AppShell;
-use super::state::ActiveView;
 
 /// 面板内单条命令的静态定义。
 #[derive(Clone, Debug)]
@@ -310,10 +309,10 @@ impl AppShell {
                 self.toggle_settings(cx);
             }
             PaletteCommandKind::SplitHorizontal => {
-                self.toggle_terminal_split(window, cx);
+                self.toggle_terminal_split(cx);
             }
             PaletteCommandKind::SplitVertical => {
-                self.toggle_vertical_split(window, cx);
+                self.toggle_vertical_split(cx);
             }
             PaletteCommandKind::OpenInEditor => {
                 self.open_focused_project_in_editor(cx);
@@ -335,34 +334,26 @@ impl AppShell {
         }
     }
 
-    /// 在外部编辑器中打开当前聚焦会话所属的项目；无聚焦会话时空操作。
+    /// 在外部编辑器中打开聚焦 pane 所属的项目；无聚焦 pane 时空操作。
     fn open_focused_project_in_editor(&mut self, cx: &mut Context<Self>) {
-        let Some(ActiveView::LocalSession(session_id)) = self.workspace.focused_view() else {
+        let Some(pane_id) = self.workspace.focused_pane() else {
             return;
         };
-        let Some(directory) = self
-            .workspace
-            .sessions
-            .local_sessions
-            .get(&session_id)
-            .map(|session| session.project_dir.clone())
-        else {
+        let Some(directory) = crate::features::workspace::projection::project_of_pane(
+            &self.workspace.snapshot,
+            pane_id,
+        )
+        .map(|project| project.root.clone()) else {
             return;
         };
         self.open_project_in_editor(&directory, cx);
     }
-    /// 在聚焦会话的 cwd 打开 Git Viewer；无聚焦会话时空操作（复用状态栏 Git 按钮逻辑）。
+    /// 在聚焦 pane 的 cwd 打开 Git Viewer；无聚焦 pane 时空操作（复用状态栏 Git 按钮逻辑）。
     fn open_focused_project_git_viewer(&mut self) {
-        let Some(ActiveView::LocalSession(session_id)) = self.workspace.focused_view() else {
+        let Some(pane_id) = self.workspace.focused_pane() else {
             return;
         };
-        let Some(cwd) = self
-            .workspace
-            .sessions
-            .local_sessions
-            .get(&session_id)
-            .map(|session| session.cwd.clone())
-        else {
+        let Some(cwd) = self.workspace.pane(pane_id).map(|pane| pane.cwd.clone()) else {
             return;
         };
         if let Err(error) = crossh_core::git_launcher::spawn_git_process(&cwd) {

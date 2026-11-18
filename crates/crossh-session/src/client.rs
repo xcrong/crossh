@@ -4,13 +4,17 @@
 //! - `ensure_daemon` 按需拉起：探活失败则 detached  spawn（unix `setsid`，
 //!   Windows `DETACHED_PROCESS`），环境照常继承（D6）。
 
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::sync::{Mutex, oneshot, watch};
 
 use crate::handshake::{
     ErrorPayload, HandshakeOk, HandshakeRequest, PROTOCOL_VERSION, capabilities,
@@ -18,14 +22,15 @@ use crate::handshake::{
 use crate::instance::{DaemonAddr, daemon_port_file_path, read_daemon_addr};
 use crate::protocol::{
     AttachRequest, AttachedReply, CloseRequest, CreateRequest, CreatedReply, ExitedNotice,
-    ListReply, MAX_FRAME, MessageKind, ReplayEndMarker, ResizeRequest, SessionInfo, decode_frame,
-    decode_output, encode_frame,
+    ListReply, MAX_FRAME, MessageKind, ReplayEndMarker, ResizeRequest, SessionInfo,
+    WorkspaceMutateReply, WorkspaceMutateRequest, decode_frame, decode_output, encode_frame,
 };
+use crate::workspace::{WorkspaceOp, WorkspaceSnapshot};
 
 /// 握手等待上限（daemon 本地回环，常时毫秒级）。
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// 拉起后等端口文件出现的最长等待。
-const SPAWN_WAIT: Duration = Duration::from_secs(15);
+const SPAWN_WAIT: Duration = Duration::from_secs(10);
 
 async fn read_frame(reader: &mut OwnedReadHalf) -> io::Result<(MessageKind, Vec<u8>)> {
     let mut head = [0u8; 5];
@@ -127,57 +132,154 @@ fn spawn_detached() -> io::Result<()> {
     Ok(())
 }
 
-async fn probe(addr: &DaemonAddr) -> io::Result<HandshakeOk> {
+/// 客户端声明的能力（与 daemon 的交集才是生效能力）。
+fn client_capabilities() -> Vec<String> {
+    [
+        capabilities::WORKSPACE_V1,
+        capabilities::REPLAY_MARK,
+        capabilities::OBSERVER_LOCAL_LAYOUT,
+        capabilities::READONLY_BADGE,
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+#[derive(Debug)]
+enum ProbeError {
+    Version(String),
+    Other(io::Error),
+}
+
+async fn probe_version(
+    addr: &DaemonAddr,
+    version: u32,
+    capabilities: Vec<String>,
+) -> Result<HandshakeOk, ProbeError> {
     let sock = tokio::time::timeout(
         Duration::from_millis(500),
         TcpStream::connect(("127.0.0.1", addr.port)),
     )
     .await
-    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "daemon connect timeout"))??;
+    .map_err(|_| {
+        ProbeError::Other(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "daemon connect timeout",
+        ))
+    })?
+    .map_err(ProbeError::Other)?;
     let (mut r, mut w) = sock.into_split();
     let hello = HandshakeRequest {
-        version: PROTOCOL_VERSION,
-        capabilities: vec![
-            capabilities::REPLAY_MARK.to_string(),
-            capabilities::OBSERVER_LOCAL_LAYOUT.to_string(),
-            capabilities::READONLY_BADGE.to_string(),
-        ],
+        version,
+        capabilities,
         token: addr.token.clone(),
     };
-    send_frame(&mut w, MessageKind::Hello, &json(&hello)).await?;
+    send_frame(&mut w, MessageKind::Hello, &json(&hello))
+        .await
+        .map_err(ProbeError::Other)?;
     let (kind, payload) = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_frame(&mut r))
         .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "daemon handshake timeout"))??;
+        .map_err(|_| {
+            ProbeError::Other(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "daemon handshake timeout",
+            ))
+        })?
+        .map_err(ProbeError::Other)?;
     if kind != MessageKind::Welcome {
         let msg = serde_json::from_slice::<ErrorPayload>(&payload)
             .map(|e| e.message)
             .unwrap_or_else(|_| "handshake failed".to_string());
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, msg));
+        if msg.contains("protocol version mismatch") {
+            return Err(ProbeError::Version(msg));
+        }
+        return Err(ProbeError::Other(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            msg,
+        )));
     }
     serde_json::from_slice(&payload)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad welcome"))
+        .map_err(|_| ProbeError::Other(io::Error::new(io::ErrorKind::InvalidData, "bad welcome")))
 }
 
-/// 按需拉起并返回可用地址：探活成功直接用；陈旧文件删除后 detached 重拉。
-pub async fn ensure_daemon() -> io::Result<DaemonAddr> {
-    if let Some(addr) = read_daemon_addr()
-        && probe(&addr).await.is_ok()
-    {
-        return Ok(addr);
+/// daemon 状态三态；`probe_daemon` 无副作用。
+#[derive(Debug)]
+pub enum DaemonState {
+    /// 无端口文件，或端口不可连接（`stale = true`）。
+    Absent { stale: bool },
+    /// TCP 可达但握手版本不兼容。
+    Incompatible { message: String },
+    /// 当前版本握手成功。
+    Ready(DaemonAddr),
+}
+
+/// 只读探测：不删除端口文件、不 spawn、不调用 `ensure_daemon`。
+pub async fn probe_daemon() -> DaemonState {
+    let Some(addr) = read_daemon_addr() else {
+        return DaemonState::Absent { stale: false };
+    };
+    match probe_version(&addr, PROTOCOL_VERSION, client_capabilities()).await {
+        Ok(_) => DaemonState::Ready(addr),
+        Err(ProbeError::Version(message)) => DaemonState::Incompatible { message },
+        Err(ProbeError::Other(_)) => DaemonState::Absent { stale: true },
     }
-    let _ = std::fs::remove_file(daemon_port_file_path());
+}
+
+fn parse_found_version(message: &str) -> Option<u32> {
+    let rest = message.split("daemon ").nth(1)?;
+    rest.split(|c: char| !c.is_ascii_digit())
+        .next()
+        .and_then(|value| value.parse().ok())
+}
+
+/// 兼容性错误文案：包含两侧版本与恢复命令。
+pub fn incompatible_message(found: Option<u32>) -> String {
+    let found = found
+        .map(|version| format!("v{version}"))
+        .unwrap_or_else(|| "unknown".to_string());
+    format!(
+        "daemon protocol {found} is incompatible with this client (expected v{}); run `crossh daemon stop`",
+        PROTOCOL_VERSION
+    )
+}
+
+/// 按需拉起并返回可用地址：兼容 daemon 直接用；无监听时 detached 重拉；
+/// 存活但不兼容时明确报错，**不删除端口文件、不 spawn**。
+pub async fn ensure_daemon() -> io::Result<DaemonAddr> {
+    match probe_daemon().await {
+        DaemonState::Ready(addr) => return Ok(addr),
+        DaemonState::Incompatible { message } => {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                incompatible_message(parse_found_version(&message)),
+            ));
+        }
+        DaemonState::Absent { stale } => {
+            if stale {
+                let _ = std::fs::remove_file(daemon_port_file_path());
+            }
+        }
+    }
     spawn_detached()?;
     let deadline = Instant::now() + SPAWN_WAIT;
     loop {
-        if let Some(addr) = read_daemon_addr()
-            && probe(&addr).await.is_ok()
-        {
-            return Ok(addr);
+        match probe_daemon().await {
+            DaemonState::Ready(addr) => return Ok(addr),
+            DaemonState::Incompatible { message } => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    incompatible_message(parse_found_version(&message)),
+                ));
+            }
+            DaemonState::Absent { .. } => {}
         }
         if Instant::now() >= deadline {
+            let reason = crate::workspace_store::read_daemon_error()
+                .map(|reason| format!(": {reason}"))
+                .unwrap_or_default();
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                "crossh-daemon did not come up",
+                format!("crossh-daemon did not come up{reason}"),
             ));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -202,7 +304,7 @@ impl Client {
         let (mut reader, mut writer) = sock.into_split();
         let hello = HandshakeRequest {
             version: PROTOCOL_VERSION,
-            capabilities: vec![],
+            capabilities: client_capabilities(),
             token: addr.token.clone(),
         };
         send_frame(&mut writer, MessageKind::Hello, &json(&hello)).await?;
@@ -368,6 +470,69 @@ impl Client {
             }
         }
     }
+
+    /// 读取一份工作区快照（不订阅后续更新）。
+    pub async fn workspace_get(&mut self) -> io::Result<WorkspaceSnapshot> {
+        send_frame(&mut self.writer, MessageKind::WorkspaceGet, &[]).await?;
+        loop {
+            let (kind, payload) = read_timeout(&mut self.reader).await?;
+            match kind {
+                MessageKind::WorkspaceSnapshot => {
+                    return serde_json::from_slice(&payload).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidData, "bad workspace snapshot")
+                    });
+                }
+                MessageKind::Error => return Err(client_error(&payload)),
+                _ => {}
+            }
+        }
+    }
+
+    /// 订阅工作区：返回当前快照，后续用 `next_workspace_snapshot` 读取推送。
+    pub async fn workspace_attach(&mut self) -> io::Result<WorkspaceSnapshot> {
+        send_frame(&mut self.writer, MessageKind::WorkspaceAttach, &[]).await?;
+        self.next_workspace_snapshot().await
+    }
+
+    pub async fn next_workspace_snapshot(&mut self) -> io::Result<WorkspaceSnapshot> {
+        loop {
+            let (kind, payload) = read_timeout(&mut self.reader).await?;
+            match kind {
+                MessageKind::WorkspaceSnapshot => {
+                    return serde_json::from_slice(&payload).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidData, "bad workspace snapshot")
+                    });
+                }
+                MessageKind::Error => return Err(client_error(&payload)),
+                _ => {}
+            }
+        }
+    }
+
+    /// 串行修改工作区并等待回执；中途到达的快照被忽略。
+    pub async fn workspace_mutate(
+        &mut self,
+        request: WorkspaceMutateRequest,
+    ) -> io::Result<WorkspaceMutateReply> {
+        send_frame(
+            &mut self.writer,
+            MessageKind::WorkspaceMutate,
+            &json(&request),
+        )
+        .await?;
+        loop {
+            let (kind, payload) = read_timeout(&mut self.reader).await?;
+            match kind {
+                MessageKind::WorkspaceMutateReply => {
+                    return serde_json::from_slice(&payload).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidData, "bad workspace reply")
+                    });
+                }
+                MessageKind::Error => return Err(client_error(&payload)),
+                _ => {}
+            }
+        }
+    }
 }
 
 /// 建/接入会话后一次性返回的信息 + 回放。
@@ -452,23 +617,69 @@ pub async fn capture_session(id: &str, out: &mut dyn Write) -> io::Result<Sessio
     Ok(attached.session)
 }
 
-/// `daemon stop`：已认证停服，端口文件由服务端删除；随后探活确认退出。
+/// `daemon stop`：直接连接现有 daemon，任何分支都不拉起新实例。
+///
+/// 当前版本握手遇到版本错误时用 v1 握手重试（v1 的 `Shutdown = 16`
+/// 编号与空载荷不变）；两种握手都失败时给出可执行错误。
 pub async fn daemon_stop() -> io::Result<()> {
-    let addr = ensure_daemon().await?;
+    let Some(addr) = read_daemon_addr() else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "daemon is not running (no {})",
+                daemon_port_file_path().display()
+            ),
+        ));
+    };
+    let current = match probe_version(&addr, PROTOCOL_VERSION, client_capabilities()).await {
+        Ok(_) => Some(PROTOCOL_VERSION),
+        Err(ProbeError::Version(_)) => match probe_version(&addr, 1, Vec::new()).await {
+            Ok(_) => Some(1),
+            Err(ProbeError::Version(message)) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!(
+                        "cannot stop daemon at {}: {message}; run `crossh daemon stop` with the matching crossh version",
+                        daemon_port_file_path().display()
+                    ),
+                ));
+            }
+            Err(ProbeError::Other(error)) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "cannot stop daemon at {}: {error}; run `crossh daemon stop` with the matching crossh version",
+                        daemon_port_file_path().display()
+                    ),
+                ));
+            }
+        },
+        Err(ProbeError::Other(error)) => {
+            return Err(io::Error::new(
+                error.kind(),
+                format!(
+                    "cannot stop daemon at {}: {error}; the daemon may be from another crossh version",
+                    daemon_port_file_path().display()
+                ),
+            ));
+        }
+    };
+    let version = current.expect("handshake succeeded");
     let sock = TcpStream::connect(("127.0.0.1", addr.port)).await?;
     let (mut r, mut w) = sock.into_split();
     let hello = HandshakeRequest {
-        version: PROTOCOL_VERSION,
-        capabilities: vec![],
+        version,
+        capabilities: if version == PROTOCOL_VERSION {
+            client_capabilities()
+        } else {
+            Vec::new()
+        },
         token: addr.token.clone(),
     };
     send_frame(&mut w, MessageKind::Hello, &json(&hello)).await?;
-    let (kind, _) = read_frame(&mut r).await?;
+    let (kind, payload) = read_frame(&mut r).await?;
     if kind != MessageKind::Welcome {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "handshake failed",
-        ));
+        return Err(client_error(&payload));
     }
     send_frame(&mut w, MessageKind::Shutdown, &[]).await?;
     // 等端口消失或连不上（服务端删文件后退出）。
@@ -483,6 +694,145 @@ pub async fn daemon_stop() -> io::Result<()> {
         io::ErrorKind::TimedOut,
         "daemon did not stop",
     ))
+}
+
+/// 工作区订阅连接：一个读任务持续接收快照与回执，写端串行发送修改。
+///
+/// GUI 用它做主连接；每个终端的 `DaemonLink` 仍是独立连接。
+pub struct WorkspaceConnection {
+    writer: Arc<Mutex<OwnedWriteHalf>>,
+    pending: Arc<std::sync::Mutex<HashMap<u64, oneshot::Sender<WorkspaceMutateReply>>>>,
+    snapshots: watch::Receiver<Arc<WorkspaceSnapshot>>,
+    next_id: AtomicU64,
+}
+
+impl WorkspaceConnection {
+    pub async fn connect() -> io::Result<Self> {
+        let addr = ensure_daemon().await?;
+        Self::connect_to(addr).await
+    }
+
+    pub async fn connect_to(addr: DaemonAddr) -> io::Result<Self> {
+        let sock = TcpStream::connect(("127.0.0.1", addr.port)).await?;
+        let (mut reader, mut writer) = sock.into_split();
+        let hello = HandshakeRequest {
+            version: PROTOCOL_VERSION,
+            capabilities: client_capabilities(),
+            token: addr.token.clone(),
+        };
+        send_frame(&mut writer, MessageKind::Hello, &json(&hello)).await?;
+        let (kind, payload) = read_timeout(&mut reader).await?;
+        if kind != MessageKind::Welcome {
+            return Err(client_error(&payload));
+        }
+        send_frame(&mut writer, MessageKind::WorkspaceAttach, &[]).await?;
+        let initial: WorkspaceSnapshot = loop {
+            let (kind, payload) = read_timeout(&mut reader).await?;
+            match kind {
+                MessageKind::WorkspaceSnapshot => {
+                    break serde_json::from_slice(&payload).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidData, "bad workspace snapshot")
+                    })?;
+                }
+                MessageKind::Error => return Err(client_error(&payload)),
+                _ => {}
+            }
+        };
+        let (snapshot_tx, snapshots) = watch::channel(Arc::new(initial));
+        let pending: Arc<std::sync::Mutex<HashMap<u64, oneshot::Sender<WorkspaceMutateReply>>>> =
+            Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let reader_pending = pending.clone();
+        tokio::spawn(async move {
+            loop {
+                let (kind, payload) = match read_frame(&mut reader).await {
+                    Ok(frame) => frame,
+                    Err(_) => break,
+                };
+                match kind {
+                    MessageKind::WorkspaceSnapshot => {
+                        if let Ok(snapshot) = serde_json::from_slice::<WorkspaceSnapshot>(&payload)
+                        {
+                            let _ = snapshot_tx.send(Arc::new(snapshot));
+                        }
+                    }
+                    MessageKind::WorkspaceMutateReply => {
+                        if let Ok(reply) = serde_json::from_slice::<WorkspaceMutateReply>(&payload)
+                        {
+                            let sender = reader_pending
+                                .lock()
+                                .ok()
+                                .and_then(|mut pending| pending.remove(&reply.request_id));
+                            if let Some(sender) = sender {
+                                let _ = sender.send(reply);
+                            }
+                        }
+                    }
+                    MessageKind::Error => {
+                        log::warn!("workspace connection error: {}", client_error(&payload));
+                    }
+                    _ => {}
+                }
+            }
+        });
+        Ok(Self {
+            writer: Arc::new(Mutex::new(writer)),
+            pending,
+            snapshots,
+            next_id: AtomicU64::new(1),
+        })
+    }
+
+    pub fn snapshots(&self) -> watch::Receiver<Arc<WorkspaceSnapshot>> {
+        self.snapshots.clone()
+    }
+
+    pub fn current(&self) -> Arc<WorkspaceSnapshot> {
+        self.snapshots.borrow().clone()
+    }
+
+    pub async fn mutate(
+        &self,
+        op: WorkspaceOp,
+        expected_revision: Option<u64>,
+    ) -> io::Result<WorkspaceMutateReply> {
+        let request_id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let request = WorkspaceMutateRequest {
+            request_id,
+            expected_revision,
+            op,
+        };
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.insert(request_id, reply_tx);
+        }
+        let send = async {
+            let mut writer = self.writer.lock().await;
+            send_frame(&mut writer, MessageKind::WorkspaceMutate, &json(&request)).await
+        };
+        if let Err(error) = send.await {
+            if let Ok(mut pending) = self.pending.lock() {
+                pending.remove(&request_id);
+            }
+            return Err(error);
+        }
+        match tokio::time::timeout(HANDSHAKE_TIMEOUT, reply_rx).await {
+            Ok(Ok(reply)) => Ok(reply),
+            Ok(Err(_)) => Err(io::Error::other("workspace connection closed")),
+            Err(_) => {
+                if let Ok(mut pending) = self.pending.lock() {
+                    pending.remove(&request_id);
+                }
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "workspace mutate reply timed out",
+                ))
+            }
+        }
+    }
+
+    pub async fn refresh_availability(&self) -> io::Result<WorkspaceMutateReply> {
+        self.mutate(WorkspaceOp::RefreshAvailability, None).await
+    }
 }
 
 /// 会话角色（相对观察者自身 id）：controller / observer / 无。

@@ -2,7 +2,7 @@
 //!
 //! 同时覆盖 2.4（observer 首输入丢弃+接管）、2.5（observer resize 静默忽略、
 //! controller resize 生效由 `stty size` 证明）、2.6（`exit 3` 退出码透出）。
-//! 单测独立隔离：`CROSSH_CACHE_DIR` 指向临时目录。
+//! 单测独立隔离：`CROSSH_CACHE_DIR` 与 `CROSSH_CONFIG_DIR` 指向临时目录。
 
 use std::io;
 use std::path::PathBuf;
@@ -152,8 +152,13 @@ fn cache_dir() -> PathBuf {
 #[tokio::test]
 async fn daemon_full_cycle() {
     let dir = cache_dir();
+    let config = dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
     // SAFETY: 测试进程内最早设置，后续只读。
-    unsafe { std::env::set_var("CROSSH_CACHE_DIR", &dir) };
+    unsafe {
+        std::env::set_var("CROSSH_CACHE_DIR", &dir);
+        std::env::set_var("CROSSH_CONFIG_DIR", &config);
+    }
     let daemon_bin = env!("CARGO_BIN_EXE_crossh-daemon");
     let child = std::process::Command::new(daemon_bin)
         .stdout(std::process::Stdio::null())

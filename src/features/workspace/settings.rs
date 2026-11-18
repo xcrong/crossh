@@ -1,41 +1,14 @@
 //! Workspace-owned settings and their validation rules.
-
-use std::collections::HashSet;
-use std::path::PathBuf;
+//!
+//! 最近目录与固定标签已迁入 daemon 的工作区模型；本结构只保留展示与
+//! 终端交互设置。
 
 use serde::{Deserialize, Serialize};
-
-pub(crate) const DEFAULT_RECENT_DIRS_MAX: usize = 50;
-pub(crate) const MIN_RECENT_DIRS_MAX: usize = 0;
-pub(crate) const MAX_RECENT_DIRS_MAX: usize = 500;
-
-/// 一条固定本地会话的持久化记录。`pin_id` 是记录内唯一的稳定身份，
-/// 分配后不回收、与列表位置解耦；排序由 `Vec` 顺序决定（为拖拽排序预留）。
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub(crate) struct PinnedLocalTab {
-    pub(crate) pin_id: u64,
-    pub(crate) project_dir: PathBuf,
-    pub(crate) cwd: PathBuf,
-    #[serde(default)]
-    pub(crate) custom_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) default_command: Option<String>,
-    /// 附着恢复用的 daemon 会话 id；`None` 时回退为新建会话。
-    /// daemon 重启后旧 id 失效，恢复走接入失败的显式错误路径。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) daemon_session_id: Option<String>,
-}
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct WorkspaceSettings {
     #[serde(default = "default_show_host_sidebar")]
     pub(crate) show_host_sidebar: bool,
-    #[serde(default, rename = "recent_local_dirs")]
-    pub(crate) recent_dirs: Vec<PathBuf>,
-    #[serde(default = "default_recent_dirs_max", rename = "recent_local_dirs_max")]
-    pub(crate) recent_dirs_max: usize,
-    #[serde(default)]
-    pub(crate) pinned_local_tabs: Vec<PinnedLocalTab>,
     /// 显式编辑器命令，由设置中的下拉选择框写入（选项来自自动检测结果）；
     /// 设置后状态栏「在编辑器中打开」跳过自动检测。空白归一为 `None`（视为未配置）。
     /// 检测候选列表是代码常量 `editor_launcher::DEFAULT_EDITOR_PRIORITY`，不可配置。
@@ -51,9 +24,6 @@ impl Default for WorkspaceSettings {
     fn default() -> Self {
         Self {
             show_host_sidebar: default_show_host_sidebar(),
-            recent_dirs: Vec::new(),
-            recent_dirs_max: default_recent_dirs_max(),
-            pinned_local_tabs: Vec::new(),
             editor_command: None,
             focus_follows_mouse: default_focus_follows_mouse(),
         }
@@ -62,27 +32,6 @@ impl Default for WorkspaceSettings {
 
 impl WorkspaceSettings {
     pub(crate) fn normalized(mut self) -> Self {
-        self.recent_dirs_max = self
-            .recent_dirs_max
-            .clamp(MIN_RECENT_DIRS_MAX, MAX_RECENT_DIRS_MAX);
-        if self.recent_dirs_max != 0 && self.recent_dirs.len() > self.recent_dirs_max {
-            self.recent_dirs.truncate(self.recent_dirs_max);
-        }
-        // 固定记录按 pin_id 去重（保留首个出现），空白自定义名称归一为 None。
-        let mut seen = HashSet::new();
-        self.pinned_local_tabs.retain(|tab| seen.insert(tab.pin_id));
-        for tab in &mut self.pinned_local_tabs {
-            tab.custom_name = tab
-                .custom_name
-                .take()
-                .filter(|name| !name.trim().is_empty())
-                .map(|name| name.trim().to_string());
-            tab.default_command = tab
-                .default_command
-                .take()
-                .map(|command| command.trim().to_string())
-                .filter(|command| !command.is_empty());
-        }
         // 编辑器配置：空白命令归一为 None。
         self.editor_command = self
             .editor_command
@@ -91,10 +40,6 @@ impl WorkspaceSettings {
             .filter(|command| !command.is_empty());
         self
     }
-}
-
-fn default_recent_dirs_max() -> usize {
-    DEFAULT_RECENT_DIRS_MAX
 }
 
 fn default_show_host_sidebar() -> bool {
@@ -109,31 +54,6 @@ fn default_focus_follows_mouse() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn normalization_clamps_limits_and_truncates_in_order() {
-        let paths = (0..60)
-            .map(|index| PathBuf::from(format!("/project-{index}")))
-            .collect::<Vec<_>>();
-        let low = WorkspaceSettings {
-            recent_dirs: paths.clone(),
-            recent_dirs_max: 0,
-            ..WorkspaceSettings::default()
-        }
-        .normalized();
-        assert_eq!(low.recent_dirs_max, 0);
-        assert_eq!(low.recent_dirs.len(), 60);
-        assert_eq!(low.recent_dirs, paths);
-
-        let high = WorkspaceSettings {
-            recent_dirs: paths.clone(),
-            recent_dirs_max: usize::MAX,
-            ..WorkspaceSettings::default()
-        }
-        .normalized();
-        assert_eq!(high.recent_dirs_max, MAX_RECENT_DIRS_MAX);
-        assert_eq!(high.recent_dirs, paths);
-    }
 
     #[test]
     fn focus_follows_mouse_defaults_on_for_legacy_and_explicit_configs() {
@@ -174,103 +94,11 @@ mod tests {
     }
 
     #[test]
-    fn spec_20260820_open_project_in_editor_defaults_have_no_configured_command() {
-        let defaults = WorkspaceSettings::default();
-        assert_eq!(defaults.editor_command, None);
-    }
-
-    #[test]
-    fn spec_20260818_local_tab_pin_normalization_deduplicates_pin_ids_and_cleans_blank_names() {
-        let tabs = vec![
-            PinnedLocalTab {
-                pin_id: 2,
-                project_dir: PathBuf::from("/a"),
-                cwd: PathBuf::from("/a"),
-                custom_name: Some("   ".into()),
-                default_command: Some("   ".into()),
-                daemon_session_id: None,
-            },
-            PinnedLocalTab {
-                pin_id: 1,
-                project_dir: PathBuf::from("/b"),
-                cwd: PathBuf::from("/b"),
-                custom_name: Some("work".into()),
-                default_command: Some("  opencode  ".into()),
-                daemon_session_id: None,
-            },
-            PinnedLocalTab {
-                pin_id: 2,
-                project_dir: PathBuf::from("/c"),
-                cwd: PathBuf::from("/c"),
-                custom_name: None,
-                default_command: None,
-                daemon_session_id: None,
-            },
-            PinnedLocalTab {
-                pin_id: 3,
-                project_dir: PathBuf::from("/d"),
-                cwd: PathBuf::from("/d"),
-                custom_name: Some("  dev  ".into()),
-                // 本地优先：默认不预设远程命令
-                default_command: None,
-                daemon_session_id: None,
-            },
-        ];
-        let normalized = WorkspaceSettings {
-            pinned_local_tabs: tabs,
-            ..WorkspaceSettings::default()
-        }
-        .normalized();
-        let ids = normalized
-            .pinned_local_tabs
-            .iter()
-            .map(|tab| tab.pin_id)
-            .collect::<Vec<_>>();
-        assert_eq!(ids, vec![2, 1, 3], "重复 pin_id 只保留首个且顺序不变");
-        assert_eq!(normalized.pinned_local_tabs[0].custom_name, None);
-        assert_eq!(normalized.pinned_local_tabs[0].default_command, None);
-        assert_eq!(
-            normalized.pinned_local_tabs[1].custom_name,
-            Some("work".to_string())
-        );
-        assert_eq!(
-            normalized.pinned_local_tabs[1].default_command,
-            Some("opencode".to_string())
-        );
-        assert_eq!(
-            normalized.pinned_local_tabs[2].custom_name,
-            Some("dev".to_string())
-        );
-        // 本地优先：不再默认填充远程命令，应为 None
-        assert_eq!(normalized.pinned_local_tabs[2].default_command, None);
-    }
-
-    #[test]
-    fn pinned_tab_daemon_session_id_survives_normalization_and_toml_roundtrip() {
-        // 按 id 恢复的前提：归一化不丢 id，TOML 持久化往返不丢 id。
-        let tab = PinnedLocalTab {
-            pin_id: 7,
-            project_dir: PathBuf::from("/a"),
-            cwd: PathBuf::from("/a"),
-            custom_name: None,
-            default_command: None,
-            daemon_session_id: Some("sess-abc".to_string()),
-        };
-        let normalized = WorkspaceSettings {
-            pinned_local_tabs: vec![tab],
-            ..WorkspaceSettings::default()
-        }
-        .normalized();
-        assert_eq!(
-            normalized.pinned_local_tabs[0].daemon_session_id,
-            Some("sess-abc".to_string())
-        );
-        let encoded = toml::to_string(&normalized).expect("settings should serialize");
-        let decoded: WorkspaceSettings =
-            toml::from_str(&encoded).expect("settings should deserialize");
-        assert_eq!(
-            decoded.pinned_local_tabs[0].daemon_session_id,
-            Some("sess-abc".to_string())
-        );
+    fn legacy_workspace_keys_are_ignored() {
+        let settings: WorkspaceSettings = toml::from_str(
+            "recent_local_dirs = [\"/a\"]\nrecent_local_dirs_max = 10\npinned_local_tabs = []\n",
+        )
+        .expect("legacy settings should deserialize");
+        assert_eq!(settings, WorkspaceSettings::default());
     }
 }

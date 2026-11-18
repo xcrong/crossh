@@ -10,9 +10,13 @@ pub mod protocol;
 pub mod serve;
 pub mod session;
 pub mod spawn;
+pub mod workspace;
+pub mod workspace_actor;
+pub mod workspace_store;
 pub use client::{
-    Attached, Client, ServerEvent, capture_session, daemon_bin_path, daemon_stop, ensure_daemon,
-    role_of, run_command,
+    Attached, Client, DaemonState, ServerEvent, WorkspaceConnection, capture_session,
+    daemon_bin_path, daemon_stop, ensure_daemon, incompatible_message, probe_daemon, role_of,
+    run_command,
 };
 pub use feed::{FeedState, FeedUpdate, program_state_name};
 pub use handshake::{HandshakeError, HandshakeRequest, HandshakeResult, verify_handshake};

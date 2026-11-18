@@ -1,8 +1,9 @@
-//! 工作区渲染：标签条 + 终端主区、状态栏与模态弹窗。
+//! 工作区渲染：标签条 + 递归分屏树、状态栏与输入弹窗。
+//!
+//! 布局来自 daemon 快照；渲染层按 `PaneNodeSnapshot` 递归生成 flex 行/列，
+//! 终端视图按 `PaneId` 从 `WorkspaceState` 取出。
 
-use std::cell::Cell;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, AppContext, Context, DispatchPhase, InteractiveElement, IntoElement,
@@ -13,28 +14,39 @@ use gpui::{
 use crate::features::settings::is_settings_window_open;
 use crate::features::updates::UpdateStatus;
 use crate::features::workspace::empty_state;
-use crate::features::workspace::registry::{SplitSide, TerminalSplitState};
-use crate::features::workspace::shell::{AppShell, CrossDragState, GitSyncOperation, GitSyncState};
-pub use crate::features::workspace::state::{ActiveView, LocalDir, LocalSession, LocalSessionId};
+use crate::features::workspace::projection;
+use crate::features::workspace::registry::SplitDrag;
+use crate::features::workspace::shell::{AppShell, GitSyncOperation, GitSyncState};
 use crate::features::workspace::tab_strip;
 use crate::features::workspace::toaster::{ToastNotice, ToastTone};
 use crossh_core::editor_launcher;
 use crossh_core::git_status::GitStatus;
 use crossh_core::i18n;
+use crossh_session::workspace::{
+    Axis, PaneId, PaneNodeSnapshot, PaneSnapshot, PaneStatus, TabSnapshot,
+};
 use crossh_terminal_view::TerminalItem as _;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{
     BadgeTone, Button, ButtonSize, ButtonVariant, ModalDialog, ModalField, SharedTextState,
-    SplitResizer, StatusBar, StatusMetric, Tooltip,
+    StatusBar, StatusMetric, Tooltip,
 };
 
 const TERMINAL_SPLIT_MIN_PANE_WIDTH: f32 = 160.0;
 const TERMINAL_SPLIT_HANDLE_WIDTH: f32 = 8.0;
 const TERMINAL_SPLIT_MIN_PANE_HEIGHT: f32 = 80.0;
 
-fn split_clamped_size(requested: f32, default: f32, min: f32, max: f32) -> f32 {
-    let base = if requested <= 0.0 { default } else { requested };
-    crossh_ui_component::clamp_panel_width(base, min, max)
+fn terminal_split_available(width: Pixels) -> bool {
+    width.as_f32() >= TERMINAL_SPLIT_MIN_PANE_WIDTH * 2.0 + TERMINAL_SPLIT_HANDLE_WIDTH
+}
+
+fn terminal_split_vertical_available(height: Pixels) -> bool {
+    height.as_f32() >= TERMINAL_SPLIT_MIN_PANE_HEIGHT * 2.0 + TERMINAL_SPLIT_HANDLE_WIDTH
+}
+
+/// 焦点跟随鼠标的纯判定：仅当开关开启、当前是纯悬停、且悬停格尚非聚焦侧时才切焦点。
+fn hover_should_switch_focus(enabled: bool, already_focused: bool, is_plain_hover: bool) -> bool {
+    enabled && is_plain_hover && !already_focused
 }
 
 /// 主区：标签条 + 内容区。
@@ -52,35 +64,31 @@ pub fn render_main(
         .flex()
         .flex_col();
 
-    // 空状态（无活动视图）不渲染 Tab 条，避免 38px 空条 + 单个 "+" 的噪音；
-    // 有会话时 TabStrip 负责展示对应项目的标签及 "+"。
-    if shell.workspace.active_view.is_some() {
+    let has_tabs = shell
+        .workspace
+        .active_project()
+        .is_some_and(|project| !project.tabs.is_empty());
+    if has_tabs {
         pane = pane.child(tab_strip::render_tab_strip(shell, cx));
     }
 
-    // 终端主区。
-    let mut content = div().flex_1().min_h_0().flex().relative();
-    let mut terminal_area = div().flex_1().min_w_0().min_h_0().relative();
-    // 分栏跟随其属主 Tab：只有属主 Tab 正被展示时才渲染分栏；否则
-    // 分栏状态保留，渲染当前活动 Tab 的普通视图，切回属主即恢复。
-    if let Some(split) = shell.workspace.active_split() {
-        terminal_area = terminal_area.child(render_terminal_split(
+    let available_height = px((window.viewport_size().height.as_f32()
+        - theme::TAB_HEIGHT
+        - theme::STATUS_BAR_HEIGHT)
+        .max(120.));
+    let body = match shell.workspace.active_tab() {
+        Some(tab) => render_pane_node(
             shell,
-            split,
+            tab,
+            &tab.layout,
             available_width,
-            window,
+            available_height,
             cx,
-        ));
-    } else if let Some(active_view) = shell.workspace.active_view {
-        if let Some(active_pane) = render_workspace_view(shell, active_view) {
-            terminal_area = terminal_area.child(active_pane);
-        } else {
-            terminal_area = terminal_area.child(empty_state::render(shell, available_width, cx));
-        }
-    } else {
-        terminal_area = terminal_area.child(empty_state::render(shell, available_width, cx));
-    }
+        ),
+        None => empty_state::render(shell, available_width, cx),
+    };
 
+    let mut terminal_area = div().flex_1().min_w_0().min_h_0().relative().child(body);
     if let Some(status) = &shell.status {
         terminal_area = terminal_area.child(
             div()
@@ -98,492 +106,237 @@ pub fn render_main(
                 .child(SharedString::from(status.clone())),
         );
     }
-    content = content.child(terminal_area);
-    pane = pane.child(content);
-    pane.into_any_element()
-}
 
-fn render_workspace_view(shell: &AppShell, view: ActiveView) -> Option<AnyElement> {
-    match view {
-        ActiveView::LocalSession(session_id) => shell
-            .workspace
-            .sessions
-            .local_sessions
-            .get(&session_id)
-            .map(|session| session.terminal.clone().into_any_element()),
-    }
-}
-fn render_terminal_split(
-    shell: &mut AppShell,
-    split: TerminalSplitState,
-    available_width: Pixels,
-    window: &Window,
-    cx: &mut Context<AppShell>,
-) -> AnyElement {
-    let available_width_f = available_width.as_f32().max(0.0);
-    let has_room_h = terminal_split_available(px(available_width_f));
-    let pane_min_width = if has_room_h {
-        TERMINAL_SPLIT_MIN_PANE_WIDTH
-    } else {
-        0.0
-    };
-    let max_left_width = if has_room_h {
-        (available_width_f - TERMINAL_SPLIT_HANDLE_WIDTH - pane_min_width).max(pane_min_width)
-    } else {
-        (available_width_f - TERMINAL_SPLIT_HANDLE_WIDTH).max(0.0)
-    };
-    let default_left_width = ((available_width_f - TERMINAL_SPLIT_HANDLE_WIDTH) / 2.0).max(0.0);
-    let split_width = shell
-        .workspace
-        .split_widths
-        .get(&split.left)
-        .cloned()
-        .unwrap_or_else(|| Rc::new(Cell::new(0.)));
-    let left_width = terminal_split_left_width(
-        split_width.get(),
-        default_left_width,
-        pane_min_width,
-        max_left_width,
-    );
-
-    // 高度：按窗口可用高度响应式，与宽度同构
-    let viewport_h = window.viewport_size().height.as_f32();
-    // 预留状态栏+标签栏约 72px，剩余为终端区高度
-    let available_height_f = (viewport_h - 72.0).max(200.0);
-    let has_room_v =
-        available_height_f >= TERMINAL_SPLIT_MIN_PANE_HEIGHT * 2.0 + TERMINAL_SPLIT_HANDLE_WIDTH;
-    let pane_min_height = if has_room_v {
-        TERMINAL_SPLIT_MIN_PANE_HEIGHT
-    } else {
-        0.0
-    };
-    let max_top_height = if has_room_v {
-        (available_height_f - TERMINAL_SPLIT_HANDLE_WIDTH - pane_min_height).max(pane_min_height)
-    } else {
-        (available_height_f - TERMINAL_SPLIT_HANDLE_WIDTH).max(0.0)
-    };
-    let default_top_height = ((available_height_f - TERMINAL_SPLIT_HANDLE_WIDTH) / 2.0).max(0.0);
-    let split_height_left = shell
-        .workspace
-        .split_heights
-        .get(&split.left)
-        .cloned()
-        .unwrap_or_else(|| Rc::new(Cell::new(0.)));
-    let split_height_right = shell
-        .workspace
-        .split_heights_right
-        .get(&split.left)
-        .cloned()
-        .unwrap_or_else(|| Rc::new(Cell::new(0.)));
-    let left_top_height = terminal_split_top_height(
-        split_height_left.get(),
-        default_top_height,
-        pane_min_height,
-        max_top_height,
-    );
-    let right_top_height = terminal_split_top_height(
-        split_height_right.get(),
-        default_top_height,
-        pane_min_height,
-        max_top_height,
-    );
-
-    // 无右列：单列上下
-    if split.right.is_none() {
-        if let Some(bottom_view) = split.bottom_left {
-            return render_single_column_vertical(
-                shell,
-                split,
-                bottom_view,
-                left_top_height,
-                split_height_left,
-                pane_min_height,
-                max_top_height,
-                cx,
-            );
-        }
-        return render_split_pane(shell, split.left, SplitSide::Left, true, cx);
-    }
-
-    // 双列：各自按列独立上下
-    let left_top_pane = render_split_pane(
-        shell,
-        split.left,
-        SplitSide::Left,
-        split.focused == SplitSide::Left,
-        cx,
-    );
-    let right_top_pane = render_split_pane(
-        shell,
-        split.right.unwrap(),
-        SplitSide::Right,
-        split.focused == SplitSide::Right,
-        cx,
-    );
-
-    let left_col = render_split_column(
-        shell,
-        left_width,
-        split_height_left.clone(),
-        left_top_height,
-        pane_min_height,
-        max_top_height,
-        left_top_pane,
-        split.bottom_left.map(|v| {
-            render_split_pane(
-                shell,
-                v,
-                SplitSide::BottomLeft,
-                split.focused == SplitSide::BottomLeft,
-                cx,
-            )
-        }),
-        SplitSide::BottomLeft,
-        true,
-    );
-    let right_col = render_split_column(
-        shell,
-        0.0, // flex_1 宽度由父 flex 决定，这里传 0 仅占位，内部按 flex_1 处理
-        split_height_right.clone(),
-        right_top_height,
-        pane_min_height,
-        max_top_height,
-        right_top_pane,
-        split.bottom_right.map(|v| {
-            render_split_pane(
-                shell,
-                v,
-                SplitSide::BottomRight,
-                split.focused == SplitSide::BottomRight,
-                cx,
-            )
-        }),
-        SplitSide::BottomRight,
-        false,
-    );
-
-    let mut layout = div()
-        .id("terminal-split")
-        .size_full()
-        .relative()
-        .flex()
-        .flex_row()
-        .min_w_0()
+    let content = div()
+        .flex_1()
         .min_h_0()
-        .overflow_hidden()
-        .child(left_col)
-        .child(right_col)
-        .child(render_terminal_split_resizer(
-            shell,
-            split_width.clone(),
-            left_width,
-            pane_min_width,
-            max_left_width,
-        ));
-    // 该列有横向分隔线时，竖线与横线的交叉点盖一个 8×8 双向热区：
-    // 悬停为 move 光标，一次拖拽同时调整列宽与行高。最后挂载以盖住两条单向手柄。
-    // ponytail: GPUI 在 macOS 上没有四向箭头光标，cursor_move（抓手）是框架内最接近的 move 语义。
-    if split.bottom_left.is_some() {
-        layout = layout.child(render_split_cross_handle(
-            "terminal-split-cross-left",
-            shell.terminal_split_cross_drag.clone(),
-            split_width.clone(),
-            split_height_left.clone(),
-            left_width,
-            left_top_height,
-            pane_min_width,
-            max_left_width,
-            pane_min_height,
-            max_top_height,
-            false,
-        ));
-    }
-    if split.bottom_right.is_some() {
-        layout = layout.child(render_split_cross_handle(
-            "terminal-split-cross-right",
-            shell.terminal_split_cross_drag.clone(),
-            split_width.clone(),
-            split_height_right.clone(),
-            left_width,
-            right_top_height,
-            pane_min_width,
-            max_left_width,
-            pane_min_height,
-            max_top_height,
-            true,
-        ));
-    }
-    layout.into_any_element()
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_single_column_vertical(
-    shell: &AppShell,
-    split: TerminalSplitState,
-    bottom_view: ActiveView,
-    top_height: f32,
-    height_cell: Rc<Cell<f32>>,
-    min_height: f32,
-    max_height: f32,
-    cx: &mut Context<AppShell>,
-) -> AnyElement {
-    let top = render_split_pane(
-        shell,
-        split.left,
-        SplitSide::Left,
-        split.focused == SplitSide::Left,
-        cx,
-    );
-    let bottom = render_split_pane(
-        shell,
-        bottom_view,
-        SplitSide::BottomLeft,
-        split.focused == SplitSide::BottomLeft,
-        cx,
-    );
-    div()
-        .id("terminal-split-vertical-single")
-        .size_full()
-        .relative()
         .flex()
-        .flex_col()
-        .min_w_0()
-        .min_h_0()
-        .overflow_hidden()
-        .child(div().h(px(top_height)).w_full().flex_shrink_0().child(top))
-        .child(div().flex_1().min_h_0().w_full().child(bottom))
-        .child(render_vertical_split_resizer(
-            shell,
-            height_cell,
-            top_height,
-            min_height,
-            max_height,
-            SplitSide::BottomLeft,
-        ))
-        .into_any_element()
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_split_column(
-    shell: &AppShell,
-    width: f32,
-    height_cell: Rc<Cell<f32>>,
-    top_height: f32,
-    min_height: f32,
-    max_height: f32,
-    top_pane: AnyElement,
-    bottom_pane: Option<AnyElement>,
-    bottom_side: SplitSide,
-    is_left: bool,
-) -> AnyElement {
-    let mut col = div()
-        .h_full()
-        .flex()
-        .flex_col()
-        .min_w_0()
-        .min_h_0()
-        .overflow_hidden()
-        .relative();
-    col = if is_left {
-        col.w(px(width)).flex_shrink_0()
-    } else {
-        col.flex_1().min_w_0()
-    };
-    if let Some(bottom) = bottom_pane {
-        col = col
-            .child(
-                div()
-                    .h(px(top_height))
-                    .w_full()
-                    .flex_shrink_0()
-                    .child(top_pane),
-            )
-            .child(div().flex_1().min_h_0().w_full().child(bottom))
-            .child(render_vertical_split_resizer(
-                shell,
-                height_cell,
-                top_height,
-                min_height,
-                max_height,
-                bottom_side,
-            ));
-    } else {
-        col = col.child(div().flex_1().min_h_0().w_full().child(top_pane));
-    }
-    col.into_any_element()
-}
-
-fn render_terminal_split_resizer(
-    shell: &AppShell,
-    split_width: Rc<Cell<f32>>,
-    left_width: f32,
-    min_width: f32,
-    max_width: f32,
-) -> impl IntoElement {
-    div()
         .relative()
-        .absolute()
-        .left_0()
-        .top_0()
-        .w(px(left_width))
-        .h_full()
-        .child(
-            SplitResizer::new(
-                "terminal-split-resizer",
-                shell.terminal_split_dragging.clone(),
-                split_width,
-            )
-            .min_size(min_width)
-            .max_size(max_width)
-            .line(),
-        )
+        .child(render_split_drag_overlay(shell, cx))
+        .child(terminal_area);
+    pane.child(content).into_any_element()
 }
 
-fn render_vertical_split_resizer(
-    shell: &AppShell,
-    split_height: Rc<Cell<f32>>,
-    top_height: f32,
-    min_height: f32,
-    max_height: f32,
-    side: SplitSide,
-) -> impl IntoElement {
-    let dragging = match side {
-        SplitSide::BottomRight => shell.terminal_split_vertical_right_dragging.clone(),
-        _ => shell.terminal_split_vertical_dragging.clone(),
-    };
-    let id: &'static str = match side {
-        SplitSide::BottomRight => "terminal-split-vertical-resizer-right",
-        SplitSide::BottomLeft => "terminal-split-vertical-resizer-left",
-        _ => "terminal-split-vertical-resizer-single",
-    };
-    div()
-        .relative()
-        .absolute()
-        .left_0()
-        .top_0()
-        .w_full()
-        .h(px(top_height))
-        .child(
-            SplitResizer::new(id, dragging, split_height)
-                .min_size(min_height)
-                .max_size(max_height)
-                .vertical()
-                .line(),
-        )
-}
-
-/// 竖线与横线交叉点的 8×8 双向拖拽热区：悬停为 move 光标，一次拖拽同时改列宽与归属列的行高。
-/// 全局 move/up 监听仿 `SplitResizer`（拖拽中指针会离开热区）；单向手柄的 `dragging` 位不动，
-/// 故交叉拖拽不会误触单向逻辑。
-#[allow(clippy::too_many_arguments)]
-fn render_split_cross_handle(
-    id: &'static str,
-    cross_drag: Rc<Cell<Option<CrossDragState>>>,
-    split_width: Rc<Cell<f32>>,
-    split_height: Rc<Cell<f32>>,
-    cross_x: f32,
-    cross_y: f32,
-    min_width: f32,
-    max_width: f32,
-    min_height: f32,
-    max_height: f32,
-    right_column: bool,
-) -> AnyElement {
-    let backing = canvas(|_, _, _| {}, {
-        let cross_drag = cross_drag.clone();
-        let split_width = split_width.clone();
-        let split_height = split_height.clone();
+/// 全局分屏拖拽监听：手柄按下时写入 `SplitDrag`，这里统一换算比例并在松手时提交。
+fn render_split_drag_overlay(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
+    let drag_cell = shell.workspace.split_drag_cell.clone();
+    let weak = cx.weak_entity();
+    canvas(|_, _, _| {}, {
+        let drag_cell = drag_cell.clone();
         move |_, _, window: &mut Window, _| {
             window.on_mouse_event({
-                let cross_drag = cross_drag.clone();
-                let split_width = split_width.clone();
-                let split_height = split_height.clone();
+                let drag_cell = drag_cell.clone();
                 move |event: &MouseMoveEvent, phase, window, _cx| {
                     if !matches!(phase, DispatchPhase::Bubble) {
                         return;
                     }
-                    let Some(drag) = cross_drag.get() else {
+                    let Some(mut drag) = drag_cell.get() else {
                         return;
                     };
-                    if drag.right_column != right_column {
-                        return;
-                    }
-                    split_width.set(crossh_ui_component::clamp_panel_width(
-                        drag.start_width + (event.position.x.as_f32() - drag.start_x),
-                        min_width,
-                        max_width,
-                    ));
-                    split_height.set(crossh_ui_component::clamp_panel_width(
-                        drag.start_height + (event.position.y.as_f32() - drag.start_y),
-                        min_height,
-                        max_height,
-                    ));
+                    let position = match drag.axis {
+                        Axis::Row => event.position.x.as_f32(),
+                        Axis::Column => event.position.y.as_f32(),
+                    };
+                    let total = drag.total_px.max(1.);
+                    drag.ratio = projection::clamp_split_ratio(
+                        drag.start_ratio + (position - drag.start_position) / total,
+                    );
+                    drag_cell.set(Some(drag));
                     window.refresh();
                 }
             });
             window.on_mouse_event({
-                let cross_drag = cross_drag.clone();
-                move |_event: &MouseUpEvent, phase, window, _cx| {
+                let drag_cell = drag_cell.clone();
+                let weak = weak.clone();
+                move |_event: &MouseUpEvent, phase, window, cx: &mut App| {
                     if !matches!(phase, DispatchPhase::Bubble) {
                         return;
                     }
-                    if cross_drag.take().is_some() {
-                        window.refresh();
-                    }
+                    let Some(drag) = drag_cell.take() else {
+                        return;
+                    };
+                    window.refresh();
+                    let _ = weak.update(cx, |this, cx| {
+                        this.commit_split_ratio(drag.split_id, drag.ratio, cx);
+                    });
                 }
             });
         }
     })
-    .size_full();
-    div()
-        .id(id)
-        .absolute()
-        .left(px(cross_x - 4.))
-        .top(px(cross_y - 4.))
-        .w(px(8.))
-        .h(px(8.))
-        .cursor_move()
-        .on_mouse_down(MouseButton::Left, {
-            let cross_drag = cross_drag.clone();
-            move |event: &MouseDownEvent, window, _cx| {
-                cross_drag.set(Some(CrossDragState {
-                    start_x: event.position.x.as_f32(),
-                    start_y: event.position.y.as_f32(),
-                    start_width: split_width.get(),
-                    start_height: split_height.get(),
-                    right_column,
-                }));
-                window.refresh();
-            }
-        })
-        .child(backing)
-        .into_any_element()
+    .absolute()
+    .size_full()
+    .into_any_element()
 }
 
-fn render_split_pane(
+fn render_pane_node(
     shell: &AppShell,
-    view: ActiveView,
-    side: SplitSide,
-    focused: bool,
+    tab: &TabSnapshot,
+    node: &PaneNodeSnapshot,
+    width: Pixels,
+    height: Pixels,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
-    let content = render_workspace_view(shell, view)
-        .unwrap_or_else(|| div().size_full().bg(theme::canvas()).into_any_element());
-    let id = match side {
-        SplitSide::Left => "terminal-split-left",
-        SplitSide::Right => "terminal-split-right",
-        SplitSide::BottomLeft => "terminal-split-bottom-left",
-        SplitSide::BottomRight => "terminal-split-bottom-right",
+    match node {
+        PaneNodeSnapshot::Leaf(pane) => {
+            render_pane_leaf(shell, pane, tab.active_pane == Some(pane.id), cx)
+        }
+        PaneNodeSnapshot::Split {
+            id,
+            axis,
+            ratio,
+            first,
+            second,
+        } => {
+            let preview = shell
+                .workspace
+                .split_drag_cell
+                .get()
+                .filter(|drag| drag.split_id == *id)
+                .map(|drag| drag.ratio);
+            let ratio = preview.unwrap_or_else(|| projection::clamp_split_ratio(*ratio));
+            let is_row = *axis == Axis::Row;
+            let total = if is_row {
+                width.as_f32()
+            } else {
+                height.as_f32()
+            };
+            let first_px = px((total * ratio).max(0.));
+            let container = if is_row {
+                div().size_full().flex().flex_row()
+            } else {
+                div().size_full().flex().flex_col()
+            };
+
+            let first_wrapper = if is_row {
+                div().w(first_px).h_full().flex_none().min_w_0().min_h_0()
+            } else {
+                div().h(first_px).w_full().flex_none().min_w_0().min_h_0()
+            };
+            let second_wrapper = if is_row {
+                div().flex_1().h_full().min_w_0().min_h_0()
+            } else {
+                div().flex_1().w_full().min_w_0().min_h_0()
+            };
+
+            let split_id = *id;
+            let drag_cell = shell.workspace.split_drag_cell.clone();
+            let divider = if is_row {
+                div()
+                    .id(("split-divider", split_id.0))
+                    .w(px(TERMINAL_SPLIT_HANDLE_WIDTH))
+                    .h_full()
+                    .flex_none()
+                    .cursor_col_resize()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .w(px(1.))
+                            .h_full()
+                            .bg(theme::border())
+                            .hover(|style| style.bg(theme::accent())),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        move |event: &MouseDownEvent, window, _| {
+                            drag_cell.set(Some(SplitDrag {
+                                split_id,
+                                axis: Axis::Row,
+                                total_px: width.as_f32(),
+                                start_ratio: ratio,
+                                start_position: event.position.x.as_f32(),
+                                ratio,
+                            }));
+                            window.refresh();
+                        },
+                    )
+            } else {
+                div()
+                    .id(("split-divider", split_id.0))
+                    .w_full()
+                    .h(px(TERMINAL_SPLIT_HANDLE_WIDTH))
+                    .flex_none()
+                    .cursor_row_resize()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .h(px(1.))
+                            .w_full()
+                            .bg(theme::border())
+                            .hover(|style| style.bg(theme::accent())),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        move |event: &MouseDownEvent, window, _| {
+                            drag_cell.set(Some(SplitDrag {
+                                split_id,
+                                axis: Axis::Column,
+                                total_px: height.as_f32(),
+                                start_ratio: ratio,
+                                start_position: event.position.y.as_f32(),
+                                ratio,
+                            }));
+                            window.refresh();
+                        },
+                    )
+            };
+
+            let (first_width, first_height) = if is_row {
+                (first_px, height)
+            } else {
+                (width, first_px)
+            };
+            let (second_width, second_height) = if is_row {
+                (px((total - total * ratio).max(0.)), height)
+            } else {
+                (width, px((total - total * ratio).max(0.)))
+            };
+            container
+                .child(first_wrapper.child(render_pane_node(
+                    shell,
+                    tab,
+                    first,
+                    first_width,
+                    first_height,
+                    cx,
+                )))
+                .child(divider)
+                .child(second_wrapper.child(render_pane_node(
+                    shell,
+                    tab,
+                    second,
+                    second_width,
+                    second_height,
+                    cx,
+                )))
+                .into_any_element()
+        }
+    }
+}
+
+fn render_pane_leaf(
+    shell: &AppShell,
+    pane: &PaneSnapshot,
+    active: bool,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    let content = match shell.workspace.pane_view(pane.id) {
+        Some(view) => view.clone().into_any_element(),
+        None => render_pane_placeholder(shell, pane, cx),
     };
+    let pane_id = pane.id;
     div()
-        .id(id)
+        .id(("pane-leaf", pane.id.0))
         .relative()
         .size_full()
         .min_w_0()
         .min_h_0()
         .overflow_hidden()
         .border_t_1()
-        .border_color(if focused {
+        .border_color(if active {
             theme::accent()
         } else {
             theme::border()
@@ -591,26 +344,19 @@ fn render_split_pane(
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _event, _window, cx| {
-                this.focus_terminal_split(side, cx);
-                cx.stop_propagation();
+                this.focus_pane(pane_id, cx);
             }),
         )
-        // 焦点跟随鼠标：仅切分屏格，不跨标签页。
         .on_mouse_move(
             cx.listener(move |this, event: &MouseMoveEvent, _window, cx| {
-                let hovered_side_is_focused = this
-                    .workspace
-                    .active_split()
-                    .is_some_and(|split| split.focused == side);
-                // 按住拖选文本（pressed_button 非空）与拖拽分隔线（active_drag）期间必须让位，
-                // 否则焦点会在选字/拉手柄的过程中乱跳。
+                let already_focused = this.workspace.focused_pane() == Some(pane_id);
                 let is_plain_hover = event.pressed_button.is_none() && !cx.has_active_drag();
                 if hover_should_switch_focus(
                     this.workspace_settings.focus_follows_mouse,
-                    hovered_side_is_focused,
+                    already_focused,
                     is_plain_hover,
                 ) {
-                    this.focus_terminal_split(side, cx);
+                    this.focus_pane(pane_id, cx);
                 }
             }),
         )
@@ -618,139 +364,52 @@ fn render_split_pane(
         .into_any_element()
 }
 
-/// 焦点跟随鼠标的纯判定：仅当开关开启、当前是纯悬停、且悬停格尚非聚焦侧时才切焦点。
-/// `is_plain_hover` 为 false 时（拖选文本 / 拖拽分隔线）一律不切焦点。
-fn hover_should_switch_focus(enabled: bool, already_focused: bool, is_plain_hover: bool) -> bool {
-    enabled && is_plain_hover && !already_focused
-}
-
-fn terminal_split_available(width: Pixels) -> bool {
-    width.as_f32() >= TERMINAL_SPLIT_MIN_PANE_WIDTH * 2.0 + TERMINAL_SPLIT_HANDLE_WIDTH
-}
-
-fn terminal_split_left_width(requested: f32, default: f32, min_width: f32, max_width: f32) -> f32 {
-    split_clamped_size(requested, default, min_width, max_width)
-}
-
-fn terminal_split_top_height(
-    requested: f32,
-    default: f32,
-    min_height: f32,
-    max_height: f32,
-) -> f32 {
-    split_clamped_size(requested, default, min_height, max_height)
-}
-
-/// 分栏按钮 tooltip 的快捷键后缀：GPUI `platform` 修饰键在 macOS 是 `⌘`，
-/// 在 Linux/Windows 是 Win/Super 键，按目标平台显示对应字形。
-#[cfg(target_os = "macos")]
-const SPLIT_HORIZONTAL_HINT: &str = "⌘D";
-#[cfg(not(target_os = "macos"))]
-const SPLIT_HORIZONTAL_HINT: &str = "Win+D";
-#[cfg(target_os = "macos")]
-const SPLIT_VERTICAL_HINT: &str = "⇧⌘D";
-#[cfg(not(target_os = "macos"))]
-const SPLIT_VERTICAL_HINT: &str = "Shift+Win+D";
-
-/// tooltip 文案 + 可选快捷键后缀（禁用态不带后缀，避免暗示不可用的按键）。
-fn split_toggle_tooltip(base_key: &str, hint: Option<&str>) -> String {
-    match hint {
-        Some(hint) => format!("{}（{}）", i18n::text(base_key), hint),
-        None => i18n::text(base_key),
-    }
-}
-
-fn render_workspace_terminal_toggle(
+fn render_pane_placeholder(
     shell: &AppShell,
-    available_width: Pixels,
+    pane: &PaneSnapshot,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
-    let terminal_active = shell
-        .workspace
-        .focused_view()
-        .is_some_and(|view| workspace_view_has_terminal(shell, view));
-    if !terminal_active {
-        return div().h(px(0.)).flex_none().into_any_element();
-    }
-
-    let split = shell.workspace.active_split();
-    let has_horizontal = split.is_some_and(|s| s.right.is_some());
-    // 上下分栏是按列独立的：选中态只反映当前聚焦列是否存在底部格
-    let has_vertical = split.is_some_and(|s| {
-        let is_right = s.focused.is_right_column() && s.right.is_some();
-        if is_right {
-            s.bottom_right.is_some()
-        } else {
-            s.bottom_left.is_some()
-        }
-    });
-    let can_toggle_horizontal = has_horizontal || terminal_split_available(available_width);
-    let can_vertical = shell.workspace.can_add_vertical() || has_vertical;
-    let (horizontal_tooltip, horizontal_hint) = if has_horizontal {
-        ("tooltip.close_split", Some(SPLIT_HORIZONTAL_HINT))
-    } else if can_toggle_horizontal {
-        ("tooltip.split_terminal", Some(SPLIT_HORIZONTAL_HINT))
-    } else {
-        ("tooltip.split_terminal_narrow", None)
-    };
-    let (vertical_tooltip, vertical_hint) = if has_vertical {
-        ("tooltip.close_vertical_split", Some(SPLIT_VERTICAL_HINT))
-    } else if can_vertical {
-        ("tooltip.split_terminal_vertical", Some(SPLIT_VERTICAL_HINT))
-    } else {
-        ("tooltip.split_terminal_vertical_full", None)
-    };
-    div()
+    let reason = i18n::text(projection::pane_status_reason_key(&pane.status));
+    let can_retry = !matches!(pane.status, PaneStatus::Starting)
+        && pane.cwd_available
+        && shell.workspace.is_connected();
+    let pane_id = pane.id;
+    let mut card = div()
+        .size_full()
         .flex()
-        .flex_row()
-        .gap_1()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap_2()
+        .px_4()
+        .text_center()
         .child(
-            Button::new("terminal-split-toggle")
-                .size(ButtonSize::Icon(px(22.)))
-                .variant(ButtonVariant::Ghost)
-                .selected(has_horizontal)
-                .disabled(!can_toggle_horizontal)
-                .icon(
-                    icons::icon(icons::IconName::Columns2, 13.).text_color(if has_horizontal {
-                        theme::accent()
-                    } else {
-                        theme::muted_text()
-                    }),
-                )
-                .tooltip(split_toggle_tooltip(horizontal_tooltip, horizontal_hint))
-                .on_click(cx.listener(|this, _event, window, cx| {
-                    this.toggle_terminal_split(window, cx);
-                })),
+            div()
+                .text_sm()
+                .text_color(theme::muted_text())
+                .child(SharedString::from(reason)),
         )
         .child(
-            Button::new("terminal-vertical-split-toggle")
-                .size(ButtonSize::Icon(px(22.)))
-                .variant(ButtonVariant::Ghost)
-                .selected(has_vertical)
-                .disabled(!can_vertical)
-                .icon(
-                    icons::icon(icons::IconName::Rows2, 13.).text_color(if has_vertical {
-                        theme::accent()
-                    } else {
-                        theme::muted_text()
-                    }),
-                )
-                .tooltip(split_toggle_tooltip(vertical_tooltip, vertical_hint))
-                .on_click(cx.listener(|this, _event, window, cx| {
-                    this.toggle_vertical_split(window, cx);
+            div()
+                .max_w(px(520.))
+                .truncate()
+                .text_xs()
+                .text_color(theme::faint_text())
+                .child(SharedString::from(pane.cwd.to_string_lossy().into_owned())),
+        );
+    if can_retry {
+        card = card.child(
+            Button::new(("pane-retry", pane.id.0))
+                .size(ButtonSize::Small)
+                .variant(ButtonVariant::Secondary)
+                .icon(icons::icon(icons::IconName::RefreshCw, 12.))
+                .label(i18n::text("workspace.retry_pane"))
+                .on_click(cx.listener(move |this, _event, _window, cx| {
+                    this.ensure_pane_session(pane_id, cx);
                 })),
-        )
-        .into_any_element()
-}
-
-fn workspace_view_has_terminal(shell: &AppShell, view: ActiveView) -> bool {
-    match view {
-        ActiveView::LocalSession(session_id) => shell
-            .workspace
-            .sessions
-            .local_sessions
-            .contains_key(&session_id),
+        );
     }
+    card.into_any_element()
 }
 
 fn copy_status_path_to_clipboard(path: &Path, cx: &App) {
@@ -759,13 +418,13 @@ fn copy_status_path_to_clipboard(path: &Path, cx: &App) {
     ));
 }
 
-/// 「在外部编辑器中打开」状态栏按钮；仅本地会话渲染，目标为该会话当前 `cwd`。
+/// 「在外部编辑器中打开」状态栏按钮；目标为聚焦 pane 的 cwd。
 fn render_open_in_editor_button(
-    session: &LocalSession,
+    cwd: PathBuf,
     shell: &AppShell,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
-    let directory = session.cwd.clone();
+    let directory = cwd;
     let tooltip = match tooltip_editor_name(shell) {
         Some(name) => {
             rust_i18n::t!("tooltip.open_in_editor_with", editor = name.as_str()).to_string()
@@ -837,8 +496,7 @@ pub(crate) fn render_workspace_status_bar(
     available_width: Pixels,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
-    let focused_view = shell.workspace.focused_view();
-    let terminal_active = focused_view.is_some_and(|view| workspace_view_has_terminal(shell, view));
+    let pane = shell.workspace.active_pane();
     let mut left = div()
         .min_w_0()
         .flex()
@@ -860,17 +518,10 @@ pub(crate) fn render_workspace_status_bar(
             AppShell::toggle_host_sidebar,
             cx,
         ));
-    if terminal_active {
-        // 按终端独立：状态栏钟表反映当前焦点终端的实际状态（分屏时随聚焦侧变化）。
-        let show_timestamps = focused_view
-            .and_then(|view| match view {
-                ActiveView::LocalSession(session_id) => shell
-                    .workspace
-                    .sessions
-                    .local_sessions
-                    .get(&session_id)
-                    .map(|session| session.terminal.show_timestamps(cx)),
-            })
+    if pane.is_some() {
+        let show_timestamps = pane
+            .and_then(|pane| shell.workspace.pane_view(pane.id))
+            .map(|view| view.show_timestamps(cx))
             .unwrap_or(shell.terminal_settings.show_timestamps);
         left = left.child(render_status_bar_toggle(
             "status-timestamps",
@@ -881,7 +532,6 @@ pub(crate) fn render_workspace_status_bar(
             cx,
         ));
         left = left.child(render_workspace_terminal_toggle(shell, available_width, cx));
-        // 焦点跟随鼠标与时间戳同属"分屏体验"开关，故置于终端区末尾。
         left = left.child(render_status_bar_toggle(
             "status-focus-follows-mouse",
             icons::IconName::Crosshair,
@@ -893,13 +543,12 @@ pub(crate) fn render_workspace_status_bar(
     }
     {
         let compose_active = shell.workspace.compose_visible_for_focused();
-        let compose_disabled = focused_view.is_none();
         left = left.child(
             Button::new("status-compose")
                 .size(ButtonSize::Icon(px(22.)))
                 .variant(ButtonVariant::Ghost)
                 .selected(compose_active)
-                .disabled(compose_disabled)
+                .disabled(pane.is_none())
                 .icon(
                     icons::icon(icons::IconName::Keyboard, 13.).text_color(if compose_active {
                         theme::accent()
@@ -915,14 +564,18 @@ pub(crate) fn render_workspace_status_bar(
         );
     }
 
-    if let Some(ActiveView::LocalSession(session_id)) = focused_view
-        && let Some(session) = shell.workspace.sessions.local_sessions.get(&session_id)
-    {
-        left = left.child(render_open_in_editor_button(session, shell, cx));
-        left = left.child(render_status_path(session.cwd.clone(), cx));
-        if let Some(status) = &session.git_status {
-            let sync = shell.git_sync.get(&session_id);
-            left = left.child(render_git_status(status, session, session_id, sync, cx));
+    if let Some(pane) = pane {
+        left = left.child(render_open_in_editor_button(pane.cwd.clone(), shell, cx));
+        left = left.child(render_status_path(pane.cwd.clone(), cx));
+        if let Some(status) = shell.workspace.git_status.get(&pane.id) {
+            let sync = shell.git_sync.get(&pane.id);
+            left = left.child(render_git_status(
+                status,
+                pane.id,
+                pane.cwd.clone(),
+                sync,
+                cx,
+            ));
         }
     }
 
@@ -986,6 +639,103 @@ pub(crate) fn render_workspace_status_bar(
         .child(left)
         .child(right)
         .into_any_element()
+}
+
+fn render_workspace_terminal_toggle(
+    shell: &AppShell,
+    available_width: Pixels,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    let Some(tab) = shell.workspace.active_tab() else {
+        return div().h(px(0.)).flex_none().into_any_element();
+    };
+    let has_split = tab.layout.leaves().count() > 1;
+    let can_split_horizontal = has_split || terminal_split_available(available_width);
+    let can_split_vertical =
+        has_split || terminal_split_vertical_available(px((available_width.as_f32() - 0.).max(0.)));
+    div()
+        .flex()
+        .flex_row()
+        .gap_1()
+        .child(
+            Button::new("terminal-split-toggle")
+                .size(ButtonSize::Icon(px(22.)))
+                .variant(ButtonVariant::Ghost)
+                .selected(has_split)
+                .disabled(!can_split_horizontal)
+                .icon(
+                    icons::icon(icons::IconName::Columns2, 13.).text_color(if has_split {
+                        theme::accent()
+                    } else {
+                        theme::muted_text()
+                    }),
+                )
+                .tooltip(split_toggle_tooltip(
+                    if has_split {
+                        "tooltip.close_split"
+                    } else {
+                        "tooltip.split_terminal"
+                    },
+                    split_horizontal_hint(),
+                ))
+                .on_click(cx.listener(|this, _event, _window, cx| {
+                    this.toggle_terminal_split(cx);
+                })),
+        )
+        .child(
+            Button::new("terminal-vertical-split-toggle")
+                .size(ButtonSize::Icon(px(22.)))
+                .variant(ButtonVariant::Ghost)
+                .selected(has_split)
+                .disabled(!can_split_vertical)
+                .icon(
+                    icons::icon(icons::IconName::Rows2, 13.).text_color(if has_split {
+                        theme::accent()
+                    } else {
+                        theme::muted_text()
+                    }),
+                )
+                .tooltip(split_toggle_tooltip(
+                    if has_split {
+                        "tooltip.close_vertical_split"
+                    } else {
+                        "tooltip.split_terminal_vertical"
+                    },
+                    split_vertical_hint(),
+                ))
+                .on_click(cx.listener(|this, _event, _window, cx| {
+                    this.toggle_vertical_split(cx);
+                })),
+        )
+        .into_any_element()
+}
+
+#[cfg(target_os = "macos")]
+fn split_horizontal_hint() -> Option<&'static str> {
+    Some("⌘D")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn split_horizontal_hint() -> Option<&'static str> {
+    Some("Win+D")
+}
+
+#[cfg(target_os = "macos")]
+fn split_vertical_hint() -> Option<&'static str> {
+    Some("⇧⌘D")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn split_vertical_hint() -> Option<&'static str> {
+    Some("Shift+Win+D")
+}
+
+/// tooltip 文案 + 可选快捷键后缀。
+fn split_toggle_tooltip(base_key: &str, hint: Option<&str>) -> String {
+    match hint {
+        Some(hint) => format!("{}（{}）", i18n::text(base_key), hint),
+        None => i18n::text(base_key),
+    }
 }
 
 /// 状态栏更新指示器：检查 → 下载 → 重启，随更新状态切换图标与点击动作。
@@ -1127,12 +877,12 @@ fn render_status_bar_toggle(
 
 fn render_git_status(
     status: &GitStatus,
-    session: &LocalSession,
-    session_id: LocalSessionId,
+    pane_id: PaneId,
+    cwd: PathBuf,
     sync: Option<&GitSyncState>,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
-    let click_cwd = session.cwd.clone();
+    let click_cwd = cwd;
     let mut git = div()
         .id("status-git")
         .flex_none()
@@ -1205,7 +955,7 @@ fn render_git_status(
                 i18n::text("git.pull"),
                 GitSyncOperation::Pull,
                 sync,
-                session_id,
+                pane_id,
                 cx,
             ));
         }
@@ -1216,7 +966,7 @@ fn render_git_status(
                 i18n::text("git.push"),
                 GitSyncOperation::Push,
                 sync,
-                session_id,
+                pane_id,
                 cx,
             ));
         }
@@ -1231,7 +981,7 @@ fn git_sync_button(
     tooltip: String,
     operation: GitSyncOperation,
     sync: Option<&GitSyncState>,
-    session_id: LocalSessionId,
+    pane_id: PaneId,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
     let state = sync.filter(|state| state.operation == operation);
@@ -1253,7 +1003,7 @@ fn git_sync_button(
             theme::accent()
         }))
         .on_click(cx.listener(move |this, _event, _window, cx| {
-            this.run_git_sync(session_id, operation, cx);
+            this.run_git_sync(pane_id, operation, cx);
             cx.stop_propagation();
         }))
         .into_any_element()
@@ -1266,7 +1016,6 @@ fn render_single_line_modal(
     focus: gpui::FocusHandle,
     state: SharedTextState,
     scroll: Option<gpui::ScrollHandle>,
-    _shell: &mut AppShell,
     cx: &mut Context<AppShell>,
     input_id: &'static str,
     placeholder: String,
@@ -1343,7 +1092,6 @@ pub fn render_rename_editor(
         editor.focus.clone(),
         state,
         None,
-        shell,
         cx,
         "rename-editor-input",
         i18n::text("rename_tab.name_placeholder"),
@@ -1355,8 +1103,8 @@ pub fn render_rename_editor(
         i18n::text("rename_tab.save"),
         "rename-editor-save",
         "rename-editor-cancel",
-        AppShell::submit_rename_local_session,
-        AppShell::cancel_rename_local_session,
+        AppShell::submit_rename_tab,
+        AppShell::cancel_rename_tab,
     )
 }
 
@@ -1377,7 +1125,6 @@ pub fn render_default_command_editor(
         editor.focus.clone(),
         state,
         None,
-        shell,
         cx,
         "default-command-editor-input",
         i18n::text("default_command.placeholder"),
@@ -1402,15 +1149,10 @@ mod tests {
 
     #[test]
     fn hover_should_switch_focus_respects_toggle_drag_and_current_focus() {
-        // 开启 + 纯悬停 + 非聚焦侧：切换（唯一的正例）
         assert!(hover_should_switch_focus(true, false, true));
-        // 关闭开关：永不切换，哪怕悬停在别的格
         assert!(!hover_should_switch_focus(false, false, true));
-        // 已是聚焦侧：幂等短路，避免每帧重复切焦点
         assert!(!hover_should_switch_focus(true, true, true));
-        // 拖选文本 / 拖分隔线期间让位，不抢焦点
         assert!(!hover_should_switch_focus(true, false, false));
-        // 三者任一不满足都不得切换（穷举开关关闭 + 两种抑制）
         assert!(!hover_should_switch_focus(false, true, false));
         assert!(!hover_should_switch_focus(true, true, false));
     }
@@ -1440,13 +1182,6 @@ mod tests {
         assert!(terminal_split_available(px(328.)));
     }
 
-    #[test]
-    fn terminal_split_width_preserves_dragged_values_on_both_sides_of_default() {
-        assert_eq!(terminal_split_left_width(0., 500., 160., 940.), 500.);
-        assert_eq!(terminal_split_left_width(220., 500., 160., 940.), 220.);
-        assert_eq!(terminal_split_left_width(760., 500., 160., 940.), 760.);
-    }
-
     fn update_candidate() -> UpdateCandidate {
         UpdateCandidate {
             version: semver::Version::new(0, 2, 0),
@@ -1469,7 +1204,6 @@ mod tests {
         assert_eq!(idle.icon, icons::IconName::RefreshCw);
         assert!(!idle.disabled);
 
-        // 检查/下载进行中不接受点击，避免重复触发。
         assert!(update_indicator(&UpdateStatus::Checking).disabled);
 
         assert_eq!(
@@ -1489,7 +1223,6 @@ mod tests {
         assert!(downloading.disabled);
         assert_eq!(downloading.progress.as_deref(), Some("50%"));
 
-        // 总大小未知时按 0% 处理，不得出现 NaN。
         let unknown_total = update_indicator(&UpdateStatus::Downloading {
             candidate: update_candidate(),
             downloaded: 0,

@@ -846,7 +846,9 @@ mod tests {
     #[test]
     fn osc8_hyperlink_uri_uses_the_plain_text_sanitizer() {
         let mut term = Term::new(Config::default(), &TermSize::new(200, 24), VoidListener);
-        let mut processor = alacritty_terminal::vte::ansi::Processor::new();
+        let mut processor = alacritty_terminal::vte::ansi::Processor::<
+            alacritty_terminal::vte::ansi::StdSyncHandler,
+        >::new();
         processor.advance(
             &mut term,
             "\x1b]8;;https://github.com/xcrong/crossh/issues/9（标签\x07\

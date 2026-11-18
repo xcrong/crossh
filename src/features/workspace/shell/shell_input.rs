@@ -46,8 +46,8 @@ impl AppShell {
             Some(AppShellInputField::Rename)
         } else if self
             .workspace
-            .focused_view()
-            .is_some_and(|view| self.workspace.compose_visible(view))
+            .focused_pane()
+            .is_some_and(|pane_id| self.workspace.compose_visible(pane_id))
             && self.compose_focus.is_focused(window)
         {
             Some(AppShellInputField::Compose)
@@ -70,8 +70,11 @@ impl AppShell {
                 .as_ref()
                 .map(|editor| &editor.state),
             AppShellInputField::Compose => {
-                let view = self.workspace.focused_view()?;
-                self.workspace.compose.get(&view).map(|entry| &entry.state)
+                let pane_id = self.workspace.focused_pane()?;
+                self.workspace
+                    .compose
+                    .get(&pane_id)
+                    .map(|entry| &entry.state)
             }
         }
     }
@@ -91,10 +94,10 @@ impl AppShell {
                 .as_mut()
                 .map(|editor| &mut editor.state),
             AppShellInputField::Compose => {
-                let view = self.workspace.focused_view()?;
+                let pane_id = self.workspace.focused_pane()?;
                 self.workspace
                     .compose
-                    .get_mut(&view)
+                    .get_mut(&pane_id)
                     .map(|entry| &mut entry.state)
             }
         }
@@ -107,8 +110,8 @@ impl AppShell {
         match field {
             AppShellInputField::HostSearch => Some(&mut self.search_query),
             AppShellInputField::Compose => {
-                let view = self.workspace.focused_view()?;
-                Some(&mut self.workspace.compose_entry_mut(view).state)
+                let pane_id = self.workspace.focused_pane()?;
+                Some(&mut self.workspace.compose_entry_mut(pane_id).state)
             }
             _ => self.editing_state_mut(field),
         }

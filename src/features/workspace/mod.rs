@@ -6,7 +6,7 @@ pub(crate) mod empty_state;
 pub(crate) mod linux_titlebar;
 pub(crate) mod local_paths;
 pub(crate) mod modal_editor;
-pub(crate) mod pinned;
+pub(crate) mod projection;
 pub(crate) mod registry;
 pub(crate) mod scratch_bar;
 pub(crate) mod settings;

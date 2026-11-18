@@ -33,15 +33,12 @@ impl AppShell {
         // 按终端独立：仅切换当前焦点终端（分屏时为聚焦侧），非全局广播。
         // 新建终端的默认值仍跟随全局 `terminal_settings.show_timestamps`，此处同步更新
         // 该默认值并落盘，但不广播到其他已存在终端。
-        let Some(crate::features::workspace::state::ActiveView::LocalSession(session_id)) =
-            self.workspace.focused_view()
-        else {
+        let Some(pane_id) = self.workspace.focused_pane() else {
             return;
         };
-        let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) else {
+        let Some(terminal) = self.workspace.pane_view(pane_id).cloned() else {
             return;
         };
-        let terminal = session.terminal.clone();
         let next = !terminal.show_timestamps(cx);
         terminal.set_show_timestamps(next, cx);
         if self.terminal_settings.show_timestamps != next {
@@ -92,15 +89,6 @@ impl AppShell {
         self.apply_terminal_settings(terminal, cx);
     }
 
-    pub(crate) fn set_recent_dirs_max(&mut self, max: usize, cx: &mut Context<Self>) {
-        let mut workspace = self.workspace_settings.clone();
-        workspace.recent_dirs_max = max;
-        self.workspace_settings = workspace.normalized();
-        self.persist_settings();
-        self.sync_local_dirs(cx);
-        cx.notify();
-    }
-
     /// 设置显式编辑器命令；`None`/空白清除覆盖并回退自动检测。
     pub(crate) fn set_editor_command(&mut self, command: Option<String>, cx: &mut Context<Self>) {
         let mut workspace = self.workspace_settings.clone();
@@ -122,8 +110,11 @@ impl AppShell {
 
         crossh_terminal_view::TerminalView::apply_zed_settings(&settings, cx);
 
-        for session in self.workspace.sessions.local_sessions.values() {
-            session.terminal.apply_settings(settings.clone(), cx);
+        for view in self.workspace.pane_views.values() {
+            view.apply_settings(settings.clone(), cx);
+        }
+        if let Some(scratch) = &self.scratch_terminal {
+            scratch.apply_settings(settings.clone(), cx);
         }
 
         self.terminal_settings = settings;

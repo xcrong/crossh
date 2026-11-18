@@ -1,5 +1,5 @@
 //! Scratch 临时终端的显隐与生命周期（抽屉式）。
-//! 单例、复用同一 PTY、仅内存态，不进 `local_dirs / recent_dirs`。
+//! 单例、复用同一 PTY、仅内存态，不进入 daemon 工作区布局。
 
 use std::path::PathBuf;
 

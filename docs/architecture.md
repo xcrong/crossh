@@ -11,6 +11,7 @@ crossh (application + feature views)
   -> crossh-ui-component -> crossh-ui-base -> (gpui only)
   -> crossh-ui-component -> crossh-ui
   -> crossh-terminal-view -> crossh-terminal -> crossh-core
+  -> crossh-terminal-view -> crossh-session -> crossh-core
   -> crossh-terminal-view -> crossh-ui -> crossh-assets
   -> crossh-update
   -> crossh-core
@@ -27,6 +28,7 @@ crossh-note (standalone Note Viewer binary; thin assembly in src/bin)
 crossh-core       -> no GPUI, no application crate; Git command, status, branch,
                       history, stash, conflict, and commit-detail contracts
 crossh-terminal   -> no GPUI, terminal settings/events only
+crossh-session    -> no GPUI, session daemon: PTYs, replay ring, persistent workspace, protocol v2
 crossh-terminal-view -> GPUI terminal feature: the `terminal_view`-style host around
                       Zed's terminal foundation, its keymap, and the forked terminal element
 crossh-update     -> no GPUI, release/download/install implementation
@@ -43,7 +45,7 @@ shared resources  -> external `crossh-assets` directory loaded by every binary
 
 - `crossh-core`: terminal-neutral contracts and title helpers, command history/background tasks, Git command/diff parsing, local branch inspection/switching, stash and conflict operations, the shared `git_status`, `git_branch`, `git_history`, `git_stash`, and `git_conflict` parsers. Also owns the app-wide shared logic: the process-wide `logging` sink (file + stderr tee, panic hook) used by the `crossh` and `crossh-note` binaries, the text-editing state machine (`text_editing`), the IME/selection input pipeline (`input_handler`), the locale table with `LanguagePreference` (`i18n`), and the lightweight CLI launchers (`git_launcher`, `note_launcher`, `editor_launcher`) shared by the main binary and the standalone viewers.
 - `crossh-terminal`: terminal-owned settings and events. It is the model boundary consumed by the GPUI terminal view.
-- `crossh-session`: the session owner process (`crossh-daemon` binary in the same crate). Owns PTYs, the per-session output ring, input forwarding, resize arbitration, and session metadata. Does no VT grid parsing. Zero `gpui`/`gpui_platform` dependency; GUI attaches as a byte-stream client (`TerminalType::Remote`), so closing windows never ends sessions.
+- `crossh-session`: the session owner process (`crossh-daemon` binary in the same crate). Owns PTYs, the per-session output ring, input forwarding, resize arbitration, and session metadata. Also owns the persistent workspace: projects, tabs, the recursive split tree and ratios, and focus are daemon state. A serial `WorkspaceActor` is the only mutable owner of that state; mutations can carry `expected_revision` for compare-and-swap revision checks and reply with an outcome, the new revision, `durable`, and `storage_error`. The workspace is atomically persisted under the shared config root. Does no VT grid parsing. Zero `gpui`/`gpui_platform` dependency; GUI attaches as a byte-stream client (`TerminalType::Remote`) and consumes workspace snapshots, so closing windows never ends sessions and layout survives daemon restarts.
 - `crossh-update`: release manifest validation, HTTPS downloads, checksum verification, archive installation, and the standalone updater hand-off.
 - `crossh-assets`: UI-neutral Lucide SVG storage, OFL fonts vendored from Zed, shared external-resource discovery, debug embedded fallback, shared icon identifiers, and asset integrity tests. Its files live under `crates/crossh-assets/assets/icons/` and `crates/crossh-assets/assets/fonts/`.
 - `crossh-ui`: reusable GPUI widgets, context menus, renderer-independent palette (`palette.rs`, migrated from `crossh-theme`), icon rendering, the `AssetSource` adapter backed by the shared external resource directory and the fonts embedded in `crossh-assets`, and `theme::install_crossh_theme`, the sole writer stamping the Crossh palette onto `terminal::theme::CrosshTheme`.
@@ -54,9 +56,10 @@ shared resources  -> external `crossh-assets` directory loaded by every binary
 - `crossh-note-view`: the GPUI Note Viewer feature: window, list/search, `crossh-editor` input state, Markdown preview, and the in-note find panel. Split into `window.rs` (state and layout), `find_panel.rs` (find overlay), `format.rs` (pure formatting, no `gpui`), and `markdown.rs` (a thin wrapper over `crossh_editor::TextView`). Consumed only by the thin `crossh-note` binary in `src/bin`; the note store itself stays in `crossh-note`.
 - `features/settings`: application settings persistence and settings window.
 - `features/updates`: update controller and update presentation only.
-`AppShell` is the GPUI composition root for the workspace feature. Session
-collections and terminal split state live in `WorkspaceState` and
-`SessionRegistry`.
+`AppShell` is the GPUI composition root for the workspace feature.
+`WorkspaceState` holds the last `WorkspaceSnapshot` plus the per-`PaneId`
+terminal views; the project, tab, split-tree, ratio, and focus state lives in
+the daemon.
 
 ## Boundary Rules
 
@@ -76,8 +79,19 @@ relying only on directory conventions.
 Each crate README records its responsibility, boundary, public entry points,
 and quick verification command for focused validation.
 
-## 决策记录
+## Config Root
 
-已移除独立  目录。架构以代码（crate 依赖图 + `scripts/check-architecture.sh`）为准。
+`crates/crossh-core/src/config/mod.rs` is the sole resolver for Crossh paths:
 
-分屏固定为每属主 2×2 四格（`TerminalSplitState` 的四个槽位），不做递归 pane tree——四格已够用。要支持嵌套需要先改数据结构，届时应作为独立变更立项。
+- `CROSSH_CONFIG_DIR` is used directly as the config root, with no extra `crossh` component.
+- Without it, the root is `~/.config/crossh` for release builds and `~/.config/crossh-dev` for debug builds.
+- Settings are written to `<root>/settings.toml`. When that file is missing and `CROSSH_CONFIG_DIR` is unset, reads fall back to the legacy `~/.config/crossh/settings.toml` read-only, which lets debug builds import release settings.
+- The daemon workspace is `<root>/daemon/workspace.json`; startup failures such as a newer workspace format are recorded in `<root>/daemon/daemon.error`.
+- On Unix, config directories are restricted to `0700` and config files to `0600`.
+- Rolling back to a 0.44.x build loses `recent_local_dirs` and `pinned_local_tabs`: the old build does not read `workspace.json`, and the new version removes those fields the first time it saves settings.
+
+## Decision Notes
+
+The separate `docs/adr/` directory was removed; architecture is enforced by code (the crate dependency graph plus `scripts/check-architecture.sh`).
+
+Tabs use a recursive `PaneNode` tree: `Leaf(Pane)` or `Split { axis: Row | Column, ratio, first, second }`, with `ratio` clamped to `0.05..=0.95`. Nesting is supported without a fixed 2×2 limit.

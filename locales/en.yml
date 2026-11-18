@@ -149,6 +149,8 @@ context_menu:
   forget_dir: Forget Directory
   stop_project: Stop Project
   switch: Switch
+  new_tab: New Tab
+  forget_project: Forget Project
   close: Close
   close_others: Close Others
   close_all: Close All
@@ -398,3 +400,19 @@ note:
     hours_ago: "%{count} hours ago"
     yesterday: Yesterday
     days_ago: "%{count} days ago"
+
+workspace:
+  connecting: Connecting to workspace…
+  connection_failed: "Workspace connection failed: %{error}"
+  reconnecting: Workspace disconnected; reconnecting…
+  disconnected: Workspace is disconnected; changes are disabled
+  path_missing: Directory not found
+  pane_not_ready: No running session in this tab yet
+  retry_pane: Retry
+  pane_starting: Starting terminal…
+  pane_live: Running
+  pane_spawn_failed: Failed to start the shell; check the project directory
+  pane_dormant: Terminal not started yet
+  pane_unavailable: Unavailable
+  project_root_missing: Project directory is missing
+  cwd_missing: Working directory is missing

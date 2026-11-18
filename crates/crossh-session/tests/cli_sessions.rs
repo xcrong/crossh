@@ -38,9 +38,12 @@ fn echo_hi() -> Vec<String> {
 #[tokio::test]
 async fn cli_full_cycle() {
     let dir = cache_dir();
+    let config = dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
     // SAFETY: 测试进程内最早设置，后续只读。
     unsafe {
         std::env::set_var("CROSSH_CACHE_DIR", &dir);
+        std::env::set_var("CROSSH_CONFIG_DIR", &config);
         std::env::set_var("CROSSH_DAEMON_BIN", env!("CARGO_BIN_EXE_crossh-daemon"));
     }
 

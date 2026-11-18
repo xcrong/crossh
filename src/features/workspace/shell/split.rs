@@ -1,331 +1,388 @@
-//! AppShell terminal split creation, focus, and sizing state.
+//! AppShell 分屏动作：递归分屏树的方向导航、拆分与折叠。
+//!
+//! 分屏树归 daemon；本模块只把按键翻译成 `SplitPane`/`ClosePane`/`ActivatePane`，
+//! 纯几何函数（`directional_neighbor`）不依赖 `gpui` 便于测试。
 
-use std::path::PathBuf;
+#[cfg(test)]
+use std::collections::BTreeMap;
 
-use gpui::{Context, Window};
+use gpui::Window;
 
-use crate::features::workspace::registry::{SplitFocusDirection, SplitSide};
+use super::*;
+use crate::features::workspace::projection;
+use crossh_session::workspace::{Axis, PaneNodeSnapshot, SplitId};
 
-use super::tabs::{SplitPaneRetirement, TabCloseRisk, split_pane_retirement};
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
 
-use super::{ActiveView, AppShell};
-
-/// 竖线与横线交叉点的拖拽快照：落点坐标 + 起始尺寸；`None` 即空闲。
-/// 左右两列的交叉热区共用一个 cell（单次手势只可能拖一个点），以 `right_column` 区分归属列。
+/// 以父容器为单位的相对矩形（x/y/w/h 均为 0..1 比例）。
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct CrossDragState {
-    pub(crate) start_x: f32,
-    pub(crate) start_y: f32,
-    pub(crate) start_width: f32,
-    pub(crate) start_height: f32,
-    pub(crate) right_column: bool,
+struct Rect {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+impl Rect {
+    fn full() -> Self {
+        Self {
+            x: 0.,
+            y: 0.,
+            w: 1.,
+            h: 1.,
+        }
+    }
+}
+
+fn collect_rects(node: &PaneNodeSnapshot, rect: Rect, out: &mut Vec<(PaneId, Rect)>) {
+    match node {
+        PaneNodeSnapshot::Leaf(pane) => out.push((pane.id, rect)),
+        PaneNodeSnapshot::Split {
+            axis,
+            ratio,
+            first,
+            second,
+            ..
+        } => {
+            let ratio = projection::clamp_split_ratio(*ratio);
+            match axis {
+                Axis::Row => {
+                    let first_width = rect.w * ratio;
+                    collect_rects(
+                        first,
+                        Rect {
+                            w: first_width,
+                            ..rect
+                        },
+                        out,
+                    );
+                    collect_rects(
+                        second,
+                        Rect {
+                            x: rect.x + first_width,
+                            w: rect.w - first_width,
+                            ..rect
+                        },
+                        out,
+                    );
+                }
+                Axis::Column => {
+                    let first_height = rect.h * ratio;
+                    collect_rects(
+                        first,
+                        Rect {
+                            h: first_height,
+                            ..rect
+                        },
+                        out,
+                    );
+                    collect_rects(
+                        second,
+                        Rect {
+                            y: rect.y + first_height,
+                            h: rect.h - first_height,
+                            ..rect
+                        },
+                        out,
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn center(rect: Rect) -> (f32, f32) {
+    (rect.x + rect.w / 2., rect.y + rect.h / 2.)
+}
+
+/// 按几何位置找方向上的相邻 pane；没有相邻 pane 时返回 `None`。
+pub(crate) fn directional_neighbor(
+    layout: &PaneNodeSnapshot,
+    active: PaneId,
+    direction: Direction,
+) -> Option<PaneId> {
+    let mut rects = Vec::new();
+    collect_rects(layout, Rect::full(), &mut rects);
+    let (_, active_rect) = rects.iter().find(|(id, _)| *id == active)?;
+    let active_rect = *active_rect;
+    let (active_x, active_y) = center(active_rect);
+
+    let mut best: Option<(PaneId, f32, f32)> = None;
+    for (pane_id, rect) in &rects {
+        if *pane_id == active {
+            continue;
+        }
+        let (x, y) = center(*rect);
+        let usable = match direction {
+            Direction::Left => rect.x + rect.w <= active_rect.x + f32::EPSILON,
+            Direction::Right => rect.x >= active_rect.x + active_rect.w - f32::EPSILON,
+            Direction::Up => rect.y + rect.h <= active_rect.y + f32::EPSILON,
+            Direction::Down => rect.y >= active_rect.y + active_rect.h - f32::EPSILON,
+        };
+        if !usable {
+            continue;
+        }
+        // 主轴距离优先，次轴距离用于同列/同行内择近。
+        let (primary, secondary) = match direction {
+            Direction::Left => (active_rect.x - (rect.x + rect.w), (active_y - y).abs()),
+            Direction::Right => (
+                rect.x - (active_rect.x + active_rect.w),
+                (active_y - y).abs(),
+            ),
+            Direction::Up => (active_rect.y - (rect.y + rect.h), (active_x - x).abs()),
+            Direction::Down => (
+                rect.y - (active_rect.y + active_rect.h),
+                (active_x - x).abs(),
+            ),
+        };
+        let candidate = (primary.abs(), secondary);
+        let replace = best.is_none_or(|(_, best_primary, best_secondary)| {
+            candidate.0 < best_primary - f32::EPSILON
+                || ((candidate.0 - best_primary).abs() <= f32::EPSILON
+                    && candidate.1 < best_secondary)
+        });
+        if replace {
+            best = Some((*pane_id, candidate.0, candidate.1));
+        }
+    }
+    best.map(|(pane_id, _, _)| pane_id)
 }
 
 impl AppShell {
-    pub(crate) fn open_local_session_for_split(
-        &mut self,
-        project_dir: PathBuf,
-        cwd: PathBuf,
-        cx: &mut Context<Self>,
-    ) -> Option<ActiveView> {
-        let view = self.create_local_session(project_dir, cwd, None, cx)?;
-        let ActiveView::LocalSession(session_id) = view;
-        self.refresh_git_status(session_id, false, cx);
-        self.status = None;
-        cx.notify();
-        Some(view)
-    }
-
-    pub(crate) fn toggle_terminal_split(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // 水平分栏切换：若当前 Tab 已有水平分栏（right 存在），则原子关闭右列（含 bottom_right）；
-        // 避免两次 request_close 竞态（确认框互斥），先快照右列格子，统一做风险确认。
-        if let Some(split) = self.workspace.active_split()
-            && split.right.is_some()
-        {
-            let right_panes: Vec<ActiveView> = [split.right, split.bottom_right]
-                .into_iter()
-                .flatten()
-                .collect();
-            // 收集需要确认的 pane
-            let mut needs_confirm: Option<TabCloseRisk> = None;
-            for &pane in &right_panes {
-                let ActiveView::LocalSession(sid) = pane;
-                if let Some(risk) = self.local_session_close_risk(sid, cx)
-                    && risk.needs_confirmation()
-                {
-                    needs_confirm = Some(risk);
-                    break;
-                }
-            }
-            if let Some(risk) = needs_confirm {
-                // 单次确认覆盖整列，避免 confirmation_open 竞态
-                let panes = right_panes.clone();
-                self.prompt_close_tab(risk, window, cx, move |this, cx| {
-                    for pane in panes {
-                        let ActiveView::LocalSession(sid) = pane;
-                        this.close_local_session(sid, cx);
-                    }
-                });
-            } else {
-                for pane in right_panes {
-                    let ActiveView::LocalSession(sid) = pane;
-                    self.close_local_session(sid, cx);
-                }
-            }
-            return;
-        }
-
-        let Some(active_view) = self.workspace.active_view else {
-            return;
-        };
-        let Some(right_view) = self.create_split_terminal(active_view, cx) else {
-            return;
-        };
-        if !self.workspace.begin_terminal_split(right_view) {
-            self.rollback_split_terminal(right_view, cx);
-            return;
-        }
-        self.workspace.focus_terminal_split(SplitSide::Right);
-        self.refocus_active_terminal(cx);
-        cx.notify();
-    }
-
-    pub(crate) fn toggle_vertical_split(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // 垂直分栏切换：按当前聚焦列切换 bottom 格
-        let Some(split) = self.workspace.active_split() else {
-            // 无分栏：直接创建左列垂直分栏
-            let Some(active_view) = self.workspace.active_view else {
-                return;
-            };
-            let Some(bottom_view) = self.create_split_terminal(active_view, cx) else {
-                return;
-            };
-            if !self.workspace.begin_vertical_split(bottom_view) {
-                self.rollback_split_terminal(bottom_view, cx);
-                return;
-            }
-            // 焦点已在 begin_vertical_split 中设为 BottomLeft
-            self.refocus_active_terminal(cx);
-            cx.notify();
-            return;
-        };
-        // 已有分栏：判断当前聚焦列的 bottom 是否存在
-        let focused_is_right = split.focused.is_right_column() && split.right.is_some();
-        let has_bottom = if focused_is_right {
-            split.bottom_right.is_some()
-        } else {
-            split.bottom_left.is_some()
-        };
-        if has_bottom {
-            // 关闭该列的 bottom
-            let bottom = if focused_is_right {
-                split.bottom_right
-            } else {
-                split.bottom_left
-            };
-            if let Some(ActiveView::LocalSession(session_id)) = bottom {
-                self.request_close_local_session(session_id, window, cx);
-            }
-            return;
-        }
-        // 创建 bottom
-        let Some(active_view) = self.workspace.active_view else {
-            return;
-        };
-        // 创建时以前景会话的 project/cwd 为模板
-        let Some(bottom_view) = self.create_split_terminal(active_view, cx) else {
-            return;
-        };
-        if !self.workspace.begin_vertical_split(bottom_view) {
-            self.rollback_split_terminal(bottom_view, cx);
-            return;
-        }
-        self.refocus_active_terminal(cx);
-        cx.notify();
-    }
-    /// 批量清扫前拆掉与被清扫视图相关的分栏
-    pub(crate) fn detach_splits_for(&mut self, closed: &[ActiveView], _cx: &mut Context<Self>) {
-        // 取回并丢弃涉及被清扫视图的分栏，registry 内部完成接管/清理。
-        let _ = self.workspace.take_splits_involving(closed);
-        // 同步清理终端级的 compose 状态，避免已关闭视图的草稿残留
-        let _ = self.workspace.take_composes_involving(closed);
-        self.reset_split_ui_if_idle();
-    }
-
-    /// 处理退出分栏的 secondary 窗格：按活动风险决定销毁或保留为普通标签。
-    fn retire_split_pane(&mut self, view: ActiveView, cx: &mut Context<Self>) {
-        let retirement = match view {
-            ActiveView::LocalSession(session_id) => {
-                split_pane_retirement(self.local_session_close_risk(session_id, cx).as_ref())
-            }
-        };
-        if retirement == SplitPaneRetirement::KeepAsTab {
-            return;
-        }
-        match view {
-            ActiveView::LocalSession(session_id) => self.close_local_session(session_id, cx),
-        }
-    }
-
-    /// 分栏视图关闭前的状态处理：让 registry 处理接管/退休
-    /// 支持 2x2：属主关闭时遍历所有 secondary，按风险分别退休/保留
-    pub(super) fn prepare_terminal_split_view_close(
-        &mut self,
-        view: ActiveView,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(split) = self.workspace.split_containing(view) else {
-            return false;
-        };
-        let is_owner_close = split.left == view;
-        let was_active_owner = self.workspace.active_view == Some(view);
-        let outcome = self.workspace.prepare_split_view_close(view);
-        match outcome {
-            crate::features::workspace::registry::SplitViewCloseOutcome::Closed {
-                retire_pane: Some(pane),
-            } => {
-                self.retire_split_pane(pane, cx);
-            }
-            crate::features::workspace::registry::SplitViewCloseOutcome::Closed {
-                retire_pane: None,
-            } if is_owner_close => {
-                // 属主活跃关闭仅晋升，未返回退休；需处理剩余 secondary
-                // was_active_owner 时晋升的 pane 已成为 active_view，避免重复退休
-                let promoted = if was_active_owner {
-                    self.workspace.active_view
-                } else {
-                    None
-                };
-                for extra in split.secondary_views() {
-                    if Some(extra) == promoted {
-                        continue;
-                    }
-                    // 隐藏态已退休首个，活跃态需退休其余
-                    self.retire_split_pane(extra, cx);
-                }
-            }
-            _ => {}
-        }
-        // 隐藏态属主关闭：outcome 已退休首个，仍需处理其余 secondary（除首个外）
-        if is_owner_close
-            && !was_active_owner
-            && let crate::features::workspace::registry::SplitViewCloseOutcome::Closed {
-                retire_pane: Some(first),
-            } = outcome
-        {
-            for extra in split.secondary_views() {
-                if extra == first {
-                    continue;
-                }
-                self.retire_split_pane(extra, cx);
-            }
-        }
-        self.reset_split_ui_if_idle();
-        true
-    }
-    pub(crate) fn focus_terminal_split(&mut self, side: SplitSide, cx: &mut Context<Self>) {
-        if self.workspace.focus_terminal_split(side) {
-            self.refocus_active_terminal(cx);
-            cx.notify();
-        }
-    }
-
-    pub(crate) fn move_split_focus(
-        &mut self,
-        direction: SplitFocusDirection,
-        cx: &mut Context<Self>,
-    ) {
-        if self.workspace.move_split_focus(direction) {
-            self.refocus_active_terminal(cx);
-            cx.notify();
-        }
-    }
-
     pub(crate) fn handle_split_terminal_horizontal(
         &mut self,
-        _: &super::SplitTerminalHorizontal,
-        window: &mut Window,
+        _: &crate::features::workspace::shell::SplitTerminalHorizontal,
+        _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.toggle_terminal_split(window, cx);
+        self.toggle_terminal_split(cx);
     }
 
     pub(crate) fn handle_split_terminal_vertical(
         &mut self,
-        _: &super::SplitTerminalVertical,
-        window: &mut Window,
+        _: &crate::features::workspace::shell::SplitTerminalVertical,
+        _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.toggle_vertical_split(window, cx);
+        self.toggle_vertical_split(cx);
     }
 
     pub(crate) fn handle_focus_split_left(
         &mut self,
-        _: &super::FocusSplitLeft,
+        _: &crate::features::workspace::shell::FocusSplitLeft,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.move_split_focus(SplitFocusDirection::Left, cx);
+        self.move_split_focus(Direction::Left, cx);
     }
 
     pub(crate) fn handle_focus_split_right(
         &mut self,
-        _: &super::FocusSplitRight,
+        _: &crate::features::workspace::shell::FocusSplitRight,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.move_split_focus(SplitFocusDirection::Right, cx);
+        self.move_split_focus(Direction::Right, cx);
     }
 
     pub(crate) fn handle_focus_split_up(
         &mut self,
-        _: &super::FocusSplitUp,
+        _: &crate::features::workspace::shell::FocusSplitUp,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.move_split_focus(SplitFocusDirection::Up, cx);
+        self.move_split_focus(Direction::Up, cx);
     }
 
     pub(crate) fn handle_focus_split_down(
         &mut self,
-        _: &super::FocusSplitDown,
+        _: &crate::features::workspace::shell::FocusSplitDown,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.move_split_focus(SplitFocusDirection::Down, cx);
+        self.move_split_focus(Direction::Down, cx);
     }
 
-    /// 为分栏创建右窗格会话。分栏右窗格**总是新建**独立会话：
-    /// 标签栏中的每个 Tab 都是独立一等公民，分栏是当前 Tab 的临时
-    /// 布局，绝不能把已有 Tab/会话取走或改其存在性（曾经存在过按
-    /// target/project+cwd 复用的实现，会吞掉同目标的独立 Tab，见 issue #5）。
-    fn create_split_terminal(
-        &mut self,
-        active_view: ActiveView,
-        cx: &mut Context<Self>,
-    ) -> Option<ActiveView> {
-        match active_view {
-            ActiveView::LocalSession(session_id) => {
-                let project_dir = self.local_session_project_dir(session_id);
-                let cwd = self.local_session_cwd(session_id, cx);
-                self.open_local_session_for_split(project_dir, cwd, cx)
+    /// 左右分屏按钮：已有分屏时折叠为一个 pane，否则把活跃 pane 一分为二。
+    pub(crate) fn toggle_terminal_split(&mut self, cx: &mut Context<Self>) {
+        self.toggle_split(Axis::Row, cx);
+    }
+
+    pub(crate) fn toggle_vertical_split(&mut self, cx: &mut Context<Self>) {
+        self.toggle_split(Axis::Column, cx);
+    }
+
+    fn toggle_split(&mut self, axis: Axis, cx: &mut Context<Self>) {
+        let Some(tab) = self.workspace.active_tab() else {
+            return;
+        };
+        let pane_ids = tab.layout.leaves().map(|pane| pane.id).collect::<Vec<_>>();
+        if pane_ids.len() > 1 {
+            let Some(active) = tab.active_pane else {
+                return;
+            };
+            for pane_id in pane_ids.into_iter().filter(|pane_id| *pane_id != active) {
+                self.send_workspace_op(WorkspaceOp::ClosePane { pane_id }, cx);
             }
+            return;
+        }
+        if let Some(pane_id) = tab.active_pane.or_else(|| pane_ids.first().copied()) {
+            self.send_workspace_op(
+                WorkspaceOp::SplitPane {
+                    pane_id,
+                    axis,
+                    cwd: None,
+                },
+                cx,
+            );
         }
     }
 
-    fn rollback_split_terminal(&mut self, view: ActiveView, cx: &mut Context<Self>) {
-        match view {
-            ActiveView::LocalSession(session_id) => self.close_local_session(session_id, cx),
+    pub(crate) fn move_split_focus(&mut self, direction: Direction, cx: &mut Context<Self>) {
+        let Some(tab) = self.workspace.active_tab() else {
+            return;
+        };
+        let Some(active) = tab.active_pane else {
+            return;
+        };
+        let target = directional_neighbor(&tab.layout, active, direction);
+        if let Some(pane_id) = target {
+            self.focus_pane(pane_id, cx);
         }
     }
 
-    /// 分栏全部关闭后复位拖拽标志；宽度/高度槽位已随各删除路径在 registry
-    /// 中清理，这里不再触碰。
-    fn reset_split_ui_if_idle(&mut self) {
-        if self.workspace.terminal_splits.is_empty() {
-            self.terminal_split_dragging.set(false);
-            self.terminal_split_vertical_dragging.set(false);
-            self.terminal_split_vertical_right_dragging.set(false);
+    /// 分屏比例提交：拖拽结束时调用。
+    pub(crate) fn commit_split_ratio(
+        &mut self,
+        split_id: SplitId,
+        ratio: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let ratio = projection::clamp_split_ratio(ratio);
+        let unchanged = self
+            .workspace
+            .snapshot
+            .projects
+            .iter()
+            .flat_map(|project| &project.tabs)
+            .any(|tab| match &tab.layout {
+                PaneNodeSnapshot::Split {
+                    id, ratio: current, ..
+                } if *id == split_id => (*current - ratio).abs() < f32::EPSILON,
+                _ => false,
+            });
+        if unchanged {
+            return;
         }
+        self.workspace.split_drag_cell.set(None);
+        self.send_workspace_op(WorkspaceOp::SetSplitRatio { split_id, ratio }, cx);
+    }
+}
+
+/// 每个叶子 pane 的比例矩形，供几何测试使用。
+#[cfg(test)]
+pub(crate) fn pane_rects(layout: &PaneNodeSnapshot) -> BTreeMap<PaneId, (f32, f32, f32, f32)> {
+    let mut rects = Vec::new();
+    collect_rects(layout, Rect::full(), &mut rects);
+    rects
+        .into_iter()
+        .map(|(pane_id, rect)| (pane_id, (rect.x, rect.y, rect.w, rect.h)))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn leaf(id: u64) -> PaneNodeSnapshot {
+        PaneNodeSnapshot::Leaf(crossh_session::workspace::PaneSnapshot {
+            id: PaneId(id),
+            cwd: "/tmp".into(),
+            size: crossh_session::workspace::TermSize::default(),
+            session: None,
+            cwd_available: true,
+            status: crossh_session::workspace::PaneStatus::Dormant {
+                reason: crossh_session::workspace::PaneStatusReason::NotStarted,
+            },
+        })
+    }
+
+    fn split(
+        id: u64,
+        axis: Axis,
+        ratio: f32,
+        first: PaneNodeSnapshot,
+        second: PaneNodeSnapshot,
+    ) -> PaneNodeSnapshot {
+        PaneNodeSnapshot::Split {
+            id: SplitId(id),
+            axis,
+            ratio,
+            first: Box::new(first),
+            second: Box::new(second),
+        }
+    }
+
+    #[test]
+    fn directional_neighbor_follows_split_geometry() {
+        let layout = split(1, Axis::Row, 0.5, leaf(1), leaf(2));
+        assert_eq!(
+            directional_neighbor(&layout, PaneId(1), Direction::Right),
+            Some(PaneId(2))
+        );
+        assert_eq!(
+            directional_neighbor(&layout, PaneId(2), Direction::Left),
+            Some(PaneId(1))
+        );
+        assert_eq!(
+            directional_neighbor(&layout, PaneId(1), Direction::Left),
+            None
+        );
+        assert_eq!(
+            directional_neighbor(&layout, PaneId(1), Direction::Down),
+            None
+        );
+
+        let layout = split(
+            2,
+            Axis::Column,
+            0.5,
+            split(3, Axis::Row, 0.5, leaf(1), leaf(2)),
+            split(4, Axis::Row, 0.5, leaf(3), leaf(4)),
+        );
+        assert_eq!(
+            directional_neighbor(&layout, PaneId(1), Direction::Down),
+            Some(PaneId(3))
+        );
+        assert_eq!(
+            directional_neighbor(&layout, PaneId(4), Direction::Up),
+            Some(PaneId(2))
+        );
+        assert_eq!(
+            directional_neighbor(&layout, PaneId(3), Direction::Right),
+            Some(PaneId(4))
+        );
+    }
+
+    #[test]
+    fn pane_rects_cover_the_container_without_overlap() {
+        let layout = split(
+            2,
+            Axis::Row,
+            0.25,
+            leaf(1),
+            split(3, Axis::Column, 0.5, leaf(2), leaf(3)),
+        );
+        let rects = pane_rects(&layout);
+        assert_eq!(rects[&PaneId(1)], (0., 0., 0.25, 1.));
+        assert!((rects[&PaneId(2)].0 - 0.25).abs() < 1e-5);
+        assert!((rects[&PaneId(2)].3 - 0.5).abs() < 1e-5);
+        assert!((rects[&PaneId(3)].1 - 0.5).abs() < 1e-5);
     }
 }

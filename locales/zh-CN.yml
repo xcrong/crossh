@@ -149,6 +149,8 @@ context_menu:
   forget_dir: 忘记此目录
   stop_project: 停止项目
   switch: 切换
+  new_tab: 新建标签页
+  forget_project: 忘记项目
   close: 关闭
   close_others: 关闭其他
   close_all: 关闭全部
@@ -398,3 +400,19 @@ note:
     hours_ago: "%{count} 小时前"
     yesterday: 昨天
     days_ago: "%{count} 天前"
+
+workspace:
+  connecting: 正在连接工作区…
+  connection_failed: "工作区连接失败：%{error}"
+  reconnecting: 工作区连接已断开，正在重连…
+  disconnected: 工作区连接已断开，修改已禁用
+  path_missing: 目录不存在
+  pane_not_ready: 该标签页还没有可用的会话
+  retry_pane: 重试
+  pane_starting: 正在启动终端…
+  pane_live: 运行中
+  pane_spawn_failed: 无法启动 shell，请检查项目目录
+  pane_dormant: 终端尚未启动
+  pane_unavailable: 不可用
+  project_root_missing: 项目目录不存在
+  cwd_missing: 工作目录不存在

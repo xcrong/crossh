@@ -216,25 +216,18 @@ fn find_main_window(cx: &App) -> Option<gpui::WindowHandle<AppShell>> {
         .find_map(|handle| handle.downcast::<AppShell>())
 }
 
-/// 跨进程/CLI 打开项目的意图级入口：聚焦应用、确保主窗口存在（窗口被关闭后
-/// 按 `on_reopen` 的无窗口分支重建）、聚焦窗口，可选激活指定项目目录。
-/// `None` 表示仅聚焦（裸 `crossh`）。`main` 的单实例桥与首屏激活都收敛到此，
-/// 不直接操作 `AppShell`。
-pub(crate) fn activate_project(cx: &mut App, directory: Option<PathBuf>) {
+/// 聚焦应用并确保主窗口存在（窗口被关闭后按 `on_reopen` 的无窗口分支重建）。
+/// 项目激活由 `crossh open` 在 daemon 中完成，GUI attach 后自然收敛。
+pub(crate) fn show_main_window(cx: &mut App) {
     cx.activate(true);
-    let shell = ensure_main_shell(cx);
+    let _ = ensure_main_shell(cx);
     if let Some(window) = find_main_window(cx) {
         let _ = window.update(cx, |_, window, _| window.activate_window());
-    }
-    if let Some(directory) = directory {
-        shell.update(cx, |shell, cx| {
-            shell.activate_local_dir(directory, cx);
-        });
     }
 }
 
 /// 单实例投递桥的前台消费端：监听线程只收包，`open_rx` 的每个请求都在 UI
-/// 线程经 [`activate_project`] 落地（无窗口时重建，有项目时激活）。
+/// 线程经 [`show_main_window`] 落地（无窗口时重建，单实例载荷只表示聚焦）。
 ///
 /// 任务经 `Context::spawn` 挂到前台执行器、只捕获 `WeakEntity`（GPUI 的
 /// `Context::spawn` 直接委托 `App::spawn`，与 entity 生命周期解耦），窗口
@@ -246,8 +239,8 @@ pub(crate) fn serve_project_requests(
     let shell = ensure_main_shell(cx);
     shell.update(cx, |_, cx| {
         cx.spawn(async move |_, cx| {
-            while let Some(request) = open_rx.recv().await {
-                cx.update(|cx| activate_project(cx, request));
+            while open_rx.recv().await.is_some() {
+                cx.update(show_main_window);
             }
         })
         .detach();

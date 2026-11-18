@@ -1,35 +1,35 @@
-//! 模态文本编辑器（固定标签重命名弹窗 + 默认命令编辑器）的行为：
+//! 模态文本编辑器（tab 重命名弹窗 + 默认命令编辑器）的行为：
 //! 打开/提交/取消与统一键盘处理。渲染位于 `view.rs`（两者互斥，
 //! 键盘入口合并为一个 handler，避免重复的编辑键分支）。
 
 use gpui::{ClipboardEntry, ClipboardItem, Context, FocusHandle, KeyDownEvent, Window};
 
-use crate::features::workspace::state::LocalSessionId;
 use crossh_core::text_editing::{EditingKeystroke, TextEditingState, handle_text_editing_key};
+use crossh_session::workspace::TabId;
 
 use super::*;
 
-pub(crate) struct PinnedTabEditor {
-    pub(crate) session_id: LocalSessionId,
+pub(crate) struct TabEditor {
+    pub(crate) tab_id: TabId,
     pub(crate) state: TextEditingState,
     pub(crate) focus: FocusHandle,
 }
 
-impl PinnedTabEditor {
-    pub(crate) fn new(session_id: LocalSessionId, current: String, focus: FocusHandle) -> Self {
+impl TabEditor {
+    pub(crate) fn new(tab_id: TabId, current: String, focus: FocusHandle) -> Self {
         Self {
-            session_id,
+            tab_id,
             state: TextEditingState::new(current),
             focus,
         }
     }
 }
 
-pub(crate) type RenameEditor = PinnedTabEditor;
-pub(crate) type DefaultCommandEditor = PinnedTabEditor;
+pub(crate) type RenameEditor = TabEditor;
+pub(crate) type DefaultCommandEditor = TabEditor;
 
 impl AppShell {
-    /// 模态文本编辑器的统一键盘处理：固定标签重命名弹窗与默认命令编辑器共用（两者互斥，最多只有一个打开）。
+    /// 模态文本编辑器的统一键盘处理：tab 重命名与默认命令编辑器共用（两者互斥，最多只有一个打开）。
     /// 唯一归属：仅 `render_single_line_modal` 的内层 `on_key_down` 注册，
     /// shell 根节点直接 `return`，保证一次按键只走一次编辑（见命令面板 `nneeww` 教训）。
     pub(crate) fn handle_modal_editor_key(
@@ -45,7 +45,7 @@ impl AppShell {
                 if self.default_command_editor.is_some() {
                     self.submit_default_command(cx);
                 } else if self.rename_editor.is_some() {
-                    self.submit_rename_local_session(cx);
+                    self.submit_rename_tab(cx);
                 } else {
                     return;
                 }
@@ -55,7 +55,7 @@ impl AppShell {
                 if self.default_command_editor.is_some() {
                     self.cancel_default_command(cx);
                 } else if self.rename_editor.is_some() {
-                    self.cancel_rename_local_session(cx);
+                    self.cancel_rename_tab(cx);
                 } else {
                     return;
                 }

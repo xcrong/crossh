@@ -22,8 +22,8 @@ pub(crate) fn render_compose_bar(
     let focused = focus.is_focused(window);
     let compose_state = shell
         .workspace
-        .focused_view()
-        .and_then(|view| shell.workspace.compose_state_for(view))
+        .focused_pane()
+        .and_then(|pane_id| shell.workspace.compose_state_for(pane_id))
         .cloned()
         .unwrap_or_else(|| crossh_core::text_editing::TextEditingState::new(String::new()));
     let value = compose_state.value.clone();
@@ -220,7 +220,7 @@ pub(crate) fn render_compose_bar(
     input = input.child(ime_input_canvas(focus.clone(), cx.entity()));
 
     let has_text = !value.trim().is_empty();
-    let can_send = has_text && shell.workspace.focused_view().is_some();
+    let can_send = has_text && shell.workspace.focused_pane().is_some();
 
     let send_button = Button::new("compose-send")
         .size(ButtonSize::Medium)

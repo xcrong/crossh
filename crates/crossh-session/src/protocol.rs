@@ -47,6 +47,16 @@ pub enum MessageKind {
     Exited = 15,
     /// 停 daemon（空载荷；握手后已认证连接发送，服务端清理后退出进程）。
     Shutdown = 16,
+    /// 读取工作区快照（空载荷；应答 `WorkspaceSnapshot`）。
+    WorkspaceGet = 17,
+    /// 订阅工作区快照（空载荷；先回当前快照，随后持续推送）。
+    WorkspaceAttach = 18,
+    /// 修改工作区（JSON `WorkspaceMutateRequest`）。
+    WorkspaceMutate = 19,
+    /// 工作区快照推送（JSON `WorkspaceSnapshot`）。
+    WorkspaceSnapshot = 20,
+    /// 工作区修改回执（JSON `WorkspaceMutateReply`）。
+    WorkspaceMutateReply = 21,
 }
 
 impl MessageKind {
@@ -68,6 +78,11 @@ impl MessageKind {
             14 => Some(Self::Attached),
             15 => Some(Self::Exited),
             16 => Some(Self::Shutdown),
+            17 => Some(Self::WorkspaceGet),
+            18 => Some(Self::WorkspaceAttach),
+            19 => Some(Self::WorkspaceMutate),
+            20 => Some(Self::WorkspaceSnapshot),
+            21 => Some(Self::WorkspaceMutateReply),
             _ => None,
         }
     }
@@ -200,6 +215,36 @@ pub struct SessionInfo {
     pub controller: Option<u64>,
     pub alive: bool,
     pub exit_code: Option<i32>,
+    /// 布局归属；临时会话（`crossh run` 等）为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<u64>,
+}
+
+/// 工作区修改请求。
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct WorkspaceMutateRequest {
+    pub request_id: u64,
+    #[serde(default)]
+    pub expected_revision: Option<u64>,
+    pub op: crate::workspace::WorkspaceOp,
+}
+
+/// 工作区修改回执。
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct WorkspaceMutateReply {
+    pub request_id: u64,
+    pub outcome: crate::workspace::MutateOutcome,
+    pub revision: u64,
+    pub created: crate::workspace::CreatedIds,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<crate::workspace::OpError>,
+    pub durable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_error: Option<crate::workspace::StorageErrorInfo>,
 }
 
 /// 建会话应答（`Created`）。

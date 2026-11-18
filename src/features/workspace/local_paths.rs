@@ -23,45 +23,14 @@ pub(super) fn normalize_local_cwd(path: PathBuf) -> Option<PathBuf> {
     path.is_dir().then_some(path)
 }
 
-pub(super) fn normalize_recent_dirs(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
-    let mut normalized = Vec::new();
-    for path in paths {
-        let Some(path) = normalize_local_cwd(path) else {
-            continue;
-        };
-        if !normalized.contains(&path) {
-            normalized.push(path);
-        }
-    }
-    normalized
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{normalize_local_cwd, normalize_recent_dirs};
+    use super::normalize_local_cwd;
 
     #[test]
     fn spec_20260817_recent_local_dir_recovery_missing_path_is_rejected() {
         let missing =
             std::env::temp_dir().join(format!("crossh-missing-local-dir-{}", std::process::id()));
         assert_eq!(normalize_local_cwd(missing), None);
-    }
-
-    #[test]
-    fn spec_20260817_recent_local_dir_recovery_recent_list_keeps_only_directories() {
-        let root = std::env::temp_dir().join(format!(
-            "crossh-recent-dir-normalize-{}",
-            std::process::id()
-        ));
-        let existing = root.join("existing");
-        let file = root.join("file");
-        let missing = root.join("missing");
-        std::fs::create_dir_all(&existing).expect("test directory should be created");
-        std::fs::write(&file, b"not a directory").expect("test file should be created");
-
-        let normalized = normalize_recent_dirs([existing.clone(), file, missing, existing.clone()]);
-
-        assert_eq!(normalized, vec![dunce::canonicalize(&existing).unwrap()]);
-        std::fs::remove_dir_all(root).expect("test directory should be removed");
     }
 }

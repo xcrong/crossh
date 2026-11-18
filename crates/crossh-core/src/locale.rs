@@ -39,7 +39,7 @@ pub fn persisted_locale_code() -> &'static str {
 }
 
 fn settings_path() -> Option<std::path::PathBuf> {
-    dirs::home_dir().map(|home| home.join(".config").join("crossh").join("settings.toml"))
+    crate::config::settings_read_path()
 }
 
 fn resolve_code(language: Option<&str>, system_code: &'static str) -> &'static str {

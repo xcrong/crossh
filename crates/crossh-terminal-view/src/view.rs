@@ -185,8 +185,6 @@ pub struct TerminalView {
     pending_timestamp: Option<String>,
     /// daemon 接入链路（`None` = 未建立/已结束）。
     daemon_link: Option<DaemonLink>,
-    /// daemon 会话 id（固定标签按 id 恢复用）。
-    pub daemon_session_id: Option<String>,
     /// 是否持有输入权（`false` 显示只读标记；尺寸不上报）。
     has_input_rights: bool,
     /// 已上报的尺寸（去重避免每帧 Resize）。
@@ -290,7 +288,6 @@ impl TerminalView {
                 timestamp_state: TerminalTimestampState::default(),
                 pending_timestamp: None,
                 daemon_link: None,
-                daemon_session_id: None,
                 has_input_rights: true,
                 last_reported_size: None,
             };
@@ -310,8 +307,7 @@ impl TerminalView {
                 while let Some(msg) = ui_rx.recv().await {
                     let end = this
                         .update(cx, |this, cx| match msg {
-                            UiMsg::Attached { id, has_input, cwd } => {
-                                this.daemon_session_id = Some(id.clone());
+                            UiMsg::Attached { has_input, cwd } => {
                                 this.has_input_rights = has_input;
                                 // 回放开始：抑制重放字节触发的副作用回写。
                                 this.zed_terminal.update(cx, |terminal, _| {
@@ -319,7 +315,7 @@ impl TerminalView {
                                 });
                                 this.apply_daemon_cwd(cwd.as_deref(), cx);
                                 this.state = ConnState::Connected;
-                                cx.emit(TerminalEvent::SessionAttached { id });
+                                cx.emit(TerminalEvent::SessionAttached);
                                 cx.notify();
                                 false
                             }

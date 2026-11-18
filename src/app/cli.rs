@@ -34,11 +34,10 @@ pub(crate) enum CliCommand {
     Run(Vec<String>),
     /// 输出指定会话的回放字节。
     Capture(String),
-    /// 启动主窗口。`path` 为原始参数（相对路径不解析），由 `main`
-    /// 结合进程工作目录校验为项目目录；`None` 为裸启动。
-    Main {
-        path: Option<PathBuf>,
-    },
+    /// 启动主窗口。
+    Main,
+    /// 在 daemon 中打开/激活项目，再唤起 GUI；路径由 `main` 校验。
+    Open(PathBuf),
 }
 
 /// `args` 为 `std::env::args().skip(1)` 的迭代器；`current_dir` 仅在
@@ -50,7 +49,7 @@ pub(crate) fn parse_cli(
     current_dir: Result<PathBuf, String>,
 ) -> CliCommand {
     match args.next().as_deref() {
-        None => CliCommand::Main { path: None },
+        None => CliCommand::Main,
         Some("--help" | "-h" | "help") => CliCommand::Help,
         Some("--version" | "-V") => CliCommand::Version,
         Some("git") => {
@@ -85,9 +84,7 @@ pub(crate) fn parse_cli(
         // 开目录唯一入口：`crossh open <path>`（与子命令同名也无需转义）。
         // 缺参数/多余参数都回到未知参数，与其它子命令一致。
         Some("open") => match args.next() {
-            Some(path) if args.next().is_none() => CliCommand::Main {
-                path: Some(PathBuf::from(path)),
-            },
+            Some(path) if args.next().is_none() => CliCommand::Open(PathBuf::from(path)),
             _ => CliCommand::Unknown("open".to_string()),
         },
         // 首个 `-` 开头参数不在已知集合中：保持未知参数行为。
@@ -100,7 +97,7 @@ pub(crate) fn parse_cli(
 /// 返回与 `print_help` 打印内容一致的帮助文本，便于测试与复用。
 pub(crate) fn help_text() -> String {
     format!(
-        "Crossh {} — Local-first terminal workspace (GPUI)\n\nUsage: crossh [COMMAND]\n       crossh open <path>\n\nLocal-first terminal workspace — manage projects, terminals and notes locally.\n\nCommands:\n  open        Open a project directory (reuses the running instance when present,\n              otherwise starts a new instance).\n              Directories named like subcommands need no escaping: crossh open git\n  git         Open the Git Viewer for a directory\n  note        Open the Note Viewer\n  daemon      Manage the session daemon (status|start|stop)\n  ls          List daemon sessions (second frontend needs no GUI)\n  run         Run a command in a new session, stream output, return its exit code\n  capture     Print a session's replay buffer\n  help        Print help\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version",
+        "Crossh {} — Local-first terminal workspace (GPUI)\n\nUsage: crossh [COMMAND]\n       crossh open <path>\n\nLocal-first terminal workspace — manage projects, terminals and notes locally.\n\nCommands:\n  open        Open a project through the daemon, then focus or start the GUI.\n              Directories named like subcommands need no escaping: crossh open git\n  git         Open the Git Viewer for a directory\n  note        Open the Note Viewer\n  daemon      Manage the session daemon (status|start|stop; stop keeps the layout)\n  ls          List daemon sessions (columns: ID ROLE ALIVE PROGRAM PROJECT TAB PANE CWD)\n  run         Run a command in a new session, stream output, return its exit code\n  capture     Print a session's replay buffer (capture <id>)\n  help        Print help\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -124,7 +121,7 @@ mod tests {
     #[test]
     fn no_arguments_maps_to_main_without_path() {
         let command = parse_cli(std::iter::empty(), cwd_ok("/repo"));
-        assert_eq!(command, CliCommand::Main { path: None });
+        assert_eq!(command, CliCommand::Main);
     }
 
     #[test]
@@ -138,9 +135,7 @@ mod tests {
             );
             assert_eq!(
                 command,
-                CliCommand::Main {
-                    path: Some(PathBuf::from(path))
-                },
+                CliCommand::Open(PathBuf::from(path)),
                 "path: {path}"
             );
         }
@@ -181,7 +176,7 @@ mod tests {
         ] {
             let shadowed = parse_cli([name].into_iter().map(str::to_string), cwd_ok("/repo"));
             assert!(
-                !matches!(shadowed, CliCommand::Main { .. }),
+                !matches!(shadowed, CliCommand::Open(_)),
                 "bare {name} must not open a directory"
             );
 
@@ -191,9 +186,7 @@ mod tests {
             );
             assert_eq!(
                 command,
-                CliCommand::Main {
-                    path: Some(PathBuf::from(name))
-                },
+                CliCommand::Open(PathBuf::from(name)),
                 "open {name} must open a directory"
             );
         }

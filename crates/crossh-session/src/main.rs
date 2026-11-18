@@ -2,7 +2,8 @@
 //!
 //! 只做装配；协议/会话/单实例逻辑在库里（`crossh_session`）。
 
-use crossh_session::{Claim, claim_instance, remove_port_file};
+use crossh_session::Claim;
+use crossh_session::claim_instance;
 
 fn version_string() -> String {
     format!("crossh-daemon {}", env!("CARGO_PKG_VERSION"))
@@ -29,21 +30,38 @@ fn set_locale() {
 
 async fn run() -> std::io::Result<()> {
     let token = new_token();
+    let store = crossh_session::workspace_store::WorkspaceStore::default_store()
+        .ok_or_else(|| std::io::Error::other("no config root"))?;
+    // 格式保护必须发生在任何写入与端口发布之前。
+    let workspace = match store.load() {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            let reason = error.to_string();
+            crossh_session::workspace_store::write_daemon_error(&reason);
+            log::error!("{reason}");
+            return Err(std::io::Error::other(reason));
+        }
+    };
     match claim_instance(&token)? {
         Claim::Owner { listener } => {
             log::info!("crossh-daemon owner on {}", listener.local_addr()?);
+            let mut workspace = workspace;
+            crossh_session::workspace_store::migrate_legacy(&mut workspace);
+            crossh_session::workspace_store::clear_daemon_error();
             crossh_session::serve::run(
                 tokio::net::TcpListener::from_std(listener).expect("tokio listener"),
                 token,
+                workspace,
+                std::sync::Arc::new(store),
             )
             .await;
         }
         Claim::Existing(_addr) => {
             // 已有属主：直接退出，调用方接入既有实例（单实例语义）。
+            // 不得删除属主的端口文件。
+            Ok(())
         }
     }
-    remove_port_file();
-    Ok(())
 }
 
 fn new_token() -> String {

@@ -1,27 +1,31 @@
-//! 侧栏：项目搜索、本地目录列表、宽度拖拽。
+//! 侧栏：项目搜索、项目列表、宽度拖拽与收起 rail。
+//!
+//! 项目顺序严格取快照 `projects`；活跃项目来自 `snapshot.active_project`。
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, AppContext, Context, FontWeight, InteractiveElement, IntoElement, MouseButton,
     MouseDownEvent, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div,
     px,
 };
 
+use crate::features::workspace::projection;
 use crate::features::workspace::shell::AppShell;
 use crate::features::workspace::state::preferred_state;
-use crate::features::workspace::view::{ActiveView, LocalDir};
+use crate::features::workspace::status::conn_state_dot_color;
 use crossh_core::i18n::{self};
 use crossh_core::terminal::path_display_name;
-use crossh_terminal::ConnState;
+use crossh_session::workspace::ProjectSnapshot;
 use crossh_terminal_view::TerminalItem as _;
 use crossh_ui::context_menu::ShellMenuAction;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::context_menu::{MenuEntry, MenuItem};
 use crossh_ui_component::{
-    Avatar, AvatarKind, Button, ButtonSize, ButtonVariant, Hint, Rail, SidePanel, Tooltip,
-    filter_row, filter_text_input, rail_avatar, scroll_y,
+    Avatar, AvatarKind, Button, ButtonVariant, Hint, Rail, SidePanel, Tooltip, filter_row,
+    filter_text_input, rail_avatar, scroll_y,
 };
 
 /// 侧栏整体布局：标题栏（含设置）+ 搜索框 + 分组列表 + 宽度拖拽。
@@ -32,29 +36,22 @@ pub fn render_sidebar(
 ) -> AnyElement {
     let query = shell.search_query.value.trim().to_ascii_lowercase();
     let search_focus = shell.search_focus.clone();
-    let mut project_dirs: Vec<&LocalDir> = shell
+    let projects = shell
         .workspace
-        .sessions
-        .local_dirs
-        .values()
-        .filter(|dir| local_dir_matches_query(dir, &query))
-        .collect();
-    // 活跃目录优先，其余按「最近打开」顺序（未被记录的排在最后）。
-    project_dirs.sort_by_key(|dir| project_dir_sort_key(shell, dir));
-    let mut project_name_counts = BTreeMap::new();
-    for dir in shell.workspace.sessions.local_dirs.values() {
-        *project_name_counts
-            .entry(local_dir_name_key(&dir.project_dir))
+        .snapshot
+        .projects
+        .iter()
+        .filter(|project| project_matches_query(project, &query))
+        .collect::<Vec<_>>();
+    let mut name_counts = BTreeMap::new();
+    for project in &shell.workspace.snapshot.projects {
+        *name_counts
+            .entry(project_display_name(project).to_ascii_lowercase())
             .or_insert(0usize) += 1;
     }
-    let project_query = matches!(
-        query.as_str(),
-        "local" | "project" | "projects" | "本地" | "项目"
-    );
-    let show_projects = query.is_empty() || project_query || !project_dirs.is_empty();
 
     let mut project_list = div().id("project-list").flex().flex_col().gap_1();
-    if project_dirs.is_empty() {
+    if projects.is_empty() {
         project_list = project_list.child(
             Hint::new(i18n::text("sidebar.no_projects"))
                 .padding_x(px(8.))
@@ -62,19 +59,11 @@ pub fn render_sidebar(
                 .radius(px(theme::RADIUS_SM)),
         );
     } else {
-        for (idx, dir) in project_dirs.iter().enumerate() {
-            let selected = is_active_local_dir(shell, dir);
-            let duplicate_name = project_name_counts
-                .get(&local_dir_name_key(&dir.project_dir))
+        for project in &projects {
+            let duplicate = name_counts
+                .get(&project_display_name(project).to_ascii_lowercase())
                 .is_some_and(|count| *count > 1);
-            project_list = project_list.child(render_local_dir(
-                idx,
-                dir,
-                selected,
-                duplicate_name,
-                shell,
-                cx,
-            ));
+            project_list = project_list.child(render_project_row(project, duplicate, shell, cx));
         }
     }
 
@@ -87,9 +76,7 @@ pub fn render_sidebar(
         .gap_3()
         .px_3()
         .py_3();
-    if show_projects {
-        list = list.child(project_list);
-    }
+    list = list.child(project_list);
 
     let footer = div()
         .flex_shrink_0()
@@ -176,12 +163,12 @@ pub fn render_sidebar(
     .into_any_element()
 }
 
-/// 收起主机栏时保留活跃项目与连接主机，便于直接切换工作目标。
+/// 收起主机栏时保留活跃项目，便于直接切换工作目标。
 pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyElement {
-    let mut project_name_counts = BTreeMap::new();
-    for dir in shell.workspace.sessions.local_dirs.values() {
-        *project_name_counts
-            .entry(local_dir_name_key(&dir.project_dir))
+    let mut name_counts = BTreeMap::new();
+    for project in &shell.workspace.snapshot.projects {
+        *name_counts
+            .entry(project_display_name(project).to_ascii_lowercase())
             .or_insert(0usize) += 1;
     }
     let mut activity = div()
@@ -194,51 +181,38 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
         .items_center()
         .gap_1()
         .overflow_y_scroll();
-    // 与展开侧栏同序：活跃优先、其余按「最近打开」，避免开关侧栏时顺序跳变。
-    let mut rail_dirs: Vec<&LocalDir> = shell
-        .workspace
-        .sessions
-        .local_dirs
-        .values()
-        .filter(|dir| !dir.sessions.is_empty())
-        .collect();
-    rail_dirs.sort_by_key(|dir| project_dir_sort_key(shell, dir));
-    for dir in rail_dirs {
-        let project_dir = dir.project_dir.clone();
-        let label = local_dir_name(&project_dir);
-        let duplicate = project_name_counts
-            .get(&local_dir_name_key(&project_dir))
+    for project in &shell.workspace.snapshot.projects {
+        let root = project.root.clone();
+        let label = project_display_name(project);
+        let duplicate = name_counts
+            .get(&label.to_ascii_lowercase())
             .copied()
             .unwrap_or(0)
             > 1;
         let avatar_source = if duplicate {
-            local_dir_label(&project_dir, true)
+            project_label(project, true)
         } else {
-            label.clone()
+            label
         };
-        let project_id = project_dir.to_string_lossy().to_string();
-        let tooltip_label = local_dir_label(&project_dir, duplicate);
-        let tooltip = SharedString::from(format!("{tooltip_label} — {project_id}"));
+        let project_id = project.id;
+        let tooltip = SharedString::from(format!(
+            "{} — {}",
+            project_label(project, duplicate),
+            root.display()
+        ));
         let avatar = Avatar::new(&avatar_source).kind(AvatarKind::Project);
-        let selected = is_active_local_dir(shell, dir);
+        let selected = shell.workspace.snapshot.active_project == Some(project_id);
         activity = activity.child(rail_avatar(
-            SharedString::from(format!("sidebar-rail-project-{project_id}")),
+            SharedString::from(format!("sidebar-rail-project-{}", project_id.0)),
             avatar,
             tooltip,
             selected,
             cx.listener(move |this, _ev, _window, cx| {
-                this.activate_local_dir(project_dir.clone(), cx);
+                this.open_project_entry(project_id, cx);
             }),
         ));
     }
-    let add_entries = rail_add_menu_entries(
-        shell
-            .workspace_settings
-            .recent_dirs
-            .iter()
-            .filter(|path| shell.workspace.sessions.local_dirs.contains_key(*path))
-            .map(std::path::PathBuf::as_path),
-    );
+    let add_entries = rail_add_menu_entries(&shell.workspace.snapshot.projects);
 
     Rail::left("sidebar-rail", theme::SIDEBAR_RAIL_WIDTH)
         .bg(theme::sidebar())
@@ -294,172 +268,139 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
         .into_any_element()
 }
 
-fn rail_add_menu_entries<'a>(
-    recent_dirs: impl IntoIterator<Item = &'a Path>,
-) -> Vec<MenuEntry<ShellMenuAction>> {
-    let recent_dirs = recent_dirs.into_iter().collect::<Vec<_>>();
-    let mut entries = vec![MenuEntry::SectionHeader(i18n::text(
-        "rail_add.open_project",
-    ))];
-    entries.push(MenuEntry::Item(MenuItem {
-        id: "rail-open-local-project".into(),
-        label: i18n::text("rail_add.open_local_project"),
-        shortcut_hint: Some("⌘O".into()),
-        disabled: false,
-        danger: false,
-        action: ShellMenuAction::ChooseLocalProject,
-    }));
-    if !recent_dirs.is_empty() {
-        entries.extend([
-            MenuEntry::Separator,
-            MenuEntry::SectionHeader(i18n::text("empty_state.recent_projects")),
-        ]);
-    }
-    entries.extend(recent_dirs.into_iter().enumerate().map(|(index, path)| {
+fn rail_add_menu_entries(projects: &[ProjectSnapshot]) -> Vec<MenuEntry<ShellMenuAction>> {
+    let mut entries = vec![
+        MenuEntry::SectionHeader(i18n::text("rail_add.open_project")),
         MenuEntry::Item(MenuItem {
-            id: format!("rail-open-project-{index}"),
-            label: local_dir_name(path),
-            shortcut_hint: None,
+            id: "rail-open-local-project".into(),
+            label: i18n::text("rail_add.open_local_project"),
+            shortcut_hint: Some("⌘O".into()),
             disabled: false,
             danger: false,
-            action: ShellMenuAction::ActivateLocalProject(path.to_path_buf()),
-        })
-    }));
+            action: ShellMenuAction::ChooseLocalProject,
+        }),
+    ];
+    if !projects.is_empty() {
+        entries.push(MenuEntry::Separator);
+        entries.push(MenuEntry::SectionHeader(i18n::text(
+            "empty_state.recent_projects",
+        )));
+        entries.extend(projects.iter().map(|project| {
+            MenuEntry::Item(MenuItem {
+                id: format!("rail-open-project-{}", project.id.0),
+                label: project_display_name(project),
+                shortcut_hint: None,
+                disabled: false,
+                danger: false,
+                action: ShellMenuAction::ActivateProject(project.id.0),
+            })
+        }));
+    }
     entries
 }
 
-fn local_dir_name(path: &Path) -> String {
-    path_display_name(path)
+fn project_display_name(project: &ProjectSnapshot) -> String {
+    project
+        .name
+        .clone()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| path_display_name(&project.root))
 }
 
-fn local_dir_name_key(path: &Path) -> String {
-    local_dir_name(path).to_ascii_lowercase()
-}
-
-/// 展开侧栏与收起 rail 的统一排序键：有会话者优先，其余按「最近打开」，
-/// 未被记录的排最后。同键时保持 `BTreeMap` 路径序（`sort_by_key` 稳定）。
-fn project_dir_sort_key(shell: &AppShell, dir: &LocalDir) -> (bool, usize) {
-    let recency = shell
-        .workspace_settings
-        .recent_dirs
-        .iter()
-        .position(|project_dir| project_dir == &dir.project_dir);
-    (dir.sessions.is_empty(), recency.unwrap_or(usize::MAX))
-}
-
-#[cfg(test)]
-mod rail_add_menu_tests {
-    use super::rail_add_menu_entries;
-    use crossh_ui::context_menu::ShellMenuAction;
-    use crossh_ui_component::context_menu::MenuEntry;
-    use std::path::Path;
-
-    #[test]
-    fn add_menu_matches_empty_state_resource_groups() {
-        let projects = [Path::new("/workspace/alpha"), Path::new("/workspace/beta")];
-        let entries = rail_add_menu_entries(projects);
-
-        assert!(matches!(
-            &entries[4],
-            MenuEntry::Item(item) if item.label == "alpha" && matches!(item.action, ShellMenuAction::ActivateLocalProject(_))
-        ));
-        assert!(matches!(
-            &entries[5],
-            MenuEntry::Item(item) if item.label == "beta" && matches!(item.action, ShellMenuAction::ActivateLocalProject(_))
-        ));
-        assert!(matches!(entries[0], MenuEntry::SectionHeader(_)));
-        assert!(matches!(
-            &entries[1],
-            MenuEntry::Item(item) if matches!(item.action, ShellMenuAction::ChooseLocalProject)
-        ));
-        assert!(matches!(entries[2], MenuEntry::Separator));
-        assert!(matches!(entries[3], MenuEntry::SectionHeader(_)));
-        assert_eq!(entries.len(), 6);
+fn project_label(project: &ProjectSnapshot, duplicate: bool) -> String {
+    if !duplicate {
+        return project_display_name(project);
     }
-
-    #[test]
-    fn add_menu_keeps_all_recent_projects_for_the_scrollable_popover() {
-        let projects = (0..12)
-            .map(|index| std::path::PathBuf::from(format!("/workspace/project-{index}")))
-            .collect::<Vec<_>>();
-        let entries = rail_add_menu_entries(projects.iter().map(std::path::PathBuf::as_path));
-
-        let project_actions = entries
-            .iter()
-            .filter(|entry| {
-                matches!(entry, MenuEntry::Item(item) if matches!(item.action, ShellMenuAction::ActivateLocalProject(_)))
-            })
-            .count();
-        assert_eq!(project_actions, 12);
-    }
-
-    #[test]
-    fn add_menu_has_no_trailing_separator_without_saved_hosts() {
-        let entries = rail_add_menu_entries([Path::new("/workspace/alpha")]);
-
-        assert!(matches!(
-            entries.last(),
-            Some(MenuEntry::Item(item)) if matches!(item.action, ShellMenuAction::ActivateLocalProject(_))
-        ));
-    }
-}
-
-fn local_dir_label(path: &Path, duplicate_name: bool) -> String {
-    let name = local_dir_name(path);
-    if !duplicate_name {
-        return name;
-    }
-
-    path.parent()
+    let parent = project
+        .root
+        .parent()
         .and_then(Path::file_name)
-        .and_then(|parent| parent.to_str())
-        .filter(|parent| !parent.is_empty())
-        .map(|parent| format!("{name} · {parent}"))
-        .unwrap_or(name)
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty());
+    match parent {
+        Some(parent) => format!("{parent}/{}", project_display_name(project)),
+        None => project_display_name(project),
+    }
 }
 
-fn local_dir_matches_query(dir: &LocalDir, query: &str) -> bool {
-    query.is_empty()
-        || matches!(query, "local" | "project" | "projects" | "本地" | "项目")
-        || dir
-            .project_dir
-            .to_string_lossy()
+fn project_matches_query(project: &ProjectSnapshot, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    let root = project.root.to_string_lossy().to_ascii_lowercase();
+    root.contains(query)
+        || project_display_name(project)
             .to_ascii_lowercase()
             .contains(query)
 }
 
-fn is_active_local_dir(shell: &AppShell, dir: &LocalDir) -> bool {
-    matches!(shell.workspace.active_view, Some(ActiveView::LocalSession(session_id)) if dir.sessions.contains(&session_id))
-}
-
-fn local_dir_state(shell: &AppShell, dir: &LocalDir, cx: &Context<AppShell>) -> Option<ConnState> {
-    dir.sessions
+fn project_dot_color(project: &ProjectSnapshot, shell: &AppShell, cx: &gpui::App) -> gpui::Rgba {
+    if !project.available {
+        return theme::danger();
+    }
+    let state = project
+        .tabs
         .iter()
-        .filter_map(|id| shell.workspace.sessions.local_sessions.get(id))
-        .map(|session| session.terminal.state(cx))
-        .reduce(preferred_state)
+        .flat_map(|tab| tab.layout.leaves())
+        .filter_map(|pane| shell.workspace.pane_view(pane.id))
+        .map(|view| view.state(cx))
+        .reduce(preferred_state);
+    conn_state_dot_color(&state)
 }
 
-pub(crate) fn local_dir_stop_button_visible(count: usize) -> bool {
-    count > 0
-}
-
-pub(crate) fn local_dir_forget_button_visible(count: usize) -> bool {
-    count == 0
-}
-
-pub(crate) fn build_local_dir_context_menu_entries(
-    project_dir: std::path::PathBuf,
-    count: usize,
-) -> Vec<MenuEntry<ShellMenuAction>> {
-    let mut entries = vec![
+fn render_project_row(
+    project: &ProjectSnapshot,
+    duplicate: bool,
+    shell: &AppShell,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    let project_id = project.id;
+    let selected = shell.workspace.snapshot.active_project == Some(project_id);
+    let label = project_label(project, duplicate);
+    let detail = project.root.to_string_lossy().into_owned();
+    let cwd = project.root.clone();
+    let menu_entries = vec![
         MenuEntry::Item(MenuItem {
-            id: "open-terminal".into(),
-            label: i18n::text("context_menu.open_local_terminal"),
+            id: "activate-project".into(),
+            label: i18n::text("context_menu.switch"),
+            shortcut_hint: None,
+            disabled: selected,
+            danger: false,
+            action: ShellMenuAction::ActivateProject(project_id.0),
+        }),
+        MenuEntry::Item(MenuItem {
+            id: "new-tab".into(),
+            label: i18n::text("context_menu.new_tab"),
             shortcut_hint: None,
             disabled: false,
             danger: false,
-            action: ShellMenuAction::OpenLocalTerminal(project_dir.clone()),
+            action: ShellMenuAction::CreateTab(project_id.0),
+        }),
+        MenuEntry::Separator,
+        MenuEntry::Item(MenuItem {
+            id: "stop-project".into(),
+            label: i18n::text("context_menu.stop_project"),
+            shortcut_hint: None,
+            disabled: project.tabs.is_empty(),
+            danger: false,
+            action: ShellMenuAction::StopProject(project_id.0),
+        }),
+        MenuEntry::Item(MenuItem {
+            id: "forget-project".into(),
+            label: i18n::text("context_menu.forget_project"),
+            shortcut_hint: None,
+            disabled: false,
+            danger: true,
+            action: ShellMenuAction::ForgetProject(project_id.0),
+        }),
+        MenuEntry::Separator,
+        MenuEntry::Item(MenuItem {
+            id: "copy-path".into(),
+            label: i18n::text("context_menu.copy_path"),
+            shortcut_hint: None,
+            disabled: false,
+            danger: false,
+            action: ShellMenuAction::CopyText(cwd.to_string_lossy().to_string()),
         }),
         MenuEntry::Item(MenuItem {
             id: "reveal-finder".into(),
@@ -467,185 +408,69 @@ pub(crate) fn build_local_dir_context_menu_entries(
             shortcut_hint: None,
             disabled: false,
             danger: false,
-            action: ShellMenuAction::RevealInFinder(project_dir.clone()),
+            action: ShellMenuAction::RevealInFinder(cwd),
         }),
     ];
-    if count == 0 {
-        entries.push(MenuEntry::Separator);
-        entries.push(MenuEntry::Item(MenuItem {
-            id: "forget-dir".into(),
-            label: i18n::text("context_menu.forget_dir"),
-            shortcut_hint: None,
-            disabled: false,
-            danger: false,
-            action: ShellMenuAction::ForgetLocalDir(project_dir.clone()),
-        }));
-    } else {
-        entries.push(MenuEntry::Separator);
-        entries.push(MenuEntry::Item(MenuItem {
-            id: "stop-project".into(),
-            label: i18n::text("context_menu.stop_project"),
-            shortcut_hint: None,
-            disabled: false,
-            danger: false,
-            action: ShellMenuAction::StopLocalProject(project_dir),
-        }));
-    }
-    entries
-}
 
-fn render_local_dir(
-    idx: usize,
-    dir: &LocalDir,
-    selected: bool,
-    duplicate_name: bool,
-    shell: &AppShell,
-    cx: &mut Context<AppShell>,
-) -> AnyElement {
-    let project_dir = dir.project_dir.clone();
-    let project_dir_for_row = project_dir.clone();
-    let project_dir_for_new = project_dir.clone();
-    let project_dir_for_stop = project_dir.clone();
-    let label = local_dir_label(&project_dir, duplicate_name);
-    let tooltip_path = SharedString::from(project_dir.to_string_lossy().to_string());
-    let count = dir.sessions.len();
-    let state = local_dir_state(shell, dir, cx);
-    // tty7：饱和色留给状态点，选中不强制染成强调色，目录图标只反映连接状态。
-    let folder_color = match state {
-        Some(ConnState::Connected) => theme::accent(),
-        Some(ConnState::Connecting) => theme::warning(),
-        Some(ConnState::Error(_)) => theme::danger(),
-        _ => theme::muted_text(),
-    };
-    let mut row = div()
-        .id(("local-group", idx))
+    let dot = div()
+        .w(px(7.))
+        .h(px(7.))
         .flex_shrink_0()
-        .h(px(theme::ROW_HEIGHT))
+        .rounded_full()
+        .bg(project_dot_color(project, shell, cx));
+    let pane_count = projection::project_pane_count(project);
+    let tab_count = project.tabs.len();
+
+    div()
+        .id(("project-row", project_id.0))
+        .w_full()
+        .min_h(px(44.))
         .px_2()
+        .py_1()
         .flex()
         .items_center()
         .gap_2()
         .rounded(px(theme::RADIUS_SM))
-        .text_sm()
         .cursor_pointer()
-        // tty7：侧栏当前行中性 selected 阶 + semibold，不用强调色底/边框。
-        // ponytail: 暂复用 raised 作 selected 阶，后续按 tty7 Surfaces 建完整阶梯。
-        .font_weight(if selected {
-            FontWeight::SEMIBOLD
-        } else {
-            FontWeight::NORMAL
-        });
-    if selected {
-        row = row.bg(theme::raised());
-    }
-    row = row
-        .hover(|s| s.bg(theme::surface()))
+        .when(selected, |row| row.bg(theme::accent_soft()))
+        .hover(|style| style.bg(theme::surface()))
         .tooltip(move |_window, cx| {
-            let path = tooltip_path.clone();
-            cx.new(|_| Tooltip::new(path)).into()
+            cx.new(|_| Tooltip::new(SharedString::from(detail.clone())))
+                .into()
         })
-        .on_click(cx.listener(move |this, _ev, _window, cx| {
-            this.activate_local_dir(project_dir_for_row.clone(), cx);
-        }))
-        .on_mouse_down(MouseButton::Right, {
-            let cwd_menu = project_dir.clone();
-            cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
-                let entries = build_local_dir_context_menu_entries(cwd_menu.clone(), count);
-                this.open_context_menu(ev.position, entries, cx);
-            })
-        })
-        .child(icons::icon(icons::IconName::FolderOpen, 15.).text_color(folder_color))
+        .child(dot)
         .child(
             div()
                 .min_w_0()
                 .flex_1()
-                .truncate()
-                .text_color(theme::text())
-                .child(SharedString::from(label)),
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .truncate()
+                        .text_sm()
+                        .text_color(theme::text())
+                        .child(SharedString::from(label)),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_xs()
+                        .text_color(theme::faint_text())
+                        .child(SharedString::from(format!(
+                            "{} tabs · {} panes",
+                            tab_count, pane_count
+                        ))),
+                ),
         )
-        .child(
-            div()
-                .min_w(px(18.))
-                .text_xs()
-                .text_color(theme::muted_text())
-                .child(SharedString::from(format!("{count}"))),
-        );
-    // 仅有历史记录（无活动会话）的目录提供「从最近记录移除」按钮。
-    if local_dir_stop_button_visible(count) {
-        row = row.child(
-            Button::new(SharedString::from(format!("local-stop-{idx}")))
-                .size(ButtonSize::Icon(px(24.)))
-                .variant(ButtonVariant::Ghost)
-                .icon(icons::icon(icons::IconName::Square, 14.).text_color(theme::muted_text()))
-                .tooltip(i18n::text("tooltip.stop_project"))
-                .on_click(cx.listener(move |this, _ev, window, cx| {
-                    cx.stop_propagation();
-                    this.stop_local_project(project_dir_for_stop.clone(), window, cx);
-                })),
-        );
-    }
-    if local_dir_forget_button_visible(count) {
-        row = row.child(
-            Button::new(("local-forget", idx))
-                .size(ButtonSize::Icon(px(24.)))
-                .variant(ButtonVariant::Ghost)
-                .icon(icons::icon(icons::IconName::X, 14.).text_color(theme::muted_text()))
-                .tooltip(i18n::text("tooltip.forget_dir"))
-                .on_click(cx.listener(move |this, _ev, _window, cx| {
-                    cx.stop_propagation();
-                    this.forget_local_dir(project_dir.clone(), cx);
-                })),
-        );
-    }
-    row.child(
-        Button::new(("local-new", idx))
-            .size(ButtonSize::Icon(px(24.)))
-            .variant(ButtonVariant::Ghost)
-            .icon(icons::icon(icons::IconName::Plus, 14.).text_color(theme::muted_text()))
-            .tooltip(i18n::text("tooltip.new_terminal"))
-            .on_click(cx.listener(move |this, _ev, _window, cx| {
-                cx.stop_propagation();
-                let _ = this.open_local_session(
-                    project_dir_for_new.clone(),
-                    project_dir_for_new.clone(),
-                    cx,
-                );
-            })),
-    )
-    .into_any_element()
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-
-    use super::*;
-
-    #[test]
-    fn project_search_matches_directory_view() {
-        let dir = LocalDir {
-            project_dir: PathBuf::from("/Users/me/projects/crossh"),
-            sessions: vec![1, 2],
-            active_session: Some(1),
-        };
-        assert!(local_dir_matches_query(&dir, ""));
-        assert!(local_dir_matches_query(&dir, "local"));
-        assert!(local_dir_matches_query(&dir, "project"));
-        assert!(local_dir_matches_query(&dir, "projects"));
-        assert!(local_dir_matches_query(&dir, "projects/crossh"));
-        assert!(!local_dir_matches_query(&dir, "unrelated"));
-    }
-
-    #[test]
-    fn project_labels_prefer_directory_name_and_disambiguate_duplicates() {
-        let path = Path::new("/Users/me/Code/crossh");
-        assert_eq!(local_dir_name(path), "crossh");
-        assert_eq!(
-            local_dir_name_key(Path::new("/Users/me/Code/Crossh")),
-            "crossh"
-        );
-        assert_eq!(local_dir_label(path, false), "crossh");
-        assert_eq!(local_dir_label(path, true), "crossh · Code");
-        assert_eq!(local_dir_label(Path::new("/"), true), "/");
-    }
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
+                this.open_context_menu(ev.position, menu_entries.clone(), cx);
+            }),
+        )
+        .on_click(cx.listener(move |this, _ev, _window, cx| {
+            this.open_project_entry(project_id, cx);
+        }))
+        .into_any_element()
 }

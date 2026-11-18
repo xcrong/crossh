@@ -1,11 +1,6 @@
-//! 顶部标签条渲染：远程标签、固定/普通本地会话标签与右键菜单。
+//! 顶部标签条：活跃项目的 tab、状态点、右键菜单与拖拽重排。
 //!
-//! 会话数据与行为在 `shell`/`tabs`，本模块只做视图组装。固定标签
-//! （`LocalSession.pin_id.is_some()`）按持久化记录顺序置顶渲染，普通
-//! 标签只渲染当前目录内未固定的会话（详见 spec 20260818-local-tab-pin-rename）。
-
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+//! 标题、默认命令与 cwd 全部来自快照；本模块只组装视图与菜单动作。
 
 use gpui::{
     AnyElement, AppContext, ClickEvent, Context, ElementId, InteractiveElement, IntoElement,
@@ -13,14 +8,14 @@ use gpui::{
     Window, div, px,
 };
 
-use crate::features::workspace::pinned::pinned_tabs_for_project;
+use crate::features::workspace::projection;
 use crate::features::workspace::shell::AppShell;
 use crate::features::workspace::status::{
     local_tab_dot_color, program_status_dot_color, program_status_progress_suffix,
     program_status_tooltip,
 };
-use crate::features::workspace::view::{ActiveView, LocalSessionId};
 use crossh_core::i18n;
+use crossh_session::workspace::{ProjectId, TabId};
 use crossh_terminal_view::TerminalItem as _;
 use crossh_ui::context_menu::ShellMenuAction;
 use crossh_ui::{icons, theme};
@@ -44,8 +39,7 @@ fn render_tab_chip<M, S, C>(
     on_select: S,
     close_id: impl Into<gpui::ElementId>,
     on_close: C,
-    session_id: LocalSessionId,
-    pinned: bool,
+    tab_id: TabId,
 ) -> AnyElement
 where
     M: Fn(&MouseDownEvent, &mut AppShell, &mut Window, &mut Context<AppShell>) + 'static,
@@ -58,9 +52,9 @@ where
         tab = tab.tooltip(tooltip);
     }
     tab = tab
-        .drag_tab(DragLocalTab::new(session_id, pinned, label))
+        .drag_tab(DragLocalTab::new(tab_id.0, false, label))
         .on_drop_tab(cx.listener(move |this, drag: &DragLocalTab, _window, cx| {
-            this.reorder_local_tab(drag.session_id(), session_id, pinned, cx);
+            this.reorder_tab(TabId(drag.session_id()), tab_id, cx);
         }))
         .label_id(label_id)
         .active(is_active)
@@ -88,12 +82,12 @@ where
     tab.into_any_element()
 }
 
-pub(crate) fn local_session_menu_entries(
-    session_id: LocalSessionId,
+pub(crate) fn tab_menu_entries(
+    tab_id: TabId,
+    project_id: ProjectId,
     is_active: bool,
-    pinned: bool,
     single: bool,
-    cwd: PathBuf,
+    cwd: std::path::PathBuf,
     default_command: Option<String>,
     is_command_running: bool,
 ) -> Vec<MenuEntry<ShellMenuAction>> {
@@ -103,62 +97,51 @@ pub(crate) fn local_session_menu_entries(
         shortcut_hint: None,
         disabled: is_active,
         danger: false,
-        action: ShellMenuAction::SelectLocalSession(session_id),
+        action: ShellMenuAction::ActivateTab(tab_id.0),
     })];
-    if pinned {
-        entries.push(MenuEntry::Item(MenuItem {
-            id: "unpin".into(),
-            label: i18n::text("context_menu.unpin_tab"),
-            shortcut_hint: None,
-            disabled: false,
-            danger: false,
-            action: ShellMenuAction::UnpinLocalSession(session_id),
-        }));
-        entries.push(MenuEntry::Item(MenuItem {
-            id: "rename".into(),
-            label: i18n::text("context_menu.rename_tab"),
-            shortcut_hint: None,
-            disabled: false,
-            danger: false,
-            action: ShellMenuAction::RenameLocalSession(session_id),
-        }));
-        entries.push(MenuEntry::Item(MenuItem {
-            id: "edit-default-command".into(),
-            label: i18n::text("context_menu.edit_default_command"),
-            shortcut_hint: None,
-            disabled: false,
-            danger: false,
-            action: ShellMenuAction::EditDefaultCommand(session_id),
-        }));
-        let has_command = default_command
-            .as_ref()
-            .is_some_and(|cmd| !cmd.trim().is_empty());
-        entries.push(MenuEntry::Item(MenuItem {
-            id: "reload-default-command".into(),
-            label: i18n::text("context_menu.reload_default_command"),
-            shortcut_hint: None,
-            disabled: !has_command || is_command_running,
-            danger: false,
-            action: ShellMenuAction::ReloadDefaultCommand(session_id),
-        }));
-        entries.push(MenuEntry::Item(MenuItem {
-            id: "clear-default-command".into(),
-            label: i18n::text("context_menu.clear_default_command"),
-            shortcut_hint: None,
-            disabled: !has_command,
-            danger: false,
-            action: ShellMenuAction::ClearDefaultCommand(session_id),
-        }));
-    } else {
-        entries.push(MenuEntry::Item(MenuItem {
-            id: "pin".into(),
-            label: i18n::text("context_menu.pin_tab"),
-            shortcut_hint: None,
-            disabled: false,
-            danger: false,
-            action: ShellMenuAction::PinLocalSession(session_id),
-        }));
-    }
+    entries.push(MenuEntry::Item(MenuItem {
+        id: "new-tab".into(),
+        label: i18n::text("context_menu.new_tab"),
+        shortcut_hint: None,
+        disabled: false,
+        danger: false,
+        action: ShellMenuAction::CreateTab(project_id.0),
+    }));
+    entries.push(MenuEntry::Item(MenuItem {
+        id: "rename".into(),
+        label: i18n::text("context_menu.rename_tab"),
+        shortcut_hint: None,
+        disabled: false,
+        danger: false,
+        action: ShellMenuAction::RenameTab(tab_id.0),
+    }));
+    entries.push(MenuEntry::Item(MenuItem {
+        id: "edit-default-command".into(),
+        label: i18n::text("context_menu.edit_default_command"),
+        shortcut_hint: None,
+        disabled: false,
+        danger: false,
+        action: ShellMenuAction::EditDefaultCommand(tab_id.0),
+    }));
+    let has_command = default_command
+        .as_ref()
+        .is_some_and(|cmd| !cmd.trim().is_empty());
+    entries.push(MenuEntry::Item(MenuItem {
+        id: "reload-default-command".into(),
+        label: i18n::text("context_menu.reload_default_command"),
+        shortcut_hint: None,
+        disabled: !has_command || is_command_running,
+        danger: false,
+        action: ShellMenuAction::ReloadDefaultCommand(tab_id.0),
+    }));
+    entries.push(MenuEntry::Item(MenuItem {
+        id: "clear-default-command".into(),
+        label: i18n::text("context_menu.clear_default_command"),
+        shortcut_hint: None,
+        disabled: !has_command,
+        danger: false,
+        action: ShellMenuAction::ClearDefaultCommand(tab_id.0),
+    }));
     entries.extend([
         MenuEntry::Item(MenuItem {
             id: "close".into(),
@@ -166,7 +149,7 @@ pub(crate) fn local_session_menu_entries(
             shortcut_hint: None,
             disabled: false,
             danger: false,
-            action: ShellMenuAction::CloseLocalSession(session_id),
+            action: ShellMenuAction::CloseTab(tab_id.0),
         }),
         MenuEntry::Item(MenuItem {
             id: "close-others".into(),
@@ -174,7 +157,10 @@ pub(crate) fn local_session_menu_entries(
             shortcut_hint: None,
             disabled: single,
             danger: false,
-            action: ShellMenuAction::CloseOtherLocalSessions(session_id),
+            action: ShellMenuAction::CloseOtherTabs {
+                project_id: project_id.0,
+                keep: tab_id.0,
+            },
         }),
         MenuEntry::Separator,
         MenuEntry::Item(MenuItem {
@@ -200,184 +186,78 @@ pub(crate) fn local_session_menu_entries(
 pub(super) fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoElement {
     let mut strip = TabStrip::new("tab-strip").track_scroll(&shell.tab_scroll);
 
-    match shell.workspace.active_view {
-        Some(ActiveView::LocalSession(active_session_id)) => {
-            // 固定会话只在所属项目视图内置顶（契约 1 Rev-1）：按当前
-            // 活动项目过滤持久化记录再映射到会话；当前目录的普通会话
-            // 在其后渲染，已固定的会话不重复出现。
-            let pinned_by_id = shell
-                .workspace
-                .sessions
-                .local_sessions
-                .iter()
-                .filter_map(|(session_id, session)| {
-                    session.pin_id.map(|pin_id| (pin_id, *session_id))
-                })
-                .collect::<BTreeMap<_, _>>();
-            let pinned_ids = shell
-                .local_dir_for_session(active_session_id)
-                .map(|dir| {
-                    pinned_tabs_for_project(
-                        &shell.workspace_settings.pinned_local_tabs,
-                        &dir.project_dir,
-                    )
-                    .iter()
-                    .filter_map(|tab| pinned_by_id.get(&tab.pin_id).copied())
-                    .collect::<Vec<_>>()
-                })
+    if let Some(project) = shell.workspace.active_project() {
+        let project_id = project.id;
+        let single = project.tabs.len() == 1;
+        for (index, tab) in project.tabs.iter().enumerate() {
+            let tab_id = tab.id;
+            let is_active = project.active_tab == Some(tab_id);
+            let view = tab
+                .active_pane
+                .and_then(|pane_id| tab.layout.find_pane(pane_id))
+                .and_then(|pane| shell.workspace.pane_view(pane.id))
+                .or_else(|| {
+                    tab.layout
+                        .leaves()
+                        .find_map(|pane| shell.workspace.pane_view(pane.id))
+                });
+            let state = view.map(|view| view.state(cx));
+            let command_running = view.is_some_and(|view| view.is_command_running(cx));
+            let program_status = view.and_then(|view| view.program_status(cx));
+            let label = projection::tab_title(tab, index);
+            let label = match program_status_progress_suffix(&program_status) {
+                Some(suffix) => format!("{label}{suffix}"),
+                None => label,
+            };
+            let cwd = tab
+                .active_pane
+                .and_then(|pane_id| tab.layout.find_pane(pane_id))
+                .or_else(|| tab.layout.leaves().next())
+                .map(|pane| pane.cwd.clone())
                 .unwrap_or_default();
-            let session_ids = shell
-                .local_dir_for_session(active_session_id)
-                .map(|dir| dir.sessions.clone())
-                .unwrap_or_default();
-
-            for (idx, session_id) in pinned_ids.iter().copied().enumerate() {
-                if shell
-                    .workspace
-                    .is_split_secondary(ActiveView::LocalSession(session_id))
-                {
-                    continue;
-                }
-                let is_active = active_session_id == session_id;
-                let Some(session) = shell.workspace.sessions.local_sessions.get(&session_id) else {
-                    continue;
-                };
-                let state = session.terminal.state(cx);
-                let command_running = session.terminal.is_command_running(cx);
-                let program_status = session.terminal.program_status(cx);
-                let fallback = format!("ses{}", idx + 1);
-                let label = session
-                    .custom_name
-                    .clone()
-                    .unwrap_or_else(|| session.terminal.tab_title(cx, &fallback));
-                let label = match program_status_progress_suffix(&program_status) {
-                    Some(suffix) => format!("{label}{suffix}"),
-                    None => label,
-                };
-                let cwd = session.cwd.clone();
-                let default_command = session.default_command.clone();
-                let has_default_command = default_command.is_some();
-                let single = session_ids.len() == 1;
-                let leading = {
-                    let mut leading =
-                        div().flex().items_center().gap_1().child(
-                            icons::icon(icons::IconName::Pin, 11.).text_color(theme::accent()),
-                        );
-                    if has_default_command {
-                        leading = leading.child(
-                            icons::icon(icons::IconName::Play, 8.).text_color(theme::muted_text()),
-                        );
-                    }
-                    leading.into_any_element()
-                };
-                strip = strip.child(render_tab_chip(
-                    cx,
-                    ("pinned-tab-container", session_id),
-                    // 程序状态点优先于连接/命令运行色
-                    program_status_dot_color(&program_status)
-                        .unwrap_or_else(|| local_tab_dot_color(&Some(state), command_running)),
-                    label,
-                    program_status_tooltip(&program_status),
-                    is_active,
-                    Some(leading),
-                    ("pinned-tab", session_id),
-                    move |ev: &MouseDownEvent, this, _window, cx| {
-                        let entries = local_session_menu_entries(
-                            session_id,
-                            is_active,
-                            true,
-                            single,
-                            cwd.clone(),
-                            default_command.clone(),
-                            command_running,
-                        );
-                        this.open_context_menu(ev.position, entries, cx);
-                    },
-                    move |_ev: &ClickEvent, this, _window, cx| {
-                        this.select_local_session(session_id, cx);
-                    },
-                    ("pinned-tab-close", session_id),
-                    move |_ev: &ClickEvent, this, w, cx| {
-                        this.request_close_local_session(session_id, w, cx);
-                    },
-                    session_id,
-                    true,
-                ));
-            }
-
-            for (idx, session_id) in session_ids.iter().copied().enumerate() {
-                if shell
-                    .workspace
-                    .is_split_secondary(ActiveView::LocalSession(session_id))
-                    || shell
-                        .workspace
-                        .sessions
-                        .local_sessions
-                        .get(&session_id)
-                        .is_some_and(|session| session.pin_id.is_some())
-                {
-                    continue;
-                }
-                let is_active = active_session_id == session_id;
-                let session = shell.workspace.sessions.local_sessions.get(&session_id);
-                let state = session.map(|session| session.terminal.state(cx));
-                let command_running =
-                    session.is_some_and(|session| session.terminal.is_command_running(cx));
-                let program_status =
-                    session.and_then(|session| session.terminal.program_status(cx));
-                let fallback = format!("ses{}", idx + 1);
-                let label = match session {
-                    Some(session) => session.terminal.tab_title(cx, &fallback),
-                    None => fallback,
-                };
-                let label = match program_status_progress_suffix(&program_status) {
-                    Some(suffix) => format!("{label}{suffix}"),
-                    None => label,
-                };
-                let cwd = shell
-                    .workspace
-                    .sessions
-                    .local_sessions
-                    .get(&session_id)
-                    .map(|session| session.cwd.clone())
-                    .unwrap_or_default();
-                let single = session_ids.len() == 1;
-                strip = strip.child(render_tab_chip(
-                    cx,
-                    ("local-tab-container", session_id),
-                    // 程序状态点优先于连接/命令运行色
-                    program_status_dot_color(&program_status)
-                        .unwrap_or_else(|| local_tab_dot_color(&state, command_running)),
-                    label,
-                    program_status_tooltip(&program_status),
-                    is_active,
-                    None,
-                    ("local-tab", session_id),
-                    move |ev: &MouseDownEvent, this, _window, cx| {
-                        let entries = local_session_menu_entries(
-                            session_id,
-                            is_active,
-                            false,
-                            single,
-                            cwd.clone(),
-                            None,
-                            command_running,
-                        );
-                        this.open_context_menu(ev.position, entries, cx);
-                    },
-                    move |_ev: &ClickEvent, this, _window, cx| {
-                        this.select_local_session(session_id, cx);
-                    },
-                    ("local-tab-close", session_id),
-                    move |_ev: &ClickEvent, this, w, cx| {
-                        this.request_close_local_session(session_id, w, cx);
-                    },
-                    session_id,
-                    false,
-                ));
-            }
+            let default_command = tab.default_command.clone();
+            let has_default_command = default_command.is_some();
+            let tooltip = program_status_tooltip(&program_status);
+            let leading = has_default_command.then(|| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(icons::icon(icons::IconName::Play, 8.).text_color(theme::muted_text()))
+                    .into_any_element()
+            });
+            strip = strip.child(render_tab_chip(
+                cx,
+                ("tab-container", tab_id.0),
+                program_status_dot_color(&program_status)
+                    .unwrap_or_else(|| local_tab_dot_color(&state, command_running)),
+                label,
+                tooltip,
+                is_active,
+                leading,
+                ("tab", tab_id.0),
+                move |ev: &MouseDownEvent, this, _window, cx| {
+                    let entries = tab_menu_entries(
+                        tab_id,
+                        project_id,
+                        is_active,
+                        single,
+                        cwd.clone(),
+                        default_command.clone(),
+                        command_running,
+                    );
+                    this.open_context_menu(ev.position, entries, cx);
+                },
+                move |_ev: &ClickEvent, this, _window, cx| {
+                    this.activate_tab(tab_id, cx);
+                },
+                ("tab-close", tab_id.0),
+                move |_ev: &ClickEvent, this, window, cx| {
+                    this.request_close_tab(tab_id, window, cx);
+                },
+                tab_id,
+            ));
         }
-        None => {}
     }
 
     strip.child(
@@ -409,8 +289,8 @@ pub(super) fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> 
                     .text_color(theme::accent())
                     .hover(|s| s.text_color(theme::canvas())),
             )
-            .on_click(cx.listener(|this, _ev, window, cx| {
-                this.new_tab(window, cx);
+            .on_click(cx.listener(|this, _ev, _window, cx| {
+                this.new_tab(cx);
             })),
     )
 }

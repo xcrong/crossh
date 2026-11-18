@@ -148,40 +148,6 @@ impl SettingsWindow {
             languages = languages.child(option);
         }
 
-        let recent_dirs_max = settings.workspace.recent_dirs_max;
-        let recent_dirs_control = div()
-            .flex()
-            .items_center()
-            .gap_1()
-            .child(
-                Stepper::new("settings-recent-dirs")
-                    .value(rust_i18n::t!("settings.dirs", value = recent_dirs_max))
-                    .tooltips(
-                        i18n::text("settings.recent_dirs"),
-                        i18n::text("settings.recent_dirs"),
-                    )
-                    .on_decrease(cx.listener(|this, _ev, _window, cx| {
-                        let max = this
-                            .shell_settings(cx)
-                            .workspace
-                            .recent_dirs_max
-                            .saturating_sub(1);
-                        this.write_to_shell(cx, |shell, cx| shell.set_recent_dirs_max(max, cx));
-                    }))
-                    .on_increase(cx.listener(|this, _ev, _window, cx| {
-                        let max = this.shell_settings(cx).workspace.recent_dirs_max + 1;
-                        this.write_to_shell(cx, |shell, cx| shell.set_recent_dirs_max(max, cx));
-                    })),
-            )
-            .child(settings_icon_button(
-                "settings-recent-dirs-clear",
-                icons::IconName::X,
-                i18n::text("settings.recent_dirs_clear"),
-                cx.listener(|this, _ev, _window, cx| {
-                    this.write_to_shell(cx, |shell, cx| shell.clear_recent_dirs(cx));
-                }),
-            ));
-
         div()
             .id("settings-general")
             .w_full()
@@ -192,12 +158,6 @@ impl SettingsWindow {
                 i18n::text("settings.language"),
                 i18n::text("settings.language_description"),
                 languages.into_any_element(),
-                compact_layout,
-            ))
-            .child(responsive_settings_row(
-                i18n::text("settings.recent_dirs"),
-                i18n::text("settings.recent_dirs_description"),
-                recent_dirs_control.into_any_element(),
                 compact_layout,
             ))
             .child(self.render_editor_settings_rows(settings, cx))

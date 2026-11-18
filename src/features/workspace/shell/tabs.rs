@@ -1,74 +1,21 @@
-//! AppShell terminal tab and session navigation.
+//! AppShell 标签导航与标签级编辑：新建、切换、关闭、重命名与默认命令。
+//!
+//! 布局归 daemon：所有操作翻译成 `WorkspaceOp`，本模块只保存输入弹窗草稿。
 
-use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
-
-use crossh_terminal::ConnState;
 use gpui::{PromptButton, PromptLevel, Window};
 
 use super::*;
-use crate::features::workspace::local_paths::{current_local_cwd, normalize_local_cwd};
 use crate::features::workspace::modal_editor::{DefaultCommandEditor, RenameEditor};
-use crate::features::workspace::pinned::{next_pin_id, pinned_tabs_for_project};
-use crate::features::workspace::settings::PinnedLocalTab;
-use crate::features::workspace::state::move_before;
-
-/// 单个标签页关闭时可能被打断的活动；任何一项存在都需要确认。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct TabCloseRisk {
-    command_running: bool,
-    unsaved_editors: usize,
-}
-
-/// 分栏右窗格会话退出分栏时的去向。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum SplitPaneRetirement {
-    /// 无活动：直接销毁。分栏是当前 Tab 的临时工作区，退出即清理。
-    Close,
-    /// 有活动（命令运行中/传输中/未保存等）：保留为普通标签，不打断用户。
-    KeepAsTab,
-}
-
-/// 决策右窗格会话退出分栏的去向。`None` 表示会话已不存在，统一按关闭
-/// 处理（关闭操作对不存在的会话是安全的空操作）。
-pub(super) fn split_pane_retirement(risk: Option<&TabCloseRisk>) -> SplitPaneRetirement {
-    match risk {
-        Some(risk) if risk.needs_confirmation() => SplitPaneRetirement::KeepAsTab,
-        _ => SplitPaneRetirement::Close,
-    }
-}
-
-impl TabCloseRisk {
-    pub(crate) fn needs_confirmation(&self) -> bool {
-        self.command_running || self.unsaved_editors > 0
-    }
-
-    fn detail(&self) -> String {
-        let mut lines = Vec::new();
-        if self.command_running {
-            lines.push(i18n::text("tab_close.running"));
-        }
-        if self.unsaved_editors > 0 {
-            lines.push(
-                rust_i18n::t!("tab_close.unsaved_editors", count = self.unsaved_editors)
-                    .to_string(),
-            );
-        }
-        lines.push(String::new());
-        lines.push(i18n::text("tab_close.consequence"));
-        lines.join("\n")
-    }
-}
+use crate::features::workspace::projection;
 
 impl AppShell {
     pub(crate) fn handle_new_terminal(
         &mut self,
         _: &crate::NewTerminal,
-        window: &mut Window,
+        _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.new_tab(window, cx);
+        self.new_tab(cx);
     }
 
     pub(crate) fn handle_cycle_next_tab(
@@ -176,167 +123,145 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.request_close_active_tab(window, cx);
-    }
-
-    pub(super) fn switch_tab(&mut self, idx: usize, cx: &mut Context<Self>) {
-        match self.workspace.active_view {
-            Some(ActiveView::LocalSession(_session_id)) => {
-                let ids: Vec<LocalSessionId> = self
-                    .workspace
-                    .sessions
-                    .local_sessions
-                    .keys()
-                    .cloned()
-                    .collect();
-                if idx < ids.len() {
-                    self.select_local_session(ids[idx], cx);
-                }
-            }
-            None => {}
-        }
-    }
-
-    /// 关闭活动标签；有命令运行等风险时先弹确认框。
-    pub(super) fn request_close_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(ActiveView::LocalSession(session_id)) = self.workspace.active_view {
-            self.request_close_local_session(session_id, window, cx);
-        }
-    }
-
-    /// 关闭单个本地会话；存在活动风险时先请求确认。
-    pub(crate) fn request_close_local_session(
-        &mut self,
-        session_id: LocalSessionId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.request_close_local_session_with_keep_pinned(session_id, window, cx, false);
-    }
-
-    pub(crate) fn request_close_local_session_with_keep_pinned(
-        &mut self,
-        session_id: LocalSessionId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-        keep_pinned: bool,
-    ) {
-        // 分栏属主的 Tab 关闭 = 关闭整个 Tab（含所有 secondary）。
-        // 右窗格在标签栏隐藏，点击 Tab X / ⌘W 时用户意图是销毁整个分栏容器，
-        // 不能只关左侧让右侧晋升为新 Tab（否则出现“左侧关闭、右侧占满 tab1”）。
-        // 进程退出等隐式关闭仍走 close_local_session 的晋升路径，这里只拦截显式 Tab 关闭。
-        if let Some(split) = self
-            .workspace
-            .split_of(ActiveView::LocalSession(session_id))
-            && split.has_any_secondary()
-        {
-            if !self
-                .workspace
-                .sessions
-                .local_sessions
-                .contains_key(&session_id)
-            {
-                return;
-            }
-            let mut views = vec![ActiveView::LocalSession(session_id)];
-            views.extend(split.secondary_views());
-            let mut combined = TabCloseRisk::default();
-            for view in &views {
-                if let ActiveView::LocalSession(id) = view
-                    && let Some(risk) = self.local_session_close_risk(*id, cx)
-                {
-                    combined.command_running |= risk.command_running;
-                    combined.unsaved_editors += risk.unsaved_editors;
-                }
-            }
-            if !combined.needs_confirmation() {
-                self.close_split_owner_tab(&views, keep_pinned, cx);
-                return;
-            }
-            self.prompt_close_tab(combined, window, cx, move |this, cx| {
-                this.close_split_owner_tab(&views, keep_pinned, cx);
-            });
-            return;
-        }
-        let Some(risk) = self.local_session_close_risk(session_id, cx) else {
+        let Some(tab_id) = self.workspace.active_tab().map(|tab| tab.id) else {
             return;
         };
-        if !risk.needs_confirmation() {
-            self.close_local_session_internal(session_id, keep_pinned, cx);
+        self.request_close_tab(tab_id, window, cx);
+    }
+
+    /// 新建 tab：活跃项目内交给 daemon 选 cwd；没有项目时把当前目录开成项目。
+    pub(crate) fn new_tab(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.workspace.active_project() else {
+            self.open_project_root(current_local_cwd(), cx);
+            return;
+        };
+        let project_id = project.id;
+        let cwd = self
+            .workspace
+            .focused_pane()
+            .and_then(|pane_id| self.workspace.pane(pane_id))
+            .map(|pane| pane.cwd.clone());
+        self.send_workspace_op(
+            WorkspaceOp::CreateTab {
+                project_id: Some(project_id),
+                title: None,
+                cwd,
+                default_command: None,
+            },
+            cx,
+        );
+    }
+
+    fn should_block_tab_shortcuts(&self) -> bool {
+        self.context_menu.is_some()
+            || self.command_palette.is_some()
+            || self.rename_editor.is_some()
+            || self.default_command_editor.is_some()
+    }
+
+    fn switch_to_index(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.should_block_tab_shortcuts() {
             return;
         }
-        self.prompt_close_tab(risk, window, cx, move |this, cx| {
-            this.close_local_session_internal(session_id, keep_pinned, cx);
+        let tab_id = self
+            .workspace
+            .active_project()
+            .and_then(|project| project.tabs.get(index))
+            .map(|tab| tab.id);
+        if let Some(tab_id) = tab_id {
+            self.activate_tab(tab_id, cx);
+        }
+    }
+
+    fn cycle_guarded(&mut self, direction: isize, cx: &mut Context<Self>) {
+        if self.should_block_tab_shortcuts() {
+            return;
+        }
+        let next = self.workspace.active_project().and_then(|project| {
+            let active = project.active_tab?;
+            let index = projection::tab_index(project, active)?;
+            let len = project.tabs.len();
+            if len == 0 {
+                return None;
+            }
+            let next = (index as isize + direction).rem_euclid(len as isize) as usize;
+            project.tabs.get(next).map(|tab| tab.id)
+        });
+        if let Some(tab_id) = next {
+            self.activate_tab(tab_id, cx);
+        }
+    }
+
+    /// 关闭 tab（连同其下全部 pane）；有命令运行时先确认。
+    pub(crate) fn request_close_tab(
+        &mut self,
+        tab_id: TabId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((_, tab)) = self.workspace.tab(tab_id) else {
+            return;
+        };
+        let running = tab.layout.leaves().any(|pane| {
+            self.workspace
+                .pane_view(pane.id)
+                .is_some_and(|view| view.is_command_running(cx))
+        });
+        if !running {
+            self.send_workspace_op(WorkspaceOp::CloseTab { tab_id }, cx);
+            return;
+        }
+        self.prompt_close_tab(window, cx, move |this, cx| {
+            this.send_workspace_op(WorkspaceOp::CloseTab { tab_id }, cx);
         });
     }
 
-    /// 关闭分栏属主所在的整个 Tab：先拆除分栏再逐个关闭，避免属主关闭晋升 secondary 为新 Tab。
-    fn close_split_owner_tab(
+    /// 关闭单个 pane；有命令运行时先确认。
+    pub(crate) fn request_close_pane(
         &mut self,
-        views: &[ActiveView],
-        keep_pinned: bool,
-        cx: &mut Context<Self>,
-    ) {
-        self.detach_splits_for(views, cx);
-        for view in views {
-            if let ActiveView::LocalSession(id) = view
-                && self.workspace.sessions.local_sessions.contains_key(id)
-            {
-                // detach 后已无分栏，逐个关闭不会触发晋升。
-                self.close_local_session_internal(*id, keep_pinned, cx);
-            }
-        }
-    }
-
-    pub(crate) fn local_session_close_risk(
-        &self,
-        session_id: LocalSessionId,
-        cx: &Context<Self>,
-    ) -> Option<TabCloseRisk> {
-        let session = self.workspace.sessions.local_sessions.get(&session_id)?;
-        Some(TabCloseRisk {
-            command_running: session.terminal.is_command_running(cx),
-            ..TabCloseRisk::default()
-        })
-    }
-
-    /// 一键停止项目：关闭该项目下全部本地会话，但保留 recent/pinned（契约 2）。
-    /// 批量快照 `Vec<LocalSessionId>` 后 `detach_splits_for` 再逐个经
-    /// `request_close_local_session` 风险确认（契约 5），有风险的会话取消后保留。
-    pub(crate) fn stop_local_project(
-        &mut self,
-        project_dir: PathBuf,
+        pane_id: PaneId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(project_dir) = normalize_local_cwd(project_dir) else {
-            return;
-        };
-        let ids: Vec<LocalSessionId> = match self.workspace.sessions.local_dirs.get(&project_dir) {
-            Some(dir) => dir.sessions.clone(),
-            None => return,
-        };
-        if ids.is_empty() {
+        if self.workspace.pane(pane_id).is_none() {
             return;
         }
-        let views: Vec<ActiveView> = ids.iter().copied().map(ActiveView::LocalSession).collect();
-        self.detach_splits_for(&views, cx);
-        for session_id in ids {
-            if !self
-                .workspace
-                .sessions
-                .local_sessions
-                .contains_key(&session_id)
-            {
-                continue;
-            }
-            self.request_close_local_session_with_keep_pinned(session_id, window, cx, true);
+        let running = self
+            .workspace
+            .pane_view(pane_id)
+            .is_some_and(|view| view.is_command_running(cx));
+        if !running {
+            self.send_workspace_op(WorkspaceOp::ClosePane { pane_id }, cx);
+            return;
+        }
+        self.prompt_close_tab(window, cx, move |this, cx| {
+            this.send_workspace_op(WorkspaceOp::ClosePane { pane_id }, cx);
+        });
+    }
+
+    pub(crate) fn close_other_tabs(
+        &mut self,
+        project_id: ProjectId,
+        keep: TabId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(project) = self.workspace.project(project_id) else {
+            return;
+        };
+        let others = project
+            .tabs
+            .iter()
+            .filter(|tab| tab.id != keep)
+            .map(|tab| tab.id)
+            .collect::<Vec<_>>();
+        self.activate_tab(keep, cx);
+        for tab_id in others {
+            self.send_workspace_op(WorkspaceOp::CloseTab { tab_id }, cx);
         }
     }
 
-    pub(super) fn prompt_close_tab(
+    fn prompt_close_tab(
         &mut self,
-        risk: TabCloseRisk,
         window: &mut Window,
         cx: &mut Context<Self>,
         on_confirm: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
@@ -349,10 +274,15 @@ impl AppShell {
             PromptButton::ok(i18n::text("tab_close.confirm")),
             PromptButton::cancel(i18n::text("tab_close.cancel")),
         ];
+        let detail = format!(
+            "{}\n\n{}",
+            i18n::text("tab_close.running"),
+            i18n::text("tab_close.consequence")
+        );
         let answer = window.prompt(
             PromptLevel::Warning,
             &i18n::text("tab_close.title"),
-            Some(&risk.detail()),
+            Some(&detail),
             &answers,
             cx,
         );
@@ -368,293 +298,69 @@ impl AppShell {
         .detach();
     }
 
-    pub(super) fn cycle_tab(&mut self, direction: isize, cx: &mut Context<Self>) {
-        let Some(active) = self.workspace.active_view else {
-            return;
-        };
-        let ActiveView::LocalSession(active_id) = active;
-        let ids: Vec<LocalSessionId> = self
-            .workspace
-            .sessions
-            .local_sessions
-            .keys()
-            .cloned()
-            .collect();
-        if ids.is_empty() {
-            return;
-        }
-        let current_idx = ids.iter().position(|id| *id == active_id).unwrap_or(0);
-        let next_idx = (current_idx as isize + direction).rem_euclid(ids.len() as isize) as usize;
-        self.select_local_session(ids[next_idx], cx);
-    }
-    fn should_block_tab_shortcuts(&self) -> bool {
-        self.context_menu.is_some()
-            || self.command_palette.is_some()
-            || self.rename_editor.is_some()
-            || self.default_command_editor.is_some()
-    }
-    fn switch_to_index(&mut self, idx: usize, cx: &mut Context<Self>) {
-        if self.should_block_tab_shortcuts() {
-            return;
-        }
-        self.switch_tab(idx, cx);
-    }
-
-    fn cycle_guarded(&mut self, direction: isize, cx: &mut Context<Self>) {
-        if self.should_block_tab_shortcuts() {
-            return;
-        }
-        self.cycle_tab(direction, cx);
-    }
-
-    /// 从当前标签复制一个终端标签；没有活动标签时把焦点放到快速连接框。
-    pub(crate) fn new_tab(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(ActiveView::LocalSession(session_id)) = self.workspace.active_view
-            && let Some(session) = self.workspace.sessions.local_sessions.get(&session_id)
-        {
-            let project_dir = session.project_dir.clone();
-            let cwd = session.cwd.clone();
-            let _ = self.open_local_session(project_dir, cwd, cx);
-            return;
-        }
-        let cwd = current_local_cwd();
-        let _ = self.open_local_session(cwd.clone(), cwd, cx);
-    }
-
-    pub(super) fn local_session_cwd(
-        &self,
-        session_id: LocalSessionId,
-        cx: &Context<Self>,
-    ) -> PathBuf {
-        self.workspace
-            .sessions
-            .local_sessions
-            .get(&session_id)
-            .map(|session| {
-                session
-                    .terminal
-                    .read(cx)
-                    .cwd
-                    .as_deref()
-                    .and_then(|cwd| normalize_local_cwd(PathBuf::from(cwd)))
-                    .unwrap_or_else(|| session.cwd.clone())
-            })
-            .unwrap_or_else(current_local_cwd)
-    }
-
-    pub(super) fn local_session_project_dir(&self, session_id: LocalSessionId) -> PathBuf {
-        self.workspace
-            .sessions
-            .local_sessions
-            .get(&session_id)
-            .map(|session| session.project_dir.clone())
-            .unwrap_or_else(current_local_cwd)
-    }
-
-    /// 关闭同一目录下的其他本地会话（保留 `keep`）。
-    pub(super) fn close_other_local_sessions(
+    pub(crate) fn open_rename_tab(
         &mut self,
-        keep: LocalSessionId,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(others) = self.local_dir_for_session(keep).map(|dir| {
-            dir.sessions
-                .iter()
-                .copied()
-                .filter(|id| *id != keep)
-                .collect::<Vec<_>>()
-        }) else {
-            return;
-        };
-        let swept = others
-            .iter()
-            .copied()
-            .map(ActiveView::LocalSession)
-            .collect::<Vec<_>>();
-        self.detach_splits_for(&swept, cx);
-        for session_id in others {
-            self.close_local_session(session_id, cx);
-        }
-        self.select_local_session(keep, cx);
-    }
-
-    pub(crate) fn pin_local_session(&mut self, session_id: LocalSessionId, cx: &mut Context<Self>) {
-        let Some(session) = self.workspace.sessions.local_sessions.get_mut(&session_id) else {
-            return;
-        };
-        if session.pin_id.is_some() {
-            return;
-        }
-        let pin_id = next_pin_id(&self.workspace_settings.pinned_local_tabs);
-        session.pin_id = Some(pin_id);
-        let daemon_session_id = session.daemon_session_id.clone();
-        let project_dir = session.project_dir.clone();
-        self.workspace_settings
-            .pinned_local_tabs
-            .push(PinnedLocalTab {
-                pin_id,
-                project_dir,
-                cwd: self.local_session_cwd(session_id, cx),
-                custom_name: None,
-                default_command: None,
-                daemon_session_id,
-            });
-        self.persist_settings();
-        cx.notify();
-    }
-
-    /// 取消固定：会话保持打开但回到普通标签行为，持久化记录移除。
-    pub(crate) fn unpin_local_session(
-        &mut self,
-        session_id: LocalSessionId,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(session) = self.workspace.sessions.local_sessions.get_mut(&session_id) else {
-            return;
-        };
-        let Some(pin_id) = session.pin_id.take() else {
-            return;
-        };
-        self.workspace_settings
-            .pinned_local_tabs
-            .retain(|tab| tab.pin_id != pin_id);
-        self.persist_settings();
-        cx.notify();
-    }
-
-    /// 拖拽排序：同组内把 `dragged` 移到 `target` 之前；跨组/相同/缺失直接忽略。
-    /// 普通标签顺序即 `LocalDir.sessions`，固定标签顺序即 `pinned_local_tabs`（持久化）。
-    pub(crate) fn reorder_local_tab(
-        &mut self,
-        dragged: LocalSessionId,
-        target: LocalSessionId,
-        pinned: bool,
-        cx: &mut Context<Self>,
-    ) {
-        if dragged == target {
-            return;
-        }
-        let sessions = &self.workspace.sessions.local_sessions;
-        let dragged_pin = sessions.get(&dragged).and_then(|s| s.pin_id);
-        let target_pin = sessions.get(&target).and_then(|s| s.pin_id);
-        if dragged_pin.is_some() != pinned || target_pin.is_some() != pinned {
-            return;
-        }
-        if pinned {
-            let (Some(dragged_pin), Some(target_pin)) = (dragged_pin, target_pin) else {
-                return;
-            };
-            let tabs = &mut self.workspace_settings.pinned_local_tabs;
-            let (Some(from), Some(to)) = (
-                tabs.iter().position(|t| t.pin_id == dragged_pin),
-                tabs.iter().position(|t| t.pin_id == target_pin),
-            ) else {
-                return;
-            };
-            move_before(tabs, from, to);
-            self.persist_settings();
-        } else {
-            let Some(dir_key) = self
-                .workspace
-                .sessions
-                .local_dirs
-                .iter()
-                .find_map(|(key, dir)| dir.sessions.contains(&target).then(|| key.clone()))
-            else {
-                return;
-            };
-            let Some(dir) = self.workspace.sessions.local_dirs.get_mut(&dir_key) else {
-                return;
-            };
-            let (Some(from), Some(to)) = (
-                dir.sessions.iter().position(|id| *id == dragged),
-                dir.sessions.iter().position(|id| *id == target),
-            ) else {
-                return;
-            };
-            move_before(&mut dir.sessions, from, to);
-        }
-        cx.notify();
-    }
-
-    /// 打开固定标签的重命名弹窗（初始值取当前自定义名称；空白表示回退默认标题）。
-    pub(crate) fn open_rename_local_session(
-        &mut self,
-        session_id: LocalSessionId,
+        tab_id: TabId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) else {
+        let Some((_, tab)) = self.workspace.tab(tab_id) else {
             return;
         };
+        let index = self
+            .workspace
+            .snapshot
+            .projects
+            .iter()
+            .flat_map(|project| &project.tabs)
+            .position(|candidate| candidate.id == tab_id)
+            .unwrap_or(0);
         let focus = cx.focus_handle();
-        self.command_palette = None;
         self.rename_editor = Some(RenameEditor::new(
-            session_id,
-            session.custom_name.clone().unwrap_or_default(),
+            tab_id,
+            projection::tab_title(tab, index),
             focus.clone(),
         ));
         window.focus(&focus, cx);
         cx.notify();
     }
 
-    /// 提交重命名：空白清除名称（契约 4），否则覆盖并持久化到固定记录。
-    pub(crate) fn submit_rename_local_session(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn submit_rename_tab(&mut self, cx: &mut Context<Self>) {
         let Some(editor) = self.rename_editor.take() else {
             return;
         };
-        let name = editor.state.value.clone();
-        let Some(session) = self
-            .workspace
-            .sessions
-            .local_sessions
-            .get_mut(&editor.session_id)
-        else {
-            // 弹窗期间会话已关闭：静默忽略，不写持久化。
-            cx.notify();
-            return;
-        };
-        let custom_name = (!name.trim().is_empty()).then(|| name.trim().to_string());
-        session.custom_name = custom_name.clone();
-        if let Some(pin_id) = session.pin_id
-            && let Some(tab) = self
-                .workspace_settings
-                .pinned_local_tabs
-                .iter_mut()
-                .find(|tab| tab.pin_id == pin_id)
-        {
-            tab.custom_name = custom_name;
-            self.persist_settings();
-        }
+        let title = editor.state.value.trim();
+        self.send_workspace_op(
+            WorkspaceOp::RenameTab {
+                tab_id: editor.tab_id,
+                title: (!title.is_empty()).then(|| title.to_string()),
+            },
+            cx,
+        );
+        self.refocus_active_terminal(cx);
         cx.notify();
     }
 
-    pub(crate) fn cancel_rename_local_session(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn cancel_rename_tab(&mut self, cx: &mut Context<Self>) {
         if self.rename_editor.take().is_some() {
+            self.refocus_active_terminal(cx);
             cx.notify();
         }
     }
 
-    /// 打开默认命令编辑弹窗（初始值取当前 default_command；空白表示清除）。
-    /// 与其他模态互斥。
     pub(crate) fn open_default_command_editor(
         &mut self,
-        session_id: LocalSessionId,
+        tab_id: TabId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) else {
+        let Some((_, tab)) = self.workspace.tab(tab_id) else {
             return;
         };
-        if session.pin_id.is_none() {
-            return;
-        }
         let focus = cx.focus_handle();
-        self.command_palette = None;
-        self.rename_editor = None;
         self.default_command_editor = Some(DefaultCommandEditor::new(
-            session_id,
-            session.default_command.clone().unwrap_or_default(),
+            tab_id,
+            tab.default_command.clone().unwrap_or_default(),
             focus.clone(),
         ));
         window.focus(&focus, cx);
@@ -665,396 +371,90 @@ impl AppShell {
         let Some(editor) = self.default_command_editor.take() else {
             return;
         };
-        let raw = editor.state.value.clone();
-        let trimmed = raw.trim().to_string();
-        let new_command = if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed)
-        };
-        let Some(session) = self
-            .workspace
-            .sessions
-            .local_sessions
-            .get_mut(&editor.session_id)
-        else {
-            cx.notify();
-            return;
-        };
-        session.default_command = new_command.clone();
-        if let Some(pin_id) = session.pin_id
-            && let Some(tab) = self
-                .workspace_settings
-                .pinned_local_tabs
-                .iter_mut()
-                .find(|tab| tab.pin_id == pin_id)
-        {
-            tab.default_command = new_command;
-            // normalized 会在 persist 前 trim+空白归一，但此处已处理
-            self.persist_settings();
-        }
+        let command = editor.state.value.trim();
+        self.set_tab_command(
+            editor.tab_id,
+            (!command.is_empty()).then(|| command.to_string()),
+            cx,
+        );
+        self.refocus_active_terminal(cx);
         cx.notify();
     }
 
     pub(crate) fn cancel_default_command(&mut self, cx: &mut Context<Self>) {
         if self.default_command_editor.take().is_some() {
+            self.refocus_active_terminal(cx);
             cx.notify();
         }
     }
 
-    /// 重载默认命令到终端；空闲时才执行（契约 5/6）。
-    pub(crate) fn reload_default_command(
+    pub(crate) fn set_tab_command(
         &mut self,
-        session_id: LocalSessionId,
+        tab_id: TabId,
+        command: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) else {
+        self.send_workspace_op(WorkspaceOp::SetTabCommand { tab_id, command }, cx);
+    }
+
+    /// 把已保存的默认命令立即送进该 tab 的终端；只在该 pane 空闲时执行。
+    pub(crate) fn reload_default_command(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
+        let Some((_, tab)) = self.workspace.tab(tab_id) else {
             return;
         };
-        let Some(cmd) = session.default_command.clone() else {
+        let Some(command) = tab
+            .default_command
+            .clone()
+            .filter(|command| !command.trim().is_empty())
+        else {
             return;
         };
-        if cmd.trim().is_empty() {
-            return;
-        }
-        if session.pin_id.is_none() {
-            return;
-        }
-        if session.terminal.is_command_running(cx) {
-            return;
-        }
-        session.terminal.run_command(&cmd, cx);
-        cx.notify();
-    }
-
-    pub(crate) fn clear_default_command(
-        &mut self,
-        session_id: LocalSessionId,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(session) = self.workspace.sessions.local_sessions.get_mut(&session_id) else {
-            return;
-        };
-        if session.pin_id.is_none() {
-            return;
-        }
-        if session.default_command.is_none() {
-            return;
-        }
-        session.default_command = None;
-        if let Some(pin_id) = session.pin_id
-            && let Some(tab) = self
-                .workspace_settings
-                .pinned_local_tabs
-                .iter_mut()
-                .find(|tab| tab.pin_id == pin_id)
-        {
-            tab.default_command = None;
-            self.persist_settings();
-        }
-        cx.notify();
-    }
-
-    /// 按固定记录顺序重开会话（契约 11 恢复路径）：把 `pin_id` 与自定义
-    /// 名称应用到**本次恢复创建的新会话**（显式会话 id），目录已失效的
-    /// 记录跳过并即时从持久化设置清理（契约 11 Rev-4）。
-    pub(super) fn restore_pinned_local_tabs(
-        &mut self,
-        tabs: Vec<PinnedLocalTab>,
-        cx: &mut Context<Self>,
-    ) {
-        let mut removed_stale = false;
-        for tab in tabs {
-            let pin_id = tab.pin_id;
-            let custom_name = tab.custom_name.clone();
-            let default_command = tab.default_command.clone();
-            // 有 daemon 会话 id 即按 id 接入（daemon 存活时回到同一会话）；
-            // id 缺失或 daemon 已重启时接入失败走终端 Error 状态，不静默新建。
-            let Some(session_id) = self.open_local_session_with_attach(
-                tab.project_dir.clone(),
-                tab.cwd.clone(),
-                tab.daemon_session_id.clone(),
-                cx,
-            ) else {
-                // 记录目录已失效（删除/改名/不可访问）：跳过恢复并即时
-                // 清理，等价契约 8 的关闭清理，不等待下次启动。
-                self.workspace_settings
-                    .pinned_local_tabs
-                    .retain(|entry| entry.pin_id != pin_id);
-                removed_stale = true;
-                continue;
-            };
-            self.apply_pin_to_session(session_id, pin_id, custom_name, default_command.clone(), cx);
-            // 自动执行默认命令（契约 4）：恢复后若配置了 default_command，延迟到终端 Connected 再执行
-            // daemon 接入完成前（Connecting）立即 send_input 会丢失，需等待 SessionAttached 后再投递。
-            if let Some(cmd) = default_command
-                && !cmd.trim().is_empty()
-            {
-                let cmd = cmd.trim().to_string();
-                if let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) {
-                    let terminal = session.terminal.clone();
-                    cx.spawn(async move |weak, cx| {
-                        // 最多等待 4s，轮询终端是否已 Connected 且空闲
-                        for _ in 0..40 {
-                            cx.background_executor()
-                                .timer(Duration::from_millis(100))
-                                .await;
-                            let ready = weak
-                                .update(cx, |this, cx| {
-                                    this.workspace
-                                        .sessions
-                                        .local_sessions
-                                        .get(&session_id)
-                                        .is_some_and(|s| {
-                                            s.terminal.entity_id() == terminal.entity_id()
-                                                && s.terminal.state(cx) == ConnState::Connected
-                                                && !s.terminal.is_command_running(cx)
-                                        })
-                                })
-                                .unwrap_or(false);
-                            if ready {
-                                let _ = weak.update(cx, |this, cx| {
-                                    if let Some(s) =
-                                        this.workspace.sessions.local_sessions.get(&session_id)
-                                    {
-                                        s.terminal.run_command(&cmd, cx);
-                                    }
-                                });
-                                break;
-                            }
-                        }
-                    })
-                    .detach();
-                }
-            }
-        }
-        if removed_stale {
-            self.persist_settings();
-        }
-    }
-
-    /// 激活项目时恢复该项目尚无会话的固定记录（契约 11）。
-    /// 幂等：已有对应 `pin_id` 会话的记录（用户手动固定或先前已恢复）
-    /// 不重复打开，也不改写既有会话内容。
-    pub(super) fn restore_pinned_tabs_for_project(
-        &mut self,
-        project_dir: &Path,
-        cx: &mut Context<Self>,
-    ) {
-        let open_pin_ids = self
-            .workspace
-            .sessions
-            .local_sessions
-            .values()
-            .filter_map(|session| session.pin_id)
-            .collect::<BTreeSet<_>>();
-        let pending =
-            pinned_tabs_for_project(&self.workspace_settings.pinned_local_tabs, project_dir)
-                .into_iter()
-                .filter(|tab| !open_pin_ids.contains(&tab.pin_id))
-                .cloned()
-                .collect::<Vec<_>>();
-        self.restore_pinned_local_tabs(pending, cx);
-    }
-    /// 认领孤儿会话：daemon 里活着、无输入者、且未被任何标签/pin 认领的
-    /// 会话，按原 cwd 接回。`project_filter` 为 `Some` 时只收本项目子树
-    /// （项目切换），`None` 时全收、各按会话自身 cwd 建项目（窗口打开时
-    /// 兜底）。幂等：已认领或 pin 覆盖的不再打开。
-    pub(super) fn adopt_orphan_daemon_sessions(
-        &mut self,
-        project_filter: Option<PathBuf>,
-        cx: &mut Context<Self>,
-    ) {
-        let bound = self
-            .workspace
-            .sessions
-            .local_sessions
-            .values()
-            .filter_map(|session| session.daemon_session_id.clone())
-            .collect::<BTreeSet<_>>();
-        let pinned = self
-            .workspace_settings
-            .pinned_local_tabs
-            .iter()
-            .filter_map(|tab| tab.daemon_session_id.clone())
-            .collect::<BTreeSet<_>>();
-        cx.spawn(async move |this, cx| {
-            // 网络段放 background：主线程只做呈现。
-            let listed = cx
-                .background_executor()
-                .spawn(async {
-                    let addr = crossh_session::instance::read_daemon_addr()?;
-                    crate::app::bootstrap::runtime().block_on(async {
-                        let mut client = crossh_session::Client::connect_to(&addr).await.ok()?;
-                        client.list().await.ok()
-                    })
-                })
-                .await;
-            let Some(sessions) = listed else { return };
-            this.update(cx, |this, cx| {
-                for session in sessions {
-                    if !session.alive || session.controller.is_some() {
-                        continue;
-                    }
-                    if bound.contains(&session.id) || pinned.contains(&session.id) {
-                        continue;
-                    }
-                    let Some(cwd) = session
-                        .cwd
-                        .clone()
-                        .map(PathBuf::from)
-                        .and_then(normalize_local_cwd)
-                    else {
-                        continue;
-                    };
-                    let project_dir = match &project_filter {
-                        Some(dir) => {
-                            if cwd != *dir && !cwd.starts_with(dir) {
-                                continue;
-                            }
-                            dir.clone()
-                        }
-                        None => cwd.clone(),
-                    };
-                    log::info!("adopting orphan daemon session {}", session.id);
-                    this.open_local_session_with_attach(
-                        project_dir,
-                        cwd,
-                        Some(session.id.clone()),
-                        cx,
-                    );
-                }
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// 把固定记录的状态应用到指定的本地会话（恢复路径专用；会话创建由
-    /// `open_local_session` 完成）。以显式 `session_id` 为目标，不依赖
-    /// 「当前活动会话」，避免失效记录污染其他会话（契约 11 Rev-4）。
-    pub(super) fn apply_pin_to_session(
-        &mut self,
-        session_id: LocalSessionId,
-        pin_id: u64,
-        custom_name: Option<String>,
-        default_command: Option<String>,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(session) = self.workspace.sessions.local_sessions.get_mut(&session_id) {
-            session.pin_id = Some(pin_id);
-            session.custom_name = custom_name;
-            // default_command 已做 trim/空白归一
-            session.default_command = default_command
-                .map(|c| c.trim().to_string())
-                .filter(|c| !c.is_empty());
-            cx.notify();
-        }
-    }
-
-    pub(super) fn first_local_view(&self) -> Option<ActiveView> {
-        self.workspace
-            .sessions
-            .local_dirs
-            .values()
-            .find_map(|dir| dir.active_session.map(ActiveView::LocalSession))
-    }
-
-    /// 把焦点交还给当前活动终端 tab（切换 tab / 关闭模态后调用）。
-    ///
-    /// 状态栏只渲染 `focused_view()` 的 git 段，而后台轮询也只轮询这一个
-    /// 会话；焦点换人时若不补刷，切过去看到的就是上一轮缓存的陈旧状态，
-    /// 必须等下一个 `GIT_STATUS_REFRESH_INTERVAL` 才追平。
-    pub(crate) fn refocus_active_terminal(&mut self, cx: &mut Context<Self>) {
-        let session_id = self
-            .workspace
-            .active_view
-            .map(|view| match view {
-                ActiveView::LocalSession(session_id) => session_id,
+        let pane_id = tab
+            .active_pane
+            .filter(|pane_id| {
+                tab.layout
+                    .find_pane(*pane_id)
+                    .is_some_and(|pane| pane.session.is_some())
             })
             .or_else(|| {
-                self.workspace
-                    .sessions
-                    .local_sessions
-                    .keys()
-                    .next()
-                    .copied()
+                tab.layout
+                    .leaves()
+                    .find(|pane| pane.session.is_some())
+                    .map(|pane| pane.id)
             });
-        if let Some(session_id) = session_id
-            && let Some(session) = self.workspace.sessions.local_sessions.get_mut(&session_id)
-        {
-            session.terminal.request_focus(cx);
-        }
-        self.refresh_focused_git_status(cx);
-    }
-
-    /// 立刻补一次状态栏聚焦会话的 git 状态，让切焦点后无需等待下一个轮询 tick。
-    ///
-    /// `GitStatusRefresh` 会把在途期间的并发请求合并成一次后续检查，因此「焦点
-    /// 跟随鼠标」下快速划过多个窗格也最多只多跑一次 `git status`。
-    fn refresh_focused_git_status(&mut self, cx: &mut Context<Self>) {
-        if let Some(ActiveView::LocalSession(session_id)) = self.workspace.focused_view() {
-            self.refresh_git_status(session_id, false, cx);
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crossh_core::i18n;
-
-    use super::{SplitPaneRetirement, TabCloseRisk, split_pane_retirement};
-
-    #[test]
-    fn close_confirmation_is_only_required_for_material_activity() {
-        assert!(!TabCloseRisk::default().needs_confirmation());
-
-        for risk in [
-            TabCloseRisk {
-                command_running: true,
-                ..Default::default()
-            },
-            TabCloseRisk {
-                unsaved_editors: 1,
-                ..Default::default()
-            },
-        ] {
-            assert!(risk.needs_confirmation());
-        }
-    }
-
-    #[test]
-    fn close_risk_detail_describes_what_will_be_interrupted() {
-        let detail = TabCloseRisk {
-            command_running: true,
-            unsaved_editors: 1,
-        }
-        .detail();
-        assert!(detail.contains(&i18n::text("tab_close.consequence")));
-        assert!(detail.contains(&i18n::text("tab_close.running")));
-    }
-
-    #[test]
-    fn split_pane_retirement_destroys_idle_panes_and_keeps_busy_ones() {
-        assert_eq!(split_pane_retirement(None), SplitPaneRetirement::Close);
-        assert_eq!(
-            split_pane_retirement(Some(&TabCloseRisk::default())),
-            SplitPaneRetirement::Close
-        );
-        for risky in [
-            TabCloseRisk {
-                command_running: true,
-                ..Default::default()
-            },
-            TabCloseRisk {
-                unsaved_editors: 1,
-                ..Default::default()
-            },
-        ] {
-            assert_eq!(
-                split_pane_retirement(Some(&risky)),
-                SplitPaneRetirement::KeepAsTab
+        let Some(pane_id) = pane_id else {
+            self.show_toast(
+                ToastNotice::new(i18n::text("workspace.pane_not_ready"), ToastTone::Info),
+                cx,
             );
+            return;
+        };
+        let Some(view) = self.workspace.pane_view(pane_id).cloned() else {
+            return;
+        };
+        if view.is_command_running(cx) {
+            return;
         }
+        self.workspace.default_command_runs.insert(tab_id);
+        view.run_command(&command, cx);
+    }
+
+    /// tab 重排：落到目标 tab 之前；同项目内由 daemon 保证顺序。
+    pub(crate) fn reorder_tab(&mut self, dragged: TabId, target: TabId, cx: &mut Context<Self>) {
+        if dragged == target {
+            return;
+        }
+        let Some((project, _)) = self.workspace.tab(target) else {
+            return;
+        };
+        let project_id = project.id;
+        self.send_workspace_op(
+            WorkspaceOp::ReorderTabs {
+                project_id,
+                tab_id: dragged,
+                before_tab_id: Some(target),
+            },
+            cx,
+        );
     }
 }

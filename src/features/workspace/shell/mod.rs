@@ -1,39 +1,31 @@
-//! 应用外壳：左侧主机列表 + 顶部标签条 + 终端工作区 + 模态弹窗。
+//! 应用外壳：项目侧栏 + tab 条 + daemon 工作区 + 终端视图。
 //!
-//! - 连接池：同主机复用一条已认证会话（开新终端 channel），全部终端关闭才断开。
-//! - 多标签：侧栏点击主机优先切换已有终端，显式新建时才追加标签；可切换/关闭。
-//! - sidebar：Local 为主视图，Active/Bank 已按需求隐藏（导航数据仍保留，仅作过滤/直达用），见 sidebar.rs:188
-//! - 模态：池中任一连接出现 pending_prompt（未知主机密钥/凭据）时弹覆盖层。
-//!
-//! 渲染与交互拆分为兄弟模块：`sidebar`（侧栏）、`workspace`（标签条+主区）、
-//! `settings`（设置页）、`prompt`（模态弹窗）。本模块只保留状态与行为。
+//! 布局归 daemon 所有：外壳只读快照、把用户操作翻译成 `WorkspaceOp`，
+//! 并按 `PaneId` 持有终端视图。渲染与连接的拆分见兄弟模块。
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext, Context, Entity, EntityId, FocusHandle, InteractiveElement, IntoElement,
-    KeyBinding, KeyDownEvent, ParentElement, PathPromptOptions, Pixels, Point, Render, Styled,
-    Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, px,
-    size,
+    App, AppContext, Context, Entity, FocusHandle, InteractiveElement, IntoElement, KeyBinding,
+    KeyDownEvent, ParentElement, PathPromptOptions, Pixels, Point, Render, Styled, Subscription,
+    Task, TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, px, size,
 };
 
 use crate::features::settings::{self, SettingsSnapshot};
 use crate::features::updates::{UpdateController, UpdateNotice, UpdateSettings};
 use crate::features::workspace::command_palette::CommandPaletteState;
 use crate::features::workspace::modal_editor::{DefaultCommandEditor, RenameEditor};
-use crate::features::workspace::pinned::{pinned_tabs_for_project, prune_missing_pinned_tabs};
 use crate::features::workspace::registry::WorkspaceState;
 use crate::features::workspace::settings::WorkspaceSettings;
 use crate::features::workspace::sidebar::{render_sidebar, render_sidebar_rail};
-use crate::features::workspace::state::rebuild_local_dirs;
 use crate::features::workspace::toaster::{ToastNotice, ToastTone};
 use crate::features::workspace::view::{
-    ActiveView, LocalDir, LocalSession, LocalSessionId, render_default_command_editor, render_main,
-    render_rename_editor, render_workspace_status_bar,
+    render_default_command_editor, render_main, render_rename_editor, render_workspace_status_bar,
 };
 use crossh_core::editor_launcher;
 use crossh_core::git::{pull, push};
@@ -42,13 +34,15 @@ use crossh_core::git_status::inspect;
 use crossh_core::i18n::{self, LanguagePreference};
 use crossh_core::system_stats::{SystemMonitorState, SystemSampler};
 use crossh_core::text_editing::{EditingKeystroke, TextEditingState, handle_text_editing_key};
+use crossh_session::WorkspaceConnection;
+use crossh_session::workspace::{PaneId, ProjectId, TabId, WorkspaceOp};
 use crossh_terminal::TerminalSettings;
-use crossh_terminal_view::{TerminalEvent, TerminalItem as _, TerminalView};
+use crossh_terminal_view::{TerminalItem as _, TerminalView};
 use crossh_ui::context_menu::ShellMenuAction;
 use crossh_ui::theme;
 use crossh_ui_component::context_menu::{ContextMenuState, MenuEntry, render_context_menu};
 
-use super::local_paths::{current_local_cwd, normalize_local_cwd, normalize_recent_dirs};
+use super::local_paths::{current_local_cwd, normalize_local_cwd};
 
 mod compose;
 #[cfg(any(target_os = "macos", windows))]
@@ -61,12 +55,12 @@ mod notifications;
 mod quit;
 pub(crate) mod scratch;
 mod settings_actions;
-pub(crate) use split::CrossDragState;
 mod shell_input;
 mod shell_render;
 mod split;
 mod tabs;
 mod update_indicator;
+mod workspace_connection;
 
 actions!(
     shell,
@@ -92,11 +86,6 @@ actions!(
 );
 
 /// 注册声明式快捷键：`cmd/ctrl+数字` 直达标签、`cmd/ctrl+tab/shift+tab` 循环标签。
-///
-/// 消融前这些由 `handle_shell_key_down` 命令式硬编码，无法被 `Keymap` 冒泡/覆盖，
-/// 也无法在 `key_context` 维度做隔离。此处迁至 `KeyBinding` 后，
-/// `Terminal` 聚焦时仍通过 `context_stack` 冒泡命中 `AppShell`，且可用
-/// `KeyBinding` 的 `context_predicate` 精确裁剪。
 pub(crate) fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-tab", CycleNextTab, Some("AppShell")),
@@ -121,9 +110,6 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("ctrl-8", SwitchToTab8, Some("AppShell")),
         KeyBinding::new("cmd-9", SwitchToTab9, Some("AppShell")),
         KeyBinding::new("ctrl-9", SwitchToTab9, Some("AppShell")),
-        // 分栏：`cmd-d` 左右开/关、`cmd-shift-d` 上下开/关、
-        // `cmd-alt-方向键` 在格间移动焦点。`cmd` 在 Linux/Windows 自动
-        // 映射为 Ctrl（GPUI 约定），与现有标签页快捷键同一风格。
         KeyBinding::new("cmd-d", SplitTerminalHorizontal, Some("AppShell")),
         KeyBinding::new("cmd-shift-d", SplitTerminalVertical, Some("AppShell")),
         KeyBinding::new("cmd-alt-left", FocusSplitLeft, Some("AppShell")),
@@ -135,11 +121,10 @@ pub(crate) fn init(cx: &mut App) {
 
 /// ponytail: 15s 足够——每次 tick 都要 fork 一次 git 子进程，5s 太密是 idle CPU 主来源之一。
 const GIT_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(15);
-/// 后台 fetch 节拍：15s 轮询 × 20 = 约 5min fetch 一次，更新 behind 计数（与之前等价）。
+/// 后台 fetch 节拍：15s 轮询 × 20 = 约 5min fetch 一次，更新 behind 计数。
 const GIT_FETCH_EVERY_TICKS: u64 = 20;
 
-/// 状态栏 Git 同步操作（push/pull）的一次进行/错误状态；按会话独立记录，
-/// 避免一个会话的在途结果被另一个会话覆盖。
+/// 状态栏 Git 同步操作的一次进行/错误状态；按 pane 独立记录。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct GitSyncState {
     pub operation: GitSyncOperation,
@@ -156,53 +141,34 @@ pub(crate) enum GitSyncOperation {
 pub struct AppShell {
     pub(crate) workspace: WorkspaceState,
     pub(crate) status: Option<String>,
-    /// 侧栏搜索状态；与 Git/Note 筛选条同一编辑语义（`TextEditingState` + 共享分发）。
+    /// 侧栏搜索状态；与 Git/Note 筛选条同一编辑语义。
     pub(crate) search_query: TextEditingState,
     pub(crate) search_focus: FocusHandle,
-    /// 应用外壳根焦点；无任何终端/输入框聚焦时持有，保证窗口级动作
-    /// （如 Cmd+Q → Quit）始终有合法的 dispatch 目标。
+    /// 应用外壳根焦点。
     pub(crate) shell_focus: FocusHandle,
-    /// 原生项目目录选择器任务，持有到选择结果返回。
+    /// 原生项目目录选择器任务。
     _project_picker: Option<Task<()>>,
-    /// 模态文本输入缓冲（密码/口令）。
-    /// 模态输入框焦点。
-    /// 上一帧是否有活动模态（用于在弹窗出现时自动聚焦）。
-    /// 当前语言偏好；实际 locale 经 [`crossh_core::i18n::set_locale`] 切换。
     pub(crate) language_preference: LanguagePreference,
-    /// 当前打开的右键上下文菜单（None = 未打开）。
     pub(crate) context_menu: Option<ContextMenuState<ShellMenuAction>>,
     pub(crate) terminal_settings: TerminalSettings,
     pub(crate) update_settings: UpdateSettings,
     pub(crate) updates: Entity<UpdateController>,
-    /// 用户主动检查后的「已是最新」提示等待位。
     update_notice: UpdateNotice,
-    /// 更新状态变化时刷新外壳（状态栏指示器）。
     _updates_subscription: Subscription,
     pub(crate) workspace_settings: WorkspaceSettings,
-    /// 侧栏宽度与拖动状态；只影响布局，不改变导航状态。
     pub(crate) sidebar_width: Rc<Cell<f32>>,
     pub(crate) sidebar_dragging: Rc<Cell<bool>>,
     pub(crate) sidebar_scroll: gpui::ScrollHandle,
     pub(crate) tab_scroll: gpui::ScrollHandle,
-    /// Left terminal split drag state; the width cell itself lives per-owner
-    /// in `WorkspaceState.split_widths` (one slot per split owner).
-    pub(crate) terminal_split_dragging: Rc<Cell<bool>>,
-    pub(crate) terminal_split_vertical_dragging: Rc<Cell<bool>>,
-    pub(crate) terminal_split_vertical_right_dragging: Rc<Cell<bool>>,
-    /// 交叉点双向拖拽快照（`None` 即空闲）；详见 `split::CrossDragState`。
-    pub(crate) terminal_split_cross_drag: Rc<Cell<Option<CrossDragState>>>,
-    /// 固定标签重命名弹窗状态；与 default command 编辑器互斥（都是模态弹窗）。
     pub(crate) rename_editor: Option<RenameEditor>,
     pub(crate) default_command_editor: Option<DefaultCommandEditor>,
     pub(crate) command_palette: Option<CommandPaletteState>,
     pub(crate) compose_focus: FocusHandle,
     pub(crate) compose_scroll: gpui::ScrollHandle,
-    /// 周期性刷新本地会话的 Git 状态，覆盖 shell 空闲时的外部文件变更。
     _git_status_refresh_task: Option<Task<()>>,
-    /// 最近一次状态栏 Git 同步操作的进行/错误状态，按会话独立记录。
-    pub(crate) git_sync: BTreeMap<LocalSessionId, GitSyncState>,
-    /// 正在后台 fetch 的会话；网络卡住时阻止每 5min 叠加 fetch 进程。
-    git_fetching: HashSet<LocalSessionId>,
+    /// 最近一次状态栏 Git 同步操作的进行/错误状态，按 pane 独立记录。
+    pub(crate) git_sync: BTreeMap<PaneId, GitSyncState>,
+    git_fetching: HashSet<PaneId>,
     pub(crate) system_monitor: SystemMonitorState,
     system_sampler: Option<SystemSampler>,
     _system_monitor_task: Option<Task<()>>,
@@ -211,55 +177,28 @@ pub struct AppShell {
     pub(crate) scratch_height: Rc<Cell<f32>>,
     pub(crate) scratch_dragging: Rc<Cell<bool>>,
     scratch_subscription: Option<Subscription>,
-    /// 链接预览的原生 WebView 单例（macOS / Windows），见 `link_preview`。
     pub(crate) link_preview: Option<link_preview::LinkPreview>,
     pub(crate) link_preview_visible: bool,
     shutdown_in_progress: bool,
-    /// 标签页关闭确认框是否已打开，防止重复弹出。
     pub(crate) tab_close_confirmation_open: bool,
+    /// 工作区订阅连接（attach + mutate）。
+    pub(crate) workspace_connection: Option<Arc<WorkspaceConnection>>,
+    _workspace_connection_task: Option<Task<()>>,
+    /// 首次 attach 成功后才允许写 settings（旧设置迁移由 daemon 负责）。
+    workspace_ready: bool,
+    _activation_subscription: Option<Subscription>,
 }
 
 impl AppShell {
-    /// 构造外壳（本地会话）。
+    /// 构造外壳：只读设置，连接 daemon 后由快照驱动布局。
     pub fn new(cx: &mut App) -> Entity<Self> {
-        let mut snapshot = settings::load();
-        let recent_dirs = normalize_recent_dirs(snapshot.workspace.recent_dirs.clone());
-        if recent_dirs != snapshot.workspace.recent_dirs {
-            snapshot.workspace.recent_dirs = recent_dirs;
-            if let Err(error) = settings::save(&snapshot) {
-                log::warn!("failed to save cleaned recent directories: {error}");
-            }
-        }
-        // 启动时清理固定标签记录中已失效的目录；不存在的目录不得阻碍启动，
-        // 也不得在每次启动时反复恢复（契约 6）。
-        let pinned_restore =
-            prune_missing_pinned_tabs(snapshot.workspace.pinned_local_tabs.clone());
-        if pinned_restore != snapshot.workspace.pinned_local_tabs {
-            snapshot.workspace.pinned_local_tabs = pinned_restore.clone();
-            if let Err(error) = settings::save(&snapshot) {
-                log::warn!("failed to save cleaned pinned tabs: {error}");
-            }
-        }
+        let snapshot = settings::load();
         let language_preference = snapshot.language;
         let terminal_settings = snapshot.terminal;
         TerminalView::apply_zed_settings(&terminal_settings, cx);
         let update_settings = snapshot.updates;
         let workspace_settings = snapshot.workspace;
-        // 启动不自动打开任何会话（契约 5 Rev-2）：固定记录保留在持久化
-        // 列表中，待用户打开对应项目时由契约 11 恢复。
         let updates = cx.new(|_| UpdateController::new(update_settings.clone()));
-        // 启动时把最近的本地目录记录恢复到侧栏 Local 分组（无活动会话，点击即重开）。
-        let mut local_dirs = BTreeMap::new();
-        for cwd in &workspace_settings.recent_dirs {
-            local_dirs.insert(
-                cwd.clone(),
-                LocalDir {
-                    project_dir: cwd.clone(),
-                    sessions: Vec::new(),
-                    active_session: None,
-                },
-            );
-        }
 
         let shell = cx.new(|cx| {
             let updates_subscription = cx.observe(
@@ -269,7 +208,7 @@ impl AppShell {
                 },
             );
             Self {
-                workspace: WorkspaceState::new(local_dirs),
+                workspace: WorkspaceState::new(),
                 status: None,
                 search_query: TextEditingState::new(String::new()),
                 search_focus: cx.focus_handle(),
@@ -287,10 +226,6 @@ impl AppShell {
                 sidebar_dragging: Rc::new(Cell::new(false)),
                 sidebar_scroll: gpui::ScrollHandle::new(),
                 tab_scroll: gpui::ScrollHandle::new(),
-                terminal_split_dragging: Rc::new(Cell::new(false)),
-                terminal_split_vertical_dragging: Rc::new(Cell::new(false)),
-                terminal_split_vertical_right_dragging: Rc::new(Cell::new(false)),
-                terminal_split_cross_drag: Rc::new(Cell::new(None)),
                 rename_editor: None,
                 default_command_editor: None,
                 command_palette: None,
@@ -311,11 +246,20 @@ impl AppShell {
                 link_preview_visible: false,
                 shutdown_in_progress: false,
                 tab_close_confirmation_open: false,
+                workspace_connection: None,
+                _workspace_connection_task: None,
+                workspace_ready: false,
+                _activation_subscription: None,
             }
         });
         updates.update(cx, |updates, cx| updates.start_startup_check(cx));
+        shell.update(cx, |shell, cx| {
+            shell.start_workspace_connection(cx);
+            shell.ensure_git_status_refresh_task(cx);
+        });
         shell
     }
+
     fn dispatch_shell_menu_action(
         &mut self,
         action: ShellMenuAction,
@@ -324,46 +268,70 @@ impl AppShell {
     ) {
         match action {
             ShellMenuAction::ChooseLocalProject => self.choose_project_directory(cx),
-            ShellMenuAction::ActivateLocalProject(path) => self.activate_local_dir(path, cx),
+            ShellMenuAction::ActivateProject(project_id) => {
+                self.send_workspace_op(
+                    WorkspaceOp::ActivateProject {
+                        project_id: ProjectId(project_id),
+                    },
+                    cx,
+                );
+            }
+            ShellMenuAction::ActivateTab(tab_id) => {
+                self.activate_tab(TabId(tab_id), cx);
+            }
+            ShellMenuAction::CreateTab(project_id) => {
+                self.create_tab(Some(ProjectId(project_id)), cx);
+            }
+            ShellMenuAction::CloseTab(tab_id) => {
+                self.request_close_tab(TabId(tab_id), window, cx);
+            }
+            ShellMenuAction::ClosePane(pane_id) => {
+                self.request_close_pane(PaneId(pane_id), window, cx);
+            }
+            ShellMenuAction::CloseOtherTabs { project_id, keep } => {
+                self.close_other_tabs(ProjectId(project_id), TabId(keep), cx);
+            }
+            ShellMenuAction::StopProject(project_id) => {
+                self.send_workspace_op(
+                    WorkspaceOp::StopProject {
+                        project_id: Some(ProjectId(project_id)),
+                    },
+                    cx,
+                );
+            }
+            ShellMenuAction::ForgetProject(project_id) => {
+                self.send_workspace_op(
+                    WorkspaceOp::ForgetProject {
+                        project_id: Some(ProjectId(project_id)),
+                    },
+                    cx,
+                );
+            }
+            ShellMenuAction::RenameTab(tab_id) => {
+                self.open_rename_tab(TabId(tab_id), window, cx);
+            }
+            ShellMenuAction::EditDefaultCommand(tab_id) => {
+                self.open_default_command_editor(TabId(tab_id), window, cx);
+            }
+            ShellMenuAction::ReloadDefaultCommand(tab_id) => {
+                self.reload_default_command(TabId(tab_id), cx);
+            }
+            ShellMenuAction::ClearDefaultCommand(tab_id) => {
+                self.set_tab_command(TabId(tab_id), None, cx);
+            }
+            ShellMenuAction::RetryPaneSession(pane_id) => {
+                self.ensure_pane_session(PaneId(pane_id), cx);
+            }
             ShellMenuAction::CopyText(text) => {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
             }
             ShellMenuAction::RevealInFinder(path) => {
                 crossh_core::process::reveal_in_finder(&path);
             }
-            ShellMenuAction::ForgetLocalDir(cwd) => self.forget_local_dir(cwd, cx),
-            ShellMenuAction::StopLocalProject(cwd) => self.stop_local_project(cwd, window, cx),
-            ShellMenuAction::OpenLocalTerminal(cwd) => {
-                let _ = self.open_local_session(cwd.clone(), cwd.clone(), cx);
-                // 「打开本地终端」即打开项目：同步恢复该项目尚无会话的
-                // 固定记录（契约 11 Rev-1）。不能放进 open_local_session
-                // 自身，否则恢复路径会递归（恢复内部也调用 open）。
-                self.restore_pinned_tabs_for_project(&cwd, cx);
-            }
-            ShellMenuAction::SelectLocalSession(session_id) => {
-                self.select_local_session(session_id, cx);
-            }
-            ShellMenuAction::PinLocalSession(session_id) => self.pin_local_session(session_id, cx),
-            ShellMenuAction::UnpinLocalSession(session_id) => {
-                self.unpin_local_session(session_id, cx)
-            }
-            ShellMenuAction::RenameLocalSession(session_id) => {
-                self.open_rename_local_session(session_id, window, cx)
-            }
-            ShellMenuAction::EditDefaultCommand(session_id) => {
-                self.open_default_command_editor(session_id, window, cx)
-            }
-            ShellMenuAction::ReloadDefaultCommand(session_id) => {
-                self.reload_default_command(session_id, cx)
-            }
-            ShellMenuAction::ClearDefaultCommand(session_id) => {
-                self.clear_default_command(session_id, cx)
-            }
-            ShellMenuAction::CloseLocalSession(session_id) => {
-                self.request_close_local_session(session_id, window, cx);
-            }
-            ShellMenuAction::CloseOtherLocalSessions(session_id) => {
-                self.close_other_local_sessions(session_id, cx);
+            ShellMenuAction::OpenProjectTerminal(project_id) => {
+                let project_id = ProjectId(project_id);
+                self.send_workspace_op(WorkspaceOp::ActivateProject { project_id }, cx);
+                self.create_tab(Some(project_id), cx);
             }
         }
         self.close_context_menu(cx);
@@ -383,9 +351,6 @@ impl AppShell {
             return;
         }
         if self.command_palette.is_some() {
-            // 失焦兜底：焦点在输入框时内层已消费并截断（消费即截断归 handler 所有），
-            // 此处只处理焦点异常；未处理键在此统一屏蔽，避免终端/全局误触。
-            // 不得在此之外再注册第二个编辑分发——同一事件两次插入即 `nneeww`。
             self.handle_command_palette_key(ev, window, cx);
             cx.stop_propagation();
             return;
@@ -393,342 +358,15 @@ impl AppShell {
         if self.rename_editor.is_some() || self.default_command_editor.is_some() {
             return;
         }
-        // 链接预览悬浮层在最上层：Esc 先关它，再轮到临时终端抽屉。
         if self.link_preview_visible && ev.keystroke.key == "escape" {
             self.hide_link_preview(cx);
             cx.stop_propagation();
             return;
         }
-        // Scratch 抽屉的 Esc 隐藏：优先级高于全局快捷键，但低于模态
         if self.scratch_visible && ev.keystroke.key == "escape" {
             self.hide_scratch_terminal(cx);
             cx.stop_propagation();
         }
-        // 消融完成：`cmd/ctrl+tab` 与 `cmd/ctrl+1..9` 已迁至声明式 `KeyBinding`
-        //（`self::init`），此处不再做命令式分发。保留模态/抽屉的 `Escape`
-        // 拦截与 `stop_propagation`，其余未命中按键交由 `Keymap` 冒泡或终端直通。
-    }
-
-    /// 在项目目录 view 中打开一个独立的 Zed terminal session。
-    /// `project_dir` 决定侧栏归属，`cwd` 只决定 shell 的初始工作目录。
-    ///
-    /// 打开新会话不取消源 Tab 的分栏：分栏跟随其属主 Tab。
-    /// 返回新会话 id；目录失效无法创建时返回 `None`（固定恢复路径据此
-    /// 跳过失效记录，契约 11 Rev-4）。
-    pub(crate) fn open_local_session(
-        &mut self,
-        project_dir: PathBuf,
-        cwd: PathBuf,
-        cx: &mut Context<Self>,
-    ) -> Option<LocalSessionId> {
-        self.open_local_session_with_attach(project_dir, cwd, None, cx)
-    }
-
-    /// 打开本地会话；`attach` 为 `Some` 时按 daemon 会话 id 接入既有会话
-    /// （固定标签恢复），否则新建 daemon 会话。
-    pub(crate) fn open_local_session_with_attach(
-        &mut self,
-        project_dir: PathBuf,
-        cwd: PathBuf,
-        attach: Option<String>,
-        cx: &mut Context<Self>,
-    ) -> Option<LocalSessionId> {
-        let Some(view) = self.create_local_session(project_dir, cwd, attach, cx) else {
-            self.sync_local_dirs(cx);
-            cx.notify();
-            return None;
-        };
-        let ActiveView::LocalSession(session_id) = view;
-        self.select_local_session(session_id, cx);
-        self.refresh_git_status(session_id, false, cx);
-        self.status = None;
-        cx.notify();
-        Some(session_id)
-    }
-
-    fn create_local_session(
-        &mut self,
-        project_dir: PathBuf,
-        cwd: PathBuf,
-        attach: Option<String>,
-        cx: &mut Context<Self>,
-    ) -> Option<ActiveView> {
-        let project_dir = normalize_local_cwd(project_dir)?;
-        let cwd = normalize_local_cwd(cwd)?;
-        self.remember_local_dir(&project_dir, cx);
-        let cwd_text = cwd.to_string_lossy().to_string();
-        let terminal = match attach {
-            Some(id) => {
-                log::info!("local session attaching to daemon session {id} for {cwd_text}");
-                TerminalView::from_daemon_attach(
-                    id,
-                    cwd.clone(),
-                    self.terminal_settings.clone(),
-                    cx,
-                )
-            }
-            None => {
-                TerminalView::from_daemon_create(cwd.clone(), self.terminal_settings.clone(), cx)
-            }
-        };
-        let session_id = self.workspace.sessions.allocate_local_session_id();
-        log::info!("local session {session_id} opened for {}", cwd_text);
-        // Zed's local PTY process tracking reports the current cwd; keep it
-        // separate from the session's project ownership when `cd` changes.
-        let subscription =
-            cx.subscribe(
-                &terminal,
-                |this, terminal, event: &TerminalEvent, cx| match event {
-                    TerminalEvent::Closed => {
-                        let session_id = this.workspace.sessions.local_sessions.iter().find_map(
-                            |(&session_id, session)| {
-                                (session.terminal.entity_id() == terminal.entity_id())
-                                    .then_some(session_id)
-                            },
-                        );
-                        if let Some(session_id) = session_id {
-                            this.close_local_session(session_id, cx);
-                        }
-                    }
-                    TerminalEvent::CwdChanged => {
-                        this.sync_local_dirs(cx);
-                        if let Some(session_id) =
-                            this.local_session_id_for_terminal(terminal.entity_id())
-                        {
-                            this.refresh_git_status(session_id, true, cx);
-                        }
-                        cx.notify();
-                    }
-                    TerminalEvent::PromptReached => {
-                        if let Some(session_id) =
-                            this.local_session_id_for_terminal(terminal.entity_id())
-                        {
-                            this.refresh_git_status(session_id, false, cx);
-                        }
-                    }
-                    TerminalEvent::CommandStarted { .. } => {}
-                    TerminalEvent::CommandFinished { status } => {
-                        log::debug!("local terminal command finished with status {status:?}");
-                    }
-                    TerminalEvent::ClipboardCopied => {
-                        this.show_toast(
-                            ToastNotice::new(i18n::text("toast.copied"), ToastTone::Success),
-                            cx,
-                        );
-                    }
-                    TerminalEvent::ClipboardPasted => {
-                        this.show_toast(
-                            ToastNotice::new(i18n::text("toast.pasted"), ToastTone::Success),
-                            cx,
-                        );
-                    }
-                    TerminalEvent::TitleChanged | TerminalEvent::Notification => cx.notify(),
-                    TerminalEvent::SessionAttached { id } => {
-                        if let Some(session_id) =
-                            this.local_session_id_for_terminal(terminal.entity_id())
-                        {
-                            let pin_id = this
-                                .workspace
-                                .sessions
-                                .local_sessions
-                                .get_mut(&session_id)
-                                .and_then(|session| {
-                                    session.daemon_session_id = Some(id.clone());
-                                    session.pin_id
-                                });
-                            // 固定记录的 id 随附着收敛：下次恢复直接回到同一会话。
-                            if let Some(pin_id) = pin_id {
-                                if let Some(tab) = this
-                                    .workspace_settings
-                                    .pinned_local_tabs
-                                    .iter_mut()
-                                    .find(|tab| tab.pin_id == pin_id)
-                                {
-                                    tab.daemon_session_id = Some(id.clone());
-                                }
-                                this.persist_settings();
-                            }
-                        }
-                    }
-                    TerminalEvent::ProgramStatusChanged => cx.notify(),
-                },
-            );
-        self.workspace
-            .sessions
-            .terminal_subscriptions
-            .push(subscription);
-        self.workspace.sessions.local_sessions.insert(
-            session_id,
-            LocalSession {
-                project_dir,
-                cwd,
-                terminal,
-                git_status: None,
-                git_refresh: Default::default(),
-                pin_id: None,
-                custom_name: None,
-                default_command: None,
-                daemon_session_id: None,
-            },
-        );
-        self.ensure_git_status_refresh_task(cx);
-        self.sync_local_dirs(cx);
-        Some(ActiveView::LocalSession(session_id))
-    }
-
-    pub(crate) fn activate_local_dir(&mut self, project_dir: PathBuf, cx: &mut Context<Self>) {
-        // 项目切换后工作区整体换内容，悬浮的临时终端抽屉随之收起（PTY 保持存活）。
-        self.hide_scratch_terminal(cx);
-        self.sync_local_dirs(cx);
-        let Some(project_dir) = normalize_local_cwd(project_dir) else {
-            cx.notify();
-            return;
-        };
-        let session_id = self
-            .workspace
-            .sessions
-            .local_dirs
-            .get(&project_dir)
-            .and_then(|dir| dir.active_session.or_else(|| dir.sessions.first().copied()));
-        if let Some(session_id) = session_id {
-            self.select_local_session(session_id, cx);
-        } else {
-            // 有固定记录的项目：固定标签即代表该项目的工作会话集合，
-            // 只恢复固定标签，不额外打开普通会话（契约 11 Rev-3）。
-            let has_pinned_records =
-                !pinned_tabs_for_project(&self.workspace_settings.pinned_local_tabs, &project_dir)
-                    .is_empty();
-            if !has_pinned_records {
-                let _ = self.open_local_session(project_dir.clone(), project_dir.clone(), cx);
-            }
-        }
-        // 激活项目时恢复该项目尚无会话的固定记录（契约 11）。
-        self.restore_pinned_tabs_for_project(&project_dir, cx);
-        // 契约 11 Rev-4：记录全部失效（已即时清理）导致项目仍无任何
-        // 会话时，兜底打开一个普通会话，保证激活必有会话。
-        let has_session_now = self
-            .workspace
-            .sessions
-            .local_dirs
-            .get(&project_dir)
-            .is_some_and(|dir| !dir.sessions.is_empty());
-        if !has_session_now {
-            let _ = self.open_local_session(project_dir.clone(), project_dir.clone(), cx);
-        }
-        // 认领孤儿会话：重启后 daemon 里活着但没被任何窗口接入的会话，
-        // 按原 cwd 接回本项目（只收本项目子树，避免把别处会话拖进本窗）。
-        self.adopt_orphan_daemon_sessions(Some(project_dir), cx);
-    }
-
-    pub(crate) fn select_local_session(
-        &mut self,
-        session_id: LocalSessionId,
-        cx: &mut Context<Self>,
-    ) {
-        if self.workspace.active_view == Some(ActiveView::LocalSession(session_id)) {
-            return;
-        }
-        let cwd = self
-            .workspace
-            .sessions
-            .local_dirs
-            .iter()
-            .find(|(_, dir)| dir.sessions.contains(&session_id))
-            .map(|(cwd, _)| cwd.clone());
-        let Some(cwd) = cwd else { return };
-        if let Some(dir) = self.workspace.sessions.local_dirs.get_mut(&cwd) {
-            dir.active_session = Some(session_id);
-        }
-        self.workspace.active_view = Some(ActiveView::LocalSession(session_id));
-        if let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) {
-            // 用户回到该终端：done/error 状态视为已读，tab 状态点随之消失
-            session.terminal.acknowledge_program_status(cx);
-        }
-        self.refocus_active_terminal(cx);
-        cx.notify();
-    }
-
-    pub(crate) fn close_local_session(
-        &mut self,
-        session_id: LocalSessionId,
-        cx: &mut Context<Self>,
-    ) {
-        self.close_local_session_internal(session_id, false, cx);
-    }
-
-    pub(crate) fn close_local_session_internal(
-        &mut self,
-        session_id: LocalSessionId,
-        keep_pinned: bool,
-        cx: &mut Context<Self>,
-    ) {
-        // 关闭即取消固定（契约 8）：任何关闭路径（按钮/关闭其他/进程退出）
-        // 都移除持久化记录，重启后不再恢复。stop 项目时 keep_pinned=true 保留固定记录。
-        if !keep_pinned {
-            let pin_id = self
-                .workspace
-                .sessions
-                .local_sessions
-                .get(&session_id)
-                .and_then(|session| session.pin_id);
-            if let Some(pin_id) = pin_id {
-                self.workspace_settings
-                    .pinned_local_tabs
-                    .retain(|tab| tab.pin_id != pin_id);
-                self.persist_settings();
-            }
-        }
-        let Some(cwd) = self
-            .workspace
-            .sessions
-            .local_dirs
-            .iter()
-            .find(|(_, dir)| dir.sessions.contains(&session_id))
-            .map(|(cwd, _)| cwd.clone())
-        else {
-            return;
-        };
-        let split_affected =
-            self.prepare_terminal_split_view_close(ActiveView::LocalSession(session_id), cx);
-        let was_active = self.workspace.active_view == Some(ActiveView::LocalSession(session_id));
-        let mut next_session = None;
-        let remove_dir = if let Some(dir) = self.workspace.sessions.local_dirs.get_mut(&cwd) {
-            dir.sessions.retain(|id| *id != session_id);
-            if dir.active_session == Some(session_id) {
-                dir.active_session = dir.sessions.first().copied();
-            }
-            next_session = dir.active_session;
-            // 仍被「最近本地目录」记住的空目录保留在侧栏，等待下次点击重开。
-            dir.sessions.is_empty() && !self.workspace_settings.recent_dirs.contains(&cwd)
-        } else {
-            false
-        };
-        // 显式结束会话：向 daemon 发 Close（关窗口/退出 GUI 只 detach 不走这里）。
-        if let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) {
-            session.terminal.update(cx, |terminal, cx| {
-                terminal.request_close(cx);
-            });
-        }
-        self.workspace.sessions.local_sessions.remove(&session_id);
-        self.workspace
-            .remove_compose_for_view(ActiveView::LocalSession(session_id));
-        self.git_sync.remove(&session_id);
-        if self.workspace.sessions.local_sessions.is_empty() {
-            self._git_status_refresh_task.take();
-        }
-        if remove_dir {
-            self.workspace.sessions.local_dirs.remove(&cwd);
-        }
-        if was_active {
-            self.workspace.active_view = next_session
-                .map(ActiveView::LocalSession)
-                .or_else(|| self.first_local_view());
-            self.refocus_active_terminal(cx);
-        }
-        if split_affected && !was_active {
-            self.refocus_active_terminal(cx);
-        }
-        cx.notify();
     }
 
     fn open_query(&mut self, cx: &mut Context<Self>) {
@@ -743,17 +381,22 @@ impl AppShell {
             return;
         }
         if matches!(query_lower.as_str(), "local" | "本地") {
-            self.activate_local_dir(current_local_cwd(), cx);
+            self.open_project_root(current_local_cwd(), cx);
             return;
         }
 
-        self.sync_local_dirs(cx);
-        if let Some(cwd) = self.local_cwd_matching_query(&query_lower) {
-            self.activate_local_dir(cwd, cx);
+        if let Some(root) = self.workspace.snapshot.projects.iter().find_map(|project| {
+            project
+                .root
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .contains(&query_lower)
+                .then(|| project.root.clone())
+        }) {
+            self.open_project_root(root, cx);
             return;
         }
 
-        // 历史主机别名匹配已移除
         self.search_query.clear();
         self.show_toast(
             ToastNotice::new(i18n::text("toast.search_no_match"), ToastTone::Info),
@@ -761,7 +404,7 @@ impl AppShell {
         );
     }
 
-    /// 通过原生目录选择器创建或打开一个本地项目。
+    /// 通过原生目录选择器打开/激活项目；实际落点由 daemon 的 `OpenProject` 决定。
     pub(crate) fn choose_project_directory(&mut self, cx: &mut Context<Self>) {
         let paths_receiver = cx.prompt_for_paths(PathPromptOptions {
             files: false,
@@ -778,16 +421,12 @@ impl AppShell {
             };
             let _ = weak.update(cx, |this, cx| {
                 this.search_query.clear();
-                this.activate_local_dir(path, cx);
+                this.open_project_root(path, cx);
             });
         });
         self._project_picker = Some(task);
     }
 
-    /// 搜索框与 Git/Note 筛选条同一编辑语义：`TextEditingState` + 共享分发；
-    /// 侧栏仅保留提交语义（Enter 打开匹配项目、Tab 保持焦点、Esc 清空），
-    /// 其余按键走通用编辑分发（插入/删除/光标/选区/剪贴板），处理后截断冒泡。
-    /// 唯一归属：仅侧栏搜索框的内层 `on_key_down` 注册，根节点不二次分发。
     pub(crate) fn handle_search_key(
         &mut self,
         ev: &KeyDownEvent,
@@ -835,7 +474,6 @@ impl AppShell {
         }
     }
 
-    /// 打开右键上下文菜单（替换已有菜单）。
     pub(crate) fn open_context_menu(
         &mut self,
         position: Point<Pixels>,
@@ -852,15 +490,11 @@ impl AppShell {
         }
     }
 
-    /// 执行外壳级菜单动作并关闭菜单。
-    /// 解析并启动外部编辑器打开 `directory`；无可用编辑器或启动失败时弹错误 Toast。
     pub(crate) fn open_project_in_editor(&mut self, directory: &Path, cx: &mut Context<Self>) {
         let path_env = editor_launcher::effective_path();
         self.open_project_in_editor_with_path_env(directory, path_env, cx);
     }
 
-    /// [`open_project_in_editor`](Self::open_project_in_editor) 的可注入 PATH 变体：
-    /// PATH 作为参数传入，便于纯逻辑测试控制检测结果而不触碰进程环境。
     pub(crate) fn open_project_in_editor_with_path_env(
         &mut self,
         directory: &Path,
@@ -889,65 +523,31 @@ impl AppShell {
         }
     }
 
-    /// 把本地会话按创建时的项目归属目录重建目录视图（打开/关闭/`cd` 时调用）。
-    pub(crate) fn sync_local_dirs(&mut self, cx: &Context<Self>) {
-        self.prune_missing_recent_dirs();
-        let previous = std::mem::take(&mut self.workspace.sessions.local_dirs);
-        let active_local_session = match self.workspace.active_view {
-            Some(ActiveView::LocalSession(session_id)) => Some(session_id),
-            _ => None,
-        };
-        let sessions = self
-            .workspace
-            .sessions
-            .local_sessions
-            .iter_mut()
-            .map(|(&session_id, session)| {
-                if let Some(cwd) = session.terminal.cwd(cx)
-                    && let Some(cwd) = normalize_local_cwd(PathBuf::from(cwd))
-                {
-                    session.cwd = cwd;
-                }
-                (session_id, session.project_dir.clone())
-            })
-            .collect::<Vec<_>>();
-        self.workspace.sessions.local_dirs = rebuild_local_dirs(
-            &previous,
-            sessions,
-            self.workspace_settings.recent_dirs.iter().cloned(),
-            active_local_session,
-        );
-    }
-
-    fn local_session_id_for_terminal(&self, terminal_id: EntityId) -> Option<LocalSessionId> {
-        self.workspace
-            .sessions
-            .local_sessions
-            .iter()
-            .find_map(|(&session_id, session)| {
-                (session.terminal.entity_id() == terminal_id).then_some(session_id)
-            })
-    }
-
-    fn refresh_git_status(
-        &mut self,
-        session_id: LocalSessionId,
-        clear_stale: bool,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(session) = self.workspace.sessions.local_sessions.get_mut(&session_id) else {
+    /// 聚焦当前活动 pane 的终端；没有视图时回到外壳焦点。
+    pub(crate) fn refocus_active_terminal(&mut self, cx: &mut Context<Self>) {
+        let Some(pane_id) = self.workspace.focused_pane() else {
             return;
         };
-        let cwd = session.cwd.clone();
-        let status_cleared = clear_stale && session.git_status.take().is_some();
-        if !session.git_refresh.request() {
+        if let Some(terminal) = self.workspace.pane_view(pane_id).cloned() {
+            terminal.request_focus(cx);
+        }
+    }
+
+    fn pane_cwd(&self, pane_id: PaneId) -> Option<PathBuf> {
+        self.workspace.pane(pane_id).map(|pane| pane.cwd.clone())
+    }
+
+    fn refresh_git_status(&mut self, pane_id: PaneId, clear_stale: bool, cx: &mut Context<Self>) {
+        let Some(cwd) = self.pane_cwd(pane_id) else {
+            return;
+        };
+        let refresh = self.workspace.git_refresh.entry(pane_id).or_default();
+        let status_cleared = clear_stale && self.workspace.git_status.remove(&pane_id).is_some();
+        if !refresh.request() {
             if status_cleared {
                 cx.notify();
             }
             return;
-        }
-        if status_cleared {
-            session.git_status = None;
         }
 
         cx.spawn(async move |weak, cx| {
@@ -966,19 +566,28 @@ impl AppShell {
                 );
             }
             let _ = weak.update(cx, |this, cx| {
-                let Some(session) = this.workspace.sessions.local_sessions.get_mut(&session_id)
-                else {
-                    return;
-                };
-                let cwd_unchanged = session.cwd == cwd_for_log;
-                let status_changed = cwd_unchanged && session.git_status != status;
+                let cwd_unchanged =
+                    this.pane_cwd(pane_id).as_deref() == Some(cwd_for_log.as_path());
+                let status_changed =
+                    cwd_unchanged && this.workspace.git_status.get(&pane_id) != status.as_ref();
                 if status_changed {
-                    session.git_status = status;
+                    match &status {
+                        Some(status) => {
+                            this.workspace.git_status.insert(pane_id, status.clone());
+                        }
+                        None => {
+                            this.workspace.git_status.remove(&pane_id);
+                        }
+                    }
                 }
-                let refresh_again = session.git_refresh.finish();
-                this.reconcile_git_sync_error(session_id);
+                let refresh_again = this
+                    .workspace
+                    .git_refresh
+                    .get_mut(&pane_id)
+                    .is_some_and(|refresh| refresh.finish());
+                this.reconcile_git_sync_error(pane_id);
                 if refresh_again {
-                    this.refresh_git_status(session_id, !cwd_unchanged, cx);
+                    this.refresh_git_status(pane_id, !cwd_unchanged, cx);
                 }
                 if status_changed {
                     cx.notify();
@@ -988,26 +597,24 @@ impl AppShell {
         .detach();
     }
 
-    /// 在状态栏对本地会话执行 git push/pull；同一会话同时只允许一个在途操作。
     pub(crate) fn run_git_sync(
         &mut self,
-        session_id: LocalSessionId,
+        pane_id: PaneId,
         operation: GitSyncOperation,
         cx: &mut Context<Self>,
     ) {
-        let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) else {
+        let Some(cwd) = self.pane_cwd(pane_id) else {
             return;
         };
         if self
             .git_sync
-            .get(&session_id)
+            .get(&pane_id)
             .is_some_and(|state| state.running)
         {
             return;
         }
-        let cwd = session.cwd.clone();
         self.git_sync.insert(
-            session_id,
+            pane_id,
             GitSyncState {
                 operation,
                 running: true,
@@ -1029,8 +636,7 @@ impl AppShell {
             let _ = weak.update(cx, |this, cx| {
                 match result {
                     Ok(()) => {
-                        // 成功后清除状态，按钮是否保留由 ahead/behind 徽章决定。
-                        this.git_sync.remove(&session_id);
+                        this.git_sync.remove(&pane_id);
                         this.show_toast(
                             ToastNotice::new(
                                 i18n::text(match operation {
@@ -1043,7 +649,7 @@ impl AppShell {
                         );
                     }
                     Err(error) => {
-                        let Some(state) = this.git_sync.get_mut(&session_id) else {
+                        let Some(state) = this.git_sync.get_mut(&pane_id) else {
                             return;
                         };
                         state.running = false;
@@ -1060,28 +666,21 @@ impl AppShell {
                         );
                     }
                 }
-                this.refresh_git_status(session_id, false, cx);
+                this.refresh_git_status(pane_id, false, cx);
                 cx.notify();
             });
         })
         .detach();
     }
 
-    /// 同步错误只在触发它的条件（behind/ahead 计数）消失时清除，避免残留过期错误。
-    fn reconcile_git_sync_error(&mut self, session_id: LocalSessionId) {
-        let Some(state) = self.git_sync.get(&session_id) else {
+    fn reconcile_git_sync_error(&mut self, pane_id: PaneId) {
+        let Some(state) = self.git_sync.get(&pane_id) else {
             return;
         };
         if state.error.is_none() {
             return;
         }
-        let Some(status) = self
-            .workspace
-            .sessions
-            .local_sessions
-            .get(&session_id)
-            .and_then(|session| session.git_status.as_ref())
-        else {
+        let Some(status) = self.workspace.git_status.get(&pane_id) else {
             return;
         };
         let resolved = match state.operation {
@@ -1089,43 +688,38 @@ impl AppShell {
             GitSyncOperation::Push => status.ahead == 0,
         };
         if resolved {
-            self.git_sync.remove(&session_id);
+            self.git_sync.remove(&pane_id);
         }
     }
-    /// 后台 `git fetch --all` 后刷新状态；失败只记日志、不弹 toast，避免定时任务打扰。
-    fn fetch_then_refresh_git_status(
-        &mut self,
-        session_id: LocalSessionId,
-        cx: &mut Context<Self>,
-    ) {
+
+    fn fetch_then_refresh_git_status(&mut self, pane_id: PaneId, cx: &mut Context<Self>) {
         if self
             .git_sync
-            .get(&session_id)
+            .get(&pane_id)
             .is_some_and(|state| state.running)
         {
-            self.refresh_git_status(session_id, false, cx);
+            self.refresh_git_status(pane_id, false, cx);
             return;
         }
-        if !self.git_fetching.insert(session_id) {
-            self.refresh_git_status(session_id, false, cx);
+        if !self.git_fetching.insert(pane_id) {
+            self.refresh_git_status(pane_id, false, cx);
             return;
         }
-        let Some(session) = self.workspace.sessions.local_sessions.get(&session_id) else {
+        let Some(cwd) = self.pane_cwd(pane_id) else {
             return;
         };
-        let cwd = session.cwd.clone();
-        // ponytail: 只轮询聚焦会话，切回来再刷其余会话，避免多项目同时 fetch 惊群。
+        // ponytail: 只轮询聚焦 pane，切回来再刷其余 pane，避免多项目同时 fetch 惊群。
         cx.spawn(async move |weak, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move { fetch_all_remotes(&cwd) })
                 .await;
             let _ = weak.update(cx, |this, cx| {
-                this.git_fetching.remove(&session_id);
+                this.git_fetching.remove(&pane_id);
                 if let Err(error) = result {
                     log::debug!("background git fetch failed: {error}");
                 }
-                this.refresh_git_status(session_id, false, cx);
+                this.refresh_git_status(pane_id, false, cx);
             });
         })
         .detach();
@@ -1146,13 +740,11 @@ impl AppShell {
 
                 if weak
                     .update(cx, |this, cx| {
-                        if let Some(ActiveView::LocalSession(session_id)) =
-                            this.workspace.focused_view()
-                        {
+                        if let Some(pane_id) = this.workspace.focused_pane() {
                             if tick.is_multiple_of(GIT_FETCH_EVERY_TICKS) {
-                                this.fetch_then_refresh_git_status(session_id, cx);
+                                this.fetch_then_refresh_git_status(pane_id, cx);
                             } else {
-                                this.refresh_git_status(session_id, false, cx);
+                                this.refresh_git_status(pane_id, false, cx);
                             }
                         }
                     })
@@ -1217,59 +809,12 @@ impl AppShell {
         }
     }
 
-    /// 把目录记入「最近本地目录」历史（最近优先、去重、截断到上限）并持久化。
-    fn remember_local_dir(&mut self, project_dir: &Path, _cx: &mut Context<Self>) {
-        let Some(project_dir) = normalize_local_cwd(project_dir.to_path_buf()) else {
-            return;
-        };
-        self.workspace_settings
-            .recent_dirs
-            .retain(|existing| existing != &project_dir);
-        self.workspace_settings.recent_dirs.insert(0, project_dir);
-        self.workspace_settings
-            .recent_dirs
-            .truncate(self.workspace_settings.recent_dirs_max);
-        self.persist_settings();
-    }
-
-    /// 从「最近本地目录」历史中移除一个目录并持久化。
-    pub(crate) fn forget_local_dir(&mut self, cwd: PathBuf, cx: &mut Context<Self>) {
-        let Some(cwd) = normalize_local_cwd(cwd) else {
-            return;
-        };
-        if !self.workspace_settings.recent_dirs.contains(&cwd) {
+    /// 只写设置全局状态与磁盘，不重放终端设置。首次 attach 前不写，避免抢在
+    /// daemon 迁移旧设置之前重写文件。
+    pub(crate) fn persist_settings(&self) {
+        if !self.workspace_ready {
             return;
         }
-        self.workspace_settings
-            .recent_dirs
-            .retain(|existing| existing != &cwd);
-        self.persist_settings();
-        self.sync_local_dirs(cx);
-        cx.notify();
-    }
-
-    fn prune_missing_recent_dirs(&mut self) {
-        let recent_dirs = normalize_recent_dirs(self.workspace_settings.recent_dirs.clone());
-        if recent_dirs == self.workspace_settings.recent_dirs {
-            return;
-        }
-        self.workspace_settings.recent_dirs = recent_dirs;
-        self.persist_settings();
-    }
-
-    /// 清空「最近本地目录」历史。
-    pub(crate) fn clear_recent_dirs(&mut self, cx: &mut Context<Self>) {
-        if self.workspace_settings.recent_dirs.is_empty() {
-            return;
-        }
-        self.workspace_settings.recent_dirs.clear();
-        self.persist_settings();
-        self.sync_local_dirs(cx);
-        cx.notify();
-    }
-
-    /// 只写设置全局状态与磁盘，不重放终端设置（区别于 apply_settings）。
-    fn persist_settings(&self) {
         let snapshot = SettingsSnapshot {
             language: self.language_preference,
             terminal: self.terminal_settings.clone(),
@@ -1281,8 +826,6 @@ impl AppShell {
         }
     }
 
-    /// Finish the normal shutdown sequence after a verified update has been
-    /// handed to the standalone updater.
     pub(crate) fn quit_for_update(&mut self, cx: &mut Context<Self>) {
         if self.shutdown_in_progress {
             return;
@@ -1291,21 +834,55 @@ impl AppShell {
         cx.quit();
     }
 
-    pub(crate) fn local_dir_for_session(&self, session_id: LocalSessionId) -> Option<&LocalDir> {
-        self.workspace
-            .sessions
-            .local_dirs
-            .iter()
-            .find_map(|(_, dir)| dir.sessions.contains(&session_id).then_some(dir))
+    /// 发送布局操作；断开期间禁用并提示重连状态。
+    pub(crate) fn send_workspace_op(&mut self, op: WorkspaceOp, cx: &mut Context<Self>) {
+        if !self.workspace.is_connected() {
+            self.show_toast(
+                ToastNotice::new(i18n::text("workspace.disconnected"), ToastTone::Info),
+                cx,
+            );
+            return;
+        }
+        let Some(connection) = self.workspace_connection.clone() else {
+            self.show_toast(
+                ToastNotice::new(i18n::text("workspace.disconnected"), ToastTone::Info),
+                cx,
+            );
+            return;
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        crate::app::bootstrap::runtime().spawn(async move {
+            let _ = tx.send(connection.mutate(op, None).await);
+        });
+        cx.spawn(async move |weak, cx| {
+            let Some(result) = rx.recv().await else {
+                return;
+            };
+            let _ = weak.update(cx, |this, cx| this.handle_mutate_result(result, cx));
+        })
+        .detach();
     }
 
-    fn local_cwd_matching_query(&self, query: &str) -> Option<PathBuf> {
-        self.workspace
-            .sessions
-            .local_dirs
-            .keys()
-            .find(|cwd| cwd.to_string_lossy().to_ascii_lowercase().contains(query))
-            .cloned()
+    fn handle_mutate_result(
+        &mut self,
+        result: std::io::Result<crossh_session::protocol::WorkspaceMutateReply>,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(reply) => {
+                if let Some(error) = reply.error {
+                    self.show_toast(ToastNotice::new(error.message, ToastTone::Error), cx);
+                }
+            }
+            Err(error) => {
+                self.workspace.connection = crossh_terminal::ConnState::Error(error.to_string());
+                self.status = Some(
+                    rust_i18n::t!("workspace.connection_failed", error = error.to_string())
+                        .to_string(),
+                );
+                cx.notify();
+            }
+        }
     }
 }
 
@@ -1323,25 +900,14 @@ pub fn open_main_window(cx: &mut App) {
                 width: px(700.),
                 height: px(420.),
             }),
-            // Wayland: xdg_toplevel app_id 需与 .desktop 的 StartupWMClass / Icon 匹配，
-            // 否则 GNOME/KDE dock 无法关联图标（退化为灰色齿轮）。保持与
-            // main.rs:cx.set_app_identity("me.xcrong.crossh") 一致。
             app_id: Some("me.xcrong.crossh".into()),
-            // X11: _NET_WM_ICON 需显式提供 RgbaImage；Wayland 忽略此字段，图标由
-            // .desktop + hicolor 主题提供。此处暂不嵌入光栅图，避免额外依赖；
-            // 若需 X11 托盘图标，可在此加入 `icon: load_window_icon()`。
             ..Default::default()
         },
         |window, cx| {
             let shell = AppShell::new(cx);
-            // 窗口级兜底：无项目激活时也认领孤儿（各按会话自身 cwd 建项目）。
-            shell.update(cx, |shell, cx| {
-                shell.adopt_orphan_daemon_sessions(None, cx);
-            });
             let weak = shell.downgrade();
             let notification_weak = shell.downgrade();
             let window_handle = window.window_handle();
-            // 终端链接：优先开在临时 WebView 预览里；平台没有原生宿主或创建失败时回退系统浏览器。
             {
                 let opener_shell = weak.clone();
                 crossh_terminal_view::set_link_opener(
@@ -1368,6 +934,16 @@ pub fn open_main_window(cx: &mut App) {
                 if handled {
                     let _ = window_handle.update(cx, |_, window, _| window.activate_window());
                 }
+            });
+            let activation = shell.update(cx, |_shell, cx| {
+                cx.observe_window_activation(window, move |shell, _window, cx| {
+                    if shell.workspace.is_connected() {
+                        shell.send_workspace_op(WorkspaceOp::RefreshAvailability, cx);
+                    }
+                })
+            });
+            shell.update(cx, |shell, _| {
+                shell._activation_subscription = Some(activation);
             });
             window.on_window_should_close(cx, move |_window, cx| {
                 weak.update(cx, |shell, cx| shell.should_close_window(cx))

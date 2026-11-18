@@ -1,7 +1,6 @@
 //! Settings persistence. Domain validation stays in the owning features.
 
 use std::fs;
-use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -9,8 +8,6 @@ use crate::features::updates::UpdateSettings;
 use crate::features::workspace::settings::WorkspaceSettings;
 use crossh_core::i18n::LanguagePreference;
 use crossh_terminal::TerminalSettings;
-
-const SETTINGS_FILE_NAME: &str = "settings.toml";
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SettingsSnapshot {
@@ -61,7 +58,7 @@ impl From<&SettingsSnapshot> for SettingsFile {
 }
 
 pub(crate) fn load() -> SettingsSnapshot {
-    match settings_path() {
+    match crossh_core::config::settings_read_path() {
         None => SettingsFile::default().into(),
         Some(path) => match fs::read_to_string(&path) {
             Ok(contents) => match toml::from_str::<SettingsFile>(&contents) {
@@ -83,23 +80,18 @@ pub(crate) fn load() -> SettingsSnapshot {
 }
 
 pub(crate) fn save(snapshot: &SettingsSnapshot) -> std::io::Result<()> {
-    let Some(path) = settings_path() else {
+    let Some(path) = crossh_core::config::settings_path() else {
         return Ok(());
     };
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
+        let _ = crossh_core::config::restrict_dir(parent);
     }
     let contents =
         toml::to_string_pretty(&SettingsFile::from(snapshot)).map_err(std::io::Error::other)?;
-    fs::write(path, contents)
-}
-
-fn settings_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| settings_path_from_home(&home))
-}
-
-fn settings_path_from_home(home: &Path) -> PathBuf {
-    home.join(".config").join("crossh").join(SETTINGS_FILE_NAME)
+    fs::write(&path, contents)?;
+    let _ = crossh_core::config::restrict_file(&path);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -119,28 +111,8 @@ mod tests {
             updates: UpdateSettings::default(),
             workspace: WorkspaceSettings {
                 show_host_sidebar: false,
-                recent_dirs: vec![PathBuf::from("/a"), PathBuf::from("/b")],
-                recent_dirs_max: 2,
                 editor_command: Some("zed".into()),
                 focus_follows_mouse: false,
-                pinned_local_tabs: vec![
-                    crate::features::workspace::settings::PinnedLocalTab {
-                        pin_id: 1,
-                        project_dir: PathBuf::from("/a"),
-                        cwd: PathBuf::from("/a"),
-                        custom_name: Some("work".into()),
-                        default_command: Some("opencode".into()),
-                        daemon_session_id: None,
-                    },
-                    crate::features::workspace::settings::PinnedLocalTab {
-                        pin_id: 2,
-                        project_dir: PathBuf::from("/b"),
-                        cwd: PathBuf::from("/b"),
-                        custom_name: None,
-                        default_command: None,
-                        daemon_session_id: None,
-                    },
-                ],
             },
         };
         let encoded =
@@ -150,11 +122,6 @@ mod tests {
             encoded
                 .lines()
                 .any(|line| line == "terminal_font_size = 18.0")
-        );
-        assert!(
-            encoded
-                .lines()
-                .any(|line| line == "recent_local_dirs_max = 2")
         );
         assert!(
             encoded
@@ -171,8 +138,8 @@ mod tests {
                 .lines()
                 .any(|line| line == "updates_check_on_startup = true")
         );
-        assert!(encoded.contains("pin_id = 1"));
-        assert!(encoded.contains("custom_name = \"work\""));
+        assert!(!encoded.contains("recent_local_dirs"));
+        assert!(!encoded.contains("pinned_local_tabs"));
 
         let decoded: SettingsSnapshot = toml::from_str::<SettingsFile>(&encoded)
             .expect("settings should deserialize")
@@ -181,11 +148,13 @@ mod tests {
     }
 
     #[test]
-    fn legacy_settings_without_pinned_tabs_default_to_an_empty_list() {
-        let snapshot: SettingsSnapshot = toml::from_str::<SettingsFile>("language = \"English\"")
-            .expect("legacy settings should deserialize")
-            .into();
-        assert!(snapshot.workspace.pinned_local_tabs.is_empty());
+    fn legacy_settings_keys_are_ignored() {
+        let snapshot: SettingsSnapshot = toml::from_str::<SettingsFile>(
+            "language = \"English\"\nrecent_local_dirs = [\"/a\"]\nrecent_local_dirs_max = 10\npinned_local_tabs = []\n",
+        )
+        .expect("legacy settings should deserialize")
+        .into();
+        assert_eq!(snapshot.workspace, WorkspaceSettings::default());
     }
 
     #[test]
@@ -202,7 +171,7 @@ mod tests {
     #[test]
     fn feature_settings_are_normalized_independently() {
         let snapshot: SettingsSnapshot = toml::from_str::<SettingsFile>(
-            "terminal_font_size = 200.0\nterminal_scrollback = 4294967295\nrecent_local_dirs_max = 0",
+            "terminal_font_size = 200.0\nterminal_scrollback = 4294967295",
         )
         .expect("settings should deserialize")
         .into();
@@ -211,30 +180,15 @@ mod tests {
             snapshot.terminal.scrollback,
             crossh_terminal::MAX_SCROLLBACK
         );
-        assert_eq!(
-            snapshot.workspace.recent_dirs_max,
-            crate::features::workspace::settings::MIN_RECENT_DIRS_MAX
-        );
-    }
-
-    #[test]
-    fn settings_path_uses_the_xdg_style_crossh_directory() {
-        assert_eq!(
-            settings_path_from_home(Path::new("/Users/example")),
-            PathBuf::from("/Users/example/.config/crossh/settings.toml")
-        );
     }
 
     #[test]
     fn spec_20260820_open_project_in_editor_default_editor_settings_stay_out_of_toml() {
         let snapshot = SettingsSnapshot {
             language: LanguagePreference::English,
-            ..SettingsSnapshot {
-                language: LanguagePreference::English,
-                terminal: TerminalSettings::default(),
-                updates: UpdateSettings::default(),
-                workspace: WorkspaceSettings::default(),
-            }
+            terminal: TerminalSettings::default(),
+            updates: UpdateSettings::default(),
+            workspace: WorkspaceSettings::default(),
         };
         let encoded = toml::to_string(&SettingsFile::from(&snapshot)).expect("should serialize");
         assert!(
@@ -245,39 +199,6 @@ mod tests {
             !encoded.contains("editor_priority"),
             "检测候选列表是代码常量，不得写入 settings.toml"
         );
-        let decoded: SettingsSnapshot = toml::from_str::<SettingsFile>(&encoded)
-            .expect("should deserialize")
-            .into();
-        assert_eq!(decoded.workspace.editor_command, None);
-    }
-
-    #[test]
-    fn spec_20260820_open_project_in_editor_custom_editor_settings_round_trip() {
-        let snapshot = SettingsSnapshot {
-            terminal: TerminalSettings::default(),
-            updates: UpdateSettings::default(),
-            workspace: WorkspaceSettings {
-                editor_command: Some("my-editor".into()),
-                ..WorkspaceSettings::default()
-            },
-            ..SettingsSnapshot {
-                language: LanguagePreference::English,
-                terminal: TerminalSettings::default(),
-                updates: UpdateSettings::default(),
-                workspace: WorkspaceSettings::default(),
-            }
-        };
-        let encoded =
-            toml::to_string(&SettingsFile::from(&snapshot)).expect("settings should serialize");
-        assert!(encoded.contains("editor_command = \"my-editor\""));
-        assert!(
-            !encoded.contains("editor_priority"),
-            "序列化不得再产生 editor_priority 字段"
-        );
-        let decoded: SettingsSnapshot = toml::from_str::<SettingsFile>(&encoded)
-            .expect("settings should deserialize")
-            .into();
-        assert_eq!(decoded, snapshot, "归一化后的快照完整 round-trip");
     }
 
     #[test]
@@ -287,11 +208,6 @@ mod tests {
         )
         .expect("legacy settings with editor_priority should deserialize")
         .into();
-        assert_eq!(
-            snapshot.workspace.editor_command,
-            Some("/usr/bin/zed".into()),
-            "编辑器覆盖项保留"
-        );
         assert_eq!(
             snapshot.workspace,
             WorkspaceSettings {

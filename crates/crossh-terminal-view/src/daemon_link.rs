@@ -26,9 +26,8 @@ pub enum LinkCmd {
 }
 /// pump → UI（视图侧 gpui 任务消费）。
 pub enum UiMsg {
-    /// 接入完成：会话 id + 初始输入权 + cwd。
+    /// 接入完成：初始输入权 + cwd。
     Attached {
-        id: String,
         has_input: bool,
         cwd: Option<String>,
     },
@@ -113,7 +112,6 @@ async fn run_link(
     };
     let id = attached.session.id.clone();
     let _ = ui_tx.send(UiMsg::Attached {
-        id: id.clone(),
         has_input: attached.session.controller == Some(me),
         cwd: attached.session.cwd.clone(),
     });

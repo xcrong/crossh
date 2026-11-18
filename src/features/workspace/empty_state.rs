@@ -1,6 +1,4 @@
-//! 空工作区的快速启动入口。
-
-use std::path::PathBuf;
+//! 空工作区的快速启动入口：打开项目与继续最近项目。
 
 use gpui::{
     AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ParentElement, SharedString,
@@ -9,18 +7,16 @@ use gpui::{
 
 use crate::features::workspace::shell::AppShell;
 use crossh_core::i18n;
+use crossh_core::terminal::path_display_name;
+use crossh_session::workspace::ProjectSnapshot;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{Button, ButtonSize, ButtonVariant};
 
 const CONTINUE_ENTRY_LIMIT: usize = 8;
 const COMPACT_LAYOUT_BREAKPOINT: f32 = 520.;
 
-fn filtered_continue_entries(recent_dirs: &[PathBuf]) -> Vec<PathBuf> {
-    recent_dirs
-        .iter()
-        .take(CONTINUE_ENTRY_LIMIT)
-        .cloned()
-        .collect()
+fn visible_entry_count(total: usize) -> usize {
+    total.min(CONTINUE_ENTRY_LIMIT)
 }
 
 fn uses_compact_layout(available_width: gpui::Pixels) -> bool {
@@ -37,14 +33,14 @@ pub(crate) fn render(
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
     let compact = uses_compact_layout(available_width);
-    let recent_dirs = shell
-        .workspace_settings
-        .recent_dirs
+    let visible = visible_entry_count(shell.workspace.snapshot.projects.len());
+    let projects = shell
+        .workspace
+        .snapshot
+        .projects
         .iter()
-        .filter(|path| shell.workspace.sessions.local_dirs.contains_key(*path))
-        .cloned()
+        .take(visible)
         .collect::<Vec<_>>();
-    let entries = filtered_continue_entries(&recent_dirs);
 
     let mut open_project = Button::new("empty-open-folder")
         .size(ButtonSize::Large)
@@ -84,19 +80,18 @@ pub(crate) fn render(
         )
         .child(actions);
 
-    let list_title = "empty_state.recent_projects";
-    let empty_text = "sidebar.no_projects";
-    let entries_empty = entries.is_empty();
     let mut list = div().w_full().flex().flex_col().gap_1().child(
         div()
             .mb_1()
             .text_xs()
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme::muted_text())
-            .child(SharedString::from(i18n::text(list_title))),
+            .child(SharedString::from(i18n::text(
+                "empty_state.recent_projects",
+            ))),
     );
     list = if compact { list.mt_4() } else { list.mt_6() };
-    if entries_empty {
+    if projects.is_empty() {
         list = list.child(
             div()
                 .h(px(42.))
@@ -105,11 +100,11 @@ pub(crate) fn render(
                 .items_center()
                 .text_sm()
                 .text_color(theme::faint_text())
-                .child(SharedString::from(i18n::text(empty_text))),
+                .child(SharedString::from(i18n::text("sidebar.no_projects"))),
         );
     } else {
-        for (row_index, entry) in entries.into_iter().enumerate() {
-            list = list.child(render_continue_entry(row_index, entry, cx));
+        for (row_index, project) in projects.into_iter().enumerate() {
+            list = list.child(render_continue_entry(row_index, project, cx));
         }
     }
     panel = panel.child(list);
@@ -129,17 +124,18 @@ pub(crate) fn render(
 
 fn render_continue_entry(
     row_index: usize,
-    path: PathBuf,
+    project: &ProjectSnapshot,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
-    let label = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| path.to_string_lossy().into_owned());
-    let detail = path.to_string_lossy().to_string();
+    let label = project
+        .name
+        .clone()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| path_display_name(&project.root));
+    let detail = project.root.to_string_lossy().into_owned();
+    let project_id = project.id;
     let icon = icons::IconName::FolderOpen;
+    let available = project.available;
 
     div()
         .id(("empty-continue-entry", row_index))
@@ -162,7 +158,11 @@ fn render_continue_entry(
                 .justify_center()
                 .rounded(px(theme::RADIUS_SM))
                 .bg(theme::accent_soft())
-                .child(icons::icon(icon, 14.).text_color(theme::accent())),
+                .child(icons::icon(icon, 14.).text_color(if available {
+                    theme::accent()
+                } else {
+                    theme::danger()
+                })),
         )
         .child(
             div()
@@ -187,7 +187,7 @@ fn render_continue_entry(
         )
         .child(icons::icon(icons::IconName::ChevronRight, 14.).text_color(theme::faint_text()))
         .on_click(cx.listener(move |this, _ev, _window, cx| {
-            this.activate_local_dir(path.clone(), cx);
+            this.open_project_entry(project_id, cx);
         }))
         .into_any_element()
 }
@@ -197,16 +197,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn local_filter_keeps_recency_and_applies_the_limit() {
-        let recent_dirs = (0..10)
-            .map(|index| PathBuf::from(format!("/project-{index}")))
-            .collect::<Vec<_>>();
-
-        let entries = filtered_continue_entries(&recent_dirs);
-
-        assert_eq!(entries.len(), CONTINUE_ENTRY_LIMIT);
-        assert_eq!(entries[0], PathBuf::from("/project-0"));
-        assert_eq!(entries[7], PathBuf::from("/project-7"));
+    fn continue_entries_are_capped() {
+        assert_eq!(visible_entry_count(0), 0);
+        assert_eq!(visible_entry_count(3), 3);
+        assert_eq!(visible_entry_count(10), CONTINUE_ENTRY_LIMIT);
     }
 
     #[test]

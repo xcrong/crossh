@@ -1579,12 +1579,14 @@ version = "0.44.2"
 dependencies = [
  "crossh-core",
  "dirs 6.0.0",
+ "dunce",
  "libc",
  "log",
  "portable-pty",
  "serde",
  "serde_json",
  "tokio",
+ "toml 1.1.5+spec-1.1.0",
 ]
 
 [[package]]

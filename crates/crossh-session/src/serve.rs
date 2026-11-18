@@ -19,7 +19,7 @@ use tokio::net::{
     TcpListener, TcpStream,
     tcp::{OwnedReadHalf, OwnedWriteHalf},
 };
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{Mutex, broadcast, mpsc, oneshot, watch};
 
 use crate::feed::program_state_name;
 use crate::handshake::{
@@ -27,15 +27,21 @@ use crate::handshake::{
 };
 use crate::protocol::{
     AttachRequest, AttachedReply, CloseRequest, CreateRequest, CreatedReply, ExitedNotice,
-    ListReply, MAX_FRAME, MessageKind, ReplayEndMarker, ResizeRequest, SessionInfo, decode_frame,
-    encode_frame, encode_output,
+    ListReply, MAX_FRAME, MessageKind, ReplayEndMarker, ResizeRequest, SessionInfo,
+    WorkspaceMutateRequest, decode_frame, encode_frame, encode_output,
 };
 use crate::session::{ControllerId, Ownership, OwnershipEvent, SessionMeta};
 use crate::spawn::{ChildSession, OutputChunk, SpawnOptions};
+use crate::workspace::{SessionId, TermSize, Workspace, WorkspaceSnapshot};
+use crate::workspace_actor::{
+    Effect, OwnershipMirror, PaneRef, WorkspaceCommand, spawn_workspace_actor,
+};
+use crate::workspace_store::WorkspaceSaver;
 
 /// 服务端声明的能力（交集后回给客户端）。
 fn server_capabilities() -> Vec<String> {
     [
+        capabilities::WORKSPACE_V1,
         capabilities::REPLAY_MARK,
         capabilities::OBSERVER_LOCAL_LAYOUT,
         capabilities::READONLY_BADGE,
@@ -86,7 +92,30 @@ fn info_of(entry: &SessionEntry) -> SessionInfo {
         controller: entry.ownership.controller(),
         alive: entry.meta.alive,
         exit_code: entry.meta.exit_code,
+        project_id: None,
+        tab_id: None,
+        pane_id: None,
     }
+}
+
+/// 归属镜像合并：在释放会话锁之后调用。
+fn merge_ownership(info: &mut SessionInfo, mirror: &OwnershipMirror) {
+    let pane = mirror
+        .read()
+        .ok()
+        .and_then(|mirror| mirror.get(&info.id).copied());
+    if let Some(pane) = pane {
+        info.project_id = Some(pane.project_id.0);
+        info.tab_id = Some(pane.tab_id.0);
+        info.pane_id = Some(pane.pane_id.0);
+    }
+}
+
+#[derive(Clone)]
+struct WorkspaceRuntime {
+    commands: mpsc::UnboundedSender<WorkspaceCommand>,
+    snapshots: watch::Receiver<Arc<WorkspaceSnapshot>>,
+    mirror: OwnershipMirror,
 }
 
 /// 从 feed 刷新元数据的 cwd/程序状态（`ls`/应答前调用）。
@@ -137,8 +166,23 @@ fn err_payload(code: &'static str, message: impl Into<String>) -> Vec<u8> {
     .unwrap_or_default()
 }
 
-pub async fn run(listener: TcpListener, token: String) -> ! {
+pub async fn run(
+    listener: TcpListener,
+    token: String,
+    workspace: Workspace,
+    store: Arc<dyn WorkspaceSaver>,
+) -> ! {
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
+    let mirror = crate::workspace_actor::empty_mirror();
+    let (effects_tx, effects_rx) = mpsc::unbounded_channel::<Effect>();
+    let handle = spawn_workspace_actor(workspace, store, effects_tx, mirror.clone());
+    spawn_effect_runtime(sessions.clone(), handle.commands.clone(), effects_rx);
+    spawn_cwd_poller(sessions.clone(), handle.commands.clone());
+    let runtime = WorkspaceRuntime {
+        commands: handle.commands,
+        snapshots: handle.snapshots,
+        mirror,
+    };
     loop {
         let Ok((sock, _)) = listener.accept().await else {
             continue;
@@ -146,15 +190,114 @@ pub async fn run(listener: TcpListener, token: String) -> ! {
         let _ = sock.set_nodelay(true);
         let sessions = sessions.clone();
         let token = token.clone();
+        let runtime = runtime.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_conn(sock, sessions, token).await {
+            if let Err(e) = handle_conn(sock, sessions, token, runtime).await {
                 log::debug!("conn ended: {e}");
             }
         });
     }
 }
 
-async fn handle_conn(sock: TcpStream, sessions: Sessions, token: String) -> io::Result<()> {
+/// 运行时副作用：actor 不碰 PTY，spawn/close/resize 都在这里执行。
+fn spawn_effect_runtime(
+    sessions: Sessions,
+    commands: mpsc::UnboundedSender<WorkspaceCommand>,
+    mut effects: mpsc::UnboundedReceiver<Effect>,
+) {
+    tokio::spawn(async move {
+        while let Some(effect) = effects.recv().await {
+            match effect {
+                Effect::Spawn { pane_id, cwd, size } => {
+                    let req = CreateRequest {
+                        shell: None,
+                        cwd: Some(cwd.to_string_lossy().into_owned()),
+                        cols: size.cols,
+                        rows: size.rows,
+                        command: None,
+                        env: None,
+                    };
+                    match spawn_session(&req).await {
+                        Ok(handle) => {
+                            let id = handle.lock().await.meta.id.clone();
+                            sessions.lock().await.insert(id.clone(), handle.clone());
+                            spawn_exit_monitor(
+                                sessions.clone(),
+                                id.clone(),
+                                handle,
+                                commands.clone(),
+                            );
+                            let _ = commands.send(WorkspaceCommand::BindSession {
+                                pane_id,
+                                session_id: id,
+                            });
+                        }
+                        Err(error) => {
+                            log::warn!("workspace pane {pane_id} spawn failed: {error}");
+                            let _ = commands.send(WorkspaceCommand::SessionSpawnFailed { pane_id });
+                        }
+                    }
+                }
+                Effect::CloseSession { session_id } => {
+                    if let Some(handle) = sessions.lock().await.remove(&session_id) {
+                        log::info!("workspace session {session_id} closed");
+                        handle.lock().await.child.kill();
+                    }
+                }
+                Effect::ResizeSession { session_id, size } => {
+                    if let Some(handle) = sessions.lock().await.get(&session_id).cloned() {
+                        let mut entry = handle.lock().await;
+                        if entry.meta.alive {
+                            let _ = entry.child.resize(size.cols.max(1), size.rows.max(1));
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// 轮询 PTY 的 OSC 7 cwd，变化时通知 actor（会话锁内不调用 actor）。
+fn spawn_cwd_poller(sessions: Sessions, commands: mpsc::UnboundedSender<WorkspaceCommand>) {
+    tokio::spawn(async move {
+        let mut seen: HashMap<SessionId, String> = HashMap::new();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let mut updates = Vec::new();
+            {
+                let map = sessions.lock().await;
+                for (id, handle) in map.iter() {
+                    let Ok(entry) = handle.try_lock() else {
+                        continue;
+                    };
+                    let Ok(feed) = entry.child.feed.lock() else {
+                        continue;
+                    };
+                    let Some(cwd) = feed.cwd().map(str::to_string) else {
+                        continue;
+                    };
+                    if seen.get(id) != Some(&cwd) {
+                        seen.insert(id.clone(), cwd.clone());
+                        updates.push((id.clone(), cwd));
+                    }
+                }
+            }
+            for (session_id, cwd) in updates {
+                let _ = commands.send(WorkspaceCommand::PaneCwdChanged {
+                    session_id,
+                    cwd: std::path::PathBuf::from(cwd),
+                });
+            }
+        }
+    });
+}
+
+async fn handle_conn(
+    sock: TcpStream,
+    sessions: Sessions,
+    token: String,
+    runtime: WorkspaceRuntime,
+) -> io::Result<()> {
     let client_id: ControllerId = NEXT_CLIENT.fetch_add(1, Ordering::Relaxed);
     let (mut reader, writer) = sock.into_split();
     let writer = Arc::new(Mutex::new(writer));
@@ -190,23 +333,37 @@ async fn handle_conn(sock: TcpStream, sessions: Sessions, token: String) -> io::
     let mut bound: Option<Handle> = None;
     // 当前接入的转发任务（切换绑定/断开时 abort）。
     let mut fwd: Option<tokio::task::JoinHandle<()>> = None;
+    let mut workspace_attached = false;
+    let mut workspace_forward: Option<tokio::task::JoinHandle<()>> = None;
 
     loop {
         let (kind, payload) = match read_frame(&mut reader).await {
             Ok(f) => f,
             Err(_) => {
                 detach_conn(&mut bound, &mut fwd, client_id).await;
+                if workspace_attached {
+                    let _ = runtime.commands.send(WorkspaceCommand::AttachEnded);
+                }
+                if let Some(task) = workspace_forward.take() {
+                    task.abort();
+                }
                 return Ok(());
             }
         };
         match kind {
             MessageKind::List => {
-                let map = sessions.lock().await;
-                let mut out = Vec::with_capacity(map.len());
-                for h in map.values() {
-                    let mut e = h.lock().await;
-                    refresh_meta(&mut e);
-                    out.push(info_of(&e));
+                let mut out = {
+                    let map = sessions.lock().await;
+                    let mut out = Vec::with_capacity(map.len());
+                    for h in map.values() {
+                        let mut e = h.lock().await;
+                        refresh_meta(&mut e);
+                        out.push(info_of(&e));
+                    }
+                    out
+                };
+                for info in &mut out {
+                    merge_ownership(info, &runtime.mirror);
                 }
                 let body = serde_json::to_vec(&ListReply { sessions: out }).unwrap_or_default();
                 send_frame(&writer, MessageKind::Listed, &body).await?;
@@ -218,7 +375,12 @@ async fn handle_conn(sock: TcpStream, sessions: Sessions, token: String) -> io::
                 let id = handle.lock().await.meta.id.clone();
                 sessions.lock().await.insert(id.clone(), handle.clone());
                 log::info!("session {id} created ({}x{})", req.cols, req.rows);
-                spawn_exit_monitor(sessions.clone(), id.clone(), handle.clone());
+                spawn_exit_monitor(
+                    sessions.clone(),
+                    id.clone(),
+                    handle.clone(),
+                    runtime.commands.clone(),
+                );
                 // 创建者自动绑定（首个接入 = controller）。
                 detach_conn(&mut bound, &mut fwd, client_id).await;
                 let created = {
@@ -230,7 +392,7 @@ async fn handle_conn(sock: TcpStream, sessions: Sessions, token: String) -> io::
                 let body = serde_json::to_vec(&created).unwrap_or_default();
                 send_frame(&writer, MessageKind::Created, &body).await?;
                 bound = Some(handle.clone());
-                fwd = Some(attach_and_stream(&writer, handle, client_id).await?);
+                fwd = Some(attach_and_stream(&writer, handle, client_id, &runtime.mirror).await?);
             }
             MessageKind::Attach => {
                 let req: AttachRequest = serde_json::from_slice(&payload)
@@ -257,7 +419,7 @@ async fn handle_conn(sock: TcpStream, sessions: Sessions, token: String) -> io::
                 detach_conn(&mut bound, &mut fwd, client_id).await;
                 bound = Some(handle.clone());
                 log::info!("client {client_id} attached to {}", req.id);
-                fwd = Some(attach_and_stream(&writer, handle, client_id).await?);
+                fwd = Some(attach_and_stream(&writer, handle, client_id, &runtime.mirror).await?);
             }
             MessageKind::Input => {
                 let Some(h) = &bound else {
@@ -309,9 +471,35 @@ async fn handle_conn(sock: TcpStream, sessions: Sessions, token: String) -> io::
                 let req: ResizeRequest = serde_json::from_slice(&payload)
                     .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad resize"))?;
                 if let Some(h) = &bound {
-                    let mut e = h.lock().await;
-                    if e.ownership.accepts_resize(client_id) && e.meta.alive {
-                        let _ = e.child.resize(req.cols.max(1), req.rows.max(1));
+                    let session_id = h.lock().await.meta.id.clone();
+                    let workspace_pane = runtime
+                        .mirror
+                        .read()
+                        .ok()
+                        .is_some_and(|mirror| mirror.contains_key(&session_id));
+                    if workspace_pane {
+                        let (session_id, accepted) = {
+                            let e = h.lock().await;
+                            (
+                                e.meta.id.clone(),
+                                e.ownership.accepts_resize(client_id) && e.meta.alive,
+                            )
+                        };
+                        if accepted {
+                            let _ = runtime.commands.send(WorkspaceCommand::ResizePane {
+                                session_id,
+                                size: TermSize {
+                                    cols: req.cols.max(1),
+                                    rows: req.rows.max(1),
+                                },
+                            });
+                        }
+                    } else {
+                        // 临时会话不经过工作区 actor，直接调整 PTY。
+                        let mut e = h.lock().await;
+                        if e.ownership.accepts_resize(client_id) && e.meta.alive {
+                            let _ = e.child.resize(req.cols.max(1), req.rows.max(1));
+                        }
                     }
                     // observer 上报静默忽略（尺寸权威在 controller）。
                 }
@@ -319,18 +507,94 @@ async fn handle_conn(sock: TcpStream, sessions: Sessions, token: String) -> io::
             MessageKind::Close => {
                 let req: CloseRequest = serde_json::from_slice(&payload)
                     .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad close"))?;
-                if let Some(h) = sessions.lock().await.remove(&req.id) {
-                    // 发信号；退出码由监视任务收割并广播（监视任务随后发现
-                    // 表中已无该会话，仅跳过移除）。
+                let owner = runtime
+                    .mirror
+                    .read()
+                    .ok()
+                    .and_then(|mirror| mirror.get(&req.id).copied());
+                if let Some(PaneRef { pane_id, .. }) = owner {
+                    // 布局会话：actor 先解绑、更新布局、持久化，再投 CloseSession。
+                    let _ = runtime
+                        .commands
+                        .send(WorkspaceCommand::ClosePane { pane_id });
+                } else if let Some(h) = sessions.lock().await.remove(&req.id) {
+                    // 临时会话：沿用直接 kill 路径。
                     log::info!("session {} closed by client", req.id);
                     h.lock().await.child.kill();
                 }
             }
             MessageKind::Shutdown => {
-                // 显式停止：删端口文件后直接退出进程（会话随之结束，见规格）。
+                // 显式停止：flush 工作区、投递关闭效果、删端口文件后退出。
                 log::info!("shutdown requested, exiting");
+                let (reply, wait) = oneshot::channel();
+                let _ = runtime.commands.send(WorkspaceCommand::Shutdown { reply });
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(6), wait).await;
                 crate::instance::remove_port_file();
                 std::process::exit(0);
+            }
+            MessageKind::WorkspaceGet => {
+                let (reply, wait) = oneshot::channel();
+                let _ = runtime.commands.send(WorkspaceCommand::Get { reply });
+                match wait.await {
+                    Ok(snapshot) => {
+                        let body = serde_json::to_vec(&*snapshot).unwrap_or_default();
+                        send_frame(&writer, MessageKind::WorkspaceSnapshot, &body).await?;
+                    }
+                    Err(_) => {
+                        send_frame(
+                            &writer,
+                            MessageKind::Error,
+                            &err_payload("workspace", "workspace unavailable"),
+                        )
+                        .await?;
+                    }
+                }
+            }
+            MessageKind::WorkspaceAttach => {
+                // 先订阅再 attach：订阅与快照之间不会漏掉发布。
+                let mut updates = runtime.snapshots.clone();
+                let (reply, wait) = oneshot::channel();
+                let _ = runtime.commands.send(WorkspaceCommand::Attach { reply });
+                if let Ok(snapshot) = wait.await {
+                    let body = serde_json::to_vec(&*snapshot).unwrap_or_default();
+                    send_frame(&writer, MessageKind::WorkspaceSnapshot, &body).await?;
+                }
+                workspace_attached = true;
+                let forward_writer = writer.clone();
+                workspace_forward = Some(tokio::spawn(async move {
+                    while updates.changed().await.is_ok() {
+                        let snapshot = updates.borrow_and_update().clone();
+                        let body = serde_json::to_vec(&*snapshot).unwrap_or_default();
+                        if send_frame(&forward_writer, MessageKind::WorkspaceSnapshot, &body)
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }));
+            }
+            MessageKind::WorkspaceMutate => {
+                let request: WorkspaceMutateRequest = serde_json::from_slice(&payload)
+                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad mutate"))?;
+                let (reply, wait) = oneshot::channel();
+                let _ = runtime
+                    .commands
+                    .send(WorkspaceCommand::Mutate { request, reply });
+                match wait.await {
+                    Ok(reply) => {
+                        let body = serde_json::to_vec(&reply).unwrap_or_default();
+                        send_frame(&writer, MessageKind::WorkspaceMutateReply, &body).await?;
+                    }
+                    Err(_) => {
+                        send_frame(
+                            &writer,
+                            MessageKind::Error,
+                            &err_payload("workspace", "workspace unavailable"),
+                        )
+                        .await?;
+                    }
+                }
             }
             _ => {
                 send_frame(
@@ -366,6 +630,7 @@ async fn attach_and_stream(
     writer: &Arc<Mutex<OwnedWriteHalf>>,
     handle: Handle,
     client: ControllerId,
+    mirror: &OwnershipMirror,
 ) -> io::Result<tokio::task::JoinHandle<()>> {
     // 订阅与快照之间无 `.await`：读线程"先推进环、再广播"的顺序
     // 保证订阅后到达的块序号一定大于快照序号，不丢不重。
@@ -394,6 +659,8 @@ async fn attach_and_stream(
         let start = end_seq.saturating_sub(bytes.len() as u64);
         (out_rx, exit_rx, attached, chunk_with_seq(start, &bytes))
     };
+    let mut attached = attached;
+    merge_ownership(&mut attached.session, mirror);
     let id = attached.session.id.clone();
     let body = serde_json::to_vec(&attached).unwrap_or_default();
     send_frame(writer, MessageKind::Attached, &body).await?;
@@ -457,7 +724,12 @@ fn spawn_forwarder(
 }
 
 /// 退出监视：子进程退出 → 标记 + 广播 `Exited` → 从表移除。
-fn spawn_exit_monitor(sessions: Sessions, id: String, handle: Handle) {
+fn spawn_exit_monitor(
+    sessions: Sessions,
+    id: String,
+    handle: Handle,
+    commands: mpsc::UnboundedSender<WorkspaceCommand>,
+) {
     tokio::spawn(async move {
         loop {
             let exited = {
@@ -480,6 +752,9 @@ fn spawn_exit_monitor(sessions: Sessions, id: String, handle: Handle) {
             if let Some(code) = exited {
                 sessions.lock().await.remove(&id);
                 log::info!("session {id} exited with {code}");
+                let _ = commands.send(WorkspaceCommand::SessionExited {
+                    session_id: id.clone(),
+                });
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;

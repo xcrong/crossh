@@ -5,12 +5,12 @@
 
 ## 特性
 
-- **本地终端 / 项目管理**：以项目目录组织多会话本地终端（`LocalSession` / `LocalDir` 一等公民，见 `src/features/workspace/view.rs`），会话归属常驻进程 `crossh-daemon`（零 `gpui` 依赖的 `crossh-session` crate，拥有 PTY 与输出环形缓冲），GUI 只解析字节流；关窗口/退出 GUI 不结束会话（只 detach），显式关闭标签才发 Close；固定标签按 daemon 会话 id 恢复；侧栏以项目为核心，隐藏主机分组（见 `src/features/workspace/sidebar.rs:188`）。CLI：`crossh ls` 列会话、`crossh run -- <cmd>` 跑一次性命令并原样返回退出码、`crossh capture <id>` 抓取回放、`crossh daemon [status|start|stop]` 管理属主进程（stop 结束全部会话）。
+- **本地终端 / 项目管理**：以项目目录组织多会话本地终端；项目、标签页、递归分屏树（行/列 + 比例）、焦点与 pane cwd 由常驻进程 `crossh-daemon`（零 `gpui` 依赖的 `crossh-session` crate，拥有 PTY 与输出环形缓冲）持有并持久化到 `daemon/workspace.json`。GUI 只消费快照、按 `PaneId` 维护终端视图（见 `src/features/workspace/registry.rs`）：关窗口/退出 GUI 不结束会话（只 detach），daemon 重启后布局原样恢复、会话按 pane 重建；侧栏以项目为核心。CLI：`crossh open <path>` 先在 daemon 中打开/激活项目再唤起 GUI、`crossh ls` 列会话（`ID ROLE ALIVE PROGRAM PROJECT TAB PANE CWD`，临时会话层级列为 `-`）、`crossh run -- <cmd>` 跑一次性命令并原样返回退出码、`crossh capture <id>` 抓取回放、`crossh daemon [status|start|stop]` 管理属主进程（stop 结束全部会话但保留布局）。
 - **Git Viewer**：独立二进制 `crossh-git`，提供变更列表、staging/unstage、commit、push/pull 与远端分歧同步，状态栏实时展示 Git 状态，`cmd-r` 刷新。
 - **Note**：独立二进制 `crossh-note`，本地 SQLite（WAL + FTS5 + 触发器同步，见 `crates/crossh-note/src/lib.rs`）存储，全文检索把 FTS 与正文子串两条路径取并集（中文无需专用索引），再按置顶 → 命中次数 → 首次命中位置 → 更新时间排序；支持置顶，零 `gpui` 依赖的纯逻辑层。
 - **系统监视 / Scratch 终端**：系统指标常驻面板与随手 Scratch 终端，作为工作区内置视图，不阻塞主工作区。
 - **链接预览**：终端链接开在悬浮卡片里（macOS WKWebView / Windows WebView2 原生子视图，卡片外框、地址栏、`Esc` 与浮层避让由 GPUI 负责），创建失败或 Linux（为不引 GTK/WebKitGTK 而未接）回退系统浏览器。
-- **设置与常驻友好**：语言（zh/en）、Zed 终端字号、滚动回退行数、启动时检查更新，持久化到 `~/.config/crossh/`；日志裁剪（`/tmp/crossh/run.log`）、panic 现场保留、空闲内存 ~70MB。
+- **设置与常驻友好**：语言（zh/en）、Zed 终端字号、滚动回退行数、启动时检查更新，持久化到配置根的 `settings.toml`（默认 `~/.config/crossh[-dev]`，`CROSSH_CONFIG_DIR` 直接指定根目录）；daemon 布局在 `<root>/daemon/workspace.json`；日志裁剪（`/tmp/crossh/run.log`）、panic 现场保留、空闲内存 ~70MB。
 - **远程更新**：设置页从 HTTPS release manifest 检查版本，按平台下载并校验 SHA-256 与 Ed25519 签名（缺失/无效签名一律拒绝，），再交给随应用分发的独立 updater 完成替换和重启。
 
 ## 构建与运行
@@ -24,11 +24,15 @@ cargo run --release  # 发布模式
 crossh git
 crossh git ~/Code/draw-backend
 
- # 在已运行实例中打开项目（无实例时启动新实例）；裸 `crossh` 仅聚焦已有实例
- crossh open ~/Code/draw-backend
- # 与子命令同名也无需转义
- crossh open git
+# 在 daemon 中打开/激活项目，回执成功后再聚焦或启动 GUI；裸 `crossh` 仅聚焦已有实例
+crossh open ~/Code/draw-backend
+# 与子命令同名也无需转义
+crossh open git
 ```
+
+`crossh open` 先向 daemon 提交打开操作并等待工作区修改回执，成功后才聚焦已有实例或启动 GUI；路径不存在、daemon 协议不兼容或回执超时都会以非零状态退出，不启动 GUI。
+
+`crossh daemon status` 只读探测：运行中打印 `running (N sessions, port P)` 与 `workspace: N projects, N tabs, N panes`；协议不兼容打印 `incompatible: found vN, expected vM; run crossh daemon stop`；未运行打印 `not running`（端口文件残留时带 `(stale port file)`，能读到原因时追加 `: <reason>`）。`crossh daemon stop` 结束全部会话并保留工作区布局。
 
 Git Viewer 提供变更列表、staging/unstage、commit、push/pull 与刷新，状态栏同步显示与远端的分歧；`cmd-r` 刷新。
 
@@ -60,6 +64,7 @@ open dist/crossh.app
 crates/
   crossh-core/                无 UI 的配置、终端契约、命令/Git 逻辑
   crossh-terminal/            终端 settings/events 模型边界
+  crossh-session/             常驻 daemon：PTY、持久工作区、协议 v2
   crossh-update/              manifest、下载校验、归档安装和 updater
   crossh-assets/              无 UI 的图标资源、嵌入和资源完整性校验
   crossh-ui/                  GPUI 主题、调色板、图标、菜单和通用控件
@@ -70,12 +75,12 @@ src/
   features/                   GPUI feature views 和跨 crate adapters
     terminal/                 Zed terminal 的终端视图宿主
     git/                      Git Viewer 窗口与变更操作
-    workspace/                外壳、侧栏、标签和分栏状态
+    workspace/                外壳、侧栏、标签与 PaneId 终端视图（布局归 daemon）
     settings/                 设置窗口与持久化编排
     updates/                  更新状态机与设置页入口
 ```
 
-依赖方向保持单向：`crossh-core`、`crossh-assets`、`crossh-terminal` 和 `crossh-update` 不依赖 GPUI；`crossh-ui`（含调色板 `palette`）将 `crossh-assets` 适配为 GPUI 的资源源；根 package 的 GPUI feature adapter 依赖这些 crate；`workspace` 直接管理本地终端实体、活动视图与分栏状态。可重复执行的分层检查位于 `scripts/check-architecture.sh`。
+依赖方向保持单向：`crossh-core`、`crossh-assets`、`crossh-terminal`、`crossh-session` 和 `crossh-update` 不依赖 GPUI；`crossh-ui`（含调色板 `palette`）将 `crossh-assets` 适配为 GPUI 的资源源；根 package 的 GPUI feature adapter 依赖这些 crate；`workspace` 只把 daemon 快照投影为 `PaneId → TerminalView`，自身不持有布局。可重复执行的分层检查位于 `scripts/check-architecture.sh`。
 
 UI 图标统一放在 `crates/crossh-assets/assets/icons/`，由 `crossh-assets`
 自动嵌入。图标引用必须通过 `crossh_ui::icons::IconName`，不要在业务视图中

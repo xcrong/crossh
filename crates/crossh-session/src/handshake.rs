@@ -7,10 +7,13 @@
 use serde::{Deserialize, Serialize};
 
 /// 当前协议版本。升级时 +1，旧 daemon 拒绝新客户端并给出恢复命令。
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// 已知能力标志。未知标志 MUST 被忽略（见 `normalize_capabilities`）。
 pub mod capabilities {
+    /// 工作区快照、订阅与串行修改（协议 v2）。
+    /// 不支持的对端：拒绝连接并提示升级，不静默降级成 GUI 本地持有布局。
+    pub const WORKSPACE_V1: &str = "workspace-v1";
     /// 服务端在回放后发送 `ReplayEnd` 边界帧。
     /// 不支持的对端：把回放与实时同等追加显示，不依赖该帧也可用。
     pub const REPLAY_MARK: &str = "replay-mark";
