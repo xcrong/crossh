@@ -30,7 +30,7 @@ crossh open ~/Code/draw-backend
 crossh open git
 ```
 
-`crossh open` 先向 daemon 提交打开操作并等待工作区修改回执，成功后才聚焦已有实例或启动 GUI；路径不存在、daemon 协议不兼容或回执超时都会以非零状态退出，不启动 GUI。
+`crossh open` 先向 daemon 提交打开操作并等待工作区修改回执，成功后才聚焦已有实例或启动 GUI；路径不存在或回执超时会以非零状态退出，不启动 GUI。升级后旧协议的 daemon 仍在运行时，按需拉起的客户端会先停掉它再启动当前版本：旧会话结束，工作区布局保留。
 
 `crossh daemon status` 只读探测：运行中打印 `running (N sessions, port P)` 与 `workspace: N projects, N tabs, N panes`；协议不兼容打印 `incompatible: found vN, expected vM; run crossh daemon stop`；未运行打印 `not running`（端口文件残留时带 `(stale port file)`，能读到原因时追加 `: <reason>`）。`crossh daemon stop` 结束全部会话并保留工作区布局。
 

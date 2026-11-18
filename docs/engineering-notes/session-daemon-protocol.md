@@ -18,6 +18,11 @@ to be running at all"），帧格式照其切分：`u32` 小端长度 + 1 字节
   已解析公共字段（单测断言）。
 - 握手：版本不一致给明确错误类型，文案含停止旧实例的具体命令；
   令牌缺失/错误拒绝连接（回环 TCP 从"开目录"升级为"可打字"后的安全面）。
+- 升级恢复：连接路径（`ensure_daemon`）遇到存活但版本不兼容的 daemon 时，
+  按对端在握手错误里报告的版本重新握手、发 `Shutdown`，等端口释放后
+  detached 拉起当前版本的 daemon。旧会话随旧 daemon 结束，布局在
+  Shutdown 时落盘。只按报告版本握手，避免并发客户端已拉起新 daemon 时误杀。
+  `crossh daemon status` 仍只读探测，不触发重启。
 
 ## 出向通道划分
 
@@ -84,4 +89,5 @@ to be running at all"），帧格式照其切分：`u32` 小端长度 + 1 字节
 `DETACHED_PROCESS`, 重连回放, 输入权, 只读,
 `WorkspaceSnapshot`, `WorkspaceActor`, `revision`, `expected_revision`,
 `workspace-v1`, 协议 v2, 递归分屏, `durable`, `storage_error`,
-`workspace.json`, `CROSSH_CONFIG_DIR`, `daemon.error`
+`workspace.json`, `CROSSH_CONFIG_DIR`, `daemon.error`, 升级恢复, 自动重启,
+`ensure_daemon`, `Shutdown`

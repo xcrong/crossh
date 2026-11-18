@@ -244,21 +244,39 @@ pub fn incompatible_message(found: Option<u32>) -> String {
 }
 
 /// 按需拉起并返回可用地址：兼容 daemon 直接用；无监听时 detached 重拉；
-/// 存活但不兼容时明确报错，**不删除端口文件、不 spawn**。
+/// 存活但协议不兼容时先按对端版本停掉旧 daemon，再拉起本版本
+/// （旧 daemon 的会话随之结束，工作区布局在 Shutdown 时落盘）。
 pub async fn ensure_daemon() -> io::Result<DaemonAddr> {
+    let mut stop_failure = None;
     match probe_daemon().await {
         DaemonState::Ready(addr) => return Ok(addr),
         DaemonState::Incompatible { message } => {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                incompatible_message(parse_found_version(&message)),
-            ));
+            let found = parse_found_version(&message);
+            if let Some(addr) = read_daemon_addr() {
+                match stop_incompatible_daemon(&addr, found).await {
+                    Ok(()) => log::warn!(
+                        "stopped incompatible daemon on port {} (protocol {found:?}); its sessions ended",
+                        addr.port
+                    ),
+                    // 停止期间旧 daemon 可能已被并发客户端换成新版本，也可能
+                    // 自行退出：能兼容连上就复用，确实为空则照常拉起；只有
+                    // 仍是另一个不兼容实例时才把停止错误交给调用方。
+                    Err(error) => match probe_daemon().await {
+                        DaemonState::Ready(addr) => return Ok(addr),
+                        DaemonState::Absent { .. } => {}
+                        DaemonState::Incompatible { .. } => stop_failure = Some(error),
+                    },
+                }
+            }
         }
         DaemonState::Absent { stale } => {
             if stale {
                 let _ = std::fs::remove_file(daemon_port_file_path());
             }
         }
+    }
+    if let Some(error) = stop_failure {
+        return Err(error);
     }
     spawn_detached()?;
     let deadline = Instant::now() + SPAWN_WAIT;
@@ -619,8 +637,9 @@ pub async fn capture_session(id: &str, out: &mut dyn Write) -> io::Result<Sessio
 
 /// `daemon stop`：直接连接现有 daemon，任何分支都不拉起新实例。
 ///
-/// 当前版本握手遇到版本错误时用 v1 握手重试（v1 的 `Shutdown = 16`
-/// 编号与空载荷不变）；两种握手都失败时给出可执行错误。
+/// 当前版本握手遇到版本错误时，按对端在错误里报告的版本重试握手
+/// （v1 起的 `Hello` 字段与 `Shutdown = 16` 编号不变）；两种握手都
+/// 失败时给出可执行错误。
 pub async fn daemon_stop() -> io::Result<()> {
     let Some(addr) = read_daemon_addr() else {
         return Err(io::Error::new(
@@ -631,40 +650,63 @@ pub async fn daemon_stop() -> io::Result<()> {
             ),
         ));
     };
-    let current = match probe_version(&addr, PROTOCOL_VERSION, client_capabilities()).await {
-        Ok(_) => Some(PROTOCOL_VERSION),
-        Err(ProbeError::Version(_)) => match probe_version(&addr, 1, Vec::new()).await {
-            Ok(_) => Some(1),
-            Err(ProbeError::Version(message)) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    format!(
-                        "cannot stop daemon at {}: {message}; run `crossh daemon stop` with the matching crossh version",
-                        daemon_port_file_path().display()
-                    ),
-                ));
+    let version = match probe_version(&addr, PROTOCOL_VERSION, client_capabilities()).await {
+        Ok(_) => PROTOCOL_VERSION,
+        Err(ProbeError::Version(message)) => {
+            let Some(found) =
+                parse_found_version(&message).filter(|version| *version != PROTOCOL_VERSION)
+            else {
+                return Err(stop_error(&message));
+            };
+            match probe_version(&addr, found, Vec::new()).await {
+                Ok(_) => found,
+                Err(ProbeError::Version(message)) => return Err(stop_error(&message)),
+                Err(ProbeError::Other(error)) => return Err(stop_io_error(error)),
             }
-            Err(ProbeError::Other(error)) => {
-                return Err(io::Error::new(
-                    error.kind(),
-                    format!(
-                        "cannot stop daemon at {}: {error}; run `crossh daemon stop` with the matching crossh version",
-                        daemon_port_file_path().display()
-                    ),
-                ));
-            }
-        },
-        Err(ProbeError::Other(error)) => {
-            return Err(io::Error::new(
-                error.kind(),
-                format!(
-                    "cannot stop daemon at {}: {error}; the daemon may be from another crossh version",
-                    daemon_port_file_path().display()
-                ),
-            ));
         }
+        Err(ProbeError::Other(error)) => return Err(stop_io_error(error)),
     };
-    let version = current.expect("handshake succeeded");
+    shutdown_daemon(&addr, version).await
+}
+
+/// 停掉已确认版本不兼容的 daemon。只按对端报告的版本握手：并发客户端
+/// 可能已拉起新 daemon，用当前版本探测成功并不代表它就是旧实例。
+async fn stop_incompatible_daemon(addr: &DaemonAddr, found: Option<u32>) -> io::Result<()> {
+    let Some(version) = found.filter(|version| *version != PROTOCOL_VERSION) else {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            incompatible_message(found),
+        ));
+    };
+    match probe_version(addr, version, Vec::new()).await {
+        Ok(_) => shutdown_daemon(addr, version).await,
+        Err(ProbeError::Version(message)) => Err(stop_error(&message)),
+        Err(ProbeError::Other(error)) => Err(stop_io_error(error)),
+    }
+}
+
+fn stop_error(message: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!(
+            "cannot stop daemon at {}: {message}; run `crossh daemon stop` with the matching crossh version",
+            daemon_port_file_path().display()
+        ),
+    )
+}
+
+fn stop_io_error(error: io::Error) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!(
+            "cannot stop daemon at {}: {error}; the daemon may be from another crossh version",
+            daemon_port_file_path().display()
+        ),
+    )
+}
+
+/// 用指定协议版本握手并发送 `Shutdown`，等到端口不可连接。
+async fn shutdown_daemon(addr: &DaemonAddr, version: u32) -> io::Result<()> {
     let sock = TcpStream::connect(("127.0.0.1", addr.port)).await?;
     let (mut r, mut w) = sock.into_split();
     let hello = HandshakeRequest {
@@ -841,5 +883,78 @@ pub fn role_of(session: &SessionInfo, me: u64) -> &'static str {
         Some(id) if id == me => "controller",
         Some(_) => "observer",
         None => "none",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn found_version_is_parsed_from_mismatch_text() {
+        assert_eq!(
+            parse_found_version(
+                "protocol version mismatch (daemon 1, client 2); run `crossh daemon stop` then retry"
+            ),
+            Some(1)
+        );
+        assert_eq!(parse_found_version("handshake rejected"), None);
+    }
+
+    /// 自动停止只能按对端报告过的版本握手：期间并发客户端可能已拉起
+    /// 新 daemon，用当前版本探测成功并不代表它就是旧实例。
+    #[tokio::test]
+    async fn stop_incompatible_daemon_never_stops_a_compatible_instance() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Ok((sock, _)) = listener.accept().await {
+                let (mut r, mut w) = sock.into_split();
+                let Ok((kind, payload)) = read_frame(&mut r).await else {
+                    continue;
+                };
+                assert_eq!(kind, MessageKind::Hello);
+                let hello: HandshakeRequest = serde_json::from_slice(&payload).unwrap();
+                if hello.version != PROTOCOL_VERSION {
+                    let error = ErrorPayload {
+                        code: "protocol".to_string(),
+                        message: format!(
+                            "protocol version mismatch (daemon {PROTOCOL_VERSION}, client {}); run `crossh daemon stop` then retry",
+                            hello.version
+                        ),
+                    };
+                    let _ = send_frame(&mut w, MessageKind::Error, &json(&error)).await;
+                    continue;
+                }
+                let ok = HandshakeOk {
+                    version: PROTOCOL_VERSION,
+                    capabilities: vec![],
+                    client_id: 1,
+                };
+                if send_frame(&mut w, MessageKind::Welcome, &json(&ok))
+                    .await
+                    .is_err()
+                {
+                    continue;
+                }
+                if let Ok((MessageKind::Shutdown, _)) = read_frame(&mut r).await {
+                    let _ = shutdown_tx.send(());
+                }
+            }
+        });
+
+        let addr = DaemonAddr {
+            port,
+            token: "tok".to_string(),
+        };
+        let error = stop_incompatible_daemon(&addr, Some(PROTOCOL_VERSION.saturating_sub(1)))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(
+            shutdown_rx.try_recv().is_err(),
+            "a compatible daemon must never receive Shutdown"
+        );
     }
 }
