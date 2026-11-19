@@ -32,6 +32,6 @@
 
 - [x] 5.1 `cargo test --bin crossh link_preview`：3 passed（`only_http_schemes_are_previewable` / `bare_hosts_get_https_prefix` / `explicit_foreign_schemes_are_not_taken_over`）。
 - [x] 5.2 `cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`scripts/check-architecture.sh` 全绿。
-- [ ] 5.3 macOS 实机冒烟：终端链接开卡片、浮层避让、网页内 `Esc`、地址栏回写、失败回退。
+- [x] 5.3 macOS 实机冒烟：终端链接开卡片、浮层避让、网页内 `Esc`、地址栏回写、失败回退。2026-11-19 用户确认 macOS 已基本没问题，视为已验证；Windows 侧（2.3 DPI/工程笔记回写 C2）仍待补，后续另修。
 - [x] 5.4 `openspec validate link-preview-multi-platform --strict`（2026-11-18 复核：valid）。
 - [x] 5.5 评审先于 apply 落盘（`review.md` 为「带条件通过」，条件 C1–C3 见该文件）。
