@@ -15,7 +15,7 @@ use crate::features::workspace::status::{
     program_status_tooltip,
 };
 use crossh_core::i18n;
-use crossh_session::workspace::{ProjectId, TabId};
+use crossh_session::workspace::{ProjectId, TabId, TabSnapshot};
 use crossh_terminal_view::TerminalItem as _;
 use crossh_ui::context_menu::ShellMenuAction;
 use crossh_ui::{icons, theme};
@@ -183,6 +183,86 @@ pub(crate) fn tab_menu_entries(
     entries
 }
 
+fn render_tab_entry(
+    shell: &AppShell,
+    cx: &mut Context<AppShell>,
+    project_id: ProjectId,
+    single: bool,
+    index: usize,
+    tab: &TabSnapshot,
+) -> AnyElement {
+    let tab_id = tab.id;
+    let is_active = shell
+        .workspace
+        .active_tab()
+        .is_some_and(|active| active.id == tab_id);
+    let view = tab
+        .active_pane
+        .and_then(|pane_id| tab.layout.find_pane(pane_id))
+        .and_then(|pane| shell.workspace.pane_view(pane.id))
+        .or_else(|| {
+            tab.layout
+                .leaves()
+                .find_map(|pane| shell.workspace.pane_view(pane.id))
+        });
+    let state = view.map(|view| view.state(cx));
+    let command_running = view.is_some_and(|view| view.is_command_running(cx));
+    let program_status = view.and_then(|view| view.program_status(cx));
+    let label = projection::tab_title(tab, index);
+    let label = match program_status_progress_suffix(&program_status) {
+        Some(suffix) => format!("{label}{suffix}"),
+        None => label,
+    };
+    let cwd = tab
+        .active_pane
+        .and_then(|pane_id| tab.layout.find_pane(pane_id))
+        .or_else(|| tab.layout.leaves().next())
+        .map(|pane| pane.cwd.clone())
+        .unwrap_or_default();
+    let default_command = tab.default_command.clone();
+    let has_default_command = default_command.is_some();
+    let tooltip = program_status_tooltip(&program_status);
+    let leading = has_default_command.then(|| {
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(icons::icon(icons::IconName::Play, 8.).text_color(theme::muted_text()))
+            .into_any_element()
+    });
+    render_tab_chip(
+        cx,
+        ("tab-container", tab_id.0),
+        program_status_dot_color(&program_status)
+            .unwrap_or_else(|| local_tab_dot_color(&state, command_running)),
+        label,
+        tooltip,
+        is_active,
+        leading,
+        ("tab", tab_id.0),
+        move |ev: &MouseDownEvent, this, _window, cx| {
+            let entries = tab_menu_entries(
+                tab_id,
+                project_id,
+                is_active,
+                single,
+                cwd.clone(),
+                default_command.clone(),
+                command_running,
+            );
+            this.open_context_menu(ev.position, entries, cx);
+        },
+        move |_ev: &ClickEvent, this, _window, cx| {
+            this.activate_tab(tab_id, cx);
+        },
+        ("tab-close", tab_id.0),
+        move |_ev: &ClickEvent, this, window, cx| {
+            this.request_close_tab(tab_id, window, cx);
+        },
+        tab_id,
+    )
+}
+
 pub(super) fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoElement {
     let mut strip = TabStrip::new("tab-strip").track_scroll(&shell.tab_scroll);
 
@@ -190,107 +270,43 @@ pub(super) fn render_tab_strip(shell: &AppShell, cx: &mut Context<AppShell>) -> 
         let project_id = project.id;
         let single = project.tabs.len() == 1;
         for (index, tab) in project.tabs.iter().enumerate() {
-            let tab_id = tab.id;
-            let is_active = project.active_tab == Some(tab_id);
-            let view = tab
-                .active_pane
-                .and_then(|pane_id| tab.layout.find_pane(pane_id))
-                .and_then(|pane| shell.workspace.pane_view(pane.id))
-                .or_else(|| {
-                    tab.layout
-                        .leaves()
-                        .find_map(|pane| shell.workspace.pane_view(pane.id))
-                });
-            let state = view.map(|view| view.state(cx));
-            let command_running = view.is_some_and(|view| view.is_command_running(cx));
-            let program_status = view.and_then(|view| view.program_status(cx));
-            let label = projection::tab_title(tab, index);
-            let label = match program_status_progress_suffix(&program_status) {
-                Some(suffix) => format!("{label}{suffix}"),
-                None => label,
-            };
-            let cwd = tab
-                .active_pane
-                .and_then(|pane_id| tab.layout.find_pane(pane_id))
-                .or_else(|| tab.layout.leaves().next())
-                .map(|pane| pane.cwd.clone())
-                .unwrap_or_default();
-            let default_command = tab.default_command.clone();
-            let has_default_command = default_command.is_some();
-            let tooltip = program_status_tooltip(&program_status);
-            let leading = has_default_command.then(|| {
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(icons::icon(icons::IconName::Play, 8.).text_color(theme::muted_text()))
-                    .into_any_element()
-            });
-            strip = strip.child(render_tab_chip(
-                cx,
-                ("tab-container", tab_id.0),
-                program_status_dot_color(&program_status)
-                    .unwrap_or_else(|| local_tab_dot_color(&state, command_running)),
-                label,
-                tooltip,
-                is_active,
-                leading,
-                ("tab", tab_id.0),
-                move |ev: &MouseDownEvent, this, _window, cx| {
-                    let entries = tab_menu_entries(
-                        tab_id,
-                        project_id,
-                        is_active,
-                        single,
-                        cwd.clone(),
-                        default_command.clone(),
-                        command_running,
-                    );
-                    this.open_context_menu(ev.position, entries, cx);
-                },
-                move |_ev: &ClickEvent, this, _window, cx| {
-                    this.activate_tab(tab_id, cx);
-                },
-                ("tab-close", tab_id.0),
-                move |_ev: &ClickEvent, this, window, cx| {
-                    this.request_close_tab(tab_id, window, cx);
-                },
-                tab_id,
-            ));
+            strip = strip.child(render_tab_entry(shell, cx, project_id, single, index, tab));
         }
     }
 
-    strip.child(
-        div()
-            .id("new-tab")
-            .flex_shrink_0()
-            .w(px(28.))
-            .h(px(28.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(theme::RADIUS_SM))
-            .cursor_pointer()
-            .bg(theme::raised())
-            .border_1()
-            .border_color(theme::border())
-            .text_color(theme::accent())
-            .hover(|s| {
-                s.bg(theme::accent())
-                    .border_color(theme::accent())
-                    .text_color(theme::canvas())
-            })
-            .tooltip(|_window, cx| {
-                cx.new(|_| Tooltip::new(i18n::text("tooltip.new_terminal")))
-                    .into()
-            })
-            .child(
-                icons::icon(icons::IconName::Plus, 15.)
-                    .text_color(theme::accent())
-                    .hover(|s| s.text_color(theme::canvas())),
-            )
-            .on_click(cx.listener(|this, _ev, _window, cx| {
-                this.new_tab(cx);
-            })),
-    )
+    strip.child(render_new_tab_button(cx))
+}
+
+fn render_new_tab_button(cx: &mut Context<AppShell>) -> impl IntoElement {
+    div()
+        .id("new-tab")
+        .flex_shrink_0()
+        .w(px(28.))
+        .h(px(28.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(theme::RADIUS_SM))
+        .cursor_pointer()
+        .bg(theme::raised())
+        .border_1()
+        .border_color(theme::border())
+        .text_color(theme::accent())
+        .hover(|s| {
+            s.bg(theme::accent())
+                .border_color(theme::accent())
+                .text_color(theme::canvas())
+        })
+        .tooltip(|_window, cx| {
+            cx.new(|_| Tooltip::new(i18n::text("tooltip.new_terminal")))
+                .into()
+        })
+        .child(
+            icons::icon(icons::IconName::Plus, 15.)
+                .text_color(theme::accent())
+                .hover(|s| s.text_color(theme::canvas())),
+        )
+        .on_click(cx.listener(|this, _ev, _window, cx| {
+            this.new_tab(cx);
+        }))
 }
