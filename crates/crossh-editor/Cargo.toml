@@ -10,7 +10,7 @@ name = "crossh-editor"
 repository = "https://github.com/longbridge/gpui-component"
 homepage = "https://longbridge.github.io/gpui-component"
 documentation = "https://docs.rs/gpui-base"
-version = "0.45.2"
+version = "0.45.3"
 publish = false
 edition = "2024"
 

@@ -1,6 +1,6 @@
 [package]
 name = "crossh-git-view"
-version = "0.45.2"
+version = "0.45.3"
 edition = "2024"
 license = "GPL-3.0-or-later"
 
