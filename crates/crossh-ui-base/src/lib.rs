@@ -1,6 +1,11 @@
 // Copyright (c) 2026 Crossh contributors.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+// This crate is the public component seam; keep its API documented. Cargo's
+// `[lints] workspace = true` cannot be combined with a crate-specific lint, so
+// `missing_docs` lives here instead of the manifest.
+#![warn(missing_docs)]
+
 //! 无样式行为 / 几何基础：行为归地基，表现归应用。
 //!
 //! - 只做语义、焦点、键盘、可访问性、几何钳制、受控状态机。

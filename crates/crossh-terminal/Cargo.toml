@@ -8,3 +8,6 @@ license = "GPL-3.0-or-later"
 chrono = "0.4"
 crossh-core = { path = "../crossh-core" }
 serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true

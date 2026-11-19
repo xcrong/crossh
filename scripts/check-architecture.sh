@@ -107,6 +107,15 @@ check_absent \
     "$repo_root/crates/crossh-ui" \
     "$repo_root/src"
 
+# Cargo only applies workspace lints to packages that opt in. Keep new members
+# from silently dropping the shared baseline in the root manifest.
+for manifest in "$repo_root/Cargo.toml" "$repo_root"/crates/*/Cargo.toml; do
+    if ! rg -q -U '^\[lints\]\nworkspace = true' "$manifest"; then
+        printf '%s\n' "architecture violation: manifest does not inherit workspace lints: ${manifest#"$repo_root"/}"
+        failure=1
+    fi
+done
+
 size_files=$(find "$repo_root/src" "$repo_root"/crates/*/src -type f -name '*.rs' -print 2>/dev/null || true)
 for file in $size_files; do
     line_count=$(wc -l < "$file")

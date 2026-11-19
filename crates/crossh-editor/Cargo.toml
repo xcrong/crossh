@@ -61,4 +61,7 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "1478fb5e60f8b7852
 indoc = "2"
 
 [lints]
-clippy.all = "warn"
+workspace = true
+# `lib.rs` intentionally allows the clippy groups for this upstream-derived
+# editor foundation. The exception stays at the source root so the manifest
+# still inherits every other workspace lint.

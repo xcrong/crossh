@@ -34,6 +34,23 @@ members = [
 ]
 resolver = "2"
 
+# Shared lint baseline inherited by every member through `[lints] workspace = true`.
+# Keep this table conservative: CI runs `cargo clippy -- -D warnings`, so every
+# entry here is enforced across the whole workspace. Stricter per-crate rules stay
+# in the crate that can satisfy them (e.g. `missing_docs` in crossh-ui-base).
+[workspace.lints.rust]
+# Edition 2024 already warns; stated explicitly so the baseline is visible.
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+# Keep the default warning groups explicit instead of relying on tool defaults.
+all = { level = "warn", priority = -1 }
+# `all` is warn-only; correctness findings stay hard errors.
+correctness = { level = "deny", priority = 1 }
+# Never commit debugging or unfinished-code macros.
+dbg_macro = "deny"
+todo = "deny"
+
 [dependencies]
 crossh-core = { path = "crates/crossh-core" }
 crossh-note = { path = "crates/crossh-note" }
@@ -80,6 +97,9 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "1478fb5e60f8b7852
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1478fb5e60f8b7852a2b0da32aa3da5cd9bb6954", features = ["font-kit", "test-support", "wayland", "x11"] }
 terminal = { path = "crates/terminal" }
 async-channel = "2"
+
+[lints]
+workspace = true
 
 [profile.dev]
 incremental = true

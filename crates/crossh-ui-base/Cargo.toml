@@ -14,5 +14,5 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "1478fb5e60f8b7852
 [dev-dependencies]
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1478fb5e60f8b7852a2b0da32aa3da5cd9bb6954", features = ["test-support"] }
 
-[lints.rust]
-missing_docs = "warn"
+[lints]
+workspace = true

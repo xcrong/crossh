@@ -18,3 +18,6 @@ rust-i18n = "4"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1478fb5e60f8b7852a2b0da32aa3da5cd9bb6954", features = ["test-support"] }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1478fb5e60f8b7852a2b0da32aa3da5cd9bb6954", features = ["font-kit", "test-support", "wayland", "x11"] }
 tempfile = "3"
+
+[lints]
+workspace = true
