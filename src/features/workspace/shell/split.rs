@@ -154,6 +154,13 @@ pub(crate) fn directional_neighbor(
     best.map(|(pane_id, _, _)| pane_id)
 }
 
+/// 拆分目标：优先活跃 pane；没有活跃 pane 时回退到首个叶子。
+///
+/// 分屏动作在已有布局里继续拆分，不折叠其它 pane。
+pub(crate) fn split_target(layout: &PaneNodeSnapshot, active: Option<PaneId>) -> Option<PaneId> {
+    active.or_else(|| layout.leaves().next().map(|pane| pane.id))
+}
+
 impl AppShell {
     pub(crate) fn handle_split_terminal_horizontal(
         &mut self,
@@ -161,7 +168,7 @@ impl AppShell {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.toggle_terminal_split(cx);
+        self.split_terminal_horizontal(cx);
     }
 
     pub(crate) fn handle_split_terminal_vertical(
@@ -170,7 +177,7 @@ impl AppShell {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.toggle_vertical_split(cx);
+        self.split_terminal_vertical(cx);
     }
 
     pub(crate) fn handle_focus_split_left(
@@ -207,6 +214,32 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         self.move_split_focus(Direction::Down, cx);
+    }
+
+    /// 快捷键与命令面板：始终在活跃 pane 上继续拆分（已有分屏时形成嵌套）。
+    pub(crate) fn split_terminal_horizontal(&mut self, cx: &mut Context<Self>) {
+        self.split_active_pane(Axis::Row, cx);
+    }
+
+    pub(crate) fn split_terminal_vertical(&mut self, cx: &mut Context<Self>) {
+        self.split_active_pane(Axis::Column, cx);
+    }
+
+    fn split_active_pane(&mut self, axis: Axis, cx: &mut Context<Self>) {
+        let Some(tab) = self.workspace.active_tab() else {
+            return;
+        };
+        let Some(pane_id) = split_target(&tab.layout, tab.active_pane) else {
+            return;
+        };
+        self.send_workspace_op(
+            WorkspaceOp::SplitPane {
+                pane_id,
+                axis,
+                cwd: None,
+            },
+            cx,
+        );
     }
 
     /// 左右分屏按钮：已有分屏时折叠为一个 pane，否则把活跃 pane 一分为二。
@@ -368,6 +401,21 @@ mod tests {
             directional_neighbor(&layout, PaneId(3), Direction::Right),
             Some(PaneId(4))
         );
+    }
+
+    #[test]
+    fn split_target_continues_inside_existing_layout() {
+        let layout = split(
+            2,
+            Axis::Row,
+            0.5,
+            leaf(1),
+            split(3, Axis::Column, 0.5, leaf(2), leaf(3)),
+        );
+        assert_eq!(split_target(&layout, Some(PaneId(2))), Some(PaneId(2)));
+        assert_eq!(split_target(&layout, Some(PaneId(3))), Some(PaneId(3)));
+        assert_eq!(split_target(&layout, None), Some(PaneId(1)));
+        assert_eq!(split_target(&leaf(9), None), Some(PaneId(9)));
     }
 
     #[test]

@@ -309,10 +309,10 @@ impl AppShell {
                 self.toggle_settings(cx);
             }
             PaletteCommandKind::SplitHorizontal => {
-                self.toggle_terminal_split(cx);
+                self.split_terminal_horizontal(cx);
             }
             PaletteCommandKind::SplitVertical => {
-                self.toggle_vertical_split(cx);
+                self.split_terminal_vertical(cx);
             }
             PaletteCommandKind::OpenInEditor => {
                 self.open_focused_project_in_editor(cx);

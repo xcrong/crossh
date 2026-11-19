@@ -1528,6 +1528,56 @@ mod tests {
     }
 
     #[test]
+    fn split_row_then_column_nests_three_panes() {
+        let root = temp_dir("split-nested");
+        let mut ws = Workspace::new();
+        let created = open(&mut ws, &root);
+        let left = created.pane.unwrap();
+        let right = ws
+            .apply(&WorkspaceOp::SplitPane {
+                pane_id: left,
+                axis: Axis::Row,
+                cwd: None,
+            })
+            .created
+            .pane
+            .unwrap();
+        let bottom = ws
+            .apply(&WorkspaceOp::SplitPane {
+                pane_id: right,
+                axis: Axis::Column,
+                cwd: None,
+            })
+            .created
+            .pane
+            .unwrap();
+        let tab = ws.tab(created.tab.unwrap()).unwrap();
+        let ids = tab.layout.leaves().map(|pane| pane.id).collect::<Vec<_>>();
+        assert_eq!(ids, vec![left, right, bottom]);
+        assert_eq!(tab.active_pane, Some(bottom));
+        match &tab.layout {
+            PaneNode::Split {
+                axis: Axis::Row,
+                second,
+                ..
+            } => match second.as_ref() {
+                PaneNode::Split {
+                    axis: Axis::Column,
+                    first,
+                    second,
+                    ..
+                } => {
+                    assert!(matches!(first.as_ref(), PaneNode::Leaf(pane) if pane.id == right));
+                    assert!(matches!(second.as_ref(), PaneNode::Leaf(pane) if pane.id == bottom));
+                }
+                other => panic!("expected nested column split, got {other:?}"),
+            },
+            other => panic!("expected row split, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn closing_root_leaf_removes_tab() {
         let root = temp_dir("close-root");
         let mut ws = Workspace::new();
