@@ -38,8 +38,10 @@ jobs:
       - name: Architecture checks
         run: scripts/check-architecture.sh
 
+      # Function length is warning-only: --force-warn keeps too_many_lines a
+      # warning even though every other lint stays under -D warnings.
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings --force-warn clippy::too_many_lines
 
       - name: Session tests
         run: cargo test -p crossh-session

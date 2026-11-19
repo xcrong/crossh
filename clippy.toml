@@ -1,0 +1,4 @@
+# Keep the 100-line function target explicit. The macOS clippy gate enables
+# this lint with `--force-warn clippy::too_many_lines`, so it reports as a
+# warning while every other lint stays under `-D warnings`.
+too-many-lines-threshold = 100

@@ -53,6 +53,7 @@
 ## Size and Language Discipline
 
 - **Keep source files under 2000 lines.** `scripts/check-architecture.sh` rejects Rust files above this limit under `src/` and `crates/*/src/`. Keep any exception explicit in that script's whitelist and document why it is maintained.
+- **Keep functions under 100 lines.** The macOS clippy gate runs with `-D warnings --force-warn clippy::too_many_lines`, so long functions are reported as warnings without failing the build. The 2000-line file limit above remains the hard file-size rule.
 - **Match the surrounding language.** Preserve the existing language of comments and documentation when editing a file. New documentation defaults to Chinese; `AGENTS.md` and `docs/architecture.md` remain in English.
 - **Code is the spec.** Structural decisions are enforced by crate graph + `scripts/check-architecture.sh`, not separate docs.
 
