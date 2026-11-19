@@ -212,7 +212,7 @@ impl WorkspaceActor {
                 false
             }
             WorkspaceCommand::SessionExited { session_id } => {
-                self.on_session_exited(&session_id);
+                self.on_session_exited(&session_id).await;
                 false
             }
             WorkspaceCommand::PaneCwdChanged { session_id, cwd } => {
@@ -720,18 +720,18 @@ impl WorkspaceActor {
         self.publish();
     }
 
-    fn on_session_exited(&mut self, session_id: &SessionId) {
+    /// shell 自然退出：关闭对应 pane 并折叠父分屏，最后一个 pane 关闭后删除 tab。
+    ///
+    /// 显式关闭会先解绑会话，因此迟到的退出事件查不到映射，直接忽略；
+    /// daemon 自身停止时也不改树。
+    async fn on_session_exited(&mut self, session_id: &SessionId) {
         if self.shutting_down {
             return;
         }
-        if let Some(pane_id) = self.runtime.session_pane.remove(session_id) {
-            self.runtime.pane_session.remove(&pane_id);
-            self.runtime.starting.remove(&pane_id);
-            if let Ok(mut mirror) = self.mirror.write() {
-                mirror.remove(session_id);
-            }
-            self.publish();
-        }
+        let Some(pane_id) = self.runtime.session_pane.get(session_id).copied() else {
+            return;
+        };
+        self.run_internal(WorkspaceOp::ClosePane { pane_id }).await;
     }
 
     fn on_pane_cwd_changed(&mut self, session_id: &SessionId, cwd: PathBuf) {
@@ -1227,17 +1227,94 @@ mod tests {
                 session_id: "s1".to_string(),
             })
             .unwrap();
-        let exited = wait_for(&mut handle, "pane unavailable after exit", |snapshot| {
-            matches!(
-                pane(snapshot, pane_id).status,
-                PaneStatus::Unavailable {
-                    reason: PaneStatusReason::ProjectRootMissing
-                }
-            )
+        let exited = wait_for(&mut handle, "tab removed after exit", |snapshot| {
+            snapshot.projects[0].tabs.is_empty()
         })
         .await;
-        assert_eq!(exited.revision, revision);
-        assert!(pane(&exited, pane_id).session.is_none());
+        assert_eq!(exited.revision, revision + 1);
+        assert_eq!(exited.projects[0].active_tab, None);
+
+        // 重复的退出事件必须被忽略：映射已解绑，布局不再变化。
+        handle
+            .commands
+            .send(WorkspaceCommand::SessionExited {
+                session_id: "s1".to_string(),
+            })
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(handle.snapshots.borrow().projects[0].tabs.is_empty());
+        assert_eq!(handle.snapshots.borrow().revision, revision + 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn session_exit_closes_its_pane_and_folds_split() {
+        let root = temp_dir("split-exit");
+        let (mut handle, _effects) = spawn(Arc::new(OkSaver));
+        let created = mutate(
+            &handle,
+            WorkspaceOp::OpenProject { root: root.clone() },
+            None,
+        )
+        .await;
+        let tab_id = created.created.tab.expect("tab id");
+        let left = created.created.pane.expect("left pane id");
+        let right = mutate(
+            &handle,
+            WorkspaceOp::SplitPane {
+                pane_id: left,
+                axis: crate::workspace::Axis::Row,
+                cwd: None,
+            },
+            None,
+        )
+        .await
+        .created
+        .pane
+        .expect("right pane id");
+        for (pane_id, session_id) in [(left, "s1"), (right, "s2")] {
+            handle
+                .commands
+                .send(WorkspaceCommand::BindSession {
+                    pane_id,
+                    session_id: session_id.to_string(),
+                })
+                .unwrap();
+        }
+        wait_for(&mut handle, "both panes live", |snapshot| {
+            pane(snapshot, left).status == PaneStatus::Live
+                && pane(snapshot, right).status == PaneStatus::Live
+        })
+        .await;
+        let revision = handle.snapshots.borrow().revision;
+
+        handle
+            .commands
+            .send(WorkspaceCommand::SessionExited {
+                session_id: "s2".to_string(),
+            })
+            .unwrap();
+        let after = wait_for(&mut handle, "right pane removed", |snapshot| {
+            snapshot.projects[0]
+                .tabs
+                .iter()
+                .find(|tab| tab.id == tab_id)
+                .is_some_and(|tab| tab.layout.leaves().count() == 1)
+        })
+        .await;
+
+        assert_eq!(after.revision, revision + 1);
+        let tab = after.projects[0]
+            .tabs
+            .iter()
+            .find(|tab| tab.id == tab_id)
+            .expect("tab survives sibling exit");
+        assert_eq!(tab.active_pane, Some(left));
+        assert!(matches!(
+            tab.layout,
+            crate::workspace::PaneNodeSnapshot::Leaf(ref pane) if pane.id == left
+        ));
+        assert_eq!(pane(&after, left).session.as_deref(), Some("s1"));
         let _ = std::fs::remove_dir_all(root);
     }
 
