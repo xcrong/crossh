@@ -58,6 +58,32 @@ pub struct TextEditingKeyResult {
     pub copy_text: Option<String>,
 }
 
+impl TextEditingKeyResult {
+    /// 已处理的按键，无复制内容。
+    fn handled() -> Self {
+        Self {
+            handled: true,
+            copy_text: None,
+        }
+    }
+
+    /// 未匹配的按键。
+    fn unhandled() -> Self {
+        Self {
+            handled: false,
+            copy_text: None,
+        }
+    }
+
+    /// 已处理的复制/剪切按键，带待写入剪贴板的文本。
+    fn copied(text: String) -> Self {
+        Self {
+            handled: true,
+            copy_text: Some(text),
+        }
+    }
+}
+
 /// 与编辑分发相关的按键快照；由视图层从 GPUI 的 `Keystroke` 转换而来。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditingKeystroke {
@@ -85,122 +111,98 @@ pub fn handle_text_editing_key(
     // 统一小写，兼容 GPUI 可能的 "ArrowUp"/"Up" 与选择组件的 lowercasing 处理
     let key_lower = ks.key.to_lowercase();
     let key = key_lower.as_str();
-    if primary && key == "a" {
-        state.clear_composition();
-        state.select_all();
-        return TextEditingKeyResult {
-            handled: true,
-            copy_text: None,
-        };
+    if primary && let Some(result) = handle_primary_shortcut(state, key, clipboard_text) {
+        return result;
     }
-    if primary && matches!(key, "c" | "x") {
-        if let Some(text) = state.selected_text() {
-            let copy = text.clone();
-            if key == "x" {
+    if let Some(result) = handle_editing_navigation_key(state, key, extend) {
+        return result;
+    }
+    if let Some(ch) = printable_key_char(ks) {
+        state.clear_composition();
+        state.replace_selection(&ch.to_string());
+        return TextEditingKeyResult::handled();
+    }
+    TextEditingKeyResult::unhandled()
+}
+
+/// 主修饰键（ctrl/cmd）分支：`a` 全选、`c/x` 复制/剪切、`v` 粘贴。
+/// 返回 `None` 表示不是主修饰键快捷键，交由后续分支处理。
+fn handle_primary_shortcut(
+    state: &mut TextEditingState,
+    key: &str,
+    clipboard_text: Option<&str>,
+) -> Option<TextEditingKeyResult> {
+    match key {
+        "a" => {
+            state.clear_composition();
+            state.select_all();
+            Some(TextEditingKeyResult::handled())
+        }
+        "c" | "x" => {
+            let copy = state.selected_text();
+            if copy.is_some() && key == "x" {
                 state.clear_composition();
                 state.replace_selection("");
             }
-            return TextEditingKeyResult {
-                handled: true,
-                copy_text: Some(copy),
-            };
+            Some(match copy {
+                Some(text) => TextEditingKeyResult::copied(text),
+                None => TextEditingKeyResult::handled(),
+            })
         }
-        return TextEditingKeyResult {
-            handled: true,
-            copy_text: None,
-        };
-    }
-    if primary && key == "v" {
-        if let Some(pasted) = clipboard_text {
-            state.clear_composition();
-            state.replace_selection(pasted);
+        "v" => {
+            if let Some(pasted) = clipboard_text {
+                state.clear_composition();
+                state.replace_selection(pasted);
+            }
+            Some(TextEditingKeyResult::handled())
         }
-        return TextEditingKeyResult {
-            handled: true,
-            copy_text: None,
-        };
+        _ => None,
     }
+}
+
+/// 导航/编辑键分支：`backspace/delete/left/right/up/down/home/end`。
+/// 返回 `None` 表示不是这些键，交由可打印字符分支处理。
+fn handle_editing_navigation_key(
+    state: &mut TextEditingState,
+    key: &str,
+    extend: bool,
+) -> Option<TextEditingKeyResult> {
     match key {
         "backspace" => {
             state.clear_composition();
             state.backspace();
-            TextEditingKeyResult {
-                handled: true,
-                copy_text: None,
-            }
         }
         "delete" => {
             state.clear_composition();
             state.delete();
-            TextEditingKeyResult {
-                handled: true,
-                copy_text: None,
-            }
         }
         "left" | "arrowleft" => {
             state.clear_composition();
             state.move_horizontal(-1, extend);
-            TextEditingKeyResult {
-                handled: true,
-                copy_text: None,
-            }
         }
         "right" | "arrowright" => {
             state.clear_composition();
             state.move_horizontal(1, extend);
-            TextEditingKeyResult {
-                handled: true,
-                copy_text: None,
-            }
         }
         "up" | "arrowup" => {
             state.clear_composition();
             state.move_vertical(-1, extend);
-            TextEditingKeyResult {
-                handled: true,
-                copy_text: None,
-            }
         }
         "down" | "arrowdown" => {
             state.clear_composition();
             state.move_vertical(1, extend);
-            TextEditingKeyResult {
-                handled: true,
-                copy_text: None,
-            }
         }
         "home" => {
             state.clear_composition();
             state.move_to_boundary(false, extend);
-            TextEditingKeyResult {
-                handled: true,
-                copy_text: None,
-            }
         }
         "end" => {
             state.clear_composition();
             state.move_to_boundary(true, extend);
-            TextEditingKeyResult {
-                handled: true,
-                copy_text: None,
-            }
         }
-        _ => {
-            if let Some(ch) = printable_key_char(ks) {
-                state.clear_composition();
-                state.replace_selection(&ch.to_string());
-                TextEditingKeyResult {
-                    handled: true,
-                    copy_text: None,
-                }
-            } else {
-                TextEditingKeyResult {
-                    handled: false,
-                    copy_text: None,
-                }
-            }
-        }
+        _ => return None,
     }
+    Some(TextEditingKeyResult::handled())
 }
 
 /// 键盘事件的可打印字符；带控制/平台修饰键时返回 None。
