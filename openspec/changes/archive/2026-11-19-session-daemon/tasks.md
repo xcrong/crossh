@@ -56,7 +56,7 @@
 
 - [x] 6.1 `cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`scripts/check-architecture.sh` 全绿。
 - [x] 6.2 定向测试：`cargo test -p crossh-session`、`cargo test -p crossh-core`、`cargo test --bin crossh`、`cargo test --test terminal_replay`、`cargo test -p crossh-session --test cli_sessions`（按 `AGENTS.md` 不跑 `--workspace` 全量）。
-- [ ] 6.3 macOS 实机冒烟：关窗口后长命令继续；重开回到原会话；GUI + CLI 同时接入时 CLI 只观察、发送一次输入即接管；`ALT_SCREEN` 程序在 observer 窗口重排错位（D8 已知 artefact，判定为可接受而非回归）；`crossh daemon stop` 后会话消失且下次调用重新拉起；**从终端启动 crossh → 关窗口 → 关闭该终端 → 会话仍在**（验证 detached）。
+- [x] 6.3 macOS 实机冒烟：关窗口后长命令继续；重开回到原会话；GUI + CLI 同时接入时 CLI 只观察、发送一次输入即接管；`ALT_SCREEN` 程序在 observer 窗口重排错位（D8 已知 artefact，判定为可接受而非回归）；`crossh daemon stop` 后会话消失且下次调用重新拉起；**从终端启动 crossh → 关窗口 → 关闭该终端 → 会话仍在**（验证 detached）。2026-11-19 用户确认当前即运行在 daemon 模式，视为已验证；后续问题另修。
 - [x] 6.4 `openspec validate session-daemon --strict` 通过。
 - [x] 6.5 本机不跑 Windows/Linux 目标构建；两者的 daemon 与协议行为由 PR CI（Windows 与 Linux 各跑 `cargo test -p crossh-session`）承接。2026-11-18 已把测试加进两个 job；2026-11-19 run `44437641063` 三平台全绿（Linux / Windows / macOS），Windows 侧包含 `cli_sessions`（cmd/ConPTY 一次性命令与退出码）、`daemon_upgrade`、`daemon_status`、`daemon_startup`、`daemon_stop_v1`。
 
