@@ -110,6 +110,74 @@ impl SpawnOptions {
     }
 }
 
+/// ConPTY 启动握手：`portable_pty` 用 `PSEUDOCONSOLE_INHERIT_CURSOR` 建伪终端，
+/// ConPTY 会先发 DSR 6（`ESC[6n`）询问终端光标位置，收到回报前不启动子进程。
+/// GUI 终端（alacritty）会应答，无头的 `crossh run` 不会，所以由 daemon 代答
+/// 一次，并把这条查询从输出流里吞掉：避免接入 GUI 时终端再答一次。
+///
+/// 只处理开头这一条查询；一旦出现其他输出，后续 DSR 属于应用自己的终端交互，
+/// 必须原样交给客户端。
+#[cfg(windows)]
+struct StartupCursorProbe {
+    matched: usize,
+    done: bool,
+}
+
+#[cfg(windows)]
+impl StartupCursorProbe {
+    const PATTERN: &'static [u8] = b"\x1b[6n";
+    const REPLY: &'static [u8] = b"\x1b[1;1R";
+
+    fn new() -> Self {
+        Self {
+            matched: 0,
+            done: false,
+        }
+    }
+
+    /// 返回应进入回放/广播的字节；命中启动查询时通过 `reply` 回写光标位置。
+    fn filter<F: FnMut(&[u8])>(&mut self, bytes: &[u8], mut reply: F) -> Vec<u8> {
+        if self.done {
+            return bytes.to_vec();
+        }
+        let mut out = Vec::with_capacity(bytes.len());
+        for (i, &byte) in bytes.iter().enumerate() {
+            if byte == Self::PATTERN[self.matched] {
+                self.matched += 1;
+                if self.matched == Self::PATTERN.len() {
+                    reply(Self::REPLY);
+                    self.done = true;
+                    out.extend_from_slice(&bytes[i + 1..]);
+                    return out;
+                }
+            } else {
+                out.extend_from_slice(&Self::PATTERN[..self.matched]);
+                self.matched = 0;
+                out.push(byte);
+                self.done = true;
+                out.extend_from_slice(&bytes[i + 1..]);
+                return out;
+            }
+        }
+        out
+    }
+}
+
+/// 非 Windows 没有 ConPTY 启动握手：输出原样透传。
+#[cfg(not(windows))]
+struct StartupCursorProbe;
+
+#[cfg(not(windows))]
+impl StartupCursorProbe {
+    fn new() -> Self {
+        Self
+    }
+
+    fn filter<F: FnMut(&[u8])>(&mut self, bytes: &[u8], _reply: F) -> Vec<u8> {
+        bytes.to_vec()
+    }
+}
+
 /// 运行中的 PTY 会话。`Drop` 时杀子进程并回收读线程。
 ///
 /// 字节归属：读线程把原始输出**直写**共享回放环（不丢）；广播只给实时
@@ -120,7 +188,8 @@ pub struct ChildSession {
     child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
     reader: Option<thread::JoinHandle<()>>,
     master: Option<Box<dyn MasterPty + Send>>,
-    writer: Option<Box<dyn Write + Send>>,
+    /// 读线程要回写 ConPTY 启动查询，写入端必须共享。
+    writer: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
     /// 交互 shell 集成脚本守卫（见 `SpawnOptions::shell_env`）。
     _shell_env: Option<LocalShellEnvironment>,
 }
@@ -151,7 +220,7 @@ impl ChildSession {
         }
         let master = pair.master;
         let mut reader = master.try_clone_reader().map_err(io_err)?;
-        let writer = master.take_writer().map_err(io_err)?;
+        let writer = Arc::new(Mutex::new(master.take_writer().map_err(io_err)?));
         let child = pair.slave.spawn_command(cmd).map_err(io_err)?;
         drop(pair.slave);
 
@@ -159,24 +228,35 @@ impl ChildSession {
         let tx = output_tx.clone();
         let feed = Arc::new(Mutex::new(FeedState::new()));
         let feed_in = feed.clone();
+        let writer_in = writer.clone();
         let owned_id = id.to_string();
         let reader_handle = thread::Builder::new()
             .name(format!("pty-read-{owned_id}"))
             .spawn(move || {
                 let mut buf = [0u8; 8192];
+                let mut probe = StartupCursorProbe::new();
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
+                            // ConPTY 启动握手由 daemon 代答；查询本身不进回放。
+                            let chunk = probe.filter(&buf[..n], |reply| {
+                                if let Ok(mut w) = writer_in.lock() {
+                                    let _ = w.write_all(reply);
+                                }
+                            });
+                            if chunk.is_empty() {
+                                continue;
+                            }
                             let seq = match feed_in.lock() {
                                 Ok(mut f) => {
-                                    f.push(&buf[..n]);
+                                    f.push(&chunk);
                                     f.seq()
                                 }
                                 Err(_) => break,
                             };
                             // 实时广播尽力而为：无订阅/消费慢都不影响回放环。
-                            let _ = tx.send((seq, buf[..n].to_vec()));
+                            let _ = tx.send((seq, chunk));
                         }
                         Err(_) => break,
                     }
@@ -197,10 +277,14 @@ impl ChildSession {
 
     /// 向 PTY 写输入（controller 门控由调用方做，这里只写字节）。
     pub fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
-        self.writer
-            .as_mut()
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "pty closed"))?
-            .write_all(bytes)
+        let writer = self
+            .writer
+            .as_ref()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "pty closed"))?;
+        let mut writer = writer
+            .lock()
+            .map_err(|_| std::io::Error::other("pty writer poisoned"))?;
+        writer.write_all(bytes)
     }
 
     /// 缩放 PTY（尺寸权威在服务端，见 D8）。
