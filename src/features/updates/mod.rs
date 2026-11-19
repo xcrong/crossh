@@ -139,7 +139,7 @@ impl UpdateController {
                 .await;
             let result = match result {
                 Ok(Ok(candidate)) => Ok(candidate),
-                Ok(Err(error)) => Err(error.to_string()),
+                Ok(Err(error)) => Err(error.describe()),
                 Err(error) => Err(format!("update task failed: {error}")),
             };
             let _ = weak.update(cx, |this, cx| {
@@ -203,7 +203,7 @@ impl UpdateController {
             }
             let result = match join.await {
                 Ok(Ok(package)) => Ok(package),
-                Ok(Err(error)) => Err(error.to_string()),
+                Ok(Err(error)) => Err(error.describe()),
                 Err(error) => Err(format!("download task failed: {error}")),
             };
             let _ = weak.update(cx, |this, cx| {

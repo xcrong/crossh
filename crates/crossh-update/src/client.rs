@@ -23,7 +23,19 @@ use super::model::{UpdateArtifact, UpdateManifest};
 use crate::DEFAULT_ACCELERATE_PREFIX;
 
 #[cfg(feature = "network")]
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// manifest 很小，30 秒总时限足够，也能避免卡死。
+const MANIFEST_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(feature = "network")]
+/// 安装包可能几十 MB：只限制建连与两次数据之间的间隔，
+/// 不设总时限，慢速但持续的下载可以完成。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+#[cfg(feature = "network")]
+const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(feature = "network")]
+/// 每个通道的最大尝试轮数（两轮 = 加速源 + 原站各两次）。
+const ATTEMPTS: usize = 2;
+#[cfg(feature = "network")]
+const RETRY_DELAY: Duration = Duration::from_millis(400);
 
 #[derive(Debug, Error)]
 pub enum UpdateError {
@@ -50,6 +62,12 @@ pub enum UpdateError {
 }
 
 impl UpdateError {
+    /// 包含底层 source 的可读错误文本。reqwest 的顶层消息经常只有
+    /// “error decoding response body”，真正的超时或连接中断在 source 链里。
+    pub fn describe(&self) -> String {
+        error_chain(self)
+    }
+
     /// 是否为传输层错误（换通道重试有意义）；校验类错误不在此列。
     /// 加速源与 GitHub 原站两条通道共享此分类：传输错误触发回退，
     /// 校验失败（内容不可信）直接返回、不再换通道尝试。
@@ -57,6 +75,18 @@ impl UpdateError {
     pub(crate) fn is_transport(&self) -> bool {
         matches!(self, UpdateError::Request(_) | UpdateError::HttpStatus(_))
     }
+}
+
+/// 把错误及其 source 链拼成一行，避免底层原因被顶层消息吞掉。
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(next) = source {
+        message.push_str(": ");
+        message.push_str(&next.to_string());
+        source = next.source();
+    }
+    message
 }
 
 #[cfg(feature = "network")]
@@ -82,23 +112,38 @@ fn candidate_urls(url: &str) -> Vec<String> {
 }
 
 #[cfg(feature = "network")]
-fn client() -> Result<reqwest::Client, reqwest::Error> {
+fn manifest_client() -> Result<reqwest::Client, reqwest::Error> {
     reqwest::Client::builder()
         .user_agent(concat!("crossh/", env!("CARGO_PKG_VERSION")))
-        .timeout(REQUEST_TIMEOUT)
+        .timeout(MANIFEST_TIMEOUT)
+        .build()
+}
+
+#[cfg(feature = "network")]
+fn download_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .user_agent(concat!("crossh/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(DOWNLOAD_READ_TIMEOUT)
         .build()
 }
 
 #[cfg(feature = "network")]
 pub async fn fetch_manifest(url: &str) -> Result<UpdateManifest, UpdateError> {
-    // 加速源优先、GitHub 原站兜底；仅传输类错误触发回退，
+    // 加速源优先、GitHub 原站兜底；仅传输类错误触发回退/重试，
     // 校验类错误（验签失败等）直接返回，不换通道重试。
+    let candidates = candidate_urls(url);
     let mut last_error = None;
-    for candidate in candidate_urls(url) {
-        match fetch_manifest_once(&candidate).await {
-            Ok(manifest) => return Ok(manifest),
-            Err(error) if error.is_transport() => last_error = Some(error),
-            Err(error) => return Err(error),
+    for attempt in 0..ATTEMPTS {
+        if attempt > 0 {
+            tokio::time::sleep(RETRY_DELAY * attempt as u32).await;
+        }
+        for candidate in &candidates {
+            match fetch_manifest_once(candidate).await {
+                Ok(manifest) => return Ok(manifest),
+                Err(error) if error.is_transport() => last_error = Some(error),
+                Err(error) => return Err(error),
+            }
         }
     }
     Err(last_error.expect("candidate list is never empty"))
@@ -112,7 +157,7 @@ pub async fn fetch_manifest(_url: &str) -> Result<UpdateManifest, UpdateError> {
 #[cfg(feature = "network")]
 async fn fetch_manifest_once(url: &str) -> Result<UpdateManifest, UpdateError> {
     validate_https_url(url)?;
-    let mut response = client()?.get(url).send().await?;
+    let mut response = manifest_client()?.get(url).send().await?;
     if !response.status().is_success() {
         return Err(UpdateError::HttpStatus(response.status()));
     }
@@ -166,25 +211,31 @@ pub async fn download_artifact_with_progress(
     ));
     let temporary = destination.with_extension("part");
 
-    // 加速源优先、GitHub 原站兜底；仅传输类错误触发回退，
+    // 加速源优先、GitHub 原站兜底；传输类错误按轮重试，
     // 校验类错误（checksum/size 不匹配等）直接返回，不换通道重试。
+    let candidates = candidate_urls(&artifact.url);
     let mut last_error = None;
-    for url in candidate_urls(&artifact.url) {
-        match download_from(&url, artifact, &temporary, &on_progress).await {
-            Ok(()) => {
-                if let Err(error) = tokio::fs::rename(&temporary, &destination).await {
-                    let _ = tokio::fs::remove_file(&temporary).await;
-                    return Err(error.into());
+    for attempt in 0..ATTEMPTS {
+        if attempt > 0 {
+            tokio::time::sleep(RETRY_DELAY * attempt as u32).await;
+        }
+        for url in &candidates {
+            match download_from(url, artifact, &temporary, &on_progress).await {
+                Ok(()) => {
+                    if let Err(error) = tokio::fs::rename(&temporary, &destination).await {
+                        let _ = tokio::fs::remove_file(&temporary).await;
+                        return Err(error.into());
+                    }
+                    return Ok(destination);
                 }
-                return Ok(destination);
-            }
-            Err(error) if error.is_transport() => {
-                let _ = tokio::fs::remove_file(&temporary).await;
-                last_error = Some(error);
-            }
-            Err(error) => {
-                let _ = tokio::fs::remove_file(&temporary).await;
-                return Err(error);
+                Err(error) if error.is_transport() => {
+                    let _ = tokio::fs::remove_file(&temporary).await;
+                    last_error = Some(error);
+                }
+                Err(error) => {
+                    let _ = tokio::fs::remove_file(&temporary).await;
+                    return Err(error);
+                }
             }
         }
     }
@@ -208,7 +259,7 @@ async fn download_from(
     temporary: &Path,
     on_progress: &(impl Fn(u64, u64) + Send + Sync),
 ) -> Result<(), UpdateError> {
-    let response = client()?.get(url).send().await?;
+    let response = download_client()?.get(url).send().await?;
     if !response.status().is_success() {
         return Err(UpdateError::HttpStatus(response.status()));
     }
@@ -319,6 +370,19 @@ mod tests {
         let mut hasher = Sha256::new();
         hasher.update(bytes);
         hex::encode(hasher.finalize())
+    }
+
+    #[test]
+    fn error_chain_includes_nested_sources() {
+        #[derive(Debug, thiserror::Error)]
+        #[error("outer")]
+        struct Outer(#[source] Inner);
+
+        #[derive(Debug, thiserror::Error)]
+        #[error("inner")]
+        struct Inner;
+
+        assert_eq!(error_chain(&Outer(Inner)), "outer: inner");
     }
 
     #[test]
