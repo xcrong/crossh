@@ -7,7 +7,7 @@
 - [x] 1.1 去掉调用点的 8 处 `#[cfg(target_os = "macos")]`：`shell/mod.rs:54`（模块声明）、`:211`/`:213`（字段）、`:309`/`:311`（初始化）、`:399`（Esc 处理）、`:1280`（`LinkOpener` 安装）、`view.rs:993`（状态栏入口），改为无条件存在。`view.rs:646/650` 是分栏快捷键字形，不在本变更范围。
 - [x] 1.2 新增 `shell/link_preview_unsupported.rs` 作为无宿主平台的占位实现（`link_preview.rs` 全程引用 `wry`，Linux 上整份文件编译不了，stub 无法同文件），由 `shell/mod.rs` 用 `#[path]` 选择；stub 提供 `LinkPreview`、`open_link_preview`（`false`）、`hide_link_preview`、`render_status_toggle`（`None`）、`render_link_preview`（空元素，`shell_render.rs:130` 无条件调用）。
 - [x] 1.3 `LinkOpener` 在 Linux 上照旧安装：stub 的 `open_link_preview` 返回 `false`，`open_link` 于是走 `cx.open_url`（`crates/crossh-terminal-view/src/link_opener.rs:31-38`）。
-- [ ] 1.4 Linux 上 stub 无 `dead_code` / `unused` 警告（`clippy -D warnings` 已在 macOS 通过；2026-11-18 已给 `ci.yml` 的 Linux job 加 `cargo clippy --workspace --all-targets -- -D warnings`，待首跑回填）。
+- [x] 1.4 Linux 上 stub 无 `dead_code` / `unused` 警告（`clippy -D warnings` 已在 macOS 通过；2026-11-18 已给 `ci.yml` 的 Linux job 加 `cargo clippy --workspace --all-targets -- -D warnings`；2026-11-19 run `44437641063` Linux job 绿灯，回填）。
 
 ## 2. Windows 接通
 

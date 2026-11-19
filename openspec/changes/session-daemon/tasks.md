@@ -26,7 +26,7 @@
 - [x] 3.3 `crates/crossh-session/src/main.rs` 提供 `[[bin]] crossh-daemon`：日志（复用 `crossh_core::logging`）、locale、tokio 运行时、`run()`；**以 detached 方式启动**——unix 在 `pre_exec` 里 `libc::setsid()`，Windows 用 `creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)`，环境照常继承。验证：`cargo build -p crossh-session` 产出二进制；`./target/debug/crossh-daemon --version` 输出一行版本号后退出；从 shell 启动 daemon 后 `ps -o sid= -p <pid>` 与该 shell 的 sid 不同。
 - [x] 3.4 daemon 集成测试（`crates/crossh-session/tests/`）：spawn 二进制 → 读 `daemon.port` → 令牌握手 → 建会话 → 写输入 → 读输出 → 结束会话；另断言无令牌握手拿不到会话列表。验证：`cargo test -p crossh-session --test daemon_lifecycle`。
 - [x] 3.5 `docs/architecture.md` 加入 `crossh-session` 的所有权、边界规则与 `crossh-daemon` 的进程角色（含 detached 启动），crate 图段落同步。验证：段落与 `cargo tree` 实际依赖一致（人工对照一次），`scripts/check-architecture.sh` 通过。
-- [ ] 3.6 Windows / Linux 的 daemon 行为（ConPTY、`DETACHED_PROCESS`、令牌文件权限、单实例竞态）本机不验证，由 PR CI 的 `cargo check` + `cargo test -p crossh-session` 承接。2026-11-18 已把 `cargo test -p crossh-session` 加进 Windows / Linux job；Unix 专属的 `daemon_lifecycle` / `workspace_lifecycle` 已加 `#![cfg(unix)]`，Windows 侧跑 `cli_sessions` / `daemon_upgrade` / `daemon_status`。验证：CI 绿灯后回填此处。
+- [x] 3.6 Windows / Linux 的 daemon 行为（ConPTY、`DETACHED_PROCESS`、令牌文件权限、单实例竞态）本机不验证，由 PR CI 的 `cargo check` + `cargo test -p crossh-session` 承接。2026-11-18 已把 `cargo test -p crossh-session` 加进 Windows / Linux job；Unix 专属的 `daemon_lifecycle` / `workspace_lifecycle` 已加 `#![cfg(unix)]`，Windows 侧跑 `cli_sessions` / `daemon_upgrade` / `daemon_status`。2026-11-19 首次三平台全绿（run `44437641063`）；期间发现并修复 ConPTY 启动握手问题：portable-pty 的 `PSEUDOCONSOLE_INHERIT_CURSOR` 会让 ConPTY 先发 `ESC[6n` 等终端回光标位置，无 GUI 的 `crossh run` 因此永远收不到退出；daemon 现在代答 `ESC[1;1R` 并从回放中吞掉该查询，Windows lib 测试 `spawn::windows_tests::one_shot_cmd_exits_without_closing_pty` 固化该行为。验证：CI 绿灯并回填此处。
 
 ## 4. GUI 成为客户端
 
@@ -58,7 +58,7 @@
 - [x] 6.2 定向测试：`cargo test -p crossh-session`、`cargo test -p crossh-core`、`cargo test --bin crossh`、`cargo test --test terminal_replay`、`cargo test -p crossh-session --test cli_sessions`（按 `AGENTS.md` 不跑 `--workspace` 全量）。
 - [ ] 6.3 macOS 实机冒烟：关窗口后长命令继续；重开回到原会话；GUI + CLI 同时接入时 CLI 只观察、发送一次输入即接管；`ALT_SCREEN` 程序在 observer 窗口重排错位（D8 已知 artefact，判定为可接受而非回归）；`crossh daemon stop` 后会话消失且下次调用重新拉起；**从终端启动 crossh → 关窗口 → 关闭该终端 → 会话仍在**（验证 detached）。
 - [x] 6.4 `openspec validate session-daemon --strict` 通过。
-- [ ] 6.5 本机不跑 Windows/Linux 目标构建；两者的 daemon 与协议行为由 PR CI（Windows 与 Linux 各跑 `cargo test -p crossh-session`）承接。2026-11-18 已把测试加进两个 job，待首跑绿灯后回填。
+- [x] 6.5 本机不跑 Windows/Linux 目标构建；两者的 daemon 与协议行为由 PR CI（Windows 与 Linux 各跑 `cargo test -p crossh-session`）承接。2026-11-18 已把测试加进两个 job；2026-11-19 run `44437641063` 三平台全绿（Linux / Windows / macOS），Windows 侧包含 `cli_sessions`（cmd/ConPTY 一次性命令与退出码）、`daemon_upgrade`、`daemon_status`、`daemon_startup`、`daemon_stop_v1`。
 
 ## Workflow follow-up
 
