@@ -178,83 +178,90 @@ impl NoteWindow {
             .border_1()
             .border_color(theme::border_strong())
             .shadow_md()
+            .child(self.render_find_input(total, counter, cx))
+            .child(self.render_find_actions(total, cx))
+            .into_any_element()
+    }
+
+    /// 查询输入行：文本框 + 匹配计数。
+    fn render_find_input(
+        &self,
+        total: usize,
+        counter: String,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        filter_text_input(
-                            "note-find-input",
-                            self.find_focus.clone(),
-                            self.find_query.value.clone(),
-                            text("note.find.placeholder"),
-                            self.find_query.ime_marked_text.clone(),
-                            self.find_query.selection(),
-                            self.find_query.cursor,
-                        )
-                        .entity(cx.entity())
-                        .key_context(FIND_CONTEXT)
-                        .on_key_down(cx.listener(Self::handle_find_key))
-                        .on_pointer_select(cx.listener(Self::handle_find_pointer)),
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .text_xs()
-                            .text_color(if total == 0 && !self.find_query.value.is_empty() {
-                                theme::danger()
-                            } else {
-                                theme::muted_text()
-                            })
-                            .child(counter),
-                    ),
+                filter_text_input(
+                    "note-find-input",
+                    self.find_focus.clone(),
+                    self.find_query.value.clone(),
+                    text("note.find.placeholder"),
+                    self.find_query.ime_marked_text.clone(),
+                    self.find_query.selection(),
+                    self.find_query.cursor,
+                )
+                .entity(cx.entity())
+                .key_context(FIND_CONTEXT)
+                .on_key_down(cx.listener(Self::handle_find_key))
+                .on_pointer_select(cx.listener(Self::handle_find_pointer)),
             )
             .child(
                 div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_end()
-                    .gap_1()
-                    .child(
-                        Button::new("note-find-prev")
-                            .size(ButtonSize::Icon(px(22.)))
-                            .variant(ButtonVariant::Ghost)
-                            .icon(
-                                icons::icon(icons::IconName::ArrowLeft, 12.)
-                                    .text_color(theme::muted_text()),
-                            )
-                            .tooltip(text("note.find.previous"))
-                            .disabled(total == 0)
-                            .on_click(cx.listener(|this, _, _, cx| this.find_prev(cx))),
+                    .flex_shrink_0()
+                    .text_xs()
+                    .text_color(if total == 0 && !self.find_query.value.is_empty() {
+                        theme::danger()
+                    } else {
+                        theme::muted_text()
+                    })
+                    .child(counter),
+            )
+            .into_any_element()
+    }
+
+    /// 操作行：上一个 / 下一个 / 关闭。
+    fn render_find_actions(&self, total: usize, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_end()
+            .gap_1()
+            .child(
+                Button::new("note-find-prev")
+                    .size(ButtonSize::Icon(px(22.)))
+                    .variant(ButtonVariant::Ghost)
+                    .icon(
+                        icons::icon(icons::IconName::ArrowLeft, 12.)
+                            .text_color(theme::muted_text()),
                     )
-                    .child(
-                        Button::new("note-find-next")
-                            .size(ButtonSize::Icon(px(22.)))
-                            .variant(ButtonVariant::Ghost)
-                            .icon(
-                                icons::icon(icons::IconName::ArrowUp, 12.)
-                                    .text_color(theme::muted_text()),
-                            )
-                            .tooltip(text("note.find.next"))
-                            .disabled(total == 0)
-                            .on_click(cx.listener(|this, _, _, cx| this.find_next(cx))),
+                    .tooltip(text("note.find.previous"))
+                    .disabled(total == 0)
+                    .on_click(cx.listener(|this, _, _, cx| this.find_prev(cx))),
+            )
+            .child(
+                Button::new("note-find-next")
+                    .size(ButtonSize::Icon(px(22.)))
+                    .variant(ButtonVariant::Ghost)
+                    .icon(
+                        icons::icon(icons::IconName::ArrowUp, 12.).text_color(theme::muted_text()),
                     )
-                    .child(
-                        Button::new("note-find-close")
-                            .size(ButtonSize::Icon(px(22.)))
-                            .variant(ButtonVariant::Ghost)
-                            .icon(
-                                icons::icon(icons::IconName::X, 12.)
-                                    .text_color(theme::muted_text()),
-                            )
-                            .tooltip(text("note.find.close"))
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.close_find(window, cx)),
-                            ),
-                    ),
+                    .tooltip(text("note.find.next"))
+                    .disabled(total == 0)
+                    .on_click(cx.listener(|this, _, _, cx| this.find_next(cx))),
+            )
+            .child(
+                Button::new("note-find-close")
+                    .size(ButtonSize::Icon(px(22.)))
+                    .variant(ButtonVariant::Ghost)
+                    .icon(icons::icon(icons::IconName::X, 12.).text_color(theme::muted_text()))
+                    .tooltip(text("note.find.close"))
+                    .on_click(cx.listener(|this, _, window, cx| this.close_find(window, cx))),
             )
             .into_any_element()
     }
