@@ -124,94 +124,139 @@ impl RenderOnce for ModalDialog {
             actions,
         } = self;
 
-        let mut card = div()
-            .w(width)
-            .p_5()
-            .bg(theme::surface())
-            .border_1()
-            .border_color(theme::border_strong())
-            .rounded(px(theme::RADIUS_MD))
-            .shadow_md()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_sm()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme::text())
-                    .child(title_icon)
-                    .child(title),
-            );
-        if let Some(body) = body {
-            card = card.child(
-                div()
-                    .mt_2()
-                    .text_xs()
-                    .text_color(theme::muted_text())
-                    .child(body),
-            );
-        }
-        for child in children {
-            card = card.child(child);
-        }
-        if let Some(actions) = actions {
-            card = card.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .mt_4()
-                    .child(actions),
-            );
-        }
+        let card = render_card(
+            CardParts {
+                title,
+                title_icon,
+                width,
+                body,
+                children,
+                actions,
+            },
+            card_id,
+            blocks_card_clicks,
+        );
+        render_scrim(card, scrim_id, on_backdrop_click)
+    }
+}
 
-        let card: AnyElement = if let Some(card_id) = card_id {
-            let card = card.id(card_id);
-            let card = if blocks_card_clicks {
-                card.on_click(|_ev, _window, cx| cx.stop_propagation())
-            } else {
-                card
-            };
-            card.into_any_element()
-        } else {
-            let mut card = card;
-            if blocks_card_clicks {
-                card.interactivity()
-                    .on_click(|_ev, _window, cx| cx.stop_propagation());
-            }
-            card.into_any_element()
-        };
+/// `render_card` 的输入字段：由 `render` 解构后传入，避免 helper 参数过多。
+struct CardParts {
+    title: SharedString,
+    title_icon: AnyElement,
+    width: gpui::Pixels,
+    body: Option<SharedString>,
+    children: Vec<AnyElement>,
+    actions: Option<AnyElement>,
+}
 
-        let scrim = div()
-            .absolute()
-            .size_full()
-            .top_0()
-            .left_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(theme::scrim());
-        let scrim: AnyElement = if let Some(scrim_id) = scrim_id {
-            let scrim = scrim.id(scrim_id);
-            let scrim = if let Some(handler) = on_backdrop_click {
-                scrim.on_click(move |event, window, cx| handler(event, window, cx))
-            } else {
-                scrim
-            };
-            scrim.child(card).into_any_element()
+/// 卡片本体：`w*p_5` + surface 背景 + `border_strong` 描边 + 圆角 + 阴影，
+/// 依次追加标题行、可选正文、children、可选尾部按钮行，最后挂上卡片交互。
+fn render_card(
+    parts: CardParts,
+    card_id: Option<SharedString>,
+    blocks_card_clicks: bool,
+) -> AnyElement {
+    let CardParts {
+        title,
+        title_icon,
+        width,
+        body,
+        children,
+        actions,
+    } = parts;
+
+    let mut card = div()
+        .w(width)
+        .p_5()
+        .bg(theme::surface())
+        .border_1()
+        .border_color(theme::border_strong())
+        .rounded(px(theme::RADIUS_MD))
+        .shadow_md()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme::text())
+                .child(title_icon)
+                .child(title),
+        );
+    if let Some(body) = body {
+        card = card.child(
+            div()
+                .mt_2()
+                .text_xs()
+                .text_color(theme::muted_text())
+                .child(body),
+        );
+    }
+    for child in children {
+        card = card.child(child);
+    }
+    if let Some(actions) = actions {
+        card = card.child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .mt_4()
+                .child(actions),
+        );
+    }
+
+    if let Some(card_id) = card_id {
+        let card = card.id(card_id);
+        let card = if blocks_card_clicks {
+            card.on_click(|_ev, _window, cx| cx.stop_propagation())
         } else {
-            let mut scrim = scrim;
-            if let Some(handler) = on_backdrop_click {
-                scrim
-                    .interactivity()
-                    .on_click(move |event, window, cx| handler(event, window, cx));
-            }
-            scrim.child(card).into_any_element()
+            card
         };
-        scrim
+        card.into_any_element()
+    } else {
+        if blocks_card_clicks {
+            card.interactivity()
+                .on_click(|_ev, _window, cx| cx.stop_propagation());
+        }
+        card.into_any_element()
+    }
+}
+
+/// scrim 遮罩：absolute 全屏居中 + scrim 底色，挂载背景点击后内嵌卡片。
+fn render_scrim(
+    card: AnyElement,
+    scrim_id: Option<SharedString>,
+    on_backdrop_click: Option<ClickHandler>,
+) -> AnyElement {
+    let mut scrim = div()
+        .absolute()
+        .size_full()
+        .top_0()
+        .left_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme::scrim());
+    if let Some(scrim_id) = scrim_id {
+        let scrim = scrim.id(scrim_id);
+        let scrim = if let Some(handler) = on_backdrop_click {
+            scrim.on_click(move |event, window, cx| handler(event, window, cx))
+        } else {
+            scrim
+        };
+        scrim.child(card).into_any_element()
+    } else {
+        if let Some(handler) = on_backdrop_click {
+            scrim
+                .interactivity()
+                .on_click(move |event, window, cx| handler(event, window, cx));
+        }
+        scrim.child(card).into_any_element()
     }
 }
