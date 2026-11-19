@@ -33,77 +33,23 @@ pub fn scan_changes(cwd: &Path) -> Result<ChangeScan, GitError> {
         }
 
         match record.first().copied() {
-            Some(b'1' | b'2') => {
-                let field_count = if record[0] == b'2' { 9 } else { 8 };
-                let Some((prefix, path)) = split_after_spaces(record, field_count) else {
-                    continue;
-                };
-                let mut fields = prefix.split(|byte| *byte == b' ');
-                let _kind = fields.next();
-                let Some(xy) = fields.next() else {
-                    continue;
-                };
-                let path = String::from_utf8_lossy(path).into_owned();
-                let mut orig_path = None;
-                if record[0] == b'2' {
-                    // -z 模式下源路径是记录后的下一个 NUL 片段。
-                    if let Some(extra) = records.get(index)
-                        && !extra.is_empty()
-                    {
-                        orig_path = Some(String::from_utf8_lossy(extra).into_owned());
-                        index += 1;
-                    }
-                }
-                let index_status = xy.first().copied().unwrap_or(b'.');
-                let worktree_status = xy.get(1).copied().unwrap_or(b'.');
-                if index_status != b'.' {
-                    changes.push(file_change(
-                        &path,
-                        orig_path.clone(),
-                        index_status,
-                        true,
-                        &staged_counts,
-                    ));
-                }
-                if worktree_status != b'.' {
-                    changes.push(file_change(
-                        &path,
-                        if is_rename(index_status) {
-                            orig_path.clone()
-                        } else {
-                            None
-                        },
-                        worktree_status,
-                        false,
-                        &working_counts,
-                    ));
-                }
-            }
+            Some(b'1' | b'2') => parse_change_record(
+                record,
+                &records,
+                &mut index,
+                &mut changes,
+                &staged_counts,
+                &working_counts,
+            ),
             Some(b'u') => {
-                let Some((_, path)) = split_after_spaces(record, 10) else {
-                    continue;
-                };
-                changes.push(FileChange {
-                    path: String::from_utf8_lossy(path).into_owned(),
-                    orig_path: None,
-                    status: ChangeStatus::Conflict,
-                    staged: false,
-                    insertions: 0,
-                    deletions: 0,
-                });
+                if let Some((_, path)) = split_after_spaces(record, 10) {
+                    push_plain_change(path, ChangeStatus::Conflict, &mut changes);
+                }
             }
             Some(b'?') => {
-                let Some(space) = record.iter().position(|byte| *byte == b' ') else {
-                    continue;
-                };
-                changes.push(FileChange {
-                    path: String::from_utf8_lossy(&record[space + 1..]).into_owned(),
-                    orig_path: None,
-                    status: ChangeStatus::Untracked,
-                    staged: false,
-                    insertions: 0,
-                    deletions: 0,
-                });
+                if let Some(space) = record.iter().position(|byte| *byte == b' ') {
+                    push_plain_change(&record[space + 1..], ChangeStatus::Untracked, &mut changes);
+                }
             }
             _ => {}
         }
@@ -114,6 +60,73 @@ pub fn scan_changes(cwd: &Path) -> Result<ChangeScan, GitError> {
         changes,
         status: parse_status(&output),
     })
+}
+
+/// 解析 porcelain v2 的 `1`/`2` 记录，并在需要时消费其后的 rename 源路径片段。
+fn parse_change_record(
+    record: &[u8],
+    records: &[&[u8]],
+    index: &mut usize,
+    changes: &mut Vec<FileChange>,
+    staged_counts: &HashMap<String, (usize, usize)>,
+    working_counts: &HashMap<String, (usize, usize)>,
+) {
+    let field_count = if record[0] == b'2' { 9 } else { 8 };
+    let Some((prefix, path)) = split_after_spaces(record, field_count) else {
+        return;
+    };
+    let mut fields = prefix.split(|byte| *byte == b' ');
+    let _kind = fields.next();
+    let Some(xy) = fields.next() else {
+        return;
+    };
+    let path = String::from_utf8_lossy(path).into_owned();
+    let mut orig_path = None;
+    if record[0] == b'2' {
+        // -z 模式下源路径是记录后的下一个 NUL 片段。
+        if let Some(extra) = records.get(*index)
+            && !extra.is_empty()
+        {
+            orig_path = Some(String::from_utf8_lossy(extra).into_owned());
+            *index += 1;
+        }
+    }
+    let index_status = xy.first().copied().unwrap_or(b'.');
+    let worktree_status = xy.get(1).copied().unwrap_or(b'.');
+    if index_status != b'.' {
+        changes.push(file_change(
+            &path,
+            orig_path.clone(),
+            index_status,
+            true,
+            staged_counts,
+        ));
+    }
+    if worktree_status != b'.' {
+        changes.push(file_change(
+            &path,
+            if is_rename(index_status) {
+                orig_path
+            } else {
+                None
+            },
+            worktree_status,
+            false,
+            working_counts,
+        ));
+    }
+}
+
+/// 追加一条无 diff 统计的未暂存变更。
+fn push_plain_change(path: &[u8], status: ChangeStatus, changes: &mut Vec<FileChange>) {
+    changes.push(FileChange {
+        path: String::from_utf8_lossy(path).into_owned(),
+        orig_path: None,
+        status,
+        staged: false,
+        insertions: 0,
+        deletions: 0,
+    });
 }
 
 /// 拆出 v2 状态记录的所有空白字段。
