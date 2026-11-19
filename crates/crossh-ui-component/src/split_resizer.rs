@@ -4,9 +4,9 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
-    App, Bounds, DispatchPhase, ElementId, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, RenderOnce, Styled,
-    Window, canvas, div, prelude::FluentBuilder, px,
+    App, Bounds, DispatchPhase, Div, ElementId, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, RenderOnce, Stateful,
+    Styled, Window, canvas, div, prelude::FluentBuilder, px,
 };
 
 pub use crossh_ui_base::{SplitAxis, SplitHandleSide};
@@ -79,12 +79,17 @@ impl SplitResizer {
         self.line = true;
         self
     }
-}
-impl RenderOnce for SplitResizer {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let bounds: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::new(Cell::new(None));
-        let is_vertical = self.axis == SplitAxis::Vertical;
-        let backing = canvas(
+
+    /// 透明 canvas：采集自身 bounds，并在拖拽时按指针位置更新尺寸单元格。
+    fn render_backing(
+        &self,
+        bounds: &Rc<Cell<Option<Bounds<Pixels>>>>,
+        is_vertical: bool,
+    ) -> impl IntoElement + use<> {
+        let min_size = self.min_size;
+        let max_size = self.max_size;
+        let handle_side = self.handle_side;
+        canvas(
             {
                 let bounds = bounds.clone();
                 move |canvas_bounds, _window, _cx| bounds.set(Some(canvas_bounds))
@@ -111,9 +116,9 @@ impl RenderOnce for SplitResizer {
                             let raw = if is_vertical {
                                 drag_height(&bounds, event.position.y)
                             } else {
-                                drag_width(self.handle_side, &bounds, event.position.x)
+                                drag_width(handle_side, &bounds, event.position.x)
                             };
-                            let value = clamp_size(raw, self.min_size, self.max_size);
+                            let value = clamp_size(raw, min_size, max_size);
                             value_cell.set(value);
                             window.refresh();
                         }
@@ -133,73 +138,93 @@ impl RenderOnce for SplitResizer {
             },
         )
         .absolute()
-        .size_full();
+        .size_full()
+    }
+
+    /// 绝对定位的拖拽手柄，按轴向分派。
+    fn render_handle(self, is_vertical: bool, resizing: bool) -> Stateful<Div> {
+        if is_vertical {
+            self.render_vertical_handle(resizing)
+        } else {
+            self.render_horizontal_handle(resizing)
+        }
+    }
+
+    fn render_vertical_handle(self, resizing: bool) -> Stateful<Div> {
+        div()
+            .id(self.id)
+            .absolute()
+            .left_0()
+            .bottom(px(-4.))
+            .w_full()
+            .h(px(8.))
+            .cursor_row_resize()
+            .when(self.line, |this| {
+                this.flex().items_center().justify_center().child(
+                    div()
+                        .h(px(1.))
+                        .w_full()
+                        .bg(if resizing {
+                            theme::accent()
+                        } else {
+                            theme::border()
+                        })
+                        .hover(|style| style.bg(theme::accent())),
+                )
+            })
+            .on_mouse_down(MouseButton::Left, {
+                let dragging = self.dragging.clone();
+                move |_event: &MouseDownEvent, window, _cx| {
+                    dragging.set(true);
+                    window.refresh();
+                }
+            })
+    }
+
+    fn render_horizontal_handle(self, resizing: bool) -> Stateful<Div> {
+        div()
+            .id(self.id)
+            .absolute()
+            .top_0()
+            .when(self.handle_side == SplitHandleSide::Left, |this| {
+                this.left(px(-4.))
+            })
+            .when(self.handle_side == SplitHandleSide::Right, |this| {
+                this.right(px(-4.))
+            })
+            .w(px(8.))
+            .h_full()
+            .cursor_col_resize()
+            .when(self.line, |this| {
+                this.flex().items_center().justify_center().child(
+                    div()
+                        .w(px(1.))
+                        .h_full()
+                        .bg(if resizing {
+                            theme::accent()
+                        } else {
+                            theme::border()
+                        })
+                        .hover(|style| style.bg(theme::accent())),
+                )
+            })
+            .on_mouse_down(MouseButton::Left, {
+                let dragging = self.dragging.clone();
+                move |_event: &MouseDownEvent, window, _cx| {
+                    dragging.set(true);
+                    window.refresh();
+                }
+            })
+    }
+}
+impl RenderOnce for SplitResizer {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let is_vertical = self.axis == SplitAxis::Vertical;
+        let bounds: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::new(Cell::new(None));
+        let backing = self.render_backing(&bounds, is_vertical);
 
         let resizing = self.dragging.get();
-        let handle = if is_vertical {
-            div()
-                .id(self.id)
-                .absolute()
-                .left_0()
-                .bottom(px(-4.))
-                .w_full()
-                .h(px(8.))
-                .cursor_row_resize()
-                .when(self.line, |this| {
-                    this.flex().items_center().justify_center().child(
-                        div()
-                            .h(px(1.))
-                            .w_full()
-                            .bg(if resizing {
-                                theme::accent()
-                            } else {
-                                theme::border()
-                            })
-                            .hover(|style| style.bg(theme::accent())),
-                    )
-                })
-                .on_mouse_down(MouseButton::Left, {
-                    let dragging = self.dragging.clone();
-                    move |_event: &MouseDownEvent, window, _cx| {
-                        dragging.set(true);
-                        window.refresh();
-                    }
-                })
-        } else {
-            div()
-                .id(self.id)
-                .absolute()
-                .top_0()
-                .when(self.handle_side == SplitHandleSide::Left, |this| {
-                    this.left(px(-4.))
-                })
-                .when(self.handle_side == SplitHandleSide::Right, |this| {
-                    this.right(px(-4.))
-                })
-                .w(px(8.))
-                .h_full()
-                .cursor_col_resize()
-                .when(self.line, |this| {
-                    this.flex().items_center().justify_center().child(
-                        div()
-                            .w(px(1.))
-                            .h_full()
-                            .bg(if resizing {
-                                theme::accent()
-                            } else {
-                                theme::border()
-                            })
-                            .hover(|style| style.bg(theme::accent())),
-                    )
-                })
-                .on_mouse_down(MouseButton::Left, {
-                    let dragging = self.dragging.clone();
-                    move |_event: &MouseDownEvent, window, _cx| {
-                        dragging.set(true);
-                        window.refresh();
-                    }
-                })
-        };
+        let handle = self.render_handle(is_vertical, resizing);
 
         div().absolute().size_full().child(backing).child(handle)
     }
