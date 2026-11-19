@@ -287,7 +287,7 @@ mod tests {
     }
 
     /// 收集会话从启动到退出的全部输出（读线程直写 feed，测试读快照）。
-    fn run_to_exit(id: &str, opt: SpawnOptions) -> (i32, Vec<u8>) {
+    fn run_to_exit(id: &str, opt: SpawnOptions) -> (i32, u64, Vec<u8>) {
         let mut sess = ChildSession::spawn(id, opt).expect("spawn pty");
         // 轮询退出（测试用，不追求优雅）。
         let code = loop {
@@ -297,13 +297,13 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         };
         sess.join_reader();
-        let (_, out) = sess.feed.lock().expect("feed").snapshot();
-        (code, out)
+        let (total, out) = sess.feed.lock().expect("feed").snapshot();
+        (code, total, out)
     }
 
     #[test]
     fn real_pty_output_enters_ring() {
-        let (code, out) = run_to_exit("spawn-smoke", sh_opts("printf hello-pty"));
+        let (code, _total, out) = run_to_exit("spawn-smoke", sh_opts("printf hello-pty"));
         assert_eq!(code, 0);
         let text = String::from_utf8_lossy(&out);
         assert!(text.contains("hello-pty"), "got {text:?}");
@@ -320,7 +320,7 @@ mod tests {
             "echo \"probe=$CROSSH_ENV_PROBE\"; echo \"path=$PATH\"; echo \"cargo=$CARGO_MANIFEST_DIR\"",
         );
         opt.base_env = base;
-        let (code, out) = run_to_exit("spawn-env", opt);
+        let (code, _total, out) = run_to_exit("spawn-env", opt);
         assert_eq!(code, 0);
         let text = String::from_utf8_lossy(&out);
         assert!(text.contains("probe=probe-ok"), "got {text:?}");
@@ -331,16 +331,24 @@ mod tests {
 
     #[test]
     fn ring_truncation_keeps_tail_only() {
-        // 600 KiB 输出 → 环只保留最近 512 KiB。
-        let (code, out) = run_to_exit("spawn-truncate", sh_opts("head -c 614400 /dev/zero"));
+        // 1 MiB 输出 + 收尾停顿 → 环稳定保留最近 512 KiB。
+        // 停顿让读线程在 PTY 关闭前排空，避免 CI 抖动造成尾部丢失。
+        let (code, total, out) = run_to_exit(
+            "spawn-truncate",
+            sh_opts("head -c 1048576 /dev/zero; sleep 0.2"),
+        );
         assert_eq!(code, 0);
+        assert!(
+            total >= crate::session::REPLAY_LIMIT_BYTES as u64,
+            "expected more than the replay limit, got {total}"
+        );
         assert_eq!(out.len(), crate::session::REPLAY_LIMIT_BYTES);
         assert!(out.iter().all(|&b| b == 0));
     }
 
     #[test]
     fn exit_code_propagates() {
-        let (code, _) = run_to_exit("spawn-exit3", sh_opts("exit 3"));
+        let (code, _total, _) = run_to_exit("spawn-exit3", sh_opts("exit 3"));
         assert_eq!(code, 3);
     }
 

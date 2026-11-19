@@ -603,7 +603,7 @@ pub async fn run_command(argv: &[String], out: &mut dyn Write) -> io::Result<i32
         .ok()
         .map(|p| p.to_string_lossy().into_owned());
     let mut client = Client::connect().await?;
-    client
+    let attached = client
         .create(CreateRequest {
             shell: None,
             cwd,
@@ -612,9 +612,14 @@ pub async fn run_command(argv: &[String], out: &mut dyn Write) -> io::Result<i32
             command: Some(argv.to_vec()),
             env: Some(caller_env()),
         })
-        .await
-        .map(|_| ())?;
-    // Attached + 回放已由 create() 消费；裸命令无 prompt，回放通常为空。
+        .await?;
+    // 一次性命令可能在订阅建立前就退出（Windows 的 `cmd /C echo` 尤其常见）。
+    // 回放与退出码已在 `Attached` 里，先消费掉再等实时事件。
+    out.write_all(&attached.replay)?;
+    out.flush()?;
+    if let Some(code) = attached.session.exit_code {
+        return Ok(code);
+    }
     loop {
         match client.next_event().await? {
             ServerEvent::Output { bytes, .. } => {

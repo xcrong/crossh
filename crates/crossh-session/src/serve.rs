@@ -672,6 +672,16 @@ async fn attach_and_stream(
     })
     .unwrap_or_default();
     send_frame(writer, MessageKind::ReplayEnd, &end).await?;
+    // 退出发在订阅之前或回放期间时，broadcast 不会补发；按会话状态补一条。
+    let exit_code = {
+        let e = handle.lock().await;
+        (!e.meta.alive).then(|| e.meta.exit_code.unwrap_or(-1))
+    };
+    if let Some(code) = exit_code {
+        let body = serde_json::to_vec(&ExitedNotice { id, code }).unwrap_or_default();
+        send_frame(writer, MessageKind::Exited, &body).await?;
+        return Ok(tokio::spawn(async {}));
+    }
     Ok(spawn_forwarder(
         writer.clone(),
         out_rx,

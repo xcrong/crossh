@@ -58,8 +58,12 @@ async fn cli_full_cycle() {
     let _guard = Guard { dir: dir.clone() };
 
     // 未运行时直接 `run`：按需拉起成功且退出码为 0（5.2）。
+    // 超时兜底：一次性命令在 Windows 上可能在订阅前退出，缺退出通知会挂死。
     let mut out = Vec::new();
-    let code = run_command(&echo_hi(), &mut out).await.unwrap();
+    let code = tokio::time::timeout(Duration::from_secs(20), run_command(&echo_hi(), &mut out))
+        .await
+        .expect("one-shot command must not hang")
+        .unwrap();
     assert_eq!(code, 0);
     assert!(
         String::from_utf8_lossy(&out).contains("hi-cli"),
@@ -69,7 +73,10 @@ async fn cli_full_cycle() {
 
     // 退出码原样透出。
     let mut out = Vec::new();
-    let code = run_command(&exit7(), &mut out).await.unwrap();
+    let code = tokio::time::timeout(Duration::from_secs(20), run_command(&exit7(), &mut out))
+        .await
+        .expect("one-shot command must not hang")
+        .unwrap();
     assert_eq!(code, 7);
 
     // 双前端看到同一段输出与角色（规格“两个前端的观察一致”）。
@@ -87,7 +94,11 @@ async fn cli_full_cycle() {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !String::from_utf8_lossy(&seen).contains("shared-view") {
         assert!(std::time::Instant::now() < deadline, "c1 never saw output");
-        match c1.next_event().await.unwrap() {
+        let event = tokio::time::timeout(Duration::from_secs(10), c1.next_event())
+            .await
+            .expect("c1 event wait timed out")
+            .unwrap();
+        match event {
             crossh_session::ServerEvent::Output { bytes, .. } => seen.extend_from_slice(&bytes),
             crossh_session::ServerEvent::Exited(_) => panic!("session exited early"),
         }
@@ -97,14 +108,24 @@ async fn cli_full_cycle() {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !String::from_utf8_lossy(&joined).contains("shared-view") {
         assert!(std::time::Instant::now() < deadline, "c2 never saw output");
-        match c2.next_event().await.unwrap() {
+        let event = tokio::time::timeout(Duration::from_secs(10), c2.next_event())
+            .await
+            .expect("c2 event wait timed out")
+            .unwrap();
+        match event {
             crossh_session::ServerEvent::Output { bytes, .. } => joined.extend_from_slice(&bytes),
             crossh_session::ServerEvent::Exited(_) => break,
         }
     }
     // capture 读到同一段输出。
     let mut captured = Vec::new();
-    let info = capture_session(&sid, &mut captured).await.unwrap();
+    let info = tokio::time::timeout(
+        Duration::from_secs(20),
+        capture_session(&sid, &mut captured),
+    )
+    .await
+    .expect("capture must not hang")
+    .unwrap();
     assert_eq!(info.id, sid);
     assert!(String::from_utf8_lossy(&captured).contains("shared-view"));
     // 结束会话后列表为空。

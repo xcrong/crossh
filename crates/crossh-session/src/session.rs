@@ -32,7 +32,7 @@ impl ReplayRing {
         self.len == 0
     }
 
-    /// 追加原始输出，超出上限时从头部丢弃整块（保留最近）。
+    /// 追加原始输出，超出上限时从头部裁剪（保留最近）。
     pub fn push(&mut self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
@@ -45,11 +45,18 @@ impl ReplayRing {
         };
         self.chunks.push_back(bytes.to_vec());
         self.len += bytes.len();
+        // 按字节裁剪而不是整块丢弃：回放长度稳定等于上限。
         while self.len > REPLAY_LIMIT_BYTES {
-            if let Some(front) = self.chunks.pop_front() {
-                self.len -= front.len();
-            } else {
+            let excess = self.len - REPLAY_LIMIT_BYTES;
+            let Some(front) = self.chunks.front_mut() else {
                 break;
+            };
+            if front.len() <= excess {
+                let removed = self.chunks.pop_front().map(|c| c.len()).unwrap_or(0);
+                self.len -= removed;
+            } else {
+                front.drain(..excess);
+                self.len -= excess;
             }
         }
     }
