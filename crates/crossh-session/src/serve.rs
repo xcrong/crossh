@@ -292,6 +292,29 @@ fn spawn_cwd_poller(sessions: Sessions, commands: mpsc::UnboundedSender<Workspac
     });
 }
 
+/// 连接级可变状态：当前绑定会话、输出转发任务与工作区订阅。
+struct ConnState {
+    client_id: ControllerId,
+    bound: Option<Handle>,
+    /// 当前接入的转发任务（切换绑定/断开时 abort）。
+    fwd: Option<tokio::task::JoinHandle<()>>,
+    workspace_attached: bool,
+    workspace_forward: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl ConnState {
+    /// 读帧失败（对端断开）后的清理：解绑 → 结束工作区接入 → 停快照转发。
+    async fn disconnect(&mut self, commands: &mpsc::UnboundedSender<WorkspaceCommand>) {
+        detach_conn(&mut self.bound, &mut self.fwd, self.client_id).await;
+        if self.workspace_attached {
+            let _ = commands.send(WorkspaceCommand::AttachEnded);
+        }
+        if let Some(task) = self.workspace_forward.take() {
+            task.abort();
+        }
+    }
+}
+
 async fn handle_conn(
     sock: TcpStream,
     sessions: Sessions,
@@ -303,7 +326,56 @@ async fn handle_conn(
     let writer = Arc::new(Mutex::new(writer));
 
     // 握手必须是第一帧。
-    let (kind, payload) = read_frame(&mut reader).await?;
+    handshake(&mut reader, &writer, &token, client_id).await?;
+
+    let mut state = ConnState {
+        client_id,
+        bound: None,
+        fwd: None,
+        workspace_attached: false,
+        workspace_forward: None,
+    };
+
+    loop {
+        let (kind, payload) = match read_frame(&mut reader).await {
+            Ok(f) => f,
+            Err(_) => {
+                state.disconnect(&runtime.commands).await;
+                return Ok(());
+            }
+        };
+        match kind {
+            MessageKind::List => handle_list(&writer, &sessions, &runtime).await?,
+            MessageKind::Create => {
+                handle_create(&mut state, &writer, &sessions, &runtime, &payload).await?;
+            }
+            MessageKind::Attach => {
+                handle_attach(&mut state, &writer, &sessions, &runtime, &payload).await?;
+            }
+            MessageKind::Input => handle_input(&state, &writer, &payload).await?,
+            MessageKind::Resize => handle_resize(&state, &runtime, &payload).await?,
+            MessageKind::Close => handle_close(&sessions, &runtime, &payload).await?,
+            MessageKind::Shutdown => handle_shutdown(&runtime).await,
+            MessageKind::WorkspaceGet => handle_workspace_get(&writer, &runtime).await?,
+            MessageKind::WorkspaceAttach => {
+                handle_workspace_attach(&mut state, &writer, &runtime).await?;
+            }
+            MessageKind::WorkspaceMutate => {
+                handle_workspace_mutate(&writer, &runtime, &payload).await?;
+            }
+            _ => handle_unknown(&writer).await?,
+        }
+    }
+}
+
+/// 握手：校验首帧版本与令牌；失败回 `Error` 后拒绝连接。
+async fn handshake(
+    reader: &mut OwnedReadHalf,
+    writer: &Arc<Mutex<OwnedWriteHalf>>,
+    token: &str,
+    client_id: ControllerId,
+) -> io::Result<()> {
+    let (kind, payload) = read_frame(reader).await?;
     if kind != MessageKind::Hello {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "expected hello"));
     }
@@ -312,300 +384,332 @@ async fn handle_conn(
     match verify_handshake(
         &req,
         PROTOCOL_VERSION,
-        &token,
+        token,
         &server_capabilities(),
         client_id,
     ) {
         Ok(ok) => {
             let body = serde_json::to_vec(&ok).unwrap_or_default();
-            send_frame(&writer, MessageKind::Welcome, &body).await?;
+            send_frame(writer, MessageKind::Welcome, &body).await?;
         }
         Err(e) => {
             let body = err_payload("handshake", e.to_string());
-            send_frame(&writer, MessageKind::Error, &body).await?;
+            send_frame(writer, MessageKind::Error, &body).await?;
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "handshake failed",
             ));
         }
     }
+    Ok(())
+}
 
-    let mut bound: Option<Handle> = None;
-    // 当前接入的转发任务（切换绑定/断开时 abort）。
-    let mut fwd: Option<tokio::task::JoinHandle<()>> = None;
-    let mut workspace_attached = false;
-    let mut workspace_forward: Option<tokio::task::JoinHandle<()>> = None;
+async fn handle_list(
+    writer: &Arc<Mutex<OwnedWriteHalf>>,
+    sessions: &Sessions,
+    runtime: &WorkspaceRuntime,
+) -> io::Result<()> {
+    let mut out = {
+        let map = sessions.lock().await;
+        let mut out = Vec::with_capacity(map.len());
+        for h in map.values() {
+            let mut e = h.lock().await;
+            refresh_meta(&mut e);
+            out.push(info_of(&e));
+        }
+        out
+    };
+    for info in &mut out {
+        merge_ownership(info, &runtime.mirror);
+    }
+    let body = serde_json::to_vec(&ListReply { sessions: out }).unwrap_or_default();
+    send_frame(writer, MessageKind::Listed, &body).await
+}
 
-    loop {
-        let (kind, payload) = match read_frame(&mut reader).await {
-            Ok(f) => f,
-            Err(_) => {
-                detach_conn(&mut bound, &mut fwd, client_id).await;
-                if workspace_attached {
-                    let _ = runtime.commands.send(WorkspaceCommand::AttachEnded);
-                }
-                if let Some(task) = workspace_forward.take() {
-                    task.abort();
-                }
-                return Ok(());
-            }
-        };
-        match kind {
-            MessageKind::List => {
-                let mut out = {
-                    let map = sessions.lock().await;
-                    let mut out = Vec::with_capacity(map.len());
-                    for h in map.values() {
-                        let mut e = h.lock().await;
-                        refresh_meta(&mut e);
-                        out.push(info_of(&e));
-                    }
-                    out
-                };
-                for info in &mut out {
-                    merge_ownership(info, &runtime.mirror);
-                }
-                let body = serde_json::to_vec(&ListReply { sessions: out }).unwrap_or_default();
-                send_frame(&writer, MessageKind::Listed, &body).await?;
-            }
-            MessageKind::Create => {
-                let req: CreateRequest = serde_json::from_slice(&payload)
-                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad create"))?;
-                let handle = spawn_session(&req).await?;
-                let id = handle.lock().await.meta.id.clone();
-                sessions.lock().await.insert(id.clone(), handle.clone());
-                log::info!("session {id} created ({}x{})", req.cols, req.rows);
-                spawn_exit_monitor(
-                    sessions.clone(),
-                    id.clone(),
-                    handle.clone(),
-                    runtime.commands.clone(),
-                );
-                // 创建者自动绑定（首个接入 = controller）。
-                detach_conn(&mut bound, &mut fwd, client_id).await;
-                let created = {
-                    let e = handle.lock().await;
-                    CreatedReply {
-                        session: info_of(&e),
-                    }
-                };
-                let body = serde_json::to_vec(&created).unwrap_or_default();
-                send_frame(&writer, MessageKind::Created, &body).await?;
-                bound = Some(handle.clone());
-                fwd = Some(attach_and_stream(&writer, handle, client_id, &runtime.mirror).await?);
-            }
-            MessageKind::Attach => {
-                let req: AttachRequest = serde_json::from_slice(&payload)
-                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad attach"))?;
-                let handle = sessions.lock().await.get(&req.id).cloned();
-                let Some(handle) = handle else {
-                    send_frame(
-                        &writer,
-                        MessageKind::Error,
-                        &err_payload("session-gone", &req.id),
-                    )
-                    .await?;
-                    continue;
-                };
-                if !handle.lock().await.meta.alive {
-                    send_frame(
-                        &writer,
-                        MessageKind::Error,
-                        &err_payload("session-gone", &req.id),
-                    )
-                    .await?;
-                    continue;
-                }
-                detach_conn(&mut bound, &mut fwd, client_id).await;
-                bound = Some(handle.clone());
-                log::info!("client {client_id} attached to {}", req.id);
-                fwd = Some(attach_and_stream(&writer, handle, client_id, &runtime.mirror).await?);
-            }
-            MessageKind::Input => {
-                let Some(h) = &bound else {
-                    send_frame(
-                        &writer,
-                        MessageKind::Error,
-                        &err_payload("no-session", "attach first"),
-                    )
-                    .await?;
-                    continue;
-                };
-                let mut e = h.lock().await;
-                if !e.meta.alive {
-                    let id = e.meta.id.clone();
-                    send_frame(
-                        &writer,
-                        MessageKind::Error,
-                        &err_payload("session-closed", id),
-                    )
-                    .await?;
-                    continue;
-                }
-                match e.ownership.on_input(client_id) {
-                    // 已是 controller：直写 PTY。
-                    None => {
-                        log::debug!(
-                            "input {}B to {}: {:?}",
-                            payload.len(),
-                            e.meta.id,
-                            &payload[..payload.len().min(32)],
-                        );
-                        if let Err(err) = e.child.write_all(&payload) {
-                            log::debug!("write to pty failed: {err}");
-                        }
-                    }
-                    // observer 的第一次输入：完成接管，本次丢弃，从此进入。
-                    Some(OwnershipEvent::Takeover { new_controller }) => {
-                        e.meta.controller = Some(new_controller);
-                        log::info!(
-                            "session {} controller -> {new_controller} (takeover)",
-                            e.meta.id
-                        );
-                    }
-                    Some(OwnershipEvent::Released)
-                    | Some(OwnershipEvent::ObserverInputDropped { .. }) => {}
-                }
-            }
-            MessageKind::Resize => {
-                let req: ResizeRequest = serde_json::from_slice(&payload)
-                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad resize"))?;
-                if let Some(h) = &bound {
-                    let session_id = h.lock().await.meta.id.clone();
-                    let workspace_pane = runtime
-                        .mirror
-                        .read()
-                        .ok()
-                        .is_some_and(|mirror| mirror.contains_key(&session_id));
-                    if workspace_pane {
-                        let (session_id, accepted) = {
-                            let e = h.lock().await;
-                            (
-                                e.meta.id.clone(),
-                                e.ownership.accepts_resize(client_id) && e.meta.alive,
-                            )
-                        };
-                        if accepted {
-                            let _ = runtime.commands.send(WorkspaceCommand::ResizePane {
-                                session_id,
-                                size: TermSize {
-                                    cols: req.cols.max(1),
-                                    rows: req.rows.max(1),
-                                },
-                            });
-                        }
-                    } else {
-                        // 临时会话不经过工作区 actor，直接调整 PTY。
-                        let mut e = h.lock().await;
-                        if e.ownership.accepts_resize(client_id) && e.meta.alive {
-                            let _ = e.child.resize(req.cols.max(1), req.rows.max(1));
-                        }
-                    }
-                    // observer 上报静默忽略（尺寸权威在 controller）。
-                }
-            }
-            MessageKind::Close => {
-                let req: CloseRequest = serde_json::from_slice(&payload)
-                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad close"))?;
-                let owner = runtime
-                    .mirror
-                    .read()
-                    .ok()
-                    .and_then(|mirror| mirror.get(&req.id).copied());
-                if let Some(PaneRef { pane_id, .. }) = owner {
-                    // 布局会话：actor 先解绑、更新布局、持久化，再投 CloseSession。
-                    let _ = runtime
-                        .commands
-                        .send(WorkspaceCommand::ClosePane { pane_id });
-                } else if let Some(h) = sessions.lock().await.remove(&req.id) {
-                    // 临时会话：沿用直接 kill 路径。
-                    log::info!("session {} closed by client", req.id);
-                    h.lock().await.child.kill();
-                }
-            }
-            MessageKind::Shutdown => {
-                // 显式停止：flush 工作区、投递关闭效果、删端口文件后退出。
-                log::info!("shutdown requested, exiting");
-                let (reply, wait) = oneshot::channel();
-                let _ = runtime.commands.send(WorkspaceCommand::Shutdown { reply });
-                let _ = tokio::time::timeout(std::time::Duration::from_secs(6), wait).await;
-                crate::instance::remove_port_file();
-                std::process::exit(0);
-            }
-            MessageKind::WorkspaceGet => {
-                let (reply, wait) = oneshot::channel();
-                let _ = runtime.commands.send(WorkspaceCommand::Get { reply });
-                match wait.await {
-                    Ok(snapshot) => {
-                        let body = serde_json::to_vec(&*snapshot).unwrap_or_default();
-                        send_frame(&writer, MessageKind::WorkspaceSnapshot, &body).await?;
-                    }
-                    Err(_) => {
-                        send_frame(
-                            &writer,
-                            MessageKind::Error,
-                            &err_payload("workspace", "workspace unavailable"),
-                        )
-                        .await?;
-                    }
-                }
-            }
-            MessageKind::WorkspaceAttach => {
-                // 先订阅再 attach：订阅与快照之间不会漏掉发布。
-                let mut updates = runtime.snapshots.clone();
-                let (reply, wait) = oneshot::channel();
-                let _ = runtime.commands.send(WorkspaceCommand::Attach { reply });
-                if let Ok(snapshot) = wait.await {
-                    let body = serde_json::to_vec(&*snapshot).unwrap_or_default();
-                    send_frame(&writer, MessageKind::WorkspaceSnapshot, &body).await?;
-                }
-                workspace_attached = true;
-                let forward_writer = writer.clone();
-                workspace_forward = Some(tokio::spawn(async move {
-                    while updates.changed().await.is_ok() {
-                        let snapshot = updates.borrow_and_update().clone();
-                        let body = serde_json::to_vec(&*snapshot).unwrap_or_default();
-                        if send_frame(&forward_writer, MessageKind::WorkspaceSnapshot, &body)
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                }));
-            }
-            MessageKind::WorkspaceMutate => {
-                let request: WorkspaceMutateRequest = serde_json::from_slice(&payload)
-                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad mutate"))?;
-                let (reply, wait) = oneshot::channel();
-                let _ = runtime
-                    .commands
-                    .send(WorkspaceCommand::Mutate { request, reply });
-                match wait.await {
-                    Ok(reply) => {
-                        let body = serde_json::to_vec(&reply).unwrap_or_default();
-                        send_frame(&writer, MessageKind::WorkspaceMutateReply, &body).await?;
-                    }
-                    Err(_) => {
-                        send_frame(
-                            &writer,
-                            MessageKind::Error,
-                            &err_payload("workspace", "workspace unavailable"),
-                        )
-                        .await?;
-                    }
-                }
-            }
-            _ => {
-                send_frame(
-                    &writer,
-                    MessageKind::Error,
-                    &err_payload("bad-request", "unexpected kind"),
-                )
-                .await?;
+async fn handle_create(
+    state: &mut ConnState,
+    writer: &Arc<Mutex<OwnedWriteHalf>>,
+    sessions: &Sessions,
+    runtime: &WorkspaceRuntime,
+    payload: &[u8],
+) -> io::Result<()> {
+    let req: CreateRequest = serde_json::from_slice(payload)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad create"))?;
+    let handle = spawn_session(&req).await?;
+    let id = handle.lock().await.meta.id.clone();
+    sessions.lock().await.insert(id.clone(), handle.clone());
+    log::info!("session {id} created ({}x{})", req.cols, req.rows);
+    spawn_exit_monitor(
+        sessions.clone(),
+        id.clone(),
+        handle.clone(),
+        runtime.commands.clone(),
+    );
+    // 创建者自动绑定（首个接入 = controller）。
+    detach_conn(&mut state.bound, &mut state.fwd, state.client_id).await;
+    let created = {
+        let e = handle.lock().await;
+        CreatedReply {
+            session: info_of(&e),
+        }
+    };
+    let body = serde_json::to_vec(&created).unwrap_or_default();
+    send_frame(writer, MessageKind::Created, &body).await?;
+    state.bound = Some(handle.clone());
+    state.fwd = Some(attach_and_stream(writer, handle, state.client_id, &runtime.mirror).await?);
+    Ok(())
+}
+
+async fn handle_attach(
+    state: &mut ConnState,
+    writer: &Arc<Mutex<OwnedWriteHalf>>,
+    sessions: &Sessions,
+    runtime: &WorkspaceRuntime,
+    payload: &[u8],
+) -> io::Result<()> {
+    let req: AttachRequest = serde_json::from_slice(payload)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad attach"))?;
+    let handle = sessions.lock().await.get(&req.id).cloned();
+    let Some(handle) = handle else {
+        send_frame(
+            writer,
+            MessageKind::Error,
+            &err_payload("session-gone", &req.id),
+        )
+        .await?;
+        return Ok(());
+    };
+    if !handle.lock().await.meta.alive {
+        send_frame(
+            writer,
+            MessageKind::Error,
+            &err_payload("session-gone", &req.id),
+        )
+        .await?;
+        return Ok(());
+    }
+    detach_conn(&mut state.bound, &mut state.fwd, state.client_id).await;
+    state.bound = Some(handle.clone());
+    log::info!("client {} attached to {}", state.client_id, req.id);
+    state.fwd = Some(attach_and_stream(writer, handle, state.client_id, &runtime.mirror).await?);
+    Ok(())
+}
+
+async fn handle_input(
+    state: &ConnState,
+    writer: &Arc<Mutex<OwnedWriteHalf>>,
+    payload: &[u8],
+) -> io::Result<()> {
+    let Some(h) = &state.bound else {
+        send_frame(
+            writer,
+            MessageKind::Error,
+            &err_payload("no-session", "attach first"),
+        )
+        .await?;
+        return Ok(());
+    };
+    let mut e = h.lock().await;
+    if !e.meta.alive {
+        let id = e.meta.id.clone();
+        send_frame(
+            writer,
+            MessageKind::Error,
+            &err_payload("session-closed", id),
+        )
+        .await?;
+        return Ok(());
+    }
+    match e.ownership.on_input(state.client_id) {
+        // 已是 controller：直写 PTY。
+        None => {
+            log::debug!(
+                "input {}B to {}: {:?}",
+                payload.len(),
+                e.meta.id,
+                &payload[..payload.len().min(32)],
+            );
+            if let Err(err) = e.child.write_all(payload) {
+                log::debug!("write to pty failed: {err}");
             }
         }
+        // observer 的第一次输入：完成接管，本次丢弃，从此进入。
+        Some(OwnershipEvent::Takeover { new_controller }) => {
+            e.meta.controller = Some(new_controller);
+            log::info!(
+                "session {} controller -> {new_controller} (takeover)",
+                e.meta.id
+            );
+        }
+        Some(OwnershipEvent::Released) | Some(OwnershipEvent::ObserverInputDropped { .. }) => {}
     }
+    Ok(())
+}
+
+async fn handle_resize(
+    state: &ConnState,
+    runtime: &WorkspaceRuntime,
+    payload: &[u8],
+) -> io::Result<()> {
+    let req: ResizeRequest = serde_json::from_slice(payload)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad resize"))?;
+    if let Some(h) = &state.bound {
+        let session_id = h.lock().await.meta.id.clone();
+        let workspace_pane = runtime
+            .mirror
+            .read()
+            .ok()
+            .is_some_and(|mirror| mirror.contains_key(&session_id));
+        if workspace_pane {
+            let (session_id, accepted) = {
+                let e = h.lock().await;
+                (
+                    e.meta.id.clone(),
+                    e.ownership.accepts_resize(state.client_id) && e.meta.alive,
+                )
+            };
+            if accepted {
+                let _ = runtime.commands.send(WorkspaceCommand::ResizePane {
+                    session_id,
+                    size: TermSize {
+                        cols: req.cols.max(1),
+                        rows: req.rows.max(1),
+                    },
+                });
+            }
+        } else {
+            // 临时会话不经过工作区 actor，直接调整 PTY。
+            let mut e = h.lock().await;
+            if e.ownership.accepts_resize(state.client_id) && e.meta.alive {
+                let _ = e.child.resize(req.cols.max(1), req.rows.max(1));
+            }
+        }
+        // observer 上报静默忽略（尺寸权威在 controller）。
+    }
+    Ok(())
+}
+
+async fn handle_close(
+    sessions: &Sessions,
+    runtime: &WorkspaceRuntime,
+    payload: &[u8],
+) -> io::Result<()> {
+    let req: CloseRequest = serde_json::from_slice(payload)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad close"))?;
+    let owner = runtime
+        .mirror
+        .read()
+        .ok()
+        .and_then(|mirror| mirror.get(&req.id).copied());
+    if let Some(PaneRef { pane_id, .. }) = owner {
+        // 布局会话：actor 先解绑、更新布局、持久化，再投 CloseSession。
+        let _ = runtime
+            .commands
+            .send(WorkspaceCommand::ClosePane { pane_id });
+    } else if let Some(h) = sessions.lock().await.remove(&req.id) {
+        // 临时会话：沿用直接 kill 路径。
+        log::info!("session {} closed by client", req.id);
+        h.lock().await.child.kill();
+    }
+    Ok(())
+}
+
+async fn handle_shutdown(runtime: &WorkspaceRuntime) {
+    // 显式停止：flush 工作区、投递关闭效果、删端口文件后退出。
+    log::info!("shutdown requested, exiting");
+    let (reply, wait) = oneshot::channel();
+    let _ = runtime.commands.send(WorkspaceCommand::Shutdown { reply });
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(6), wait).await;
+    crate::instance::remove_port_file();
+    std::process::exit(0);
+}
+
+async fn handle_workspace_get(
+    writer: &Arc<Mutex<OwnedWriteHalf>>,
+    runtime: &WorkspaceRuntime,
+) -> io::Result<()> {
+    let (reply, wait) = oneshot::channel();
+    let _ = runtime.commands.send(WorkspaceCommand::Get { reply });
+    match wait.await {
+        Ok(snapshot) => {
+            let body = serde_json::to_vec(&*snapshot).unwrap_or_default();
+            send_frame(writer, MessageKind::WorkspaceSnapshot, &body).await
+        }
+        Err(_) => {
+            send_frame(
+                writer,
+                MessageKind::Error,
+                &err_payload("workspace", "workspace unavailable"),
+            )
+            .await
+        }
+    }
+}
+
+async fn handle_workspace_attach(
+    state: &mut ConnState,
+    writer: &Arc<Mutex<OwnedWriteHalf>>,
+    runtime: &WorkspaceRuntime,
+) -> io::Result<()> {
+    // 先订阅再 attach：订阅与快照之间不会漏掉发布。
+    let mut updates = runtime.snapshots.clone();
+    let (reply, wait) = oneshot::channel();
+    let _ = runtime.commands.send(WorkspaceCommand::Attach { reply });
+    if let Ok(snapshot) = wait.await {
+        let body = serde_json::to_vec(&*snapshot).unwrap_or_default();
+        send_frame(writer, MessageKind::WorkspaceSnapshot, &body).await?;
+    }
+    state.workspace_attached = true;
+    let forward_writer = writer.clone();
+    state.workspace_forward = Some(tokio::spawn(async move {
+        while updates.changed().await.is_ok() {
+            let snapshot = updates.borrow_and_update().clone();
+            let body = serde_json::to_vec(&*snapshot).unwrap_or_default();
+            if send_frame(&forward_writer, MessageKind::WorkspaceSnapshot, &body)
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    }));
+    Ok(())
+}
+
+async fn handle_workspace_mutate(
+    writer: &Arc<Mutex<OwnedWriteHalf>>,
+    runtime: &WorkspaceRuntime,
+    payload: &[u8],
+) -> io::Result<()> {
+    let request: WorkspaceMutateRequest = serde_json::from_slice(payload)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad mutate"))?;
+    let (reply, wait) = oneshot::channel();
+    let _ = runtime
+        .commands
+        .send(WorkspaceCommand::Mutate { request, reply });
+    match wait.await {
+        Ok(reply) => {
+            let body = serde_json::to_vec(&reply).unwrap_or_default();
+            send_frame(writer, MessageKind::WorkspaceMutateReply, &body).await
+        }
+        Err(_) => {
+            send_frame(
+                writer,
+                MessageKind::Error,
+                &err_payload("workspace", "workspace unavailable"),
+            )
+            .await
+        }
+    }
+}
+
+async fn handle_unknown(writer: &Arc<Mutex<OwnedWriteHalf>>) -> io::Result<()> {
+    send_frame(
+        writer,
+        MessageKind::Error,
+        &err_payload("bad-request", "unexpected kind"),
+    )
+    .await
 }
 
 async fn detach_conn(
