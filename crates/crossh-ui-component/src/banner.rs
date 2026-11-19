@@ -121,6 +121,140 @@ impl Banner {
         self.actions.push(action.into_any_element());
         self
     }
+
+    /// 左侧 2px 语义色 rail，增强与普通 toolbar 的区分。
+    fn rail(accent: gpui::Rgba) -> gpui::Div {
+        div()
+            .absolute()
+            .left_0()
+            .top_0()
+            .bottom_0()
+            .w(px(2.))
+            .bg(accent)
+    }
+
+    /// 丢弃确认：纵向堆叠，标题（带图标）+ 描述 + 右对齐操作区。
+    fn render_stacked(
+        self,
+        bg: gpui::Rgba,
+        border: gpui::Rgba,
+        accent: gpui::Rgba,
+        title_color: gpui::Rgba,
+    ) -> gpui::Stateful<gpui::Div> {
+        let mut outer = div()
+            .id(self.id)
+            .w_full()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_2()
+            .bg(bg)
+            .border_b_1()
+            .border_color(border)
+            .relative()
+            .child(Self::rail(accent));
+
+        // 标题行：图标 + 标题 同色强调
+        if let Some(title) = self.title {
+            let mut title_row = div().flex().items_center().gap_2().pl(px(6.));
+            if let Some(icon) = self.icon {
+                title_row = title_row.child(icon);
+            }
+            title_row = title_row.child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(title_color)
+                    .child(title),
+            );
+            outer = outer.child(title_row);
+        } else if let Some(icon) = self.icon {
+            outer = outer.child(div().pl(px(6.)).child(icon));
+        }
+
+        if let Some(description) = self.description {
+            outer = outer.child(
+                div()
+                    .pl(px(6.))
+                    .text_xs()
+                    .text_color(theme::muted_text())
+                    .child(description),
+            );
+        }
+
+        if !self.actions.is_empty() {
+            let mut row = div().w_full().flex().justify_end().gap_1().pl(px(6.));
+            for action in self.actions {
+                row = row.child(action);
+            }
+            outer = outer.child(row);
+        }
+
+        outer
+    }
+
+    /// stash 删除 / 冲突操作：单行自适应，`compact` 时纵向。
+    fn render_inline(
+        self,
+        bg: gpui::Rgba,
+        border: gpui::Rgba,
+        accent: gpui::Rgba,
+        title_color: gpui::Rgba,
+    ) -> gpui::Stateful<gpui::Div> {
+        let mut outer = div()
+            .id(self.id)
+            .w_full()
+            .flex_shrink_0()
+            .px_3()
+            .py_2()
+            .flex()
+            .items_center()
+            .gap_2()
+            .flex_wrap()
+            .bg(bg)
+            .border_b_1()
+            .border_color(border)
+            .relative()
+            .child(Self::rail(accent));
+
+        if self.compact {
+            outer = outer.flex_col().items_start();
+        }
+
+        if let Some(icon) = self.icon {
+            outer = outer.child(icon);
+        }
+
+        if let Some(title) = self.title {
+            outer = outer.child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .text_xs()
+                    .text_color(title_color)
+                    .child(title),
+            );
+        }
+
+        if let Some(description) = self.description {
+            outer = outer.child(
+                div()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(theme::muted_text())
+                    .child(description),
+            );
+        }
+
+        for action in self.actions {
+            outer = outer.child(action);
+        }
+
+        outer
+    }
 }
 
 impl RenderOnce for Banner {
@@ -131,134 +265,8 @@ impl RenderOnce for Banner {
         let title_color = self.tone.title_color();
 
         match self.layout {
-            BannerLayout::Stacked => {
-                // 丢弃确认：纵向堆叠，标题（带图标）+ 描述 + 右对齐操作区
-                let mut outer = div()
-                    .id(self.id)
-                    .w_full()
-                    .flex_shrink_0()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .p_2()
-                    .bg(bg)
-                    .border_b_1()
-                    .border_color(border)
-                    .relative();
-
-                // 左侧 2px 语义 rail，增强与普通 toolbar 的区分
-                outer = outer.child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .top_0()
-                        .bottom_0()
-                        .w(px(2.))
-                        .bg(accent),
-                );
-
-                // 标题行：图标 + 标题 同色强调
-                if let Some(title) = self.title {
-                    let mut title_row = div().flex().items_center().gap_2().pl(px(6.));
-                    if let Some(icon) = self.icon {
-                        title_row = title_row.child(icon);
-                    }
-                    title_row = title_row.child(
-                        div()
-                            .min_w_0()
-                            .flex_1()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(title_color)
-                            .child(title),
-                    );
-                    outer = outer.child(title_row);
-                } else if let Some(icon) = self.icon {
-                    outer = outer.child(div().pl(px(6.)).child(icon));
-                }
-
-                if let Some(description) = self.description {
-                    outer = outer.child(
-                        div()
-                            .pl(px(6.))
-                            .text_xs()
-                            .text_color(theme::muted_text())
-                            .child(description),
-                    );
-                }
-
-                if !self.actions.is_empty() {
-                    let mut row = div().w_full().flex().justify_end().gap_1().pl(px(6.));
-                    for action in self.actions {
-                        row = row.child(action);
-                    }
-                    outer = outer.child(row);
-                }
-
-                outer
-            }
-            BannerLayout::Inline => {
-                // stash 删除 / 冲突操作：单行自适应，compact 时纵向
-                let mut outer = div()
-                    .id(self.id)
-                    .w_full()
-                    .flex_shrink_0()
-                    .px_3()
-                    .py_2()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .flex_wrap()
-                    .bg(bg)
-                    .border_b_1()
-                    .border_color(border)
-                    .relative();
-
-                outer = outer.child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .top_0()
-                        .bottom_0()
-                        .w(px(2.))
-                        .bg(accent),
-                );
-
-                if self.compact {
-                    outer = outer.flex_col().items_start();
-                }
-
-                if let Some(icon) = self.icon {
-                    outer = outer.child(icon);
-                }
-
-                if let Some(title) = self.title {
-                    outer = outer.child(
-                        div()
-                            .min_w_0()
-                            .flex_1()
-                            .text_xs()
-                            .text_color(title_color)
-                            .child(title),
-                    );
-                }
-
-                if let Some(description) = self.description {
-                    outer = outer.child(
-                        div()
-                            .min_w_0()
-                            .text_xs()
-                            .text_color(theme::muted_text())
-                            .child(description),
-                    );
-                }
-
-                for action in self.actions {
-                    outer = outer.child(action);
-                }
-
-                outer
-            }
+            BannerLayout::Stacked => self.render_stacked(bg, border, accent, title_color),
+            BannerLayout::Inline => self.render_inline(bg, border, accent, title_color),
         }
     }
 }
