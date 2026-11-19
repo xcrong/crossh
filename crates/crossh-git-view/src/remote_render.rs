@@ -260,8 +260,6 @@ impl GitWindow {
     ) -> AnyElement {
         let selected = self.session.remote.selected.as_deref() == Some(remote.name.as_str());
         let name = remote.name.clone();
-        let fetch_name = remote.name.clone();
-        let remove_name = remote.name.clone();
         let fetch_url = remote.fetch_url.clone();
         let push_url = remote.push_url.clone();
         let push_distinct = match (&fetch_url, &push_url) {
@@ -269,7 +267,7 @@ impl GitWindow {
             (None, Some(_)) | (Some(_), None) => true,
             (None, None) => false,
         };
-        let row = selectable_row(
+        selectable_row(
             SharedString::from(format!("git-remote-{}", remote.name)),
             selected,
             if compact { px(106.) } else { px(78.) },
@@ -279,89 +277,98 @@ impl GitWindow {
         .flex()
         .flex_col()
         .gap_1()
-        .child(
-            div()
-                .w_full()
-                .min_w_0()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .truncate()
-                        .text_sm()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme::text())
-                        .child(SharedString::from(remote.name.clone())),
-                )
-                .child(
-                    Button::new(SharedString::from(format!(
-                        "git-fetch-remote-{}",
-                        remote.name
-                    )))
-                    .size(ButtonSize::Small)
-                    .variant(ButtonVariant::Secondary)
-                    .disabled(matches!(self.session.operation, OperationState::Running))
-                    .label(i18n::text("git.fetch"))
-                    .on_click(cx.listener(
-                        move |this, _event, _window, cx| {
-                            this.fetch_remote(fetch_name.clone(), cx);
-                            cx.stop_propagation();
-                        },
-                    )),
-                )
-                .child(
-                    Button::new(SharedString::from(format!(
-                        "git-remove-remote-{}",
-                        remote.name
-                    )))
-                    .size(ButtonSize::Icon(px(26.)))
-                    .variant(ButtonVariant::Ghost)
-                    .disabled(matches!(self.session.operation, OperationState::Running))
-                    .tooltip(i18n::text("git.remove_remote"))
-                    .icon(icons::icon(icons::IconName::Trash, 12.).text_color(theme::danger()))
-                    .on_click(cx.listener(
-                        move |this, _event, _window, cx| {
-                            this.request_remove_remote(remove_name.clone(), cx);
-                            cx.stop_propagation();
-                        },
-                    )),
-                ),
-        )
-        .child(
-            div()
-                .w_full()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .text_xs()
-                .text_color(theme::faint_text())
-                .when_some(fetch_url, |column, url| {
+        .child(self.render_remote_header(remote, cx))
+        .child(self.render_remote_urls(remote, fetch_url, push_url, push_distinct, cx))
+        .on_click(cx.listener(move |this, _event, _window, cx| {
+            this.select_remote(name.clone(), cx);
+        }))
+        .into_any_element()
+    }
+
+    /// 远端行首行：名称文本 + fetch / remove 按钮。
+    fn render_remote_header(&self, remote: &RemoteSummary, cx: &mut Context<Self>) -> AnyElement {
+        let fetch_name = remote.name.clone();
+        let remove_name = remote.name.clone();
+        let running = matches!(self.session.operation, OperationState::Running);
+        div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::text())
+                    .child(SharedString::from(remote.name.clone())),
+            )
+            .child(
+                Button::new(SharedString::from(format!(
+                    "git-fetch-remote-{}",
+                    remote.name
+                )))
+                .size(ButtonSize::Small)
+                .variant(ButtonVariant::Secondary)
+                .disabled(running)
+                .label(i18n::text("git.fetch"))
+                .on_click(cx.listener(move |this, _event, _window, cx| {
+                    this.fetch_remote(fetch_name.clone(), cx);
+                    cx.stop_propagation();
+                })),
+            )
+            .child(
+                Button::new(SharedString::from(format!(
+                    "git-remove-remote-{}",
+                    remote.name
+                )))
+                .size(ButtonSize::Icon(px(26.)))
+                .variant(ButtonVariant::Ghost)
+                .disabled(running)
+                .tooltip(i18n::text("git.remove_remote"))
+                .icon(icons::icon(icons::IconName::Trash, 12.).text_color(theme::danger()))
+                .on_click(cx.listener(move |this, _event, _window, cx| {
+                    this.request_remove_remote(remove_name.clone(), cx);
+                    cx.stop_propagation();
+                })),
+            )
+            .into_any_element()
+    }
+
+    /// 远端行地址列：fetch 地址始终显示（存在时），push 地址仅在 fetch 不同时显示。
+    fn render_remote_urls(
+        &self,
+        remote: &RemoteSummary,
+        fetch_url: Option<String>,
+        push_url: Option<String>,
+        push_distinct: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .text_xs()
+            .text_color(theme::faint_text())
+            .when_some(fetch_url, |column, url| {
+                column.child(self.render_remote_url(format!("{}/fetch", remote.name), '↓', url, cx))
+            })
+            .when(push_distinct, |column| {
+                column.when_some(push_url, |column, url| {
                     column.child(self.render_remote_url(
-                        format!("{}/fetch", remote.name),
-                        '↓',
+                        format!("{}/push", remote.name),
+                        '↑',
                         url,
                         cx,
                     ))
                 })
-                .when(push_distinct, |column| {
-                    column.when_some(push_url, |column, url| {
-                        column.child(self.render_remote_url(
-                            format!("{}/push", remote.name),
-                            '↑',
-                            url,
-                            cx,
-                        ))
-                    })
-                }),
-        )
-        .on_click(cx.listener(move |this, _event, _window, cx| {
-            this.select_remote(name.clone(), cx);
-        }));
-        row.into_any_element()
+            })
+            .into_any_element()
     }
 
     /// 远端地址行：截断显示的地址文本 + 右侧复制按钮。
