@@ -271,44 +271,13 @@ impl WorkspaceActor {
         if let Some(expected) = request.expected_revision
             && expected != self.workspace.revision
         {
-            self.send_reply(
-                reply,
-                request.request_id,
-                MutateOutcome::Conflict,
-                CreatedIds::default(),
-                Some(OpError::new(
-                    "conflict",
-                    format!(
-                        "expected revision {expected}, current {}",
-                        self.workspace.revision
-                    ),
-                )),
-                false,
-                None,
-                false,
-            );
+            self.reply_conflict(request.request_id, expected, reply);
             return;
         }
 
         match &request.op {
             WorkspaceOp::RefreshAvailability => {
-                let after = self.workspace.snapshot(&self.runtime);
-                let changed = !runtime_fields_equal(&self.last_published, &after);
-                self.publish_with(after);
-                self.send_reply(
-                    reply,
-                    request.request_id,
-                    if changed {
-                        MutateOutcome::Applied
-                    } else {
-                        MutateOutcome::Unchanged
-                    },
-                    CreatedIds::default(),
-                    None,
-                    false,
-                    None,
-                    false,
-                );
+                self.reply_refresh_availability(request.request_id, reply);
                 return;
             }
             WorkspaceOp::EnsurePaneSession { pane_id } => {
@@ -328,6 +297,63 @@ impl WorkspaceActor {
             _ => {}
         }
 
+        self.apply_mutation(request, reply).await;
+    }
+
+    fn reply_conflict(
+        &self,
+        request_id: u64,
+        expected: u64,
+        reply: Option<oneshot::Sender<WorkspaceMutateReply>>,
+    ) {
+        self.send_reply(
+            reply,
+            request_id,
+            MutateOutcome::Conflict,
+            CreatedIds::default(),
+            Some(OpError::new(
+                "conflict",
+                format!(
+                    "expected revision {expected}, current {}",
+                    self.workspace.revision
+                ),
+            )),
+            false,
+            None,
+            false,
+        );
+    }
+
+    fn reply_refresh_availability(
+        &mut self,
+        request_id: u64,
+        reply: Option<oneshot::Sender<WorkspaceMutateReply>>,
+    ) {
+        let after = self.workspace.snapshot(&self.runtime);
+        let changed = !runtime_fields_equal(&self.last_published, &after);
+        self.publish_with(after);
+        self.send_reply(
+            reply,
+            request_id,
+            if changed {
+                MutateOutcome::Applied
+            } else {
+                MutateOutcome::Unchanged
+            },
+            CreatedIds::default(),
+            None,
+            false,
+            None,
+            false,
+        );
+    }
+
+    /// 默认 apply 路径：先解绑受影响的会话，再应用 op，成功后就地落盘并回复。
+    async fn apply_mutation(
+        &mut self,
+        request: WorkspaceMutateRequest,
+        reply: Option<oneshot::Sender<WorkspaceMutateReply>>,
+    ) {
         let panes = self.panes_to_unbind(&request.op);
         let closed_sessions = panes
             .iter()
@@ -351,56 +377,63 @@ impl WorkspaceActor {
 
         self.materialize_after_op(&request.op, &result.created);
         let structural = is_structural(&request.op);
-        if structural {
-            match self.persist_structural().await {
-                Ok(()) => {
-                    for session_id in closed_sessions {
-                        let _ = self.effects.send(Effect::CloseSession { session_id });
-                    }
-                    self.publish();
-                    self.send_reply(
-                        reply,
-                        request.request_id,
-                        MutateOutcome::Applied,
-                        result.created,
-                        None,
-                        true,
-                        None,
-                        false,
-                    );
-                }
-                Err(error) => {
-                    for session_id in closed_sessions {
-                        let _ = self.effects.send(Effect::CloseSession { session_id });
-                    }
-                    self.runtime.storage_error = Some(error.clone());
-                    self.publish();
-                    self.send_reply(
-                        reply,
-                        request.request_id,
-                        MutateOutcome::Applied,
-                        result.created,
-                        None,
-                        false,
-                        Some(error),
-                        false,
-                    );
-                }
-            }
-        } else {
+        self.finish_applied_mutation(
+            request.request_id,
+            result.created,
+            closed_sessions,
+            structural,
+            reply,
+        )
+        .await;
+    }
+
+    /// 成功 apply 后：结构修改等待落盘，元数据修改合并写；随后广播并回复。
+    async fn finish_applied_mutation(
+        &mut self,
+        request_id: u64,
+        created: CreatedIds,
+        closed_sessions: Vec<SessionId>,
+        structural: bool,
+        reply: Option<oneshot::Sender<WorkspaceMutateReply>>,
+    ) {
+        if !structural {
             self.queue_metadata();
             self.publish();
             self.send_reply(
                 reply,
-                request.request_id,
+                request_id,
                 MutateOutcome::Applied,
-                result.created,
+                created,
                 None,
                 false,
                 None,
                 false,
             );
+            return;
         }
+
+        let persisted = self.persist_structural().await;
+        for session_id in closed_sessions {
+            let _ = self.effects.send(Effect::CloseSession { session_id });
+        }
+        let (durable, storage_error) = match persisted {
+            Ok(()) => (true, None),
+            Err(error) => {
+                self.runtime.storage_error = Some(error.clone());
+                (false, Some(error))
+            }
+        };
+        self.publish();
+        self.send_reply(
+            reply,
+            request_id,
+            MutateOutcome::Applied,
+            created,
+            None,
+            durable,
+            storage_error,
+            false,
+        );
     }
 
     async fn finish_layout_result(
