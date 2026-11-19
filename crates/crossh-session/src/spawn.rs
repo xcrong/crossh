@@ -389,3 +389,45 @@ mod tests {
         assert!(found, "integration markers never appeared");
     }
 }
+
+/// Windows 专属：ConPTY 下一次性命令的退出检测。
+///
+/// `cmd /C` 退出后 ConPTY 的输出管不一定立即 EOF，退出码必须能从进程句柄
+/// 独立观察到；这个测试把“会话层收不到退出”与“daemon 转发丢了退出”区分开。
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn one_shot_cmd_exits_without_closing_pty() {
+        let program = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+        let opt = SpawnOptions::raw(
+            &[program, "/C".to_string(), "echo hi-one-shot".to_string()],
+            None,
+            80,
+            24,
+            std::env::vars().collect(),
+        )
+        .expect("raw options");
+        let mut sess = ChildSession::spawn("win-one-shot", opt).expect("spawn pty");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let code = loop {
+            if let Some(code) = sess.try_wait().expect("try_wait") {
+                break Some(code);
+            }
+            if Instant::now() >= deadline {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        std::thread::sleep(Duration::from_millis(100));
+        let (_, out) = sess.feed.lock().expect("feed").snapshot();
+        assert_eq!(
+            code,
+            Some(0),
+            "ConPTY one-shot never reported exit; output: {:?}",
+            String::from_utf8_lossy(&out)
+        );
+    }
+}

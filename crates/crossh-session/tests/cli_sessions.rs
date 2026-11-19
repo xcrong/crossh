@@ -14,6 +14,27 @@ fn cache_dir() -> std::path::PathBuf {
     dir
 }
 
+/// daemon 侧诊断日志（`crossh_core::logging` 的固定路径，只取末尾）。
+fn daemon_log_tail() -> String {
+    let path = std::path::PathBuf::from("/tmp/crossh/run.log");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return format!("{}: unreadable", path.display());
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(200)..].join("\n")
+}
+
+/// 阶段超时：失败时把 daemon 日志带进 panic，跨平台 CI 才有可诊断信息。
+async fn within<T>(stage: &str, fut: impl std::future::Future<Output = T>) -> T {
+    match tokio::time::timeout(Duration::from_secs(20), fut).await {
+        Ok(value) => value,
+        Err(_) => panic!(
+            "{stage} timed out\n--- daemon log ---\n{}",
+            daemon_log_tail()
+        ),
+    }
+}
+
 #[cfg(unix)]
 fn exit7() -> Vec<String> {
     vec!["sh".to_string(), "-c".to_string(), "exit 7".to_string()]
@@ -45,6 +66,8 @@ async fn cli_full_cycle() {
         std::env::set_var("CROSSH_CACHE_DIR", &dir);
         std::env::set_var("CROSSH_CONFIG_DIR", &config);
         std::env::set_var("CROSSH_DAEMON_BIN", env!("CARGO_BIN_EXE_crossh-daemon"));
+        // daemon 继承：失败时日志能说明会话/转发走到了哪一步。
+        std::env::set_var("RUST_LOG", "crossh_session=debug");
     }
 
     struct Guard {
@@ -60,9 +83,8 @@ async fn cli_full_cycle() {
     // 未运行时直接 `run`：按需拉起成功且退出码为 0（5.2）。
     // 超时兜底：一次性命令在 Windows 上可能在订阅前退出，缺退出通知会挂死。
     let mut out = Vec::new();
-    let code = tokio::time::timeout(Duration::from_secs(20), run_command(&echo_hi(), &mut out))
+    let code = within("one-shot echo", run_command(&echo_hi(), &mut out))
         .await
-        .expect("one-shot command must not hang")
         .unwrap();
     assert_eq!(code, 0);
     assert!(
@@ -73,9 +95,8 @@ async fn cli_full_cycle() {
 
     // 退出码原样透出。
     let mut out = Vec::new();
-    let code = tokio::time::timeout(Duration::from_secs(20), run_command(&exit7(), &mut out))
+    let code = within("one-shot exit 7", run_command(&exit7(), &mut out))
         .await
-        .expect("one-shot command must not hang")
         .unwrap();
     assert_eq!(code, 7);
 
@@ -119,13 +140,9 @@ async fn cli_full_cycle() {
     }
     // capture 读到同一段输出。
     let mut captured = Vec::new();
-    let info = tokio::time::timeout(
-        Duration::from_secs(20),
-        capture_session(&sid, &mut captured),
-    )
-    .await
-    .expect("capture must not hang")
-    .unwrap();
+    let info = within("capture", capture_session(&sid, &mut captured))
+        .await
+        .unwrap();
     assert_eq!(info.id, sid);
     assert!(String::from_utf8_lossy(&captured).contains("shared-view"));
     // 结束会话后列表为空。

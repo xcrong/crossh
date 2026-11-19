@@ -662,6 +662,13 @@ async fn attach_and_stream(
     let mut attached = attached;
     merge_ownership(&mut attached.session, mirror);
     let id = attached.session.id.clone();
+    log::debug!(
+        "attach {id}: alive={} exit={:?} end_seq={} replay={}B",
+        attached.session.alive,
+        attached.session.exit_code,
+        attached.end_seq,
+        replay.iter().map(|(_, chunk)| chunk.len()).sum::<usize>(),
+    );
     let body = serde_json::to_vec(&attached).unwrap_or_default();
     send_frame(writer, MessageKind::Attached, &body).await?;
     for (seq, chunk) in &replay {
@@ -723,6 +730,7 @@ fn spawn_forwarder(
                 },
                 code = exit_rx.recv() => {
                     let code = code.unwrap_or(-1);
+                    log::debug!("forwarder {id}: exit {code}");
                     let body = serde_json::to_vec(&ExitedNotice { id: id.clone(), code })
                         .unwrap_or_default();
                     let _ = send_frame(&writer, MessageKind::Exited, &body).await;
@@ -741,6 +749,8 @@ fn spawn_exit_monitor(
     commands: mpsc::UnboundedSender<WorkspaceCommand>,
 ) {
     tokio::spawn(async move {
+        log::debug!("exit monitor {id}: start");
+        let mut polls: u64 = 0;
         loop {
             let exited = {
                 let mut e = handle.lock().await;
@@ -752,7 +762,13 @@ fn spawn_exit_monitor(
                         let _ = e.exit_tx.send(code);
                         Some(code)
                     }
-                    Ok(None) => None,
+                    Ok(None) => {
+                        polls += 1;
+                        if polls.is_multiple_of(50) {
+                            log::debug!("exit monitor {id}: still alive after {polls} polls");
+                        }
+                        None
+                    }
                     Err(err) => {
                         log::debug!("try_wait failed for {id}: {err}");
                         Some(-1)
