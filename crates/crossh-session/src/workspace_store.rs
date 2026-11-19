@@ -404,40 +404,45 @@ fn import_legacy(
 ) -> Option<Workspace> {
     let mut candidate = workspace.clone();
     let mut next_id = candidate.next_id;
-    let mut fixed_projects = Vec::new();
-    let mut recent_projects = Vec::new();
     let mut seen_imported = BTreeSet::new();
 
-    // 固定标签：项目去重，标签按设置顺序追加。
+    let fixed_projects =
+        import_pinned_tabs(&mut candidate, &mut next_id, legacy, &mut seen_imported);
+    let recent_projects =
+        import_recent_dirs(&mut candidate, &mut next_id, legacy, &mut seen_imported);
+    reorder_imported_projects(&mut candidate, &fixed_projects, &recent_projects);
+
+    candidate.next_id = next_id;
+    candidate.legacy_imported = Some(LegacyImport {
+        imported_at: now_secs(),
+        source: source.to_path_buf(),
+    });
+    Some(candidate)
+}
+
+/// 固定标签：项目按规范化根去重，标签按设置顺序追加。
+fn import_pinned_tabs(
+    candidate: &mut Workspace,
+    next_id: &mut u64,
+    legacy: &LegacySettings,
+    seen_imported: &mut BTreeSet<ProjectId>,
+) -> Vec<ProjectId> {
+    let mut fixed_projects = Vec::new();
     for pinned in &legacy.pinned_local_tabs {
         let root = normalize_project_root(&pinned.project_dir);
         if root.as_os_str().is_empty() {
             continue;
         }
-        let project_id = if let Some(project) = candidate.projects.iter().find(|p| p.root == root) {
-            project.id
-        } else {
-            let id = ProjectId(next_id);
-            next_id += 1;
-            candidate.projects.push(Project {
-                id,
-                root: root.clone(),
-                name: None,
-                last_opened_at: 0,
-                active_tab: None,
-                tabs: Vec::new(),
-            });
-            id
-        };
         let cwd = if pinned.cwd.as_os_str().is_empty() {
             root.clone()
         } else {
             normalize_pane_cwd(&pinned.cwd)
         };
-        let tab_id = TabId(next_id);
-        next_id += 1;
-        let pane_id = crate::workspace::PaneId(next_id);
-        next_id += 1;
+        let project_id = ensure_project_root(candidate, root, next_id);
+        let tab_id = TabId(*next_id);
+        *next_id += 1;
+        let pane_id = crate::workspace::PaneId(*next_id);
+        *next_id += 1;
         if let Some(project) = candidate.project_mut(project_id) {
             project.tabs.push(Tab {
                 id: tab_id,
@@ -465,34 +470,54 @@ fn import_legacy(
         let _ = pinned.pin_id;
         let _ = &pinned.daemon_session_id;
     }
+    fixed_projects
+}
 
-    // 最近目录：只建空项目，去重按规范化根。
+/// 最近目录：只建空项目，去重按规范化根。
+fn import_recent_dirs(
+    candidate: &mut Workspace,
+    next_id: &mut u64,
+    legacy: &LegacySettings,
+    seen_imported: &mut BTreeSet<ProjectId>,
+) -> Vec<ProjectId> {
+    let mut recent_projects = Vec::new();
     for dir in &legacy.recent_local_dirs {
         let root = normalize_project_root(dir);
         if root.as_os_str().is_empty() {
             continue;
         }
-        let id = if let Some(project) = candidate.projects.iter().find(|p| p.root == root) {
-            project.id
-        } else {
-            let id = ProjectId(next_id);
-            next_id += 1;
-            candidate.projects.push(Project {
-                id,
-                root,
-                name: None,
-                last_opened_at: 0,
-                active_tab: None,
-                tabs: Vec::new(),
-            });
-            id
-        };
+        let id = ensure_project_root(candidate, root, next_id);
         if seen_imported.insert(id) {
             recent_projects.push(id);
         }
     }
+    recent_projects
+}
 
-    // 固定标签在前、最近目录在后；未参与导入的既有项目保持相对顺序。
+/// 按规范化根复用已有项目，否则分配新 id 并追加空项目。
+fn ensure_project_root(candidate: &mut Workspace, root: PathBuf, next_id: &mut u64) -> ProjectId {
+    if let Some(project) = candidate.projects.iter().find(|p| p.root == root) {
+        return project.id;
+    }
+    let id = ProjectId(*next_id);
+    *next_id += 1;
+    candidate.projects.push(Project {
+        id,
+        root,
+        name: None,
+        last_opened_at: 0,
+        active_tab: None,
+        tabs: Vec::new(),
+    });
+    id
+}
+
+/// 固定标签在前、最近目录在后；未参与导入的既有项目保持相对顺序。
+fn reorder_imported_projects(
+    candidate: &mut Workspace,
+    fixed_projects: &[ProjectId],
+    recent_projects: &[ProjectId],
+) {
     let mut ordered = Vec::with_capacity(candidate.projects.len());
     for id in fixed_projects.iter().chain(recent_projects.iter()) {
         if let Some(position) = candidate
@@ -510,12 +535,6 @@ fn import_legacy(
         .copied()
         .or_else(|| recent_projects.first().copied())
         .or(candidate.active_project);
-    candidate.next_id = next_id;
-    candidate.legacy_imported = Some(LegacyImport {
-        imported_at: now_secs(),
-        source: source.to_path_buf(),
-    });
-    Some(candidate)
 }
 
 // ---------------------------------------------------------------------------
