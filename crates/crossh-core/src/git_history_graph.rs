@@ -37,95 +37,19 @@ pub fn layout_history(entries: &[CommitSummary]) -> Vec<HistoryGraphRow> {
 
     for entry in entries {
         let previous = lanes.clone();
-        let existing_lane = lanes.iter().position(|lane| lane.commit_id == entry.id);
-        let node_has_incoming = existing_lane.is_some();
-        let node_lane = existing_lane.unwrap_or_else(|| {
-            let color = next_color;
-            next_color += 1;
-            lanes.insert(
-                0,
-                ActiveLane {
-                    commit_id: entry.id.clone(),
-                    color,
-                },
-            );
-            0
-        });
+        let (node_lane, node_has_incoming) =
+            resolve_node_lane(&mut lanes, &entry.id, &mut next_color);
         let before = lanes.clone();
         let node_color = before[node_lane].color;
-        let incoming_edges = if node_has_incoming {
-            Vec::new()
-        } else {
-            previous
-                .iter()
-                .enumerate()
-                .filter_map(|(from_lane, lane)| {
-                    before
-                        .iter()
-                        .position(|candidate| candidate.commit_id == lane.commit_id)
-                        .map(|to_lane| HistoryGraphEdge {
-                            from_lane,
-                            to_lane,
-                            color: lane.color,
-                        })
-                })
-                .collect()
-        };
-
-        let mut next = before.clone();
-        next.remove(node_lane);
-        let insert_at = node_lane.min(next.len());
-        let mut inserted = 0;
-        let mut seen_parents = BTreeSet::new();
-        for (parent_index, parent) in entry.parents.iter().enumerate() {
-            if !seen_parents.insert(parent) || next.iter().any(|lane| lane.commit_id == *parent) {
-                continue;
-            }
-            let color = if parent_index == 0 {
-                node_color
-            } else {
-                let color = next_color;
-                next_color += 1;
-                color
-            };
-            let index = (insert_at + inserted).min(next.len());
-            next.insert(
-                index,
-                ActiveLane {
-                    commit_id: parent.clone(),
-                    color,
-                },
-            );
-            inserted += 1;
-        }
-
-        let mut edges = Vec::new();
-        for (from_lane, lane) in before.iter().enumerate() {
-            if from_lane == node_lane {
-                for parent in &entry.parents {
-                    let Some(to_lane) = next
-                        .iter()
-                        .position(|candidate| candidate.commit_id == *parent)
-                    else {
-                        continue;
-                    };
-                    edges.push(HistoryGraphEdge {
-                        from_lane,
-                        to_lane,
-                        color: lane.color,
-                    });
-                }
-            } else if let Some(to_lane) = next
-                .iter()
-                .position(|candidate| candidate.commit_id == lane.commit_id)
-            {
-                edges.push(HistoryGraphEdge {
-                    from_lane,
-                    to_lane,
-                    color: lane.color,
-                });
-            }
-        }
+        let incoming_edges = bridge_incoming_edges(&previous, &before, node_has_incoming);
+        let next = advance_lanes(
+            &before,
+            node_lane,
+            node_color,
+            &entry.parents,
+            &mut next_color,
+        );
+        let edges = row_edges(&before, &next, node_lane, &entry.parents);
 
         rows.push(HistoryGraphRow {
             node_lane,
@@ -138,6 +62,126 @@ pub fn layout_history(entries: &[CommitSummary]) -> Vec<HistoryGraphRow> {
     }
 
     rows
+}
+
+/// 复用已有 lane，或为新节点在头部插入 lane 并分配颜色。
+fn resolve_node_lane(
+    lanes: &mut Vec<ActiveLane>,
+    commit_id: &str,
+    next_color: &mut usize,
+) -> (usize, bool) {
+    if let Some(node_lane) = lanes.iter().position(|lane| lane.commit_id == commit_id) {
+        return (node_lane, true);
+    }
+    let color = *next_color;
+    *next_color += 1;
+    lanes.insert(
+        0,
+        ActiveLane {
+            commit_id: commit_id.to_string(),
+            color,
+        },
+    );
+    (0, false)
+}
+
+/// 新节点插入后，把旧 lane 的位置映射到新 lane 位置，形成 incoming edges。
+fn bridge_incoming_edges(
+    previous: &[ActiveLane],
+    before: &[ActiveLane],
+    node_has_incoming: bool,
+) -> Vec<HistoryGraphEdge> {
+    if node_has_incoming {
+        return Vec::new();
+    }
+    previous
+        .iter()
+        .enumerate()
+        .filter_map(|(from_lane, lane)| {
+            before
+                .iter()
+                .position(|candidate| candidate.commit_id == lane.commit_id)
+                .map(|to_lane| HistoryGraphEdge {
+                    from_lane,
+                    to_lane,
+                    color: lane.color,
+                })
+        })
+        .collect()
+}
+
+/// 摘除当前节点的 lane，再按父提交顺序去重插入下一轮 lanes。
+fn advance_lanes(
+    before: &[ActiveLane],
+    node_lane: usize,
+    node_color: usize,
+    parents: &[String],
+    next_color: &mut usize,
+) -> Vec<ActiveLane> {
+    let mut next = before.to_vec();
+    next.remove(node_lane);
+    let insert_at = node_lane.min(next.len());
+    let mut inserted = 0;
+    let mut seen_parents = BTreeSet::new();
+    for (parent_index, parent) in parents.iter().enumerate() {
+        if !seen_parents.insert(parent) || next.iter().any(|lane| lane.commit_id == *parent) {
+            continue;
+        }
+        let color = if parent_index == 0 {
+            node_color
+        } else {
+            let color = *next_color;
+            *next_color += 1;
+            color
+        };
+        let index = (insert_at + inserted).min(next.len());
+        next.insert(
+            index,
+            ActiveLane {
+                commit_id: parent.clone(),
+                color,
+            },
+        );
+        inserted += 1;
+    }
+    next
+}
+
+/// 构建当前行从旧 lanes 指向新 lanes 的 edges。
+fn row_edges(
+    before: &[ActiveLane],
+    next: &[ActiveLane],
+    node_lane: usize,
+    parents: &[String],
+) -> Vec<HistoryGraphEdge> {
+    let mut edges = Vec::new();
+    for (from_lane, lane) in before.iter().enumerate() {
+        if from_lane == node_lane {
+            for parent in parents {
+                let Some(to_lane) = next
+                    .iter()
+                    .position(|candidate| candidate.commit_id == *parent)
+                else {
+                    continue;
+                };
+                edges.push(HistoryGraphEdge {
+                    from_lane,
+                    to_lane,
+                    color: lane.color,
+                });
+            }
+        } else if let Some(to_lane) = next
+            .iter()
+            .position(|candidate| candidate.commit_id == lane.commit_id)
+        {
+            edges.push(HistoryGraphEdge {
+                from_lane,
+                to_lane,
+                color: lane.color,
+            });
+        }
+    }
+    edges
 }
 
 #[cfg(test)]
