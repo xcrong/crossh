@@ -1544,6 +1544,168 @@ mod tests {
         hyperlink_match: RangeInclusive<AlacPoint>,
     }
 
+    #[derive(Default, Eq, PartialEq)]
+    enum HoveredState {
+        #[default]
+        HoveredScan,
+        HoveredNextChar,
+        Done,
+    }
+
+    #[derive(Default, Eq, PartialEq)]
+    enum MatchState {
+        #[default]
+        MatchScan,
+        MatchNextChar,
+        Match(AlacPoint),
+        Done,
+    }
+
+    #[derive(Default, Eq, PartialEq)]
+    enum CapturesState {
+        #[default]
+        PathScan,
+        PathNextChar,
+        Path(AlacPoint),
+        RowScan,
+        Row(String),
+        ColumnScan,
+        Column(String),
+        Done,
+    }
+
+    struct CapturedHyperlink {
+        hovered_grid_point: Option<AlacPoint>,
+        hyperlink_match: RangeInclusive<AlacPoint>,
+        iri_or_path: String,
+        row: Option<u32>,
+        column: Option<u32>,
+    }
+
+    fn prev_input_point_from_term(term: &Term<VoidListener>) -> AlacPoint {
+        let grid = term.grid();
+        let cursor = &grid.cursor;
+        let mut point = cursor.point;
+
+        if !cursor.input_needs_wrap {
+            point = point.sub(term, Boundary::Grid, 1);
+        }
+
+        if grid.index(point).flags.contains(Flags::WIDE_CHAR_SPACER) {
+            point.column -= 1;
+        }
+
+        point
+    }
+
+    fn end_point_from_prev_input_point(
+        term: &Term<VoidListener>,
+        prev_input_point: AlacPoint,
+    ) -> AlacPoint {
+        if term
+            .grid()
+            .index(prev_input_point)
+            .flags
+            .contains(Flags::WIDE_CHAR)
+        {
+            prev_input_point.add(term, Boundary::Grid, 1)
+        } else {
+            prev_input_point
+        }
+    }
+
+    fn process_input(term: &mut Term<VoidListener>, c: char) {
+        match c {
+            '\t' => term.put_tab(1),
+            c => term.input(c),
+        }
+    }
+
+    fn input_test_char(
+        term: &mut Term<VoidListener>,
+        c: char,
+        captures_state: &CapturesState,
+        hyperlink_kind: &HyperlinkKind,
+        next_char_is_not_backslash: bool,
+    ) -> AlacPoint {
+        let is_windows_abs_path_start = *captures_state == CapturesState::PathNextChar
+            && cfg!(windows)
+            && *hyperlink_kind == HyperlinkKind::Path
+            && c == '\\'
+            && next_char_is_not_backslash;
+
+        if is_windows_abs_path_start {
+            // Convert Unix abs path start into Windows abs path start so that the
+            // same test can be used for both OSes.
+            term.input('C');
+            let prev_input_point = prev_input_point_from_term(term);
+            term.input(':');
+            process_input(term, c);
+            prev_input_point
+        } else {
+            process_input(term, c);
+            prev_input_point_from_term(term)
+        }
+    }
+
+    fn advance_captures(
+        term: &Term<VoidListener>,
+        captures_state: &mut CapturesState,
+        iri_or_path: &mut String,
+        row: &mut Option<u32>,
+        column: &mut Option<u32>,
+        prev_input_point: AlacPoint,
+    ) {
+        *captures_state = match captures_state {
+            CapturesState::PathScan => CapturesState::PathNextChar,
+            CapturesState::PathNextChar => {
+                panic!("Should have been handled by char input")
+            }
+            CapturesState::Path(start_point) => {
+                *iri_or_path = term.bounds_to_string(
+                    *start_point,
+                    end_point_from_prev_input_point(term, prev_input_point),
+                );
+                CapturesState::RowScan
+            }
+            CapturesState::RowScan => CapturesState::Row(String::new()),
+            CapturesState::Row(number) => {
+                *row = Some(number.parse::<u32>().unwrap());
+                CapturesState::ColumnScan
+            }
+            CapturesState::ColumnScan => CapturesState::Column(String::new()),
+            CapturesState::Column(number) => {
+                *column = Some(number.parse::<u32>().unwrap());
+                CapturesState::Done
+            }
+            CapturesState::Done => {
+                panic!("Extra '«', '»'")
+            }
+        };
+    }
+
+    fn advance_match(
+        term: &Term<VoidListener>,
+        match_state: &mut MatchState,
+        hyperlink_match: &mut RangeInclusive<AlacPoint>,
+        prev_input_point: AlacPoint,
+    ) {
+        *match_state = match match_state {
+            MatchState::MatchScan => MatchState::MatchNextChar,
+            MatchState::MatchNextChar => {
+                panic!("Should have been handled by char input")
+            }
+            MatchState::Match(start_point) => {
+                *hyperlink_match =
+                    *start_point..=end_point_from_prev_input_point(term, prev_input_point);
+                MatchState::Done
+            }
+            MatchState::Done => {
+                panic!("Extra '‹', '›'")
+            }
+        };
+    }
+
     /// Converts to Windows style paths on Windows, like path!(), but at runtime for improved test
     /// readability.
     fn build_term_from_test_lines<'a>(
@@ -1551,187 +1713,14 @@ mod tests {
         term_size: TermSize,
         test_lines: impl Iterator<Item = &'a str>,
     ) -> (Term<VoidListener>, ExpectedHyperlink) {
-        #[derive(Default, Eq, PartialEq)]
-        enum HoveredState {
-            #[default]
-            HoveredScan,
-            HoveredNextChar,
-            Done,
-        }
-
-        #[derive(Default, Eq, PartialEq)]
-        enum MatchState {
-            #[default]
-            MatchScan,
-            MatchNextChar,
-            Match(AlacPoint),
-            Done,
-        }
-
-        #[derive(Default, Eq, PartialEq)]
-        enum CapturesState {
-            #[default]
-            PathScan,
-            PathNextChar,
-            Path(AlacPoint),
-            RowScan,
-            Row(String),
-            ColumnScan,
-            Column(String),
-            Done,
-        }
-
-        fn prev_input_point_from_term(term: &Term<VoidListener>) -> AlacPoint {
-            let grid = term.grid();
-            let cursor = &grid.cursor;
-            let mut point = cursor.point;
-
-            if !cursor.input_needs_wrap {
-                point = point.sub(term, Boundary::Grid, 1);
-            }
-
-            if grid.index(point).flags.contains(Flags::WIDE_CHAR_SPACER) {
-                point.column -= 1;
-            }
-
-            point
-        }
-
-        fn end_point_from_prev_input_point(
-            term: &Term<VoidListener>,
-            prev_input_point: AlacPoint,
-        ) -> AlacPoint {
-            if term
-                .grid()
-                .index(prev_input_point)
-                .flags
-                .contains(Flags::WIDE_CHAR)
-            {
-                prev_input_point.add(term, Boundary::Grid, 1)
-            } else {
-                prev_input_point
-            }
-        }
-
-        fn process_input(term: &mut Term<VoidListener>, c: char) {
-            match c {
-                '\t' => term.put_tab(1),
-                c => term.input(c),
-            }
-        }
-
-        let mut hovered_grid_point: Option<AlacPoint> = None;
-        let mut hyperlink_match = AlacPoint::default()..=AlacPoint::default();
-        let mut iri_or_path = String::default();
-        let mut row = None;
-        let mut column = None;
-        let mut prev_input_point = AlacPoint::default();
-        let mut hovered_state = HoveredState::default();
-        let mut match_state = MatchState::default();
-        let mut captures_state = CapturesState::default();
         let mut term = Term::new(Config::default(), &term_size, VoidListener);
-
-        for text in test_lines {
-            let chars: Box<dyn Iterator<Item = char>> =
-                if cfg!(windows) && hyperlink_kind == HyperlinkKind::Path {
-                    Box::new(text.chars().map(|c| if c == '/' { '\\' } else { c })) as _
-                } else {
-                    Box::new(text.chars()) as _
-                };
-            let mut chars = chars.peekable();
-            while let Some(c) = chars.next() {
-                match c {
-                    '👉' => {
-                        hovered_state = HoveredState::HoveredNextChar;
-                    }
-                    '👈' => {
-                        hovered_grid_point = Some(prev_input_point.add(&term, Boundary::Grid, 1));
-                    }
-                    '«' | '»' => {
-                        captures_state = match captures_state {
-                            CapturesState::PathScan => CapturesState::PathNextChar,
-                            CapturesState::PathNextChar => {
-                                panic!("Should have been handled by char input")
-                            }
-                            CapturesState::Path(start_point) => {
-                                iri_or_path = term.bounds_to_string(
-                                    start_point,
-                                    end_point_from_prev_input_point(&term, prev_input_point),
-                                );
-                                CapturesState::RowScan
-                            }
-                            CapturesState::RowScan => CapturesState::Row(String::new()),
-                            CapturesState::Row(number) => {
-                                row = Some(number.parse::<u32>().unwrap());
-                                CapturesState::ColumnScan
-                            }
-                            CapturesState::ColumnScan => CapturesState::Column(String::new()),
-                            CapturesState::Column(number) => {
-                                column = Some(number.parse::<u32>().unwrap());
-                                CapturesState::Done
-                            }
-                            CapturesState::Done => {
-                                panic!("Extra '«', '»'")
-                            }
-                        }
-                    }
-                    '‹' | '›' => {
-                        match_state = match match_state {
-                            MatchState::MatchScan => MatchState::MatchNextChar,
-                            MatchState::MatchNextChar => {
-                                panic!("Should have been handled by char input")
-                            }
-                            MatchState::Match(start_point) => {
-                                hyperlink_match = start_point
-                                    ..=end_point_from_prev_input_point(&term, prev_input_point);
-                                MatchState::Done
-                            }
-                            MatchState::Done => {
-                                panic!("Extra '‹', '›'")
-                            }
-                        }
-                    }
-                    _ => {
-                        if let CapturesState::Row(number) | CapturesState::Column(number) =
-                            &mut captures_state
-                        {
-                            number.push(c)
-                        }
-
-                        let is_windows_abs_path_start = captures_state
-                            == CapturesState::PathNextChar
-                            && cfg!(windows)
-                            && hyperlink_kind == HyperlinkKind::Path
-                            && c == '\\'
-                            && chars.peek().is_some_and(|c| *c != '\\');
-
-                        if is_windows_abs_path_start {
-                            // Convert Unix abs path start into Windows abs path start so that the
-                            // same test can be used for both OSes.
-                            term.input('C');
-                            prev_input_point = prev_input_point_from_term(&term);
-                            term.input(':');
-                            process_input(&mut term, c);
-                        } else {
-                            process_input(&mut term, c);
-                            prev_input_point = prev_input_point_from_term(&term);
-                        }
-
-                        if hovered_state == HoveredState::HoveredNextChar {
-                            hovered_grid_point = Some(prev_input_point);
-                            hovered_state = HoveredState::Done;
-                        }
-                        if captures_state == CapturesState::PathNextChar {
-                            captures_state = CapturesState::Path(prev_input_point);
-                        }
-                        if match_state == MatchState::MatchNextChar {
-                            match_state = MatchState::Match(prev_input_point);
-                        }
-                    }
-                }
-            }
-            term.move_down_and_cr(1);
-        }
+        let CapturedHyperlink {
+            hovered_grid_point,
+            hyperlink_match,
+            mut iri_or_path,
+            row,
+            column,
+        } = feed_test_lines(&mut term, test_lines, &hyperlink_kind);
 
         if hyperlink_kind == HyperlinkKind::FileIri {
             let Ok(url) = Url::parse(&iri_or_path) else {
@@ -1757,6 +1746,95 @@ mod tests {
                 hyperlink_match,
             },
         )
+    }
+
+    fn feed_test_lines<'a>(
+        term: &mut Term<VoidListener>,
+        test_lines: impl Iterator<Item = &'a str>,
+        hyperlink_kind: &HyperlinkKind,
+    ) -> CapturedHyperlink {
+        let mut hovered_grid_point: Option<AlacPoint> = None;
+        let mut hyperlink_match = AlacPoint::default()..=AlacPoint::default();
+        let mut iri_or_path = String::default();
+        let mut row = None;
+        let mut column = None;
+        let mut prev_input_point = AlacPoint::default();
+        let mut hovered_state = HoveredState::default();
+        let mut match_state = MatchState::default();
+        let mut captures_state = CapturesState::default();
+
+        for text in test_lines {
+            let chars: Box<dyn Iterator<Item = char>> =
+                if cfg!(windows) && *hyperlink_kind == HyperlinkKind::Path {
+                    Box::new(text.chars().map(|c| if c == '/' { '\\' } else { c })) as _
+                } else {
+                    Box::new(text.chars()) as _
+                };
+            let mut chars = chars.peekable();
+            while let Some(c) = chars.next() {
+                match c {
+                    '👉' => {
+                        hovered_state = HoveredState::HoveredNextChar;
+                    }
+                    '👈' => {
+                        hovered_grid_point = Some(prev_input_point.add(term, Boundary::Grid, 1));
+                    }
+                    '«' | '»' => {
+                        advance_captures(
+                            term,
+                            &mut captures_state,
+                            &mut iri_or_path,
+                            &mut row,
+                            &mut column,
+                            prev_input_point,
+                        );
+                    }
+                    '‹' | '›' => {
+                        advance_match(
+                            term,
+                            &mut match_state,
+                            &mut hyperlink_match,
+                            prev_input_point,
+                        );
+                    }
+                    _ => {
+                        if let CapturesState::Row(number) | CapturesState::Column(number) =
+                            &mut captures_state
+                        {
+                            number.push(c)
+                        }
+
+                        prev_input_point = input_test_char(
+                            term,
+                            c,
+                            &captures_state,
+                            hyperlink_kind,
+                            chars.peek().is_some_and(|c| *c != '\\'),
+                        );
+
+                        if hovered_state == HoveredState::HoveredNextChar {
+                            hovered_grid_point = Some(prev_input_point);
+                            hovered_state = HoveredState::Done;
+                        }
+                        if captures_state == CapturesState::PathNextChar {
+                            captures_state = CapturesState::Path(prev_input_point);
+                        }
+                        if match_state == MatchState::MatchNextChar {
+                            match_state = MatchState::Match(prev_input_point);
+                        }
+                    }
+                }
+            }
+            term.move_down_and_cr(1);
+        }
+
+        CapturedHyperlink {
+            hovered_grid_point,
+            hyperlink_match,
+            iri_or_path,
+            row,
+            column,
+        }
     }
 
     fn line_cells_count(line: &str) -> usize {
