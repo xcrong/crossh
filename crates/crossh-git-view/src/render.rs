@@ -3,9 +3,9 @@
 use std::path::Path;
 
 use gpui::{
-    AnyElement, ClickEvent, Context, FontWeight, InteractiveElement, IntoElement,
+    AnyElement, ClickEvent, Context, Div, FontWeight, InteractiveElement, IntoElement,
     ListHorizontalSizingBehavior, ListSizingBehavior, MouseButton, MouseDownEvent, ParentElement,
-    Pixels, Point, Render, SharedString, StatefulInteractiveElement, Styled, Window, div,
+    Pixels, Point, Render, SharedString, Stateful, StatefulInteractiveElement, Styled, Window, div,
     prelude::FluentBuilder, px, uniform_list,
 };
 
@@ -238,6 +238,17 @@ impl GitWindow {
     }
 
     fn render_status_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let branch = self.render_git_status_branch(cx);
+        let refresh_loading = self.git_status_refresh_loading();
+        let actions = self.render_git_status_actions(refresh_loading, cx);
+
+        StatusBar::new("git-status-bar")
+            .child(branch)
+            .child(actions)
+            .into_any_element()
+    }
+
+    fn render_git_status_branch(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let branch_name = self
             .session
             .status
@@ -312,7 +323,11 @@ impl GitWindow {
             }
         }
 
-        let refresh_loading = if self.is_history_page() {
+        branch
+    }
+
+    fn git_status_refresh_loading(&self) -> bool {
+        if self.is_history_page() {
             self.session.history.list_state.is_loading()
         } else if self.is_branch_page() {
             self.session.branch.list_state.is_loading()
@@ -322,8 +337,11 @@ impl GitWindow {
             self.session.remote.list_state.is_loading()
         } else {
             self.session.refresh.in_flight()
-        };
-        let actions = div()
+        }
+    }
+
+    fn render_git_status_actions(&self, refresh_loading: bool, cx: &mut Context<Self>) -> Div {
+        div()
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -368,12 +386,7 @@ impl GitWindow {
                         this.refresh_current_page(cx);
                         cx.notify();
                     })),
-            );
-
-        StatusBar::new("git-status-bar")
-            .child(branch)
-            .child(actions)
-            .into_any_element()
+            )
     }
 
     fn render_changes_pane(
