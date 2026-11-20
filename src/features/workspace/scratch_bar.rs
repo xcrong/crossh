@@ -1,3 +1,6 @@
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gpui::{
     Context, InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString, Styled,
     Window, div, px,
@@ -8,6 +11,14 @@ use crate::features::workspace::shell::scratch::{SCRATCH_MIN_HEIGHT, clamp_scrat
 use crossh_core::i18n;
 use crossh_ui::{icons, theme};
 use crossh_ui_component::{Button, ButtonSize, ButtonVariant, SplitResizer};
+
+/// Scratch 卡片几何：随视口自适应，默认 80% 视口，高度受 MIN 与视口上界约束。
+struct ScratchMetrics {
+    min_h: f32,
+    max_h: f32,
+    card_width: f32,
+    card_height: f32,
+}
 
 /// 渲染 Scratch 悬浮层：复用 Command Palette 的 `absolute inset_0 + scrim + 居中卡片` 机制。
 /// 卡片复用 `SplitResizer(vertical)` 在底部可拖拽调高，尺寸较 Palette 更大以便执行任务。
@@ -34,11 +45,22 @@ pub(crate) fn render_scratch_panel(
     } else {
         height.clamp(min_h, max_h)
     };
-    let card_width = viewport.width.as_f32() * 0.8;
-    let card_height = display_height;
+    let metrics = ScratchMetrics {
+        min_h,
+        max_h,
+        card_width: viewport.width.as_f32() * 0.8,
+        card_height: display_height,
+    };
     let _ = clamp_scratch_height(height);
 
-    let header = div()
+    let header = render_scratch_header(cx);
+    let card = render_scratch_card(term, header, &metrics, dragging, height_cell);
+    render_scratch_scrim(card, cx)
+}
+
+/// Scratch 卡片头部：36px 高，左侧标题/图标，右侧关闭按钮。
+fn render_scratch_header(cx: &mut Context<AppShell>) -> impl IntoElement + use<> {
+    div()
         .h(px(36.))
         .flex_shrink_0()
         .flex()
@@ -71,13 +93,25 @@ pub(crate) fn render_scratch_panel(
                         this.hide_scratch_terminal(cx);
                     })),
             ),
-        );
+        )
+}
 
-    // 卡片：默认 80% 视口，高度可拖拽
-    let card = div()
+/// Scratch 卡片：默认 80% 视口宽，高度可拖拽，底部为垂直 `SplitResizer`。
+fn render_scratch_card<T, H>(
+    term: T,
+    header: H,
+    metrics: &ScratchMetrics,
+    dragging: Rc<Cell<bool>>,
+    height_cell: Rc<Cell<f32>>,
+) -> impl IntoElement + use<T, H>
+where
+    T: IntoElement,
+    H: IntoElement,
+{
+    div()
         .id("scratch-card")
-        .w(px(card_width))
-        .h(px(card_height))
+        .w(px(metrics.card_width))
+        .h(px(metrics.card_height))
         .relative()
         .flex()
         .flex_col()
@@ -99,11 +133,14 @@ pub(crate) fn render_scratch_panel(
         .child(
             SplitResizer::new("scratch-resizer", dragging.clone(), height_cell.clone())
                 .vertical()
-                .min_size(min_h)
-                .max_size(max_h)
+                .min_size(metrics.min_h)
+                .max_size(metrics.max_h)
                 .line(),
-        );
+        )
+}
 
+/// Scratch 遮罩层：拦截外部点击关闭，卡片包裹层阻止冒泡。
+fn render_scratch_scrim(card: impl IntoElement, cx: &mut Context<AppShell>) -> gpui::AnyElement {
     div()
         .id("scratch-scrim")
         .absolute()
