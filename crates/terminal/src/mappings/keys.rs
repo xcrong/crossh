@@ -52,121 +52,7 @@ pub(crate) fn to_esc_str(
     let modifiers = TerminalModifiers::new(keystroke);
 
     // Manual Bindings including modifiers
-    let manual_esc_str: Option<&'static str> = match (keystroke.key.as_ref(), &modifiers) {
-        //Basic special keys
-        ("tab", TerminalModifiers::None) => Some("\x09"),
-        ("escape", TerminalModifiers::None) => Some("\x1b"),
-        ("enter", TerminalModifiers::None) => Some("\x0d"),
-        ("enter", TerminalModifiers::Shift) => Some("\x0a"),
-        ("enter", TerminalModifiers::Alt) => Some("\x1b\x0d"),
-        ("backspace", TerminalModifiers::None) => Some("\x7f"),
-        //Interesting escape codes
-        ("tab", TerminalModifiers::Shift) => Some("\x1b[Z"),
-        ("backspace", TerminalModifiers::Ctrl) => Some("\x08"),
-        ("backspace", TerminalModifiers::Alt) => Some("\x1b\x7f"),
-        ("backspace", TerminalModifiers::Shift) => Some("\x7f"),
-        ("space", TerminalModifiers::Ctrl) => Some("\x00"),
-        ("home", TerminalModifiers::None) if mode.contains(Modes::APP_CURSOR) => Some("\x1bOH"),
-        ("home", TerminalModifiers::None) if !mode.contains(Modes::APP_CURSOR) => Some("\x1b[H"),
-        ("end", TerminalModifiers::None) if mode.contains(Modes::APP_CURSOR) => Some("\x1bOF"),
-        ("end", TerminalModifiers::None) if !mode.contains(Modes::APP_CURSOR) => Some("\x1b[F"),
-        ("up", TerminalModifiers::None) if mode.contains(Modes::APP_CURSOR) => Some("\x1bOA"),
-        ("up", TerminalModifiers::None) if !mode.contains(Modes::APP_CURSOR) => Some("\x1b[A"),
-        ("down", TerminalModifiers::None) if mode.contains(Modes::APP_CURSOR) => Some("\x1bOB"),
-        ("down", TerminalModifiers::None) if !mode.contains(Modes::APP_CURSOR) => Some("\x1b[B"),
-        ("right", TerminalModifiers::None) if mode.contains(Modes::APP_CURSOR) => Some("\x1bOC"),
-        ("right", TerminalModifiers::None) if !mode.contains(Modes::APP_CURSOR) => Some("\x1b[C"),
-        ("left", TerminalModifiers::None) if mode.contains(Modes::APP_CURSOR) => Some("\x1bOD"),
-        ("left", TerminalModifiers::None) if !mode.contains(Modes::APP_CURSOR) => Some("\x1b[D"),
-        ("back", TerminalModifiers::None) => Some("\x7f"),
-        ("insert", TerminalModifiers::None) => Some("\x1b[2~"),
-        ("delete", TerminalModifiers::None) => Some("\x1b[3~"),
-        ("pageup", TerminalModifiers::None) => Some("\x1b[5~"),
-        ("pagedown", TerminalModifiers::None) => Some("\x1b[6~"),
-        ("f1", TerminalModifiers::None) => Some("\x1bOP"),
-        ("f2", TerminalModifiers::None) => Some("\x1bOQ"),
-        ("f3", TerminalModifiers::None) => Some("\x1bOR"),
-        ("f4", TerminalModifiers::None) => Some("\x1bOS"),
-        ("f5", TerminalModifiers::None) => Some("\x1b[15~"),
-        ("f6", TerminalModifiers::None) => Some("\x1b[17~"),
-        ("f7", TerminalModifiers::None) => Some("\x1b[18~"),
-        ("f8", TerminalModifiers::None) => Some("\x1b[19~"),
-        ("f9", TerminalModifiers::None) => Some("\x1b[20~"),
-        ("f10", TerminalModifiers::None) => Some("\x1b[21~"),
-        ("f11", TerminalModifiers::None) => Some("\x1b[23~"),
-        ("f12", TerminalModifiers::None) => Some("\x1b[24~"),
-        ("f13", TerminalModifiers::None) => Some("\x1b[25~"),
-        ("f14", TerminalModifiers::None) => Some("\x1b[26~"),
-        ("f15", TerminalModifiers::None) => Some("\x1b[28~"),
-        ("f16", TerminalModifiers::None) => Some("\x1b[29~"),
-        ("f17", TerminalModifiers::None) => Some("\x1b[31~"),
-        ("f18", TerminalModifiers::None) => Some("\x1b[32~"),
-        ("f19", TerminalModifiers::None) => Some("\x1b[33~"),
-        ("f20", TerminalModifiers::None) => Some("\x1b[34~"),
-        // NumpadEnter, Action::Esc("\n".into());
-        //Mappings for caret notation keys
-        ("a", TerminalModifiers::Ctrl) => Some("\x01"), //1
-        ("A", TerminalModifiers::CtrlShift) => Some("\x01"), //1
-        ("b", TerminalModifiers::Ctrl) => Some("\x02"), //2
-        ("B", TerminalModifiers::CtrlShift) => Some("\x02"), //2
-        ("c", TerminalModifiers::Ctrl) => Some("\x03"), //3
-        ("C", TerminalModifiers::CtrlShift) => Some("\x03"), //3
-        ("d", TerminalModifiers::Ctrl) => Some("\x04"), //4
-        ("D", TerminalModifiers::CtrlShift) => Some("\x04"), //4
-        ("e", TerminalModifiers::Ctrl) => Some("\x05"), //5
-        ("E", TerminalModifiers::CtrlShift) => Some("\x05"), //5
-        ("f", TerminalModifiers::Ctrl) => Some("\x06"), //6
-        ("F", TerminalModifiers::CtrlShift) => Some("\x06"), //6
-        ("g", TerminalModifiers::Ctrl) => Some("\x07"), //7
-        ("G", TerminalModifiers::CtrlShift) => Some("\x07"), //7
-        ("h", TerminalModifiers::Ctrl) => Some("\x08"), //8
-        ("H", TerminalModifiers::CtrlShift) => Some("\x08"), //8
-        ("i", TerminalModifiers::Ctrl) => Some("\x09"), //9
-        ("I", TerminalModifiers::CtrlShift) => Some("\x09"), //9
-        ("j", TerminalModifiers::Ctrl) => Some("\x0a"), //10
-        ("J", TerminalModifiers::CtrlShift) => Some("\x0a"), //10
-        ("k", TerminalModifiers::Ctrl) => Some("\x0b"), //11
-        ("K", TerminalModifiers::CtrlShift) => Some("\x0b"), //11
-        ("l", TerminalModifiers::Ctrl) => Some("\x0c"), //12
-        ("L", TerminalModifiers::CtrlShift) => Some("\x0c"), //12
-        ("m", TerminalModifiers::Ctrl) => Some("\x0d"), //13
-        ("M", TerminalModifiers::CtrlShift) => Some("\x0d"), //13
-        ("n", TerminalModifiers::Ctrl) => Some("\x0e"), //14
-        ("N", TerminalModifiers::CtrlShift) => Some("\x0e"), //14
-        ("o", TerminalModifiers::Ctrl) => Some("\x0f"), //15
-        ("O", TerminalModifiers::CtrlShift) => Some("\x0f"), //15
-        ("p", TerminalModifiers::Ctrl) => Some("\x10"), //16
-        ("P", TerminalModifiers::CtrlShift) => Some("\x10"), //16
-        ("q", TerminalModifiers::Ctrl) => Some("\x11"), //17
-        ("Q", TerminalModifiers::CtrlShift) => Some("\x11"), //17
-        ("r", TerminalModifiers::Ctrl) => Some("\x12"), //18
-        ("R", TerminalModifiers::CtrlShift) => Some("\x12"), //18
-        ("s", TerminalModifiers::Ctrl) => Some("\x13"), //19
-        ("S", TerminalModifiers::CtrlShift) => Some("\x13"), //19
-        ("t", TerminalModifiers::Ctrl) => Some("\x14"), //20
-        ("T", TerminalModifiers::CtrlShift) => Some("\x14"), //20
-        ("u", TerminalModifiers::Ctrl) => Some("\x15"), //21
-        ("U", TerminalModifiers::CtrlShift) => Some("\x15"), //21
-        ("v", TerminalModifiers::Ctrl) => Some("\x16"), //22
-        ("V", TerminalModifiers::CtrlShift) => Some("\x16"), //22
-        ("w", TerminalModifiers::Ctrl) => Some("\x17"), //23
-        ("W", TerminalModifiers::CtrlShift) => Some("\x17"), //23
-        ("x", TerminalModifiers::Ctrl) => Some("\x18"), //24
-        ("X", TerminalModifiers::CtrlShift) => Some("\x18"), //24
-        ("y", TerminalModifiers::Ctrl) => Some("\x19"), //25
-        ("Y", TerminalModifiers::CtrlShift) => Some("\x19"), //25
-        ("z", TerminalModifiers::Ctrl) => Some("\x1a"), //26
-        ("Z", TerminalModifiers::CtrlShift) => Some("\x1a"), //26
-        ("@", TerminalModifiers::Ctrl) => Some("\x00"), //0
-        ("[", TerminalModifiers::Ctrl) => Some("\x1b"), //27
-        ("\\", TerminalModifiers::Ctrl) => Some("\x1c"), //28
-        ("]", TerminalModifiers::Ctrl) => Some("\x1d"), //29
-        ("^", TerminalModifiers::Ctrl) => Some("\x1e"), //30
-        ("_", TerminalModifiers::Ctrl) => Some("\x1f"), //31
-        ("?", TerminalModifiers::Ctrl) => Some("\x7f"), //127
-        _ => None,
-    };
-    if let Some(esc_str) = manual_esc_str {
+    if let Some(esc_str) = manual_esc_str(keystroke.key.as_ref(), &modifiers, mode) {
         return Some(Cow::Borrowed(esc_str));
     }
 
@@ -231,6 +117,136 @@ pub(crate) fn to_esc_str(
     }
 
     None
+}
+
+/// Manual bindings that do not depend on xterm modifier codes.
+fn manual_esc_str(key: &str, modifiers: &TerminalModifiers, mode: Modes) -> Option<&'static str> {
+    basic_esc_str(key, modifiers, mode).or_else(|| ctrl_esc_str(key, modifiers))
+}
+
+/// Basic special keys, cursor keys, and function keys without modifier codes.
+fn basic_esc_str(key: &str, modifiers: &TerminalModifiers, mode: Modes) -> Option<&'static str> {
+    match (key, modifiers) {
+        //Basic special keys
+        ("tab", TerminalModifiers::None) => Some("\x09"),
+        ("escape", TerminalModifiers::None) => Some("\x1b"),
+        ("enter", TerminalModifiers::None) => Some("\x0d"),
+        ("enter", TerminalModifiers::Shift) => Some("\x0a"),
+        ("enter", TerminalModifiers::Alt) => Some("\x1b\x0d"),
+        ("backspace", TerminalModifiers::None) => Some("\x7f"),
+        //Interesting escape codes
+        ("tab", TerminalModifiers::Shift) => Some("\x1b[Z"),
+        ("backspace", TerminalModifiers::Ctrl) => Some("\x08"),
+        ("backspace", TerminalModifiers::Alt) => Some("\x1b\x7f"),
+        ("backspace", TerminalModifiers::Shift) => Some("\x7f"),
+        ("space", TerminalModifiers::Ctrl) => Some("\x00"),
+        ("home", TerminalModifiers::None) if mode.contains(Modes::APP_CURSOR) => Some("\x1bOH"),
+        ("home", TerminalModifiers::None) if !mode.contains(Modes::APP_CURSOR) => Some("\x1b[H"),
+        ("end", TerminalModifiers::None) if mode.contains(Modes::APP_CURSOR) => Some("\x1bOF"),
+        ("end", TerminalModifiers::None) if !mode.contains(Modes::APP_CURSOR) => Some("\x1b[F"),
+        ("up", TerminalModifiers::None) if mode.contains(Modes::APP_CURSOR) => Some("\x1bOA"),
+        ("up", TerminalModifiers::None) if !mode.contains(Modes::APP_CURSOR) => Some("\x1b[A"),
+        ("down", TerminalModifiers::None) if mode.contains(Modes::APP_CURSOR) => Some("\x1bOB"),
+        ("down", TerminalModifiers::None) if !mode.contains(Modes::APP_CURSOR) => Some("\x1b[B"),
+        ("right", TerminalModifiers::None) if mode.contains(Modes::APP_CURSOR) => Some("\x1bOC"),
+        ("right", TerminalModifiers::None) if !mode.contains(Modes::APP_CURSOR) => Some("\x1b[C"),
+        ("left", TerminalModifiers::None) if mode.contains(Modes::APP_CURSOR) => Some("\x1bOD"),
+        ("left", TerminalModifiers::None) if !mode.contains(Modes::APP_CURSOR) => Some("\x1b[D"),
+        ("back", TerminalModifiers::None) => Some("\x7f"),
+        ("insert", TerminalModifiers::None) => Some("\x1b[2~"),
+        ("delete", TerminalModifiers::None) => Some("\x1b[3~"),
+        ("pageup", TerminalModifiers::None) => Some("\x1b[5~"),
+        ("pagedown", TerminalModifiers::None) => Some("\x1b[6~"),
+        ("f1", TerminalModifiers::None) => Some("\x1bOP"),
+        ("f2", TerminalModifiers::None) => Some("\x1bOQ"),
+        ("f3", TerminalModifiers::None) => Some("\x1bOR"),
+        ("f4", TerminalModifiers::None) => Some("\x1bOS"),
+        ("f5", TerminalModifiers::None) => Some("\x1b[15~"),
+        ("f6", TerminalModifiers::None) => Some("\x1b[17~"),
+        ("f7", TerminalModifiers::None) => Some("\x1b[18~"),
+        ("f8", TerminalModifiers::None) => Some("\x1b[19~"),
+        ("f9", TerminalModifiers::None) => Some("\x1b[20~"),
+        ("f10", TerminalModifiers::None) => Some("\x1b[21~"),
+        ("f11", TerminalModifiers::None) => Some("\x1b[23~"),
+        ("f12", TerminalModifiers::None) => Some("\x1b[24~"),
+        ("f13", TerminalModifiers::None) => Some("\x1b[25~"),
+        ("f14", TerminalModifiers::None) => Some("\x1b[26~"),
+        ("f15", TerminalModifiers::None) => Some("\x1b[28~"),
+        ("f16", TerminalModifiers::None) => Some("\x1b[29~"),
+        ("f17", TerminalModifiers::None) => Some("\x1b[31~"),
+        ("f18", TerminalModifiers::None) => Some("\x1b[32~"),
+        ("f19", TerminalModifiers::None) => Some("\x1b[33~"),
+        ("f20", TerminalModifiers::None) => Some("\x1b[34~"),
+        _ => None,
+    }
+}
+
+/// Caret notation keys produced by Ctrl / Ctrl+Shift.
+fn ctrl_esc_str(key: &str, modifiers: &TerminalModifiers) -> Option<&'static str> {
+    match (key, modifiers) {
+        // NumpadEnter, Action::Esc("\n".into());
+        //Mappings for caret notation keys
+        ("a", TerminalModifiers::Ctrl) => Some("\x01"), //1
+        ("A", TerminalModifiers::CtrlShift) => Some("\x01"), //1
+        ("b", TerminalModifiers::Ctrl) => Some("\x02"), //2
+        ("B", TerminalModifiers::CtrlShift) => Some("\x02"), //2
+        ("c", TerminalModifiers::Ctrl) => Some("\x03"), //3
+        ("C", TerminalModifiers::CtrlShift) => Some("\x03"), //3
+        ("d", TerminalModifiers::Ctrl) => Some("\x04"), //4
+        ("D", TerminalModifiers::CtrlShift) => Some("\x04"), //4
+        ("e", TerminalModifiers::Ctrl) => Some("\x05"), //5
+        ("E", TerminalModifiers::CtrlShift) => Some("\x05"), //5
+        ("f", TerminalModifiers::Ctrl) => Some("\x06"), //6
+        ("F", TerminalModifiers::CtrlShift) => Some("\x06"), //6
+        ("g", TerminalModifiers::Ctrl) => Some("\x07"), //7
+        ("G", TerminalModifiers::CtrlShift) => Some("\x07"), //7
+        ("h", TerminalModifiers::Ctrl) => Some("\x08"), //8
+        ("H", TerminalModifiers::CtrlShift) => Some("\x08"), //8
+        ("i", TerminalModifiers::Ctrl) => Some("\x09"), //9
+        ("I", TerminalModifiers::CtrlShift) => Some("\x09"), //9
+        ("j", TerminalModifiers::Ctrl) => Some("\x0a"), //10
+        ("J", TerminalModifiers::CtrlShift) => Some("\x0a"), //10
+        ("k", TerminalModifiers::Ctrl) => Some("\x0b"), //11
+        ("K", TerminalModifiers::CtrlShift) => Some("\x0b"), //11
+        ("l", TerminalModifiers::Ctrl) => Some("\x0c"), //12
+        ("L", TerminalModifiers::CtrlShift) => Some("\x0c"), //12
+        ("m", TerminalModifiers::Ctrl) => Some("\x0d"), //13
+        ("M", TerminalModifiers::CtrlShift) => Some("\x0d"), //13
+        ("n", TerminalModifiers::Ctrl) => Some("\x0e"), //14
+        ("N", TerminalModifiers::CtrlShift) => Some("\x0e"), //14
+        ("o", TerminalModifiers::Ctrl) => Some("\x0f"), //15
+        ("O", TerminalModifiers::CtrlShift) => Some("\x0f"), //15
+        ("p", TerminalModifiers::Ctrl) => Some("\x10"), //16
+        ("P", TerminalModifiers::CtrlShift) => Some("\x10"), //16
+        ("q", TerminalModifiers::Ctrl) => Some("\x11"), //17
+        ("Q", TerminalModifiers::CtrlShift) => Some("\x11"), //17
+        ("r", TerminalModifiers::Ctrl) => Some("\x12"), //18
+        ("R", TerminalModifiers::CtrlShift) => Some("\x12"), //18
+        ("s", TerminalModifiers::Ctrl) => Some("\x13"), //19
+        ("S", TerminalModifiers::CtrlShift) => Some("\x13"), //19
+        ("t", TerminalModifiers::Ctrl) => Some("\x14"), //20
+        ("T", TerminalModifiers::CtrlShift) => Some("\x14"), //20
+        ("u", TerminalModifiers::Ctrl) => Some("\x15"), //21
+        ("U", TerminalModifiers::CtrlShift) => Some("\x15"), //21
+        ("v", TerminalModifiers::Ctrl) => Some("\x16"), //22
+        ("V", TerminalModifiers::CtrlShift) => Some("\x16"), //22
+        ("w", TerminalModifiers::Ctrl) => Some("\x17"), //23
+        ("W", TerminalModifiers::CtrlShift) => Some("\x17"), //23
+        ("x", TerminalModifiers::Ctrl) => Some("\x18"), //24
+        ("X", TerminalModifiers::CtrlShift) => Some("\x18"), //24
+        ("y", TerminalModifiers::Ctrl) => Some("\x19"), //25
+        ("Y", TerminalModifiers::CtrlShift) => Some("\x19"), //25
+        ("z", TerminalModifiers::Ctrl) => Some("\x1a"), //26
+        ("Z", TerminalModifiers::CtrlShift) => Some("\x1a"), //26
+        ("@", TerminalModifiers::Ctrl) => Some("\x00"), //0
+        ("[", TerminalModifiers::Ctrl) => Some("\x1b"), //27
+        ("\\", TerminalModifiers::Ctrl) => Some("\x1c"), //28
+        ("]", TerminalModifiers::Ctrl) => Some("\x1d"), //29
+        ("^", TerminalModifiers::Ctrl) => Some("\x1e"), //30
+        ("_", TerminalModifiers::Ctrl) => Some("\x1f"), //31
+        ("?", TerminalModifiers::Ctrl) => Some("\x7f"), //127
+        _ => None,
+    }
 }
 
 ///   Code     Modifiers
