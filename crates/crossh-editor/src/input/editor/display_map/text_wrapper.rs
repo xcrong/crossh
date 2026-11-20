@@ -839,47 +839,55 @@ mod tests {
 
     use gpui::{Boundary, FontFeatures, FontStyle, FontWeight, px};
 
+    #[track_caller]
+    fn assert_wrapper_lines(text: &Rope, wrapper: &TextWrapper, expected_lines: &[&[&str]]) {
+        let mut actual_lines = vec![];
+        let mut offset = 0;
+        for line in wrapper.iter_lines() {
+            actual_lines.push(
+                line.wrapped_lines
+                    .iter()
+                    .map(|range| text.slice(offset + range.start..offset + range.end))
+                    .collect::<Vec<_>>(),
+            );
+            // +1 \n
+            offset += line.len() + 1;
+        }
+        assert_eq!(actual_lines, expected_lines);
+    }
+
+    fn fake_wrap_line(_line: &str, _wrap_width: Pixels) -> Vec<Boundary> {
+        vec![]
+    }
+
     #[test]
     fn test_update() {
-        let font = gpui::Font {
-            family: "Arial".into(),
-            weight: FontWeight::default(),
-            style: FontStyle::Normal,
-            features: FontFeatures::default(),
-            fallbacks: None,
-        };
-
-        let mut wrapper = TextWrapper::new(font, px(14.), None);
+        let mut wrapper = TextWrapper::new(test_font(), px(14.), None);
         let mut text = Rope::from(
             "Hello, 世界!\r\nThis is second line.\nThis is third line.\n这里是第 4 行。",
         );
+        let mut wrap = fake_wrap_line;
 
-        fn fake_wrap_line(_line: &str, _wrap_width: Pixels) -> Vec<Boundary> {
-            vec![]
-        }
+        update_initial(&mut text, &mut wrapper, &mut wrap);
+        update_add_to_end(&mut text, &mut wrapper, &mut wrap);
+        update_replace_first_line(&mut text, &mut wrapper, &mut wrap);
+        update_remove_second_line(&mut text, &mut wrapper, &mut wrap);
+        update_replace_first_two_lines(&mut text, &mut wrapper, &mut wrap);
+        update_add_line_at_end(&mut text, &mut wrapper, &mut wrap);
+        update_add_line_at_beginning(&mut text, &mut wrapper, &mut wrap);
+        update_remove_all(&mut text, &mut wrapper, &mut wrap);
+        update_all(&mut text, &mut wrapper, &mut wrap);
+    }
 
-        #[track_caller]
-        fn assert_wrapper_lines(text: &Rope, wrapper: &TextWrapper, expected_lines: &[&[&str]]) {
-            let mut actual_lines = vec![];
-            let mut offset = 0;
-            for line in wrapper.iter_lines() {
-                actual_lines.push(
-                    line.wrapped_lines
-                        .iter()
-                        .map(|range| text.slice(offset + range.start..offset + range.end))
-                        .collect::<Vec<_>>(),
-                );
-                // +1 \n
-                offset += line.len() + 1;
-            }
-            assert_eq!(actual_lines, expected_lines);
-        }
-
-        wrapper._update(&text, &(0..text.len()), &text, &mut fake_wrap_line);
+    fn update_initial<F>(text: &mut Rope, wrapper: &mut TextWrapper, wrap: &mut F)
+    where
+        F: FnMut(&str, Pixels) -> Vec<Boundary>,
+    {
+        wrapper._update(text, &(0..text.len()), text, wrap);
         assert_eq!(wrapper.lines_count(), 4);
         assert_wrapper_lines(
-            &text,
-            &wrapper,
+            text,
+            wrapper,
             &[
                 &["Hello, 世界!\r"],
                 &["This is second line."],
@@ -887,12 +895,17 @@ mod tests {
                 &["这里是第 4 行。"],
             ],
         );
+    }
 
+    fn update_add_to_end<F>(text: &mut Rope, wrapper: &mut TextWrapper, wrap: &mut F)
+    where
+        F: FnMut(&str, Pixels) -> Vec<Boundary>,
+    {
         // Add a new text to end
         let range = text.len()..text.len();
         let new_text = "New text";
         text.replace(range.clone(), new_text);
-        wrapper._update(&text, &range, &Rope::from(new_text), &mut fake_wrap_line);
+        wrapper._update(text, &range, &Rope::from(new_text), wrap);
         assert_eq!(
             text.to_string(),
             "Hello, 世界!\r\nThis is second line.\nThis is third line.\n这里是第 4 行。New text"
@@ -900,8 +913,8 @@ mod tests {
         assert_eq!(wrapper.lines_count(), 4);
         assert_eq!(wrapper.lines_count(), 4);
         assert_wrapper_lines(
-            &text,
-            &wrapper,
+            text,
+            wrapper,
             &[
                 &["Hello, 世界!\r"],
                 &["This is second line."],
@@ -909,20 +922,25 @@ mod tests {
                 &["这里是第 4 行。New text"],
             ],
         );
+    }
 
+    fn update_replace_first_line<F>(text: &mut Rope, wrapper: &mut TextWrapper, wrap: &mut F)
+    where
+        F: FnMut(&str, Pixels) -> Vec<Boundary>,
+    {
         // Replace first line `Hello` to `AAA`
         let range = 0..5;
         let new_text = "AAA";
         text.replace(range.clone(), new_text);
-        wrapper._update(&text, &range, &Rope::from(new_text), &mut fake_wrap_line);
+        wrapper._update(text, &range, &Rope::from(new_text), wrap);
         assert_eq!(
             text.to_string(),
             "AAA, 世界!\r\nThis is second line.\nThis is third line.\n这里是第 4 行。New text"
         );
         assert_eq!(wrapper.lines_count(), 4);
         assert_wrapper_lines(
-            &text,
-            &wrapper,
+            text,
+            wrapper,
             &[
                 &["AAA, 世界!\r"],
                 &["This is second line."],
@@ -930,61 +948,76 @@ mod tests {
                 &["这里是第 4 行。New text"],
             ],
         );
+    }
 
+    fn update_remove_second_line<F>(text: &mut Rope, wrapper: &mut TextWrapper, wrap: &mut F)
+    where
+        F: FnMut(&str, Pixels) -> Vec<Boundary>,
+    {
         // Remove the second line
         let start_offset = text.line_start_offset(1);
         let end_offset = text.line_end_offset(1);
         let range = start_offset..end_offset + 1;
         text.replace(range.clone(), "");
-        wrapper._update(&text, &range, &Rope::from(""), &mut fake_wrap_line);
+        wrapper._update(text, &range, &Rope::from(""), wrap);
         assert_eq!(
             text.to_string(),
             "AAA, 世界!\r\nThis is third line.\n这里是第 4 行。New text"
         );
         assert_eq!(wrapper.lines_count(), 3);
         assert_wrapper_lines(
-            &text,
-            &wrapper,
+            text,
+            wrapper,
             &[
                 &["AAA, 世界!\r"],
                 &["This is third line."],
                 &["这里是第 4 行。New text"],
             ],
         );
+    }
 
+    fn update_replace_first_two_lines<F>(text: &mut Rope, wrapper: &mut TextWrapper, wrap: &mut F)
+    where
+        F: FnMut(&str, Pixels) -> Vec<Boundary>,
+    {
         // Replace the first 2 lines to "This is a new line."
         let range = text.line_start_offset(0)..text.line_end_offset(1) + 1;
         let new_text = "This is a new line.\nThis is new line 2.\n";
         text.replace(range.clone(), new_text);
-        wrapper._update(&text, &range, &Rope::from(new_text), &mut fake_wrap_line);
+        wrapper._update(text, &range, &Rope::from(new_text), wrap);
         assert_eq!(
             text.to_string(),
             "This is a new line.\nThis is new line 2.\n这里是第 4 行。New text"
         );
         assert_eq!(wrapper.lines_count(), 3);
         assert_wrapper_lines(
-            &text,
-            &wrapper,
+            text,
+            wrapper,
             &[
                 &["This is a new line."],
                 &["This is new line 2."],
                 &["这里是第 4 行。New text"],
             ],
         );
+    }
 
+    fn update_add_line_at_end<F>(text: &mut Rope, wrapper: &mut TextWrapper, wrap: &mut F)
+    where
+        F: FnMut(&str, Pixels) -> Vec<Boundary>,
+    {
         // Add a new line at the end
         let range = text.len()..text.len();
         let new_text = "\nThis is a new line at the end.";
         text.replace(range.clone(), new_text);
-        wrapper._update(&text, &range, &Rope::from(new_text), &mut fake_wrap_line);
+        wrapper._update(text, &range, &Rope::from(new_text), wrap);
         assert_eq!(
             text.to_string(),
             "This is a new line.\nThis is new line 2.\n这里是第 4 行。New text\nThis is a new line at the end."
         );
         assert_eq!(wrapper.lines_count(), 4);
         assert_wrapper_lines(
-            &text,
-            &wrapper,
+            text,
+            wrapper,
             &[
                 &["This is a new line."],
                 &["This is new line 2."],
@@ -992,20 +1025,25 @@ mod tests {
                 &["This is a new line at the end."],
             ],
         );
+    }
 
+    fn update_add_line_at_beginning<F>(text: &mut Rope, wrapper: &mut TextWrapper, wrap: &mut F)
+    where
+        F: FnMut(&str, Pixels) -> Vec<Boundary>,
+    {
         // Add a new line at the beginning
         let range = 0..0;
         let new_text = "This is a new line at the beginning.\n";
         text.replace(range.clone(), new_text);
-        wrapper._update(&text, &range, &Rope::from(new_text), &mut fake_wrap_line);
+        wrapper._update(text, &range, &Rope::from(new_text), wrap);
         assert_eq!(
             text.to_string(),
             "This is a new line at the beginning.\nThis is a new line.\nThis is new line 2.\n这里是第 4 行。New text\nThis is a new line at the end."
         );
         assert_eq!(wrapper.lines_count(), 5);
         assert_wrapper_lines(
-            &text,
-            &wrapper,
+            text,
+            wrapper,
             &[
                 &["This is a new line at the beginning."],
                 &["This is a new line."],
@@ -1014,21 +1052,31 @@ mod tests {
                 &["This is a new line at the end."],
             ],
         );
+    }
 
+    fn update_remove_all<F>(text: &mut Rope, wrapper: &mut TextWrapper, wrap: &mut F)
+    where
+        F: FnMut(&str, Pixels) -> Vec<Boundary>,
+    {
         // Remove all to at least one line in `lines`.
         let range = 0..text.len();
         let new_text = "";
         text.replace(range.clone(), new_text);
-        wrapper._update(&text, &range, &Rope::from(new_text), &mut fake_wrap_line);
+        wrapper._update(text, &range, &Rope::from(new_text), wrap);
         assert_eq!(text.to_string(), "");
         assert_eq!(wrapper.lines_count(), 1);
         assert_eq!(wrapper.line(0).unwrap().wrapped_lines.as_slice(), [0..0]);
+    }
 
+    fn update_all<F>(text: &mut Rope, wrapper: &mut TextWrapper, wrap: &mut F)
+    where
+        F: FnMut(&str, Pixels) -> Vec<Boundary>,
+    {
         // Test update_all
         let range = 0..text.len();
         let new_text = "This is a full text.\nThis is a second line.";
         text.replace(range.clone(), new_text);
-        wrapper._update(&text, &range, &text, &mut fake_wrap_line);
+        wrapper._update(text, &range, text, wrap);
         assert_eq!(
             text.to_string(),
             "This is a full text.\nThis is a second line."
