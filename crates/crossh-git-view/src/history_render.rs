@@ -1,13 +1,14 @@
 //! Git Log 的提交图、筛选列表和提交详情渲染。
 
 use gpui::{
-    AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ListHorizontalSizingBehavior,
-    ListSizingBehavior, ParentElement, PathBuilder, SharedString, StatefulInteractiveElement,
-    Styled, canvas, div, point, prelude::FluentBuilder, px, uniform_list,
+    AnyElement, Bounds, Context, FontWeight, InteractiveElement, IntoElement,
+    ListHorizontalSizingBehavior, ListSizingBehavior, ParentElement, PathBuilder, Pixels, Rgba,
+    SharedString, StatefulInteractiveElement, Styled, Window, canvas, div, point,
+    prelude::FluentBuilder, px, uniform_list,
 };
 
 use crossh_core::git_history::{CommitDetail, CommitFileChange, HistoryRef, HistoryRefKind};
-use crossh_core::git_history_graph::HistoryGraphRow;
+use crossh_core::git_history_graph::{HistoryGraphEdge, HistoryGraphRow};
 use crossh_core::i18n;
 use crossh_editor::{Scrollbar, ScrollbarMode};
 use crossh_ui::{icons, theme};
@@ -755,94 +756,7 @@ fn render_history_graph(graph: &HistoryGraphRow, selected: bool) -> AnyElement {
             canvas(
                 |_bounds, _window, _cx| (),
                 move |bounds, _state, window, _cx| {
-                    let center_y = bounds.size.height.as_f32() / 2.;
-                    if graph_for_canvas.node_has_incoming {
-                        let mut path = PathBuilder::stroke(px(GRAPH_STROKE_WIDTH));
-                        path.move_to(point(bounds.origin.x + px(node_x), bounds.origin.y));
-                        path.line_to(point(
-                            bounds.origin.x + px(node_x),
-                            bounds.origin.y + px(center_y),
-                        ));
-                        if let Ok(path) = path.build() {
-                            window.paint_path(path, node_color);
-                        }
-                    }
-                    for edge in &graph_for_canvas.incoming_edges {
-                        let from_x = GRAPH_LEFT + edge.from_lane as f32 * GRAPH_LANE_WIDTH;
-                        let to_x = GRAPH_LEFT + edge.to_lane as f32 * GRAPH_LANE_WIDTH;
-                        let from_y = 0.;
-                        let to_y = GRAPH_TRANSITION_HEIGHT;
-                        let mut path = PathBuilder::stroke(px(GRAPH_STROKE_WIDTH));
-                        path.move_to(point(
-                            bounds.origin.x + px(from_x),
-                            bounds.origin.y + px(from_y),
-                        ));
-                        if edge.from_lane == edge.to_lane {
-                            path.line_to(point(
-                                bounds.origin.x + px(to_x),
-                                bounds.origin.y + px(to_y),
-                            ));
-                        } else {
-                            let control_offset = (to_y - from_y) * 0.55;
-                            path.cubic_bezier_to(
-                                point(bounds.origin.x + px(to_x), bounds.origin.y + px(to_y)),
-                                point(
-                                    bounds.origin.x + px(from_x),
-                                    bounds.origin.y + px(from_y + control_offset),
-                                ),
-                                point(
-                                    bounds.origin.x + px(to_x),
-                                    bounds.origin.y + px(to_y - control_offset),
-                                ),
-                            );
-                        }
-                        if let Ok(path) = path.build() {
-                            window.paint_path(path, graph_color(edge.color));
-                        }
-                    }
-                    for edge in &graph_for_canvas.edges {
-                        let from_x = GRAPH_LEFT + edge.from_lane as f32 * GRAPH_LANE_WIDTH;
-                        let to_x = GRAPH_LEFT + edge.to_lane as f32 * GRAPH_LANE_WIDTH;
-                        let from_y = if edge.from_lane == graph_for_canvas.node_lane {
-                            center_y
-                        } else if graph_for_canvas
-                            .incoming_edges
-                            .iter()
-                            .any(|incoming| incoming.to_lane == edge.from_lane)
-                        {
-                            GRAPH_TRANSITION_HEIGHT
-                        } else {
-                            0.
-                        };
-                        let to_y = bounds.size.height.as_f32();
-                        let mut path = PathBuilder::stroke(px(GRAPH_STROKE_WIDTH));
-                        path.move_to(point(
-                            bounds.origin.x + px(from_x),
-                            bounds.origin.y + px(from_y),
-                        ));
-                        if edge.from_lane == edge.to_lane {
-                            path.line_to(point(
-                                bounds.origin.x + px(to_x),
-                                bounds.origin.y + px(to_y),
-                            ));
-                        } else {
-                            let control_offset = (to_y - from_y) * 0.55;
-                            path.cubic_bezier_to(
-                                point(bounds.origin.x + px(to_x), bounds.origin.y + px(to_y)),
-                                point(
-                                    bounds.origin.x + px(from_x),
-                                    bounds.origin.y + px(from_y + control_offset),
-                                ),
-                                point(
-                                    bounds.origin.x + px(to_x),
-                                    bounds.origin.y + px(to_y - control_offset),
-                                ),
-                            );
-                        }
-                        if let Ok(path) = path.build() {
-                            window.paint_path(path, graph_color(edge.color));
-                        }
-                    }
+                    paint_history_graph(&graph_for_canvas, bounds, node_x, node_color, window);
                 },
             )
             .absolute()
@@ -850,6 +764,82 @@ fn render_history_graph(graph: &HistoryGraphRow, selected: bool) -> AnyElement {
         )
         .child(node)
         .into_any_element()
+}
+
+fn paint_history_graph(
+    graph: &HistoryGraphRow,
+    bounds: Bounds<Pixels>,
+    node_x: f32,
+    node_color: Rgba,
+    window: &mut Window,
+) {
+    let center_y = bounds.size.height.as_f32() / 2.;
+    if graph.node_has_incoming {
+        let mut path = PathBuilder::stroke(px(GRAPH_STROKE_WIDTH));
+        path.move_to(point(bounds.origin.x + px(node_x), bounds.origin.y));
+        path.line_to(point(
+            bounds.origin.x + px(node_x),
+            bounds.origin.y + px(center_y),
+        ));
+        if let Ok(path) = path.build() {
+            window.paint_path(path, node_color);
+        }
+    }
+    for edge in &graph.incoming_edges {
+        paint_history_graph_edge(edge, 0., GRAPH_TRANSITION_HEIGHT, bounds, window);
+    }
+    for edge in &graph.edges {
+        let from_y = if edge.from_lane == graph.node_lane {
+            center_y
+        } else if graph
+            .incoming_edges
+            .iter()
+            .any(|incoming| incoming.to_lane == edge.from_lane)
+        {
+            GRAPH_TRANSITION_HEIGHT
+        } else {
+            0.
+        };
+        paint_history_graph_edge(edge, from_y, bounds.size.height.as_f32(), bounds, window);
+    }
+}
+
+fn paint_history_graph_edge(
+    edge: &HistoryGraphEdge,
+    from_y: f32,
+    to_y: f32,
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+) {
+    let from_x = GRAPH_LEFT + edge.from_lane as f32 * GRAPH_LANE_WIDTH;
+    let to_x = GRAPH_LEFT + edge.to_lane as f32 * GRAPH_LANE_WIDTH;
+    let mut path = PathBuilder::stroke(px(GRAPH_STROKE_WIDTH));
+    path.move_to(point(
+        bounds.origin.x + px(from_x),
+        bounds.origin.y + px(from_y),
+    ));
+    if edge.from_lane == edge.to_lane {
+        path.line_to(point(
+            bounds.origin.x + px(to_x),
+            bounds.origin.y + px(to_y),
+        ));
+    } else {
+        let control_offset = (to_y - from_y) * 0.55;
+        path.cubic_bezier_to(
+            point(bounds.origin.x + px(to_x), bounds.origin.y + px(to_y)),
+            point(
+                bounds.origin.x + px(from_x),
+                bounds.origin.y + px(from_y + control_offset),
+            ),
+            point(
+                bounds.origin.x + px(to_x),
+                bounds.origin.y + px(to_y - control_offset),
+            ),
+        );
+    }
+    if let Ok(path) = path.build() {
+        window.paint_path(path, graph_color(edge.color));
+    }
 }
 
 fn graph_color(index: usize) -> gpui::Rgba {
