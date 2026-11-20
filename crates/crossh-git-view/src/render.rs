@@ -593,80 +593,9 @@ impl GitWindow {
         .items_center()
         .gap_2()
         .child(status_glyph(entry.status))
-        .child(
-            div()
-                .min_w_0()
-                .flex_1()
-                .flex()
-                .items_baseline()
-                .gap_1()
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_xs()
-                        .text_color(theme::text())
-                        .child(SharedString::from(basename)),
-                )
-                .when_some(parent, |row, parent| {
-                    row.child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_xs()
-                            .text_color(theme::faint_text())
-                            .child(SharedString::from(parent)),
-                    )
-                }),
-        )
-        .when(entry.insertions > 0 || entry.deletions > 0, |row| {
-            row.child(
-                div()
-                    .flex_shrink_0()
-                    .text_xs()
-                    .text_color(theme::muted_text())
-                    .child(SharedString::from(format!(
-                        "+{} −{}",
-                        entry.insertions, entry.deletions
-                    ))),
-            )
-        })
-        .child(
-            Button::new(SharedString::from(format!(
-                "git-toggle-stage-{}-{}",
-                if staged { "staged" } else { "working" },
-                entry.path
-            )))
-            .size(ButtonSize::Icon(px(24.)))
-            .variant(ButtonVariant::Ghost)
-            .tooltip(if staged {
-                i18n::text("git.unstage")
-            } else {
-                i18n::text("git.stage")
-            })
-            .icon(
-                icons::icon(
-                    if staged {
-                        icons::IconName::Minus
-                    } else {
-                        icons::IconName::Plus
-                    },
-                    13.,
-                )
-                .text_color(theme::muted_text()),
-            )
-            .on_click({
-                let path = entry.path.clone();
-                cx.listener(move |this, _event, _window, cx| {
-                    if staged {
-                        this.unstage_paths(vec![path.clone()], cx);
-                    } else {
-                        this.stage_paths(vec![path.clone()], cx);
-                    }
-                    cx.stop_propagation();
-                })
-            }),
-        )
+        .child(render_change_name(basename, parent))
+        .when_some(render_change_stats(entry), |row, stats| row.child(stats))
+        .child(render_change_stage_button(entry, staged, cx))
         .on_click({
             let key = key.clone();
             cx.listener(move |this, event: &ClickEvent, _window, cx| {
@@ -1330,4 +1259,88 @@ fn status_glyph(status: ChangeStatus) -> AnyElement {
         .text_color(status_color(status))
         .child(SharedString::from(status.glyph()))
         .into_any_element()
+}
+
+fn render_change_name(basename: String, parent: Option<String>) -> AnyElement {
+    div()
+        .min_w_0()
+        .flex_1()
+        .flex()
+        .items_baseline()
+        .gap_1()
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .text_xs()
+                .text_color(theme::text())
+                .child(SharedString::from(basename)),
+        )
+        .when_some(parent, |row, parent| {
+            row.child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_xs()
+                    .text_color(theme::faint_text())
+                    .child(SharedString::from(parent)),
+            )
+        })
+        .into_any_element()
+}
+
+fn render_change_stats(entry: &FileChange) -> Option<AnyElement> {
+    (entry.insertions > 0 || entry.deletions > 0).then(|| {
+        div()
+            .flex_shrink_0()
+            .text_xs()
+            .text_color(theme::muted_text())
+            .child(SharedString::from(format!(
+                "+{} −{}",
+                entry.insertions, entry.deletions
+            )))
+            .into_any_element()
+    })
+}
+
+fn render_change_stage_button(
+    entry: &FileChange,
+    staged: bool,
+    cx: &mut Context<GitWindow>,
+) -> AnyElement {
+    Button::new(SharedString::from(format!(
+        "git-toggle-stage-{}-{}",
+        if staged { "staged" } else { "working" },
+        entry.path
+    )))
+    .size(ButtonSize::Icon(px(24.)))
+    .variant(ButtonVariant::Ghost)
+    .tooltip(if staged {
+        i18n::text("git.unstage")
+    } else {
+        i18n::text("git.stage")
+    })
+    .icon(
+        icons::icon(
+            if staged {
+                icons::IconName::Minus
+            } else {
+                icons::IconName::Plus
+            },
+            13.,
+        )
+        .text_color(theme::muted_text()),
+    )
+    .on_click({
+        let path = entry.path.clone();
+        cx.listener(move |this, _event, _window, cx| {
+            if staged {
+                this.unstage_paths(vec![path.clone()], cx);
+            } else {
+                this.stage_paths(vec![path.clone()], cx);
+            }
+            cx.stop_propagation();
+        })
+    })
+    .into_any_element()
 }
