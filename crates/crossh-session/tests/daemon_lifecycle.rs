@@ -150,6 +150,222 @@ fn cache_dir() -> PathBuf {
     dir
 }
 
+/// 无令牌拿不到会话列表（3.2/规格 R 认证）。
+async fn assert_auth_required(port: u16) {
+    let sock = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let (mut r, mut w) = sock.into_split();
+    let bad = HandshakeRequest {
+        version: PROTOCOL_VERSION,
+        capabilities: vec![],
+        token: "wrong".to_string(),
+    };
+    send(&mut w, MessageKind::Hello, &json(&bad)).await.unwrap();
+    let (kind, _) = read_frame(&mut r).await.unwrap();
+    assert_eq!(kind, MessageKind::Error);
+}
+
+/// 建会话（创建者自动绑定 + 回放 + 边界帧），返回 session id。
+async fn create_session(c1: &mut Conn) -> String {
+    let create = CreateRequest {
+        shell: Some("/bin/sh".to_string()),
+        cwd: None,
+        cols: 80,
+        rows: 24,
+        command: None,
+        env: None,
+    };
+    send(&mut c1.writer, MessageKind::Create, &json(&create))
+        .await
+        .unwrap();
+    let (kind, payload) = read_frame(&mut c1.reader).await.unwrap();
+    assert_eq!(kind, MessageKind::Created);
+    let created: CreatedReply = serde_json::from_slice(&payload).unwrap();
+    let sid = created.session.id.clone();
+    let (kind, _) = read_frame(&mut c1.reader).await.unwrap();
+    assert_eq!(kind, MessageKind::Attached);
+    // 回放（可能非空：prompt 先到）+ 边界。
+    drain_replay(c1).await;
+    sid
+}
+
+/// 基本输入输出。
+async fn assert_basic_io(c1: &mut Conn) {
+    send(&mut c1.writer, MessageKind::Input, b"echo hello-daemon\n")
+        .await
+        .unwrap();
+    collect_until(
+        c1,
+        |b| String::from_utf8_lossy(b).contains("hello-daemon"),
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
+}
+
+/// 第二个客户端只观察；首输入被丢弃但完成接管（2.4）。
+async fn assert_observer_takeover(port: u16, token: &str, c1: &mut Conn, sid: &str) -> Conn {
+    let mut c2 = connect(port, token).await.unwrap();
+    send(
+        &mut c2.writer,
+        MessageKind::Attach,
+        &json(&AttachRequest {
+            id: sid.to_string(),
+        }),
+    )
+    .await
+    .unwrap();
+    let (kind, payload) = read_frame(&mut c2.reader).await.unwrap();
+    assert_eq!(kind, MessageKind::Attached);
+    let attached: AttachedReply = serde_json::from_slice(&payload).unwrap();
+    assert_eq!(attached.session.controller, Some(c1.id));
+    drain_replay(&mut c2).await;
+    // observer 首输入不进 PTY。
+    c2.out_buf.clear();
+    send(&mut c2.writer, MessageKind::Input, b"echo dropped-marker\n")
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    // 排空这 1s 内到达 c2 的帧，确认无 marker。
+    while let Ok(Ok((kind, payload))) =
+        tokio::time::timeout(Duration::from_millis(100), read_frame(&mut c2.reader)).await
+    {
+        if kind == MessageKind::Output {
+            let (_, bytes) = decode_output(&payload).unwrap();
+            c2.out_buf.extend_from_slice(&bytes);
+        }
+    }
+    assert!(
+        !String::from_utf8_lossy(&c2.out_buf).contains("dropped-marker"),
+        "observer first input must not enter pty"
+    );
+    // 但接管已完成：列表 controller 易手，从此进入。
+    let sessions = list(c1).await;
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].controller, Some(c2.id));
+    send(&mut c2.writer, MessageKind::Input, b"echo taken-marker\n")
+        .await
+        .unwrap();
+    collect_until(
+        &mut c2,
+        |b| String::from_utf8_lossy(b).contains("taken-marker"),
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    c2
+}
+
+/// 尺寸：observer（c1，已失权）上报被静默忽略；controller 生效（2.5）。
+async fn assert_resize(c1: &mut Conn, c2: &mut Conn) {
+    send(
+        &mut c1.writer,
+        MessageKind::Resize,
+        &json(&crossh_session::protocol::ResizeRequest { cols: 10, rows: 10 }),
+    )
+    .await
+    .unwrap();
+    send(
+        &mut c2.writer,
+        MessageKind::Resize,
+        &json(&crossh_session::protocol::ResizeRequest {
+            cols: 100,
+            rows: 40,
+        }),
+    )
+    .await
+    .unwrap();
+    send(&mut c2.writer, MessageKind::Input, b"stty size\n")
+        .await
+        .unwrap();
+    collect_until(
+        c2,
+        |b| String::from_utf8_lossy(b).contains("40 100"),
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
+}
+
+/// 结束会话：在接双方都收到 Exited，随后列表为空（2.6）。
+async fn assert_close_session(c1: &mut Conn, c2: &mut Conn, sid: &str) {
+    send(
+        &mut c1.writer,
+        MessageKind::Close,
+        &json(&CloseRequest {
+            id: sid.to_string(),
+        }),
+    )
+    .await
+    .unwrap();
+    let exited = collect_until(c2, |_| false, Duration::from_secs(10))
+        .await
+        .unwrap();
+    let exited = exited.expect("expected Exited");
+    assert_eq!(exited.id, sid);
+    assert!(list(c1).await.is_empty());
+}
+
+/// 退出码透出：`exit 3`。
+async fn assert_exit_code(c1: &mut Conn) {
+    // 再建会话：Created → Attached → 回放边界，随后注入 exit。
+    let sid = create_session(c1).await;
+    send(&mut c1.writer, MessageKind::Input, b"exit 3\n")
+        .await
+        .unwrap();
+    let exited = collect_until(c1, |_| false, Duration::from_secs(10))
+        .await
+        .unwrap();
+    let exited = exited.expect("expected Exited");
+    assert_eq!(exited.id, sid);
+}
+
+/// GUI 退出只 detach 不杀会话：建会话后直接断开 TCP（不发 Close，
+/// 模拟 view 销毁时 `cmd` 通道关闭），会话必须仍在且可被新连接列出。
+/// 若客户端在断开时误发 Close，这里会直接断言失败。
+/// 老客户端线形：无 env 字段，daemon 回落自身环境（必须继续建会话成功）。
+async fn assert_detach_keeps_session(port: u16, token: &str, mut c1: Conn) {
+    send(
+        &mut c1.writer,
+        MessageKind::Create,
+        &serde_json::to_vec(&serde_json::json!({
+            "shell": "/bin/sh",
+            "cwd": null,
+            "cols": 80,
+            "rows": 24,
+            "command": null
+        }))
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    let (kind, payload) = read_frame(&mut c1.reader).await.unwrap();
+    assert_eq!(kind, MessageKind::Created);
+    let created: CreatedReply = serde_json::from_slice(&payload).unwrap();
+    let orphan = created.session.id.clone();
+    let (kind, _) = read_frame(&mut c1.reader).await.unwrap();
+    assert_eq!(kind, MessageKind::Attached);
+    drain_replay(&mut c1).await;
+    drop(c1);
+    let mut c3 = connect(port, token).await.unwrap();
+    let sessions = list(&mut c3).await;
+    assert!(
+        sessions.iter().any(|s| s.id == orphan && s.alive),
+        "dropped connection must not end the session: {sessions:?}"
+    );
+    // 显式 Close 仍结束会话（与 detach 语义区分）。
+    send(
+        &mut c3.writer,
+        MessageKind::Close,
+        &json(&CloseRequest { id: orphan.clone() }),
+    )
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(list(&mut c3).await.iter().all(|s| s.id != orphan));
+}
+
 #[tokio::test]
 async fn daemon_full_cycle() {
     let dir = cache_dir();
@@ -197,224 +413,21 @@ async fn daemon_full_cycle() {
     let port: u16 = lines.next().unwrap().parse().unwrap();
     let token = lines.next().unwrap().to_string();
 
-    // 无令牌拿不到会话列表（3.2/规格 R 认证）。
-    {
-        let sock = tokio::net::TcpStream::connect(("127.0.0.1", port))
-            .await
-            .unwrap();
-        let (mut r, mut w) = sock.into_split();
-        let bad = HandshakeRequest {
-            version: PROTOCOL_VERSION,
-            capabilities: vec![],
-            token: "wrong".to_string(),
-        };
-        send(&mut w, MessageKind::Hello, &json(&bad)).await.unwrap();
-        let (kind, _) = read_frame(&mut r).await.unwrap();
-        assert_eq!(kind, MessageKind::Error);
-    }
+    // 阶段顺序固定、串行执行（共享同一 daemon 与 cache 目录）。
+    assert_auth_required(port).await;
 
     // 空列表起步。
     let mut c1 = connect(port, &token).await.unwrap();
     assert!(list(&mut c1).await.is_empty());
 
-    // 建会话（创建者自动绑定 + 回放 + 边界帧）。
-    let create = CreateRequest {
-        shell: Some("/bin/sh".to_string()),
-        cwd: None,
-        cols: 80,
-        rows: 24,
-        command: None,
-        env: None,
-    };
-    send(&mut c1.writer, MessageKind::Create, &json(&create))
-        .await
-        .unwrap();
-    let (kind, payload) = read_frame(&mut c1.reader).await.unwrap();
-    assert_eq!(kind, MessageKind::Created);
-    let created: CreatedReply = serde_json::from_slice(&payload).unwrap();
-    let sid = created.session.id.clone();
-    let (kind, _) = read_frame(&mut c1.reader).await.unwrap();
-    assert_eq!(kind, MessageKind::Attached);
-    // 回放（可能非空：prompt 先到）+ 边界。
-    drain_replay(&mut c1).await;
-
-    // 基本输入输出。
-    send(&mut c1.writer, MessageKind::Input, b"echo hello-daemon\n")
-        .await
-        .unwrap();
-    collect_until(
-        &mut c1,
-        |b| String::from_utf8_lossy(b).contains("hello-daemon"),
-        Duration::from_secs(10),
-    )
-    .await
-    .unwrap();
-
-    // 第二个客户端只观察；首输入被丢弃但完成接管（2.4）。
-    let mut c2 = connect(port, &token).await.unwrap();
-    send(
-        &mut c2.writer,
-        MessageKind::Attach,
-        &json(&AttachRequest { id: sid.clone() }),
-    )
-    .await
-    .unwrap();
-    let (kind, payload) = read_frame(&mut c2.reader).await.unwrap();
-    assert_eq!(kind, MessageKind::Attached);
-    let attached: AttachedReply = serde_json::from_slice(&payload).unwrap();
-    assert_eq!(attached.session.controller, Some(c1.id));
-    drain_replay(&mut c2).await;
-    // observer 首输入不进 PTY。
-    c2.out_buf.clear();
-    send(&mut c2.writer, MessageKind::Input, b"echo dropped-marker\n")
-        .await
-        .unwrap();
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    // 排空这 1s 内到达 c2 的帧，确认无 marker。
-    while let Ok(Ok((kind, payload))) =
-        tokio::time::timeout(Duration::from_millis(100), read_frame(&mut c2.reader)).await
-    {
-        if kind == MessageKind::Output {
-            let (_, bytes) = decode_output(&payload).unwrap();
-            c2.out_buf.extend_from_slice(&bytes);
-        }
-    }
-    assert!(
-        !String::from_utf8_lossy(&c2.out_buf).contains("dropped-marker"),
-        "observer first input must not enter pty"
-    );
-    // 但接管已完成：列表 controller 易手，从此进入。
-    let sessions = list(&mut c1).await;
-    assert_eq!(sessions.len(), 1);
-    assert_eq!(sessions[0].controller, Some(c2.id));
-    send(&mut c2.writer, MessageKind::Input, b"echo taken-marker\n")
-        .await
-        .unwrap();
-    collect_until(
-        &mut c2,
-        |b| String::from_utf8_lossy(b).contains("taken-marker"),
-        Duration::from_secs(10),
-    )
-    .await
-    .unwrap();
-
-    // 尺寸：observer（c1，已失权）上报被静默忽略；controller 生效（2.5）。
-    send(
-        &mut c1.writer,
-        MessageKind::Resize,
-        &json(&crossh_session::protocol::ResizeRequest { cols: 10, rows: 10 }),
-    )
-    .await
-    .unwrap();
-    send(
-        &mut c2.writer,
-        MessageKind::Resize,
-        &json(&crossh_session::protocol::ResizeRequest {
-            cols: 100,
-            rows: 40,
-        }),
-    )
-    .await
-    .unwrap();
-    send(&mut c2.writer, MessageKind::Input, b"stty size\n")
-        .await
-        .unwrap();
-    collect_until(
-        &mut c2,
-        |b| String::from_utf8_lossy(b).contains("40 100"),
-        Duration::from_secs(10),
-    )
-    .await
-    .unwrap();
-
-    // 结束会话：在接双方都收到 Exited，随后列表为空（2.6）。
-    send(
-        &mut c1.writer,
-        MessageKind::Close,
-        &json(&CloseRequest { id: sid.clone() }),
-    )
-    .await
-    .unwrap();
-    let exited = collect_until(&mut c2, |_| false, Duration::from_secs(10))
-        .await
-        .unwrap();
-    let exited = exited.expect("expected Exited");
-    assert_eq!(exited.id, sid);
-    assert!(list(&mut c1).await.is_empty());
-
-    // 退出码透出：`exit 3`。
-    send(
-        &mut c1.writer,
-        MessageKind::Create,
-        &json(&CreateRequest {
-            shell: Some("/bin/sh".to_string()),
-            cwd: None,
-            cols: 80,
-            rows: 24,
-            command: None,
-            env: None,
-        }),
-    )
-    .await
-    .unwrap();
-    let (kind, payload) = read_frame(&mut c1.reader).await.unwrap();
-    assert_eq!(kind, MessageKind::Created);
-    let created: CreatedReply = serde_json::from_slice(&payload).unwrap();
-    // 消费 Attached + 回放 + 边界。
-    let (kind, _) = read_frame(&mut c1.reader).await.unwrap();
-    assert_eq!(kind, MessageKind::Attached);
-    drain_replay(&mut c1).await;
-    send(&mut c1.writer, MessageKind::Input, b"exit 3\n")
-        .await
-        .unwrap();
-    let exited = collect_until(&mut c1, |_| false, Duration::from_secs(10))
-        .await
-        .unwrap();
-    let exited = exited.expect("expected Exited");
-    assert_eq!(exited.id, created.session.id);
-
-    // GUI 退出只 detach 不杀会话：建会话后直接断开 TCP（不发 Close，
-    // 模拟 view 销毁时 `cmd` 通道关闭），会话必须仍在且可被新连接列出。
-    // 若客户端在断开时误发 Close，这里会直接断言失败。
-    // 老客户端线形：无 env 字段，daemon 回落自身环境（必须继续建会话成功）。
-    send(
-        &mut c1.writer,
-        MessageKind::Create,
-        &serde_json::to_vec(&serde_json::json!({
-            "shell": "/bin/sh",
-            "cwd": null,
-            "cols": 80,
-            "rows": 24,
-            "command": null
-        }))
-        .unwrap(),
-    )
-    .await
-    .unwrap();
-    let (kind, payload) = read_frame(&mut c1.reader).await.unwrap();
-    assert_eq!(kind, MessageKind::Created);
-    let created: CreatedReply = serde_json::from_slice(&payload).unwrap();
-    let orphan = created.session.id.clone();
-    let (kind, _) = read_frame(&mut c1.reader).await.unwrap();
-    assert_eq!(kind, MessageKind::Attached);
-    drain_replay(&mut c1).await;
-    drop(c1);
-    let mut c3 = connect(port, &token).await.unwrap();
-    let sessions = list(&mut c3).await;
-    assert!(
-        sessions.iter().any(|s| s.id == orphan && s.alive),
-        "dropped connection must not end the session: {sessions:?}"
-    );
-    // 显式 Close 仍结束会话（与 detach 语义区分）。
-    send(
-        &mut c3.writer,
-        MessageKind::Close,
-        &json(&CloseRequest { id: orphan.clone() }),
-    )
-    .await
-    .unwrap();
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(list(&mut c3).await.iter().all(|s| s.id != orphan));
+    let sid = create_session(&mut c1).await;
+    assert_basic_io(&mut c1).await;
+    let mut c2 = assert_observer_takeover(port, &token, &mut c1, &sid).await;
+    assert_resize(&mut c1, &mut c2).await;
+    assert_close_session(&mut c1, &mut c2, &sid).await;
+    assert_exit_code(&mut c1).await;
+    // 该 helper 接管 `c1` 的所有权，以便在内部 `drop(c1)` 关闭 TCP。
+    assert_detach_keeps_session(port, &token, c1).await;
 
     let _ = child.kill();
 }
