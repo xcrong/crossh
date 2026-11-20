@@ -145,6 +145,291 @@ async fn mutate(
     reply
 }
 
+struct WorkspaceIds {
+    project_id: ProjectId,
+    first_tab: TabId,
+    first_pane: PaneId,
+    second_tab: TabId,
+    second_pane: PaneId,
+    split_pane: PaneId,
+}
+
+/// 阶段 1：打开项目、建 tab、分屏，返回 id 与重启前的布局/绑定基线。
+async fn open_initial_workspace(
+    conn: &WorkspaceConnection,
+    project_root: &Path,
+) -> (WorkspaceIds, Vec<String>, BTreeMap<PaneId, Option<String>>) {
+    let opened = mutate(
+        conn,
+        WorkspaceOp::OpenProject {
+            root: project_root.to_path_buf(),
+        },
+    )
+    .await;
+    let project_id = opened.created.project.expect("project id");
+    let first_tab = opened.created.tab.expect("tab id");
+    let first_pane = opened.created.pane.expect("pane id");
+    let snapshot = wait_for(conn, "first pane live", |snapshot| {
+        is_live(snapshot, first_pane)
+    })
+    .await;
+    assert_eq!(snapshot.projects.len(), 1);
+
+    let created = mutate(
+        conn,
+        WorkspaceOp::CreateTab {
+            project_id: Some(project_id),
+            title: Some("second".to_string()),
+            cwd: None,
+            default_command: None,
+        },
+    )
+    .await;
+    let second_tab = created.created.tab.expect("second tab id");
+    let second_pane = created.created.pane.expect("second pane id");
+
+    let split = mutate(
+        conn,
+        WorkspaceOp::SplitPane {
+            pane_id: second_pane,
+            axis: Axis::Column,
+            cwd: None,
+        },
+    )
+    .await;
+    let split_pane = split.created.pane.expect("split pane id");
+    assert!(split.created.split.is_some());
+
+    let before_restart = wait_for(conn, "all panes live", |snapshot| {
+        is_live(snapshot, first_pane)
+            && is_live(snapshot, second_pane)
+            && is_live(snapshot, split_pane)
+    })
+    .await;
+    let before_shape = layout_shape(&before_restart, project_id);
+    let before_sessions = tab_sessions(project(&before_restart, project_id), second_tab);
+    assert!(before_sessions.values().all(Option::is_some));
+
+    (
+        WorkspaceIds {
+            project_id,
+            first_tab,
+            first_pane,
+            second_tab,
+            second_pane,
+            split_pane,
+        },
+        before_shape,
+        before_sessions,
+    )
+}
+
+/// 阶段 2：客户端断开重连，布局与绑定不变。
+async fn assert_reconnect(
+    conn: WorkspaceConnection,
+    ids: &WorkspaceIds,
+    before_shape: &[String],
+    before_sessions: &BTreeMap<PaneId, Option<String>>,
+) -> WorkspaceConnection {
+    drop(conn);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let conn = WorkspaceConnection::connect().await.unwrap();
+    let reconnected = wait_for(&conn, "live panes after reconnect", |snapshot| {
+        is_live(snapshot, ids.first_pane)
+            && is_live(snapshot, ids.second_pane)
+            && is_live(snapshot, ids.split_pane)
+    })
+    .await;
+    assert_eq!(layout_shape(&reconnected, ids.project_id), before_shape);
+    assert_eq!(
+        &tab_sessions(project(&reconnected, ids.project_id), ids.second_tab),
+        before_sessions
+    );
+    conn
+}
+
+/// 阶段 3：daemon 重启后布局与 pane id 不变，会话按 attach 物化。
+async fn assert_daemon_restart(
+    conn: WorkspaceConnection,
+    ids: &WorkspaceIds,
+    before_shape: &[String],
+    empty_project: &Path,
+) -> WorkspaceConnection {
+    drop(conn);
+    crossh_session::daemon_stop().await.unwrap();
+
+    let addr = crossh_session::ensure_daemon().await.unwrap();
+    let mut bare = Client::connect_to(&addr).await.unwrap();
+    assert!(
+        bare.list().await.unwrap().is_empty(),
+        "restart must not materialize sessions before attach"
+    );
+    let restarted = bare.workspace_get().await.unwrap();
+    assert_eq!(layout_shape(&restarted, ids.project_id), before_shape);
+    assert_eq!(project(&restarted, ids.project_id).tabs.len(), 2);
+
+    // 无 attach 客户端：新项目只改布局，pane 保持休眠。
+    let reply = bare
+        .workspace_mutate(WorkspaceMutateRequest {
+            request_id: 1,
+            expected_revision: None,
+            op: WorkspaceOp::OpenProject {
+                root: empty_project.to_path_buf(),
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(reply.outcome, MutateOutcome::Applied);
+    let empty_id = reply.created.project.expect("empty project id");
+    let empty_pane = reply.created.pane.expect("empty project pane");
+    let dormant = bare.workspace_get().await.unwrap();
+    assert!(matches!(
+        find_pane(&dormant, empty_pane).unwrap().status,
+        PaneStatus::Dormant { .. }
+    ));
+    assert_eq!(dormant.projects.len(), 2);
+    drop(bare);
+
+    // attach 只物化活跃 tab（此时是新开的空项目）。
+    let conn = WorkspaceConnection::connect().await.unwrap();
+    wait_for(&conn, "empty project pane live after attach", |snapshot| {
+        is_live(snapshot, empty_pane)
+    })
+    .await;
+    assert_eq!(project(&conn.current(), empty_id).tabs.len(), 1);
+    conn
+}
+
+/// 阶段 4：已 attach 时新项目立即物化；缺失根不可用且不 spawn。
+async fn assert_attached_and_missing_projects(
+    conn: &WorkspaceConnection,
+    attached_project: &Path,
+    missing_project: &Path,
+) {
+    let attached = mutate(
+        conn,
+        WorkspaceOp::OpenProject {
+            root: attached_project.to_path_buf(),
+        },
+    )
+    .await;
+    let attached_id = attached.created.project.expect("attached project id");
+    let attached_pane = attached.created.pane.expect("attached project pane");
+    wait_for(conn, "attached project pane live", |snapshot| {
+        is_live(snapshot, attached_pane)
+    })
+    .await;
+    assert_eq!(project(&conn.current(), attached_id).tabs.len(), 1);
+
+    let missing = mutate(
+        conn,
+        WorkspaceOp::OpenProject {
+            root: missing_project.to_path_buf(),
+        },
+    )
+    .await;
+    let missing_id = missing.created.project.expect("missing project id");
+    let missing_pane = missing.created.pane.expect("missing project pane");
+    let unavailable = wait_for(conn, "missing project unavailable", |snapshot| {
+        snapshot
+            .projects
+            .iter()
+            .any(|project| project.id == missing_id && !project.available)
+    })
+    .await;
+    let missing_pane = find_pane(&unavailable, missing_pane).unwrap();
+    assert!(matches!(
+        missing_pane.status,
+        PaneStatus::Unavailable { .. }
+    ));
+    assert_eq!(missing_pane.session, None);
+}
+
+/// 阶段 5：重新激活原项目，活跃 tab 物化、后台 tab 保持休眠。
+async fn assert_project_reactivation(
+    conn: &WorkspaceConnection,
+    ids: &WorkspaceIds,
+    before_sessions: &BTreeMap<PaneId, Option<String>>,
+) -> String {
+    mutate(
+        conn,
+        WorkspaceOp::ActivateProject {
+            project_id: ids.project_id,
+        },
+    )
+    .await;
+    let active = wait_for(conn, "project tabs materialize", |snapshot| {
+        is_live(snapshot, ids.second_pane) && is_live(snapshot, ids.split_pane)
+    })
+    .await;
+    let first_tab_pane = find_pane(&active, ids.first_pane).unwrap();
+    assert!(matches!(first_tab_pane.status, PaneStatus::Dormant { .. }));
+    assert_eq!(first_tab_pane.session, None);
+
+    let after_restart_sessions = tab_sessions(project(&active, ids.project_id), ids.second_tab);
+    assert!(
+        after_restart_sessions
+            .iter()
+            .all(|(pane, session)| session.is_some() && before_sessions[pane] != *session),
+        "sessions must be recreated with new ids: {before_sessions:?} vs {after_restart_sessions:?}"
+    );
+
+    // 非活跃 tab 在 ActivateTab 后补齐物化。
+    mutate(
+        conn,
+        WorkspaceOp::ActivateTab {
+            tab_id: ids.first_tab,
+        },
+    )
+    .await;
+    let first_tab_live = wait_for(conn, "first tab materialize", |snapshot| {
+        is_live(snapshot, ids.first_pane)
+    })
+    .await;
+    find_pane(&first_tab_live, ids.first_pane)
+        .unwrap()
+        .session
+        .clone()
+        .expect("live session")
+}
+
+/// 阶段 6：shell `cd` 到子目录，pane cwd 更新且项目数量不变。
+async fn assert_cd_updates_cwd(
+    conn: &WorkspaceConnection,
+    first_pane: PaneId,
+    live_session: String,
+    sub: &Path,
+    project_root: &Path,
+) {
+    let addr = crossh_session::instance::read_daemon_addr().unwrap();
+    let mut session_client = Client::connect_to(&addr).await.unwrap();
+    session_client.attach(&live_session).await.unwrap();
+    session_client.input(b"cd sub\n").await.unwrap();
+
+    let expected_cwd = dunce::canonicalize(sub).unwrap();
+    let moved = wait_for(conn, "pane cwd updates after cd", |snapshot| {
+        find_pane(snapshot, first_pane).is_some_and(|pane| {
+            dunce::canonicalize(&pane.cwd).unwrap_or_else(|_| pane.cwd.clone()) == expected_cwd
+        })
+    })
+    .await;
+    assert_eq!(
+        moved.projects.len(),
+        4,
+        "cd must not turn subdirectories into projects"
+    );
+    let canonical_root = dunce::canonicalize(project_root).unwrap();
+    assert_eq!(
+        moved
+            .projects
+            .iter()
+            .filter(|project| project.root == canonical_root)
+            .count(),
+        1
+    );
+    drop(session_client);
+}
+
 #[tokio::test]
 async fn workspace_lifecycle() {
     let base = temp_base();
@@ -176,215 +461,12 @@ async fn workspace_lifecycle() {
     let conn = WorkspaceConnection::connect().await.unwrap();
     assert!(conn.current().projects.is_empty());
 
-    // 1. 打开项目、建 tab、分屏。
-    let opened = mutate(
-        &conn,
-        WorkspaceOp::OpenProject {
-            root: project_root.clone(),
-        },
-    )
-    .await;
-    let project_id = opened.created.project.expect("project id");
-    let first_tab = opened.created.tab.expect("tab id");
-    let first_pane = opened.created.pane.expect("pane id");
-    let snapshot = wait_for(&conn, "first pane live", |snapshot| {
-        is_live(snapshot, first_pane)
-    })
-    .await;
-    assert_eq!(snapshot.projects.len(), 1);
-
-    let created = mutate(
-        &conn,
-        WorkspaceOp::CreateTab {
-            project_id: Some(project_id),
-            title: Some("second".to_string()),
-            cwd: None,
-            default_command: None,
-        },
-    )
-    .await;
-    let second_tab = created.created.tab.expect("second tab id");
-    let second_pane = created.created.pane.expect("second pane id");
-
-    let split = mutate(
-        &conn,
-        WorkspaceOp::SplitPane {
-            pane_id: second_pane,
-            axis: Axis::Column,
-            cwd: None,
-        },
-    )
-    .await;
-    let split_pane = split.created.pane.expect("split pane id");
-    assert!(split.created.split.is_some());
-
-    let before_restart = wait_for(&conn, "all panes live", |snapshot| {
-        is_live(snapshot, first_pane)
-            && is_live(snapshot, second_pane)
-            && is_live(snapshot, split_pane)
-    })
-    .await;
-    let before_shape = layout_shape(&before_restart, project_id);
-    let before_sessions = tab_sessions(project(&before_restart, project_id), second_tab);
-    assert!(before_sessions.values().all(Option::is_some));
-
-    // 2. 客户端断开重连：布局与绑定不变。
-    drop(conn);
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let conn = WorkspaceConnection::connect().await.unwrap();
-    let reconnected = wait_for(&conn, "live panes after reconnect", |snapshot| {
-        is_live(snapshot, first_pane)
-            && is_live(snapshot, second_pane)
-            && is_live(snapshot, split_pane)
-    })
-    .await;
-    assert_eq!(layout_shape(&reconnected, project_id), before_shape);
-    assert_eq!(
-        tab_sessions(project(&reconnected, project_id), second_tab),
-        before_sessions
-    );
-
-    // 3. 停止 daemon 并重启：布局与 pane id 不变，会话身份更新。
-    drop(conn);
-    crossh_session::daemon_stop().await.unwrap();
-
-    let addr = crossh_session::ensure_daemon().await.unwrap();
-    let mut bare = Client::connect_to(&addr).await.unwrap();
-    assert!(
-        bare.list().await.unwrap().is_empty(),
-        "restart must not materialize sessions before attach"
-    );
-    let restarted = bare.workspace_get().await.unwrap();
-    assert_eq!(layout_shape(&restarted, project_id), before_shape);
-    assert_eq!(project(&restarted, project_id).tabs.len(), 2);
-
-    // 无 attach 客户端：新项目只改布局，pane 保持休眠。
-    let reply = bare
-        .workspace_mutate(WorkspaceMutateRequest {
-            request_id: 1,
-            expected_revision: None,
-            op: WorkspaceOp::OpenProject {
-                root: empty_project.clone(),
-            },
-        })
-        .await
-        .unwrap();
-    assert_eq!(reply.outcome, MutateOutcome::Applied);
-    let empty_id = reply.created.project.expect("empty project id");
-    let empty_pane = reply.created.pane.expect("empty project pane");
-    let dormant = bare.workspace_get().await.unwrap();
-    assert!(matches!(
-        find_pane(&dormant, empty_pane).unwrap().status,
-        PaneStatus::Dormant { .. }
-    ));
-    assert_eq!(dormant.projects.len(), 2);
-    drop(bare);
-
-    // attach 只物化活跃 tab（此时是新开的空项目）。
-    let conn = WorkspaceConnection::connect().await.unwrap();
-    wait_for(&conn, "empty project pane live after attach", |snapshot| {
-        is_live(snapshot, empty_pane)
-    })
-    .await;
-    assert_eq!(project(&conn.current(), empty_id).tabs.len(), 1);
-
-    // 4. 已有 attach 客户端：新项目立即物化；缺失根保持不可用且不 spawn。
-    let attached = mutate(
-        &conn,
-        WorkspaceOp::OpenProject {
-            root: attached_project.clone(),
-        },
-    )
-    .await;
-    let attached_id = attached.created.project.expect("attached project id");
-    let attached_pane = attached.created.pane.expect("attached project pane");
-    wait_for(&conn, "attached project pane live", |snapshot| {
-        is_live(snapshot, attached_pane)
-    })
-    .await;
-    assert_eq!(project(&conn.current(), attached_id).tabs.len(), 1);
-
-    let missing = mutate(
-        &conn,
-        WorkspaceOp::OpenProject {
-            root: missing_project.clone(),
-        },
-    )
-    .await;
-    let missing_id = missing.created.project.expect("missing project id");
-    let missing_pane = missing.created.pane.expect("missing project pane");
-    let unavailable = wait_for(&conn, "missing project unavailable", |snapshot| {
-        snapshot
-            .projects
-            .iter()
-            .any(|project| project.id == missing_id && !project.available)
-    })
-    .await;
-    let missing_pane = find_pane(&unavailable, missing_pane).unwrap();
-    assert!(matches!(
-        missing_pane.status,
-        PaneStatus::Unavailable { .. }
-    ));
-    assert_eq!(missing_pane.session, None);
-
-    // 5. 重新激活原项目：活跃 tab 物化，后台 tab 保持休眠。
-    mutate(&conn, WorkspaceOp::ActivateProject { project_id }).await;
-    let active = wait_for(&conn, "project tabs materialize", |snapshot| {
-        is_live(snapshot, second_pane) && is_live(snapshot, split_pane)
-    })
-    .await;
-    let first_tab_pane = find_pane(&active, first_pane).unwrap();
-    assert!(matches!(first_tab_pane.status, PaneStatus::Dormant { .. }));
-    assert_eq!(first_tab_pane.session, None);
-
-    let after_restart_sessions = tab_sessions(project(&active, project_id), second_tab);
-    assert!(
-        after_restart_sessions
-            .iter()
-            .all(|(pane, session)| session.is_some() && before_sessions[pane] != *session),
-        "sessions must be recreated with new ids: {before_sessions:?} vs {after_restart_sessions:?}"
-    );
-
-    // 非活跃 tab 在 ActivateTab 后补齐物化。
-    mutate(&conn, WorkspaceOp::ActivateTab { tab_id: first_tab }).await;
-    let first_tab_live = wait_for(&conn, "first tab materialize", |snapshot| {
-        is_live(snapshot, first_pane)
-    })
-    .await;
-    let live_session = find_pane(&first_tab_live, first_pane)
-        .unwrap()
-        .session
-        .clone()
-        .expect("live session");
-
-    // 6. shell `cd` 到子目录：pane cwd 更新，项目数量不变。
-    let addr = crossh_session::instance::read_daemon_addr().unwrap();
-    let mut session_client = Client::connect_to(&addr).await.unwrap();
-    session_client.attach(&live_session).await.unwrap();
-    session_client.input(b"cd sub\n").await.unwrap();
-
-    let expected_cwd = dunce::canonicalize(&sub).unwrap();
-    let moved = wait_for(&conn, "pane cwd updates after cd", |snapshot| {
-        find_pane(snapshot, first_pane).is_some_and(|pane| {
-            dunce::canonicalize(&pane.cwd).unwrap_or_else(|_| pane.cwd.clone()) == expected_cwd
-        })
-    })
-    .await;
-    assert_eq!(
-        moved.projects.len(),
-        4,
-        "cd must not turn subdirectories into projects"
-    );
-    let canonical_root = dunce::canonicalize(&project_root).unwrap();
-    assert_eq!(
-        moved
-            .projects
-            .iter()
-            .filter(|project| project.root == canonical_root)
-            .count(),
-        1
-    );
-    drop(session_client);
+    let (ids, before_shape, before_sessions) = open_initial_workspace(&conn, &project_root).await;
+    let conn = assert_reconnect(conn, &ids, &before_shape, &before_sessions).await;
+    let conn = assert_daemon_restart(conn, &ids, &before_shape, &empty_project).await;
+    assert_attached_and_missing_projects(&conn, &attached_project, &missing_project).await;
+    let live_session = assert_project_reactivation(&conn, &ids, &before_sessions).await;
+    assert_cd_updates_cwd(&conn, ids.first_pane, live_session, &sub, &project_root).await;
 
     // 7. 清理：停止 daemon 与临时目录。
     drop(conn);
