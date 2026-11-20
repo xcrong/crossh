@@ -10,8 +10,8 @@ use std::rc::Rc;
 use crossh_ui::theme;
 use crossh_ui_base::{PopupRequest, place_popup};
 use gpui::{
-    AnyElement, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
-    Point, SharedString, StatefulInteractiveElement, Styled, Window, div, px, size,
+    AnyElement, Context, Div, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
+    Point, SharedString, Stateful, StatefulInteractiveElement, Styled, Window, div, px, size,
 };
 
 /// 菜单固定宽度；定位钳制时按此估算。
@@ -86,25 +86,13 @@ pub fn clamp_menu_position<A>(
     .origin()
 }
 
-/// 渲染 scrim + 菜单。scrim 覆盖拥有者根 div，点击任意处（左/右键）关闭。
-///
-/// `position` 为窗口坐标（即 `MouseDownEvent.position`）；`anchor` 是拥有者
-/// 根 div 在窗口坐标系中的原点（AppShell 传 (0,0)），用于换算菜单的相对定位。
-pub fn render_context_menu<A: Clone + 'static, T: 'static>(
-    state: &ContextMenuState<A>,
-    anchor: Point<Pixels>,
-    window: &mut Window,
-    cx: &mut Context<T>,
-    on_action: impl Fn(&mut T, A, &mut Window, &mut Context<T>) + 'static,
-    on_dismiss: impl Fn(&mut T, &mut Context<T>) + 'static,
-) -> AnyElement {
-    let position = clamp_menu_position(state.position, window, &state.entries);
-    let relative = Point::new(position.x - anchor.x, position.y - anchor.y);
-    let max_height = (window.viewport_size().height.as_f32() - MENU_PADDING * 2.0).max(ITEM_HEIGHT);
-    let on_action = Rc::new(on_action);
-    let on_dismiss = Rc::new(on_dismiss);
-
-    let scrim = div()
+/// 渲染全屏 scrim：左键点击、右键按下均先关闭菜单再阻止冒泡。
+fn render_context_menu_scrim<T, F>(on_dismiss: Rc<F>, cx: &mut Context<T>) -> Stateful<Div>
+where
+    T: 'static,
+    F: Fn(&mut T, &mut Context<T>) + 'static,
+{
+    div()
         .id("ctx-scrim")
         .absolute()
         .left_0()
@@ -124,7 +112,111 @@ pub fn render_context_menu<A: Clone + 'static, T: 'static>(
                 on_dismiss(this, cx);
                 cx.stop_propagation();
             })
+        })
+}
+
+/// 渲染不可点击的分组标题。
+fn render_context_menu_section_header(label: &str) -> Div {
+    div()
+        .h(px(SECTION_HEADER_HEIGHT))
+        .flex_shrink_0()
+        .px_2()
+        .flex()
+        .items_center()
+        .text_xs()
+        .text_color(theme::faint_text())
+        .child(SharedString::from(label.to_owned()))
+}
+
+/// 渲染不可交互的分隔线。
+fn render_context_menu_separator() -> Div {
+    div()
+        .h(px(1.))
+        .flex_shrink_0()
+        .mx_2()
+        .my_1()
+        .bg(theme::border())
+}
+
+/// 渲染单个菜单项；禁用项仅降级配色，不挂 hover/点击。
+fn render_context_menu_row<A, T, F>(
+    item: &MenuItem<A>,
+    on_action: Rc<F>,
+    cx: &mut Context<T>,
+) -> Stateful<Div>
+where
+    A: Clone + 'static,
+    T: 'static,
+    F: Fn(&mut T, A, &mut Window, &mut Context<T>) + 'static,
+{
+    let action = item.action.clone();
+    let mut row = div()
+        .id(SharedString::from(format!("ctx-item-{}", item.id)))
+        .h(px(ITEM_HEIGHT))
+        .flex_shrink_0()
+        .px_2()
+        .flex()
+        .items_center()
+        .gap_2()
+        .text_xs()
+        .text_color(if item.disabled {
+            theme::faint_text()
+        } else if item.danger {
+            theme::danger()
+        } else {
+            theme::text()
         });
+    if item.disabled {
+        row = row.cursor_default();
+    } else {
+        row = row
+            .cursor_pointer()
+            .hover(|s| s.bg(theme::raised()))
+            .on_click({
+                let on_action = on_action.clone();
+                cx.listener(move |this, _ev, window, cx| {
+                    on_action(this, action.clone(), window, cx);
+                })
+            });
+    }
+    row = row.child(
+        div()
+            .flex_1()
+            .min_w_0()
+            .truncate()
+            .child(SharedString::from(item.label.clone())),
+    );
+    if let Some(hint) = &item.shortcut_hint {
+        row = row.child(
+            div()
+                .flex_shrink_0()
+                .text_xs()
+                .text_color(theme::faint_text())
+                .child(SharedString::from(hint.clone())),
+        );
+    }
+    row
+}
+
+/// 渲染 scrim + 菜单。scrim 覆盖拥有者根 div，点击任意处（左/右键）关闭。
+///
+/// `position` 为窗口坐标（即 `MouseDownEvent.position`）；`anchor` 是拥有者
+/// 根 div 在窗口坐标系中的原点（AppShell 传 (0,0)），用于换算菜单的相对定位。
+pub fn render_context_menu<A: Clone + 'static, T: 'static>(
+    state: &ContextMenuState<A>,
+    anchor: Point<Pixels>,
+    window: &mut Window,
+    cx: &mut Context<T>,
+    on_action: impl Fn(&mut T, A, &mut Window, &mut Context<T>) + 'static,
+    on_dismiss: impl Fn(&mut T, &mut Context<T>) + 'static,
+) -> AnyElement {
+    let position = clamp_menu_position(state.position, window, &state.entries);
+    let relative = Point::new(position.x - anchor.x, position.y - anchor.y);
+    let max_height = (window.viewport_size().height.as_f32() - MENU_PADDING * 2.0).max(ITEM_HEIGHT);
+    let on_action = Rc::new(on_action);
+    let on_dismiss = Rc::new(on_dismiss);
+
+    let scrim = render_context_menu_scrim(on_dismiss, cx);
 
     let mut menu = div()
         .id("ctx-menu")
@@ -145,87 +237,17 @@ pub fn render_context_menu<A: Clone + 'static, T: 'static>(
         .shadow_md();
 
     for entry in &state.entries {
-        let item = match entry {
+        match entry {
             MenuEntry::SectionHeader(label) => {
-                menu = menu.child(
-                    div()
-                        .h(px(SECTION_HEADER_HEIGHT))
-                        .flex_shrink_0()
-                        .px_2()
-                        .flex()
-                        .items_center()
-                        .text_xs()
-                        .text_color(theme::faint_text())
-                        .child(SharedString::from(label.clone())),
-                );
-                continue;
+                menu = menu.child(render_context_menu_section_header(label));
             }
             MenuEntry::Separator => {
-                menu = menu.child(
-                    div()
-                        .h(px(1.))
-                        .flex_shrink_0()
-                        .mx_2()
-                        .my_1()
-                        .bg(theme::border()),
-                );
-                continue;
+                menu = menu.child(render_context_menu_separator());
             }
-            MenuEntry::Item(item) => item,
-        };
-
-        let id = item.id.clone();
-        let action = item.action.clone();
-        let label = item.label.clone();
-        let hint = item.shortcut_hint.clone();
-        let disabled = item.disabled;
-        let danger = item.danger;
-        let mut row = div()
-            .id(SharedString::from(format!("ctx-item-{id}")))
-            .h(px(ITEM_HEIGHT))
-            .flex_shrink_0()
-            .px_2()
-            .flex()
-            .items_center()
-            .gap_2()
-            .text_xs()
-            .text_color(if disabled {
-                theme::faint_text()
-            } else if danger {
-                theme::danger()
-            } else {
-                theme::text()
-            });
-        if disabled {
-            row = row.cursor_default();
-        } else {
-            row = row
-                .cursor_pointer()
-                .hover(|s| s.bg(theme::raised()))
-                .on_click({
-                    let on_action = on_action.clone();
-                    cx.listener(move |this, _ev, window, cx| {
-                        on_action(this, action.clone(), window, cx);
-                    })
-                });
+            MenuEntry::Item(item) => {
+                menu = menu.child(render_context_menu_row(item, on_action.clone(), cx));
+            }
         }
-        row = row.child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .child(SharedString::from(label)),
-        );
-        if let Some(hint) = hint {
-            row = row.child(
-                div()
-                    .flex_shrink_0()
-                    .text_xs()
-                    .text_color(theme::faint_text())
-                    .child(SharedString::from(hint)),
-            );
-        }
-        menu = menu.child(row);
     }
 
     div()
