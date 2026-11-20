@@ -90,110 +90,9 @@ impl LocalShellEnvironment {
         let setup = shell_setup_script(shell);
 
         let mut environment = match shell {
-            RemoteShell::Bash => {
-                let temp_dir = new_shell_temp_dir()?;
-                let rc_path = temp_dir.path().join("crossh.bash");
-                fs::write(
-                    &rc_path,
-                    format!(
-                        r#"builtin set +o posix
-builtin unset ENV
-if [[ ${{CROSSH_BASH_LOGIN:-0}} == 1 ]]; then
-    if [[ -r /etc/profile ]]; then builtin source /etc/profile; fi
-    for __crossh_profile in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
-        if [[ -r "$__crossh_profile" ]]; then
-            builtin source "$__crossh_profile"
-            break
-        fi
-    done
-else
-    for __crossh_bashrc in /etc/bash.bashrc /etc/bash/bashrc; do
-        if [[ -r "$__crossh_bashrc" ]]; then
-            builtin source "$__crossh_bashrc"
-            break
-        fi
-    done
-    if [[ -r "$HOME/.bashrc" ]]; then builtin source "$HOME/.bashrc"; fi
-fi
-builtin unset CROSSH_BASH_LOGIN __crossh_profile __crossh_bashrc
-{setup}
-"#
-                    ),
-                )?;
-                Self {
-                    program: path.to_owned(),
-                    args: vec![
-                        "--rcfile".to_string(),
-                        path_to_string(&rc_path)?,
-                        "-i".to_string(),
-                    ],
-                    env: vec![(
-                        "CROSSH_BASH_LOGIN".to_string(),
-                        u8::from(cfg!(target_os = "macos")).to_string(),
-                    )],
-                    use_system_shell: false,
-                    _temp_dir: Some(temp_dir),
-                }
-            }
-            RemoteShell::Zsh => {
-                let temp_dir = new_shell_temp_dir()?;
-                let integration_path = temp_dir.path().join("crossh-integration.zsh");
-                fs::write(&integration_path, zsh_deferred_setup_script())?;
-
-                let user_zdotdir = match original_zdotdir {
-                    Some(zdotdir) => format!(
-                        "builtin export ZDOTDIR={}",
-                        shell_quote(&os_str_to_string(zdotdir)?),
-                    ),
-                    None => "builtin unset ZDOTDIR".to_string(),
-                };
-                fs::write(
-                    temp_dir.path().join(".zshenv"),
-                    format!(
-                        r#"{user_zdotdir}
-if [[ -r "${{ZDOTDIR:-$HOME}}/.zshenv" ]]; then
-    builtin source "${{ZDOTDIR:-$HOME}}/.zshenv"
-fi
-builtin source {}
-"#,
-                        shell_quote(&path_to_string(&integration_path)?),
-                    ),
-                )?;
-                // macOS GUI 进程从 Finder/Dock 启动时只有最小 PATH；拆分前
-                // Alacritty 用 `/usr/bin/login` 把 zsh 变成登录 shell，由
-                // `.zprofile` 补 Homebrew 等环境。daemon 直接 spawn 后必须显式
-                // `-l` 才能保持同一启动语义（Linux 拆分前本就不是登录 shell）。
-                #[cfg(target_os = "macos")]
-                let args = vec!["-l".to_string()];
-                #[cfg(not(target_os = "macos"))]
-                let args = Vec::new();
-                Self {
-                    program: path.to_owned(),
-                    args,
-                    env: vec![("ZDOTDIR".to_string(), path_to_string(temp_dir.path())?)],
-                    use_system_shell: true,
-                    _temp_dir: Some(temp_dir),
-                }
-            }
-            RemoteShell::Fish => {
-                let temp_dir = new_shell_temp_dir()?;
-                let data_dir = temp_dir.path().join("share");
-                let conf_dir = data_dir.join("fish/vendor_conf.d");
-                fs::create_dir_all(&conf_dir)?;
-                fs::write(conf_dir.join("crossh.fish"), format!("{setup}\n"))?;
-                let mut data_dirs = path_to_string(&data_dir)?;
-                if let Some(existing) = base.get("XDG_DATA_DIRS") {
-                    data_dirs.push(':');
-                    data_dirs.push_str(existing);
-                }
-                Self {
-                    program: path.to_owned(),
-                    args: Vec::new(),
-                    env: vec![("XDG_DATA_DIRS".to_string(), data_dirs)],
-                    use_system_shell: true,
-                    _temp_dir: Some(temp_dir),
-                }
-            }
+            RemoteShell::Bash => Self::bash_environment(path, &setup)?,
+            RemoteShell::Zsh => Self::zsh_environment(path, original_zdotdir)?,
+            RemoteShell::Fish => Self::fish_environment(path, &setup, base)?,
         };
         if let Some(binary_dir) = env::current_exe()?.parent() {
             let mut paths = vec![binary_dir.to_path_buf()];
@@ -219,6 +118,117 @@ builtin source {}
             }
         }
         Ok(Some(environment))
+    }
+
+    fn bash_environment(path: &str, setup: &str) -> io::Result<Self> {
+        let temp_dir = new_shell_temp_dir()?;
+        let rc_path = temp_dir.path().join("crossh.bash");
+        fs::write(
+            &rc_path,
+            format!(
+                r#"builtin set +o posix
+builtin unset ENV
+if [[ ${{CROSSH_BASH_LOGIN:-0}} == 1 ]]; then
+    if [[ -r /etc/profile ]]; then builtin source /etc/profile; fi
+    for __crossh_profile in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
+        if [[ -r "$__crossh_profile" ]]; then
+            builtin source "$__crossh_profile"
+            break
+        fi
+    done
+else
+    for __crossh_bashrc in /etc/bash.bashrc /etc/bash/bashrc; do
+        if [[ -r "$__crossh_bashrc" ]]; then
+            builtin source "$__crossh_bashrc"
+            break
+        fi
+    done
+    if [[ -r "$HOME/.bashrc" ]]; then builtin source "$HOME/.bashrc"; fi
+fi
+builtin unset CROSSH_BASH_LOGIN __crossh_profile __crossh_bashrc
+{setup}
+"#
+            ),
+        )?;
+        Ok(Self {
+            program: path.to_owned(),
+            args: vec![
+                "--rcfile".to_string(),
+                path_to_string(&rc_path)?,
+                "-i".to_string(),
+            ],
+            env: vec![(
+                "CROSSH_BASH_LOGIN".to_string(),
+                u8::from(cfg!(target_os = "macos")).to_string(),
+            )],
+            use_system_shell: false,
+            _temp_dir: Some(temp_dir),
+        })
+    }
+
+    fn zsh_environment(path: &str, original_zdotdir: Option<&OsStr>) -> io::Result<Self> {
+        let temp_dir = new_shell_temp_dir()?;
+        let integration_path = temp_dir.path().join("crossh-integration.zsh");
+        fs::write(&integration_path, zsh_deferred_setup_script())?;
+
+        let user_zdotdir = match original_zdotdir {
+            Some(zdotdir) => format!(
+                "builtin export ZDOTDIR={}",
+                shell_quote(&os_str_to_string(zdotdir)?),
+            ),
+            None => "builtin unset ZDOTDIR".to_string(),
+        };
+        fs::write(
+            temp_dir.path().join(".zshenv"),
+            format!(
+                r#"{user_zdotdir}
+if [[ -r "${{ZDOTDIR:-$HOME}}/.zshenv" ]]; then
+    builtin source "${{ZDOTDIR:-$HOME}}/.zshenv"
+fi
+builtin source {}
+"#,
+                shell_quote(&path_to_string(&integration_path)?),
+            ),
+        )?;
+        // macOS GUI 进程从 Finder/Dock 启动时只有最小 PATH；拆分前
+        // Alacritty 用 `/usr/bin/login` 把 zsh 变成登录 shell，由
+        // `.zprofile` 补 Homebrew 等环境。daemon 直接 spawn 后必须显式
+        // `-l` 才能保持同一启动语义（Linux 拆分前本就不是登录 shell）。
+        #[cfg(target_os = "macos")]
+        let args = vec!["-l".to_string()];
+        #[cfg(not(target_os = "macos"))]
+        let args = Vec::new();
+        Ok(Self {
+            program: path.to_owned(),
+            args,
+            env: vec![("ZDOTDIR".to_string(), path_to_string(temp_dir.path())?)],
+            use_system_shell: true,
+            _temp_dir: Some(temp_dir),
+        })
+    }
+
+    fn fish_environment(
+        path: &str,
+        setup: &str,
+        base: &HashMap<String, String>,
+    ) -> io::Result<Self> {
+        let temp_dir = new_shell_temp_dir()?;
+        let data_dir = temp_dir.path().join("share");
+        let conf_dir = data_dir.join("fish/vendor_conf.d");
+        fs::create_dir_all(&conf_dir)?;
+        fs::write(conf_dir.join("crossh.fish"), format!("{setup}\n"))?;
+        let mut data_dirs = path_to_string(&data_dir)?;
+        if let Some(existing) = base.get("XDG_DATA_DIRS") {
+            data_dirs.push(':');
+            data_dirs.push_str(existing);
+        }
+        Ok(Self {
+            program: path.to_owned(),
+            args: Vec::new(),
+            env: vec![("XDG_DATA_DIRS".to_string(), data_dirs)],
+            use_system_shell: true,
+            _temp_dir: Some(temp_dir),
+        })
     }
 }
 
