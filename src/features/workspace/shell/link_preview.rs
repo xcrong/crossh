@@ -553,13 +553,79 @@ pub(crate) fn render_link_preview(
     let card_width = viewport.width.as_f32() * CARD_WIDTH_RATIO;
     let card_height = viewport.height.as_f32() * CARD_HEIGHT_RATIO;
 
+    let focus_view = webview.clone();
+    let external = url.clone();
+    let header = render_link_preview_header(address, &webview, loading, external, cx);
+
+    let card = div()
+        .id("link-preview-card")
+        .w(px(card_width))
+        .h(px(card_height))
+        .flex()
+        .flex_col()
+        .bg(theme::surface())
+        .border_1()
+        .border_color(theme::border_strong())
+        .rounded(px(theme::RADIUS_MD))
+        .shadow_lg()
+        .overflow_hidden()
+        .child(header)
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .bg(theme::canvas())
+                .child(WebViewSurface {
+                    webview,
+                    last_bounds,
+                    hidden: covered,
+                }),
+        );
+
+    div()
+        .id("link-preview-scrim")
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_start()
+        .justify_center()
+        .pt(px(72.))
+        .bg(theme::scrim())
+        .occlude()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _ev, _window, cx| this.hide_link_preview(cx)),
+        )
+        .child(
+            div()
+                .id("link-preview-wrapper")
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |_, _ev, _window, cx| {
+                        // 点回卡片内任意处（地址栏 / 按钮）先把 First Responder 从 WKWebView
+                        // 收回到 GPUIView，否则键盘输入仍会进网页。
+                        let _ = focus_view.focus_parent();
+                        cx.stop_propagation();
+                    }),
+                )
+                .child(card),
+        )
+        .into_any_element()
+}
+
+/// 预览卡片 header：地址栏 + 后退 / 前进 / 刷新（加载中为停止）/ 外部打开 / 关闭。
+fn render_link_preview_header(
+    address: Entity<LinkAddress>,
+    webview: &Rc<wry::WebView>,
+    loading: bool,
+    external: SharedString,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
     let back = webview.clone();
     let forward = webview.clone();
     let reload = webview.clone();
-    let focus_view = webview.clone();
-    let external = url.clone();
 
-    let header = div()
+    div()
         .h(px(36.))
         .flex_shrink_0()
         .flex()
@@ -645,60 +711,6 @@ pub(crate) fn render_link_preview(
                         this.hide_link_preview(cx);
                     })),
                 ),
-        );
-
-    let card = div()
-        .id("link-preview-card")
-        .w(px(card_width))
-        .h(px(card_height))
-        .flex()
-        .flex_col()
-        .bg(theme::surface())
-        .border_1()
-        .border_color(theme::border_strong())
-        .rounded(px(theme::RADIUS_MD))
-        .shadow_lg()
-        .overflow_hidden()
-        .child(header)
-        .child(
-            div()
-                .flex_1()
-                .min_h_0()
-                .bg(theme::canvas())
-                .child(WebViewSurface {
-                    webview,
-                    last_bounds,
-                    hidden: covered,
-                }),
-        );
-
-    div()
-        .id("link-preview-scrim")
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_start()
-        .justify_center()
-        .pt(px(72.))
-        .bg(theme::scrim())
-        .occlude()
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(|this, _ev, _window, cx| this.hide_link_preview(cx)),
-        )
-        .child(
-            div()
-                .id("link-preview-wrapper")
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |_, _ev, _window, cx| {
-                        // 点回卡片内任意处（地址栏 / 按钮）先把 First Responder 从 WKWebView
-                        // 收回到 GPUIView，否则键盘输入仍会进网页。
-                        let _ = focus_view.focus_parent();
-                        cx.stop_propagation();
-                    }),
-                )
-                .child(card),
         )
         .into_any_element()
 }
