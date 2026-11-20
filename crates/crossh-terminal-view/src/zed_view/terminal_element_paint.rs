@@ -5,8 +5,8 @@
 
 use crossh_terminal::timestamps::TerminalRow;
 use gpui::{
-    App, Bounds, ContentMask, Corners, DispatchPhase, Edges, Element, ElementId, FontFeatures,
-    FontStyle, FontWeight, GlobalElementId, HighlightStyle, Hsla, LayoutId, Length,
+    App, Bounds, ContentMask, Corners, DispatchPhase, Edges, Element, ElementId, Entity,
+    FontFeatures, FontStyle, FontWeight, GlobalElementId, HighlightStyle, Hsla, LayoutId, Length,
     ModifiersChangedEvent, Pixels, Point as GpuiPoint, TextRun, TextStyle, UnderlineStyle,
     WhiteSpace, Window, fill, point, px, quad, relative, size,
 };
@@ -14,10 +14,13 @@ use itertools::Itertools;
 use std::time::Instant;
 use terminal::result_ext::ResultExt;
 use terminal::theme::CrosshTheme;
-use terminal::{CursorShape, IndexedCell, Modes, Range, TerminalBounds};
+use terminal::{Cursor, CursorShape, IndexedCell, Modes, Range, Terminal, TerminalBounds};
 
 use super::terminal_element_input::TerminalInputHandler;
-use super::{CursorLayout, DisplayCursor, EditorCursorShape, LayoutState, TerminalElement};
+use super::{
+    BatchedTextRun, BlockElementLayoutRect, CursorLayout, DisplayCursor, EditorCursorShape,
+    LayoutRect, LayoutState, TerminalElement, TerminalView,
+};
 
 #[derive(Debug)]
 struct HighlightedRangeLine {
@@ -215,6 +218,421 @@ impl TerminalElement {
     }
 }
 
+/// Font settings and theme colors resolved once per `prepaint`.
+struct TerminalPaintStyle {
+    text_style: TextStyle,
+    link_style: HighlightStyle,
+    theme: CrosshTheme,
+    minimum_contrast: f32,
+    line_height: f32,
+    show_timestamps: bool,
+}
+
+fn terminal_paint_style(terminal_view: &Entity<TerminalView>, cx: &App) -> TerminalPaintStyle {
+    let show_timestamps = terminal_view.read(cx).show_timestamps;
+    let terminal_settings = terminal::terminal_settings::TerminalSettings::get_global(cx).clone();
+    let minimum_contrast = terminal_settings.minimum_contrast;
+    // Crossh single source of truth — copied from Zed's buffer_font chain but now owned.
+    // Do not read ThemeSettings/SettingsStore; fallback is Crossh's own mono.
+    let font_family = terminal_settings
+        .font_family
+        .as_ref()
+        .map_or_else(|| "Lilex".into(), |f| f.0.clone().into());
+    let font_fallbacks = terminal_settings.font_fallbacks.clone();
+    let font_features = terminal_settings
+        .font_features
+        .clone()
+        .unwrap_or_else(FontFeatures::disable_ligatures);
+    let font_weight = terminal_settings.font_weight.unwrap_or(FontWeight(400.0));
+    let line_height = terminal_settings.line_height.value();
+    let font_size = terminal_settings
+        .font_size
+        .map(|s| s.into())
+        .unwrap_or_else(|| px(14.0).into());
+    let theme = CrosshTheme::get(cx).clone();
+
+    let link_style = HighlightStyle {
+        color: Some(theme.link_text_hover),
+        font_weight: Some(font_weight),
+        underline: Some(UnderlineStyle {
+            color: Some(theme.link_text_hover),
+            thickness: px(1.0),
+            wavy: false,
+        }),
+        ..Default::default()
+    };
+
+    let text_style = TextStyle {
+        font_family,
+        font_features,
+        font_weight,
+        font_fallbacks,
+        font_size,
+        font_style: FontStyle::Normal,
+        line_height: px(line_height).into(),
+        white_space: WhiteSpace::Normal,
+        // These are going to be overridden per-cell
+        color: theme.terminal_foreground,
+        ..Default::default()
+    };
+
+    TerminalPaintStyle {
+        text_style,
+        link_style,
+        theme,
+        minimum_contrast,
+        line_height,
+        show_timestamps,
+    }
+}
+
+/// Computes the snapped terminal bounds and the line height used for row math.
+fn terminal_dimensions(
+    bounds: Bounds<Pixels>,
+    style: &TerminalPaintStyle,
+    terminal: &Entity<Terminal>,
+    window: &Window,
+    cx: &App,
+) -> (TerminalBounds, f32) {
+    let text_style = &style.text_style;
+    let line_height = style.line_height;
+    let show_timestamps = style.show_timestamps;
+    let text_system = cx.text_system();
+    let rem_size = window.rem_size();
+    let font_pixels = text_style.font_size.to_pixels(rem_size);
+    let line_height = f32::from(font_pixels) * line_height;
+    let font_id = text_system.resolve_font(&text_style.font());
+
+    let cell_width = text_system
+        .advance(font_id, font_pixels, 'm')
+        .unwrap()
+        .width;
+
+    let gutter = if show_timestamps {
+        let available = (f32::from(bounds.size.width) - TIMESTAMP_GUTTER_GAP).max(0.0);
+        px((TIMESTAMP_GUTTER_WIDTH + TIMESTAMP_GUTTER_GAP).min(available))
+    } else {
+        px(0.)
+    };
+
+    let mut size = bounds.size;
+    size.width -= gutter;
+    let available_height = size.height;
+
+    // https://github.com/zed-industries/zed/issues/2750
+    // if the terminal is one column wide, rendering 🦀
+    // causes alacritty to misbehave.
+    if size.width < cell_width * 2.0 {
+        size.width = cell_width * 2.0;
+    }
+
+    let mut origin = bounds.origin;
+    origin.x += gutter;
+
+    let should_anchor_to_bottom = {
+        let content = terminal.read(cx).last_content();
+        content.mode.contains(Modes::ALT_SCREEN)
+            || (content.scrolled_to_bottom && content.bottom_row_occupied)
+    };
+    let scale_factor = window.scale_factor();
+    let line_height_pixels = px(line_height);
+    let line_height_device_px = (f32::from(line_height_pixels) * scale_factor)
+        .round()
+        .max(1.0) as i32;
+    let available_height_device_px = (f32::from(available_height) * scale_factor)
+        .floor()
+        .max(0.0) as i32;
+    let rows = ((available_height_device_px / line_height_device_px) as usize).max(1);
+    let snapped_height_device_px = (rows as i32) * line_height_device_px;
+    let padding_device_px = (available_height_device_px - snapped_height_device_px).max(0);
+    let snapped_height = px(snapped_height_device_px as f32 / scale_factor.max(1.0));
+    let padding = px(padding_device_px as f32 / scale_factor.max(1.0));
+    size.height = snapped_height;
+    if should_anchor_to_bottom {
+        origin.y += padding;
+    }
+
+    // Snap to device pixels to avoid subpixel jitter while resizing.
+    // Terminal rendering is grid-based; allowing fractional origins can cause the
+    // glyph rasterization to shift between frames, which looks like flicker.
+    let scale_factor = window.scale_factor();
+    let snap_px =
+        |value: Pixels| Pixels::from((f32::from(value) * scale_factor).floor() / scale_factor);
+    origin.x = snap_px(origin.x);
+    origin.y = snap_px(origin.y);
+
+    (
+        TerminalBounds::new(px(line_height), cell_width, Bounds { origin, size }),
+        line_height,
+    )
+}
+
+/// Metrics `layout_terminal_cells` needs beyond the cells themselves.
+struct CellLayoutMetrics {
+    minimum_contrast: f32,
+    cell_width: Pixels,
+    line_height_px: f32,
+    rem_size: Pixels,
+}
+
+/// Computes the region of the terminal grid that survives parent clipping.
+fn terminal_intersection(content_bounds: Bounds<Pixels>, window: &Window) -> Bounds<Pixels> {
+    // Calculate the intersection of the terminal's bounds with the current
+    // content mask (the visible viewport after all parent clipping).
+    // This allows us to only render cells that are actually visible, which is
+    // critical for performance when terminals are inside scrollable containers
+    // like the Agent Panel thread view.
+    //
+    // This optimization is analogous to the editor optimization in PR #45077
+    // which fixed performance issues with large AutoHeight editors inside Lists.
+    let visible_bounds = window.content_mask().bounds;
+    visible_bounds.intersect(&content_bounds)
+}
+
+/// Selection highlight ranges relative to the terminal content.
+fn selection_highlight_ranges(selection: Option<terminal::SelectionRange>) -> Vec<(Range, Hsla)> {
+    // Keep selection painting in the element so the terminal core
+    // remains the single owner of selection coordinates.
+    let mut ranges = Vec::new();
+    if let Some(selection) = selection {
+        ranges.push((selection.point_range(), selection_highlight_color()));
+    }
+    ranges
+}
+
+fn layout_terminal_cells(
+    cells: &[IndexedCell],
+    content_bounds: Bounds<Pixels>,
+    intersection: Bounds<Pixels>,
+    text_style: &TextStyle,
+    hover: Option<(HighlightStyle, &Range)>,
+    metrics: CellLayoutMetrics,
+    cx: &App,
+) -> (
+    Vec<LayoutRect>,
+    Vec<BatchedTextRun>,
+    Vec<BlockElementLayoutRect>,
+) {
+    // If the terminal is entirely outside the viewport, skip all cell processing.
+    // This handles the case where the terminal has been scrolled past (above or
+    // below the viewport), similar to the editor fix in PR #45077 where start_row
+    // could exceed max_row when the editor was positioned above the viewport.
+    if intersection.size.height <= px(0.) || intersection.size.width <= px(0.) {
+        return (Vec::new(), Vec::new(), Vec::new());
+    }
+
+    if intersection == content_bounds {
+        // Fast path: terminal fully visible, no clipping needed.
+        // Avoid grouping/allocation overhead by streaming cells directly.
+        TerminalElement::layout_grid(
+            cells.iter(),
+            0,
+            text_style,
+            hover,
+            metrics.minimum_contrast,
+            metrics.cell_width,
+            metrics.rem_size,
+            cx,
+        )
+    } else {
+        // Calculate which screen rows are visible based on pixel positions.
+        // This works for both Scrollable and Inline modes because we filter
+        // by screen position (enumerated line group index), not by the cell's
+        // internal line number (which can be negative in Scrollable mode for
+        // scrollback history).
+        let rows_above_viewport = f32::from(
+            (intersection.top() - content_bounds.top()).max(px(0.)) / metrics.line_height_px,
+        ) as usize;
+        let visible_row_count =
+            f32::from((intersection.size.height / metrics.line_height_px).ceil()) as usize + 1;
+
+        TerminalElement::layout_grid(
+            // Group cells by line and filter to only the visible screen rows.
+            // skip() and take() work on enumerated line groups (screen position),
+            // making this work regardless of the actual cell.point.line values.
+            cells
+                .iter()
+                .chunk_by(|c| c.point.line)
+                .into_iter()
+                .skip(rows_above_viewport)
+                .take(visible_row_count)
+                .flat_map(|(_, line_cells)| line_cells),
+            rows_above_viewport as i32,
+            text_style,
+            hover,
+            metrics.minimum_contrast,
+            metrics.cell_width,
+            metrics.rem_size,
+            cx,
+        )
+    }
+}
+
+/// Everything needed to lay out the cursor besides the base text style.
+struct CursorPaintContext<'a> {
+    cursor: Cursor,
+    cursor_char: char,
+    display_offset: usize,
+    dimensions: TerminalBounds,
+    focused: bool,
+    theme: &'a CrosshTheme,
+}
+
+fn layout_terminal_cursor(
+    context: CursorPaintContext<'_>,
+    text_style: &TextStyle,
+    window: &Window,
+) -> (Option<CursorLayout>, Option<Bounds<Pixels>>) {
+    let CursorPaintContext {
+        cursor,
+        cursor_char,
+        display_offset,
+        dimensions,
+        focused,
+        theme,
+    } = context;
+    let cursor_point = DisplayCursor::from(cursor.point, display_offset);
+    let cursor_text = {
+        let str_trxt = cursor_char.to_string();
+        let len = str_trxt.len();
+        window.text_system().shape_line(
+            str_trxt.into(),
+            text_style.font_size.to_pixels(window.rem_size()),
+            &[TextRun {
+                len,
+                font: text_style.font(),
+                color: theme.terminal_ansi_background,
+                ..Default::default()
+            }],
+            None,
+        )
+    };
+
+    // For whitespace, use cell width to avoid cursor stretching.
+    // For other characters, use the larger of shaped width and cell width
+    // to properly cover wide characters like emojis.
+    let cursor_width = if cursor_char.is_whitespace() {
+        dimensions.cell_width()
+    } else {
+        cursor_text.width.max(dimensions.cell_width())
+    };
+
+    let ime_cursor_bounds =
+        TerminalElement::cursor_position(cursor_point, dimensions).map(|cursor_position| Bounds {
+            origin: cursor_position,
+            size: size(cursor_width.ceil(), dimensions.line_height),
+        });
+
+    let cursor = if let CursorShape::Hidden = cursor.shape {
+        None
+    } else {
+        ime_cursor_bounds.map(move |bounds| {
+            let (shape, text) = match cursor.shape {
+                CursorShape::Block if !focused => (EditorCursorShape::Hollow, None),
+                CursorShape::Block => (EditorCursorShape::Block, Some(cursor_text)),
+                CursorShape::Underline if !focused => (EditorCursorShape::Hollow, None),
+                CursorShape::Underline => (EditorCursorShape::Underline, None),
+                CursorShape::Bar if !focused => (EditorCursorShape::Hollow, None),
+                CursorShape::Bar => (EditorCursorShape::Bar, None),
+                CursorShape::HollowBlock => (EditorCursorShape::Hollow, None),
+                CursorShape::Hidden => unreachable!(),
+            };
+
+            CursorLayout::new(
+                bounds.origin,
+                bounds.size.width,
+                bounds.size.height,
+                theme.cursor,
+                shape,
+                text,
+            )
+        })
+    };
+
+    (cursor, ime_cursor_bounds)
+}
+
+/// Syncs the terminal to the new dimensions and reports the viewport to the daemon.
+/// Returns the hovered word when the secondary modifier is held over the terminal.
+fn sync_terminal_frame(
+    terminal: &Entity<Terminal>,
+    terminal_view: &Entity<TerminalView>,
+    dimensions: TerminalBounds,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<terminal::HoveredWord> {
+    let last_hovered_word = terminal.update(cx, |terminal, cx| {
+        terminal.set_size(dimensions);
+        terminal.sync(window, cx);
+
+        (window.modifiers().secondary(cx) && dimensions.bounds.contains(&window.mouse_position()))
+            .then(|| terminal.last_content.last_hovered_word.clone())
+            .flatten()
+    });
+    // daemon 远端：视口变化且持有输入权时上报服务端（D2 通道 4）。
+    let cols = u16::try_from(dimensions.num_columns()).unwrap_or(u16::MAX);
+    let rows = u16::try_from(dimensions.num_lines()).unwrap_or(u16::MAX);
+    terminal_view.update(cx, |view, _| {
+        view.note_viewport(cols, rows);
+    });
+    last_hovered_word
+}
+
+/// Terminal content sampled after the size sync, plus the timestamp gutter rows.
+struct TerminalFrameSnapshot {
+    mode: Modes,
+    display_offset: usize,
+    cursor_char: char,
+    selection: Option<terminal::SelectionRange>,
+    cursor: Cursor,
+    show_timestamps: bool,
+    timestamp_rows: Vec<Option<String>>,
+}
+
+fn terminal_frame_snapshot(
+    terminal: &Entity<Terminal>,
+    terminal_view: &Entity<TerminalView>,
+    dimensions: TerminalBounds,
+    cx: &mut App,
+) -> TerminalFrameSnapshot {
+    let (mode, display_offset, cursor_char, selection, cursor, row_snapshots) = {
+        let content = &terminal.read(cx).last_content;
+        (
+            content.mode,
+            content.display_offset,
+            content.cursor_char,
+            content.selection,
+            content.cursor,
+            timestamp_rows(
+                &content.cells,
+                dimensions.num_lines(),
+                dimensions.num_columns(),
+            ),
+        )
+    };
+    let (show_timestamps, timestamp_rows) = terminal_view.update(cx, |view, _| {
+        view.update_timestamp_state(
+            &row_snapshots,
+            display_offset,
+            DisplayCursor::from(cursor.point, display_offset)
+                .line()
+                .try_into()
+                .ok(),
+            mode.contains(Modes::ALT_SCREEN),
+        )
+    });
+
+    TerminalFrameSnapshot {
+        mode,
+        display_offset,
+        cursor_char,
+        selection,
+        cursor,
+        show_timestamps,
+        timestamp_rows,
+    }
+}
+
 impl Element for TerminalElement {
     type RequestLayoutState = ();
     type PrepaintState = LayoutState;
@@ -269,316 +687,65 @@ impl Element for TerminalElement {
             cx,
             |_, _, hitbox, window, cx| {
                 let hitbox = hitbox.unwrap();
-                let show_timestamps = self.terminal_view.read(cx).show_timestamps;
-                let terminal_settings =
-                    terminal::terminal_settings::TerminalSettings::get_global(cx).clone();
-                let minimum_contrast = terminal_settings.minimum_contrast;
-                // Crossh single source of truth — copied from Zed's buffer_font chain but now owned.
-                // Do not read ThemeSettings/SettingsStore; fallback is Crossh's own mono.
-                let font_family = terminal_settings
-                    .font_family
-                    .as_ref()
-                    .map_or_else(|| "Lilex".into(), |f| f.0.clone().into());
-                let font_fallbacks = terminal_settings.font_fallbacks.clone();
-                let font_features = terminal_settings
-                    .font_features
-                    .clone()
-                    .unwrap_or_else(FontFeatures::disable_ligatures);
-                let font_weight = terminal_settings.font_weight.unwrap_or(FontWeight(400.0));
-                let line_height = terminal_settings.line_height.value();
-                let font_size = terminal_settings
-                    .font_size
-                    .map(|s| s.into())
-                    .unwrap_or_else(|| px(14.0).into());
-                let theme = CrosshTheme::get(cx).clone();
+                let style = terminal_paint_style(&self.terminal_view, cx);
 
-                let link_style = HighlightStyle {
-                    color: Some(theme.link_text_hover),
-                    font_weight: Some(font_weight),
-                    underline: Some(UnderlineStyle {
-                        color: Some(theme.link_text_hover),
-                        thickness: px(1.0),
-                        wavy: false,
-                    }),
-                    ..Default::default()
-                };
+                let (dimensions, line_height_px) =
+                    terminal_dimensions(bounds, &style, &self.terminal, window, cx);
 
-                let text_style = TextStyle {
-                    font_family,
-                    font_features,
-                    font_weight,
-                    font_fallbacks,
-                    font_size,
-                    font_style: FontStyle::Normal,
-                    line_height: px(line_height).into(),
-                    white_space: WhiteSpace::Normal,
-                    // These are going to be overridden per-cell
-                    color: theme.terminal_foreground,
-                    ..Default::default()
-                };
+                let last_hovered_word = sync_terminal_frame(
+                    &self.terminal,
+                    &self.terminal_view,
+                    dimensions,
+                    window,
+                    cx,
+                );
 
-                let text_system = cx.text_system();
-                let (dimensions, line_height_px) = {
-                    let rem_size = window.rem_size();
-                    let font_pixels = text_style.font_size.to_pixels(rem_size);
-                    let line_height = f32::from(font_pixels) * line_height;
-                    let font_id = cx.text_system().resolve_font(&text_style.font());
-
-                    let cell_width = text_system
-                        .advance(font_id, font_pixels, 'm')
-                        .unwrap()
-                        .width;
-
-                    let gutter = if show_timestamps {
-                        let available =
-                            (f32::from(bounds.size.width) - TIMESTAMP_GUTTER_GAP).max(0.0);
-                        px((TIMESTAMP_GUTTER_WIDTH + TIMESTAMP_GUTTER_GAP).min(available))
-                    } else {
-                        px(0.)
-                    };
-
-                    let mut size = bounds.size;
-                    size.width -= gutter;
-                    let available_height = size.height;
-
-                    // https://github.com/zed-industries/zed/issues/2750
-                    // if the terminal is one column wide, rendering 🦀
-                    // causes alacritty to misbehave.
-                    if size.width < cell_width * 2.0 {
-                        size.width = cell_width * 2.0;
-                    }
-
-                    let mut origin = bounds.origin;
-                    origin.x += gutter;
-
-                    let should_anchor_to_bottom = {
-                        let content = self.terminal.read(cx).last_content();
-                        content.mode.contains(Modes::ALT_SCREEN)
-                            || (content.scrolled_to_bottom && content.bottom_row_occupied)
-                    };
-                    let scale_factor = window.scale_factor();
-                    let line_height_pixels = px(line_height);
-                    let line_height_device_px = (f32::from(line_height_pixels) * scale_factor)
-                        .round()
-                        .max(1.0) as i32;
-                    let available_height_device_px = (f32::from(available_height) * scale_factor)
-                        .floor()
-                        .max(0.0) as i32;
-                    let rows =
-                        ((available_height_device_px / line_height_device_px) as usize).max(1);
-                    let snapped_height_device_px = (rows as i32) * line_height_device_px;
-                    let padding_device_px =
-                        (available_height_device_px - snapped_height_device_px).max(0);
-                    let snapped_height =
-                        px(snapped_height_device_px as f32 / scale_factor.max(1.0));
-                    let padding = px(padding_device_px as f32 / scale_factor.max(1.0));
-                    size.height = snapped_height;
-                    if should_anchor_to_bottom {
-                        origin.y += padding;
-                    }
-
-                    // Snap to device pixels to avoid subpixel jitter while resizing.
-                    // Terminal rendering is grid-based; allowing fractional origins can cause the
-                    // glyph rasterization to shift between frames, which looks like flicker.
-                    let scale_factor = window.scale_factor();
-                    let snap_px = |value: Pixels| {
-                        Pixels::from((f32::from(value) * scale_factor).floor() / scale_factor)
-                    };
-                    origin.x = snap_px(origin.x);
-                    origin.y = snap_px(origin.y);
-
-                    (
-                        TerminalBounds::new(px(line_height), cell_width, Bounds { origin, size }),
-                        line_height,
-                    )
-                };
-
-                let background_color = theme.terminal_background;
-
-                let last_hovered_word = self.terminal.update(cx, |terminal, cx| {
-                    terminal.set_size(dimensions);
-                    terminal.sync(window, cx);
-
-                    (window.modifiers().secondary(cx)
-                        && dimensions.bounds.contains(&window.mouse_position()))
-                    .then(|| terminal.last_content.last_hovered_word.clone())
-                    .flatten()
-                });
-                // daemon 远端：视口变化且持有输入权时上报服务端（D2 通道 4）。
-                let cols = u16::try_from(dimensions.num_columns()).unwrap_or(u16::MAX);
-                let rows = u16::try_from(dimensions.num_lines()).unwrap_or(u16::MAX);
-                self.terminal_view.update(cx, |view, _| {
-                    view.note_viewport(cols, rows);
-                });
-                let hovered_link = last_hovered_word.is_some();
-
-                let (mode, display_offset, cursor_char, selection, cursor, row_snapshots) = {
-                    let content = &self.terminal.read(cx).last_content;
-                    (
-                        content.mode,
-                        content.display_offset,
-                        content.cursor_char,
-                        content.selection,
-                        content.cursor,
-                        timestamp_rows(
-                            &content.cells,
-                            dimensions.num_lines(),
-                            dimensions.num_columns(),
-                        ),
-                    )
-                };
-                let (show_timestamps, timestamp_rows) = self.terminal_view.update(cx, |view, _| {
-                    view.update_timestamp_state(
-                        &row_snapshots,
-                        display_offset,
-                        DisplayCursor::from(cursor.point, display_offset)
-                            .line()
-                            .try_into()
-                            .ok(),
-                        mode.contains(Modes::ALT_SCREEN),
-                    )
-                });
+                let TerminalFrameSnapshot {
+                    mode,
+                    display_offset,
+                    cursor_char,
+                    selection,
+                    cursor,
+                    show_timestamps,
+                    timestamp_rows,
+                } = terminal_frame_snapshot(&self.terminal, &self.terminal_view, dimensions, cx);
                 let cells = &self.terminal.read(cx).last_content.cells;
 
-                // Keep selection painting in the element so the terminal core
-                // remains the single owner of selection coordinates.
-                let mut relative_highlighted_ranges = Vec::new();
-                if let Some(selection) = selection {
-                    relative_highlighted_ranges
-                        .push((selection.point_range(), selection_highlight_color()));
-                }
+                let relative_highlighted_ranges = selection_highlight_ranges(selection);
+                let intersection = terminal_intersection(dimensions.bounds, window);
 
-                // Calculate the intersection of the terminal's bounds with the current
-                // content mask (the visible viewport after all parent clipping).
-                // This allows us to only render cells that are actually visible, which is
-                // critical for performance when terminals are inside scrollable containers
-                // like the Agent Panel thread view.
-                //
-                // This optimization is analogous to the editor optimization in PR #45077
-                // which fixed performance issues with large AutoHeight editors inside Lists.
-                let content_bounds = dimensions.bounds;
-                let visible_bounds = window.content_mask().bounds;
-                let intersection = visible_bounds.intersect(&content_bounds);
-
-                // If the terminal is entirely outside the viewport, skip all cell processing.
-                // This handles the case where the terminal has been scrolled past (above or
-                // below the viewport), similar to the editor fix in PR #45077 where start_row
-                // could exceed max_row when the editor was positioned above the viewport.
-                let (rects, batched_text_runs, block_element_rects) = if intersection.size.height
-                    <= px(0.)
-                    || intersection.size.width <= px(0.)
-                {
-                    (Vec::new(), Vec::new(), Vec::new())
-                } else if intersection == content_bounds {
-                    // Fast path: terminal fully visible, no clipping needed.
-                    // Avoid grouping/allocation overhead by streaming cells directly.
-                    TerminalElement::layout_grid(
-                        cells.iter(),
-                        0,
-                        &text_style,
-                        last_hovered_word
-                            .as_ref()
-                            .map(|word| (link_style, &word.word_match)),
-                        minimum_contrast,
-                        dimensions.cell_width,
-                        window.rem_size(),
-                        cx,
-                    )
-                } else {
-                    // Calculate which screen rows are visible based on pixel positions.
-                    // This works for both Scrollable and Inline modes because we filter
-                    // by screen position (enumerated line group index), not by the cell's
-                    // internal line number (which can be negative in Scrollable mode for
-                    // scrollback history).
-                    let rows_above_viewport = f32::from(
-                        (intersection.top() - content_bounds.top()).max(px(0.)) / line_height_px,
-                    ) as usize;
-                    let visible_row_count =
-                        f32::from((intersection.size.height / line_height_px).ceil()) as usize + 1;
-
-                    TerminalElement::layout_grid(
-                        // Group cells by line and filter to only the visible screen rows.
-                        // skip() and take() work on enumerated line groups (screen position),
-                        // making this work regardless of the actual cell.point.line values.
-                        cells
-                            .iter()
-                            .chunk_by(|c| c.point.line)
-                            .into_iter()
-                            .skip(rows_above_viewport)
-                            .take(visible_row_count)
-                            .flat_map(|(_, line_cells)| line_cells),
-                        rows_above_viewport as i32,
-                        &text_style,
-                        last_hovered_word
-                            .as_ref()
-                            .map(|word| (link_style, &word.word_match)),
-                        minimum_contrast,
-                        dimensions.cell_width,
-                        window.rem_size(),
-                        cx,
-                    )
-                };
+                let hover = last_hovered_word
+                    .as_ref()
+                    .map(|word| (style.link_style, &word.word_match));
+                let (rects, batched_text_runs, block_element_rects) = layout_terminal_cells(
+                    cells,
+                    dimensions.bounds,
+                    intersection,
+                    &style.text_style,
+                    hover,
+                    CellLayoutMetrics {
+                        minimum_contrast: style.minimum_contrast,
+                        cell_width: dimensions.cell_width,
+                        line_height_px,
+                        rem_size: window.rem_size(),
+                    },
+                    cx,
+                );
 
                 // Layout cursor. Rectangle is used for IME, so we should lay it out even
                 // if we don't end up showing it.
-                let cursor_point = DisplayCursor::from(cursor.point, display_offset);
-                let cursor_text = {
-                    let str_trxt = cursor_char.to_string();
-                    let len = str_trxt.len();
-                    window.text_system().shape_line(
-                        str_trxt.into(),
-                        text_style.font_size.to_pixels(window.rem_size()),
-                        &[TextRun {
-                            len,
-                            font: text_style.font(),
-                            color: theme.terminal_ansi_background,
-                            ..Default::default()
-                        }],
-                        None,
-                    )
-                };
-
-                // For whitespace, use cell width to avoid cursor stretching.
-                // For other characters, use the larger of shaped width and cell width
-                // to properly cover wide characters like emojis.
-                let cursor_width = if cursor_char.is_whitespace() {
-                    dimensions.cell_width()
-                } else {
-                    cursor_text.width.max(dimensions.cell_width())
-                };
-
-                let ime_cursor_bounds = TerminalElement::cursor_position(cursor_point, dimensions)
-                    .map(|cursor_position| Bounds {
-                        origin: cursor_position,
-                        size: size(cursor_width.ceil(), dimensions.line_height),
-                    });
-
-                let cursor = if let CursorShape::Hidden = cursor.shape {
-                    None
-                } else {
-                    let focused = self.focused;
-                    ime_cursor_bounds.map(move |bounds| {
-                        let (shape, text) = match cursor.shape {
-                            CursorShape::Block if !focused => (EditorCursorShape::Hollow, None),
-                            CursorShape::Block => (EditorCursorShape::Block, Some(cursor_text)),
-                            CursorShape::Underline if !focused => (EditorCursorShape::Hollow, None),
-                            CursorShape::Underline => (EditorCursorShape::Underline, None),
-                            CursorShape::Bar if !focused => (EditorCursorShape::Hollow, None),
-                            CursorShape::Bar => (EditorCursorShape::Bar, None),
-                            CursorShape::HollowBlock => (EditorCursorShape::Hollow, None),
-                            CursorShape::Hidden => unreachable!(),
-                        };
-
-                        CursorLayout::new(
-                            bounds.origin,
-                            bounds.size.width,
-                            bounds.size.height,
-                            theme.cursor,
-                            shape,
-                            text,
-                        )
-                    })
-                };
+                let (cursor, ime_cursor_bounds) = layout_terminal_cursor(
+                    CursorPaintContext {
+                        cursor,
+                        cursor_char,
+                        display_offset,
+                        dimensions,
+                        focused: self.focused,
+                        theme: &style.theme,
+                    },
+                    &style.text_style,
+                    window,
+                );
 
                 LayoutState {
                     hitbox,
@@ -586,14 +753,14 @@ impl Element for TerminalElement {
                     block_element_rects,
                     cursor,
                     ime_cursor_bounds,
-                    background_color,
+                    background_color: style.theme.terminal_background,
                     dimensions,
                     rects,
                     relative_highlighted_ranges,
                     mode,
                     display_offset,
-                    hovered_link,
-                    base_text_style: text_style,
+                    hovered_link: last_hovered_word.is_some(),
+                    base_text_style: style.text_style,
                     timestamp_rows: if show_timestamps {
                         timestamp_rows
                     } else {
