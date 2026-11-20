@@ -8,83 +8,8 @@ impl Render for SettingsWindow {
         self.updates
             .update(cx, |updates, cx| updates.start_startup_check(cx));
 
-        let general = nav_button(
-            "settings-section-general",
-            icons::IconName::Settings,
-            i18n::text("settings.general"),
-            section == SettingsSection::General,
-            cx.listener(|this, _ev, _window, cx| {
-                this.select_section(SettingsSection::General, cx);
-            }),
-        );
-        let terminal = nav_button(
-            "settings-section-terminal",
-            icons::IconName::Terminal,
-            i18n::text("settings.terminal"),
-            section == SettingsSection::Terminal,
-            cx.listener(|this, _ev, _window, cx| {
-                this.select_section(SettingsSection::Terminal, cx);
-            }),
-        );
-        let updates = nav_button(
-            "settings-section-updates",
-            icons::IconName::RefreshCw,
-            i18n::text("settings.updates"),
-            section == SettingsSection::Updates,
-            cx.listener(|this, _ev, _window, cx| {
-                this.select_section(SettingsSection::Updates, cx);
-            }),
-        );
-        let about = nav_button(
-            "settings-section-about",
-            icons::IconName::Info,
-            i18n::text("settings.about"),
-            section == SettingsSection::About,
-            cx.listener(|this, _ev, _window, cx| {
-                this.select_section(SettingsSection::About, cx);
-            }),
-        );
-
-        let section_content = match section {
-            SettingsSection::General => self.render_general_settings(&settings, cx),
-            SettingsSection::Terminal => self.render_terminal_settings(&settings, cx),
-            SettingsSection::Updates => self.render_updates_settings(&settings, cx),
-            SettingsSection::About => self.render_about_settings(),
-        };
-
-        let navigation = if self.compact_layout {
-            div()
-                .w_full()
-                .flex_shrink_0()
-                .p_3()
-                .flex()
-                .flex_row()
-                .flex_wrap()
-                .gap_1()
-                .bg(theme::sidebar())
-                .border_b_1()
-                .border_color(theme::border_strong())
-                .child(general)
-                .child(terminal)
-                .child(updates)
-                .child(about)
-        } else {
-            div()
-                .w(px(180.))
-                .flex_shrink_0()
-                .p_3()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .bg(theme::sidebar())
-                .border_r_1()
-                .border_color(theme::border_strong())
-                .child(general)
-                .child(terminal)
-                .child(updates)
-                .child(div().flex_1())
-                .child(about)
-        };
+        let section_content = self.render_section_content(section, &settings, cx);
+        let navigation = self.render_navigation(section, cx);
 
         let content_container = scroll_y(&self.scroll)
             .id("settings-content")
@@ -130,5 +55,94 @@ impl Render for SettingsWindow {
             .children(linux_titlebar)
             .child(main);
         crossh_ui::client_decorations::client_side_decorations(root, window, cx)
+    }
+}
+
+impl SettingsWindow {
+    fn render_section_content(
+        &mut self,
+        section: SettingsSection,
+        settings: &SettingsSnapshot,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match section {
+            SettingsSection::General => self.render_general_settings(settings, cx),
+            SettingsSection::Terminal => self.render_terminal_settings(settings, cx),
+            SettingsSection::Updates => self.render_updates_settings(settings, cx),
+            SettingsSection::About => self.render_about_settings(),
+        }
+    }
+
+    fn render_navigation(&mut self, section: SettingsSection, cx: &mut Context<Self>) -> gpui::Div {
+        let general = nav_button(
+            "settings-section-general",
+            icons::IconName::Settings,
+            i18n::text("settings.general"),
+            section == SettingsSection::General,
+            cx.listener(|this, _ev, _window, cx| {
+                this.select_section(SettingsSection::General, cx);
+            }),
+        );
+        let terminal = nav_button(
+            "settings-section-terminal",
+            icons::IconName::Terminal,
+            i18n::text("settings.terminal"),
+            section == SettingsSection::Terminal,
+            cx.listener(|this, _ev, _window, cx| {
+                this.select_section(SettingsSection::Terminal, cx);
+            }),
+        );
+        let updates = nav_button(
+            "settings-section-updates",
+            icons::IconName::RefreshCw,
+            i18n::text("settings.updates"),
+            section == SettingsSection::Updates,
+            cx.listener(|this, _ev, _window, cx| {
+                this.select_section(SettingsSection::Updates, cx);
+            }),
+        );
+        let about = nav_button(
+            "settings-section-about",
+            icons::IconName::Info,
+            i18n::text("settings.about"),
+            section == SettingsSection::About,
+            cx.listener(|this, _ev, _window, cx| {
+                this.select_section(SettingsSection::About, cx);
+            }),
+        );
+
+        if self.compact_layout {
+            div()
+                .w_full()
+                .flex_shrink_0()
+                .p_3()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .gap_1()
+                .bg(theme::sidebar())
+                .border_b_1()
+                .border_color(theme::border_strong())
+                .child(general)
+                .child(terminal)
+                .child(updates)
+                .child(about)
+        } else {
+            div()
+                .w(px(180.))
+                .flex_shrink_0()
+                .p_3()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .bg(theme::sidebar())
+                .border_r_1()
+                .border_color(theme::border_strong())
+                .child(general)
+                .child(terminal)
+                .child(updates)
+                .child(div().flex_1())
+                .child(about)
+        }
     }
 }
