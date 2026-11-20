@@ -137,112 +137,8 @@ impl GitWindow {
         .flex()
         .flex_col()
         .gap_1()
-        .child(
-            div()
-                .w_full()
-                .min_w_0()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_sm()
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme::text())
-                                .child(SharedString::from(branch.name.clone())),
-                        )
-                        .child(
-                            Button::new(SharedString::from(format!(
-                                "git-copy-branch-{}",
-                                branch.name
-                            )))
-                            .size(ButtonSize::Icon(px(22.)))
-                            .variant(ButtonVariant::Ghost)
-                            .tooltip(i18n::text("git.copy_branch_name"))
-                            .icon(if copied {
-                                icons::icon(icons::IconName::Check, 12.).text_color(theme::accent())
-                            } else {
-                                icons::icon(icons::IconName::Copy, 12.)
-                                    .text_color(theme::muted_text())
-                            })
-                            .on_click(cx.listener(
-                                move |this, _event, _window, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(
-                                        copy_name.clone(),
-                                    ));
-                                    this.mark_branch_copied(copy_name.clone(), cx);
-                                    cx.stop_propagation();
-                                },
-                            )),
-                        ),
-                )
-                .when(current, |line| {
-                    line.child(
-                        Badge::new(i18n::text("git.current_branch")).tone(BadgeTone::Success),
-                    )
-                })
-                .when(branch.ahead > 0, |line| {
-                    line.child(Badge::new(format!("↑{}", branch.ahead)).tone(BadgeTone::Info))
-                })
-                .when(branch.behind > 0, |line| {
-                    line.child(Badge::new(format!("↓{}", branch.behind)).tone(BadgeTone::Info))
-                }),
-        )
-        .child(
-            div()
-                .w_full()
-                .min_w_0()
-                .flex()
-                .items_center()
-                .gap_2()
-                .text_xs()
-                .text_color(theme::faint_text())
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_shrink_0()
-                        .truncate()
-                        .child(SharedString::from(tracking)),
-                )
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .truncate()
-                        .text_color(theme::muted_text())
-                        .child(SharedString::from(branch.subject.clone())),
-                )
-                .when(!current, |line| {
-                    line.child(
-                        Button::new(SharedString::from(format!(
-                            "git-switch-branch-{}",
-                            branch.name
-                        )))
-                        .size(ButtonSize::Small)
-                        .variant(ButtonVariant::Secondary)
-                        .disabled(matches!(self.session.operation, OperationState::Running))
-                        .label(i18n::text("git.switch_branch"))
-                        .icon(
-                            icons::icon(icons::IconName::GitBranch, 12.).text_color(theme::text()),
-                        )
-                        .on_click(cx.listener(
-                            move |this, _event, _window, cx| {
-                                this.switch_branch(switch_name.clone(), cx);
-                                cx.stop_propagation();
-                            },
-                        )),
-                    )
-                }),
-        )
+        .child(self.render_branch_top_line(branch, current, copied, copy_name, cx))
+        .child(self.render_branch_detail_line(branch, current, tracking, switch_name, cx))
         .on_click(cx.listener(move |this, _event, _window, cx| {
             this.select_branch(name.clone(), cx);
         }));
@@ -250,6 +146,123 @@ impl GitWindow {
             row = row.cursor_default();
         }
         row.into_any_element()
+    }
+
+    fn render_branch_top_line(
+        &self,
+        branch: &BranchSummary,
+        current: bool,
+        copied: bool,
+        copy_name: String,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme::text())
+                            .child(SharedString::from(branch.name.clone())),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!(
+                            "git-copy-branch-{}",
+                            branch.name
+                        )))
+                        .size(ButtonSize::Icon(px(22.)))
+                        .variant(ButtonVariant::Ghost)
+                        .tooltip(i18n::text("git.copy_branch_name"))
+                        .icon(if copied {
+                            icons::icon(icons::IconName::Check, 12.).text_color(theme::accent())
+                        } else {
+                            icons::icon(icons::IconName::Copy, 12.).text_color(theme::muted_text())
+                        })
+                        .on_click(cx.listener(
+                            move |this, _event, _window, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(copy_name.clone()));
+                                this.mark_branch_copied(copy_name.clone(), cx);
+                                cx.stop_propagation();
+                            },
+                        )),
+                    ),
+            )
+            .when(current, |line| {
+                line.child(Badge::new(i18n::text("git.current_branch")).tone(BadgeTone::Success))
+            })
+            .when(branch.ahead > 0, |line| {
+                line.child(Badge::new(format!("↑{}", branch.ahead)).tone(BadgeTone::Info))
+            })
+            .when(branch.behind > 0, |line| {
+                line.child(Badge::new(format!("↓{}", branch.behind)).tone(BadgeTone::Info))
+            })
+            .into_any_element()
+    }
+
+    fn render_branch_detail_line(
+        &self,
+        branch: &BranchSummary,
+        current: bool,
+        tracking: String,
+        switch_name: String,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap_2()
+            .text_xs()
+            .text_color(theme::faint_text())
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .truncate()
+                    .child(SharedString::from(tracking)),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_color(theme::muted_text())
+                    .child(SharedString::from(branch.subject.clone())),
+            )
+            .when(!current, |line| {
+                line.child(
+                    Button::new(SharedString::from(format!(
+                        "git-switch-branch-{}",
+                        branch.name
+                    )))
+                    .size(ButtonSize::Small)
+                    .variant(ButtonVariant::Secondary)
+                    .disabled(matches!(self.session.operation, OperationState::Running))
+                    .label(i18n::text("git.switch_branch"))
+                    .icon(icons::icon(icons::IconName::GitBranch, 12.).text_color(theme::text()))
+                    .on_click(cx.listener(
+                        move |this, _event, _window, cx| {
+                            this.switch_branch(switch_name.clone(), cx);
+                            cx.stop_propagation();
+                        },
+                    )),
+                )
+            })
+            .into_any_element()
     }
 
     /// 记录复制反馈：图标短暂变为对勾，超时后自动还原。
