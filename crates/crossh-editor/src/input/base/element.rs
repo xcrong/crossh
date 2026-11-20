@@ -13,7 +13,7 @@ use gpui::{
 };
 use ropey::Rope;
 use smallvec::SmallVec;
-use std::{ops::Range, rc::Rc};
+use std::{borrow::Cow, ops::Range, rc::Rc};
 
 use crate::{
     Scrollbar,
@@ -21,7 +21,7 @@ use crate::{
 };
 
 use super::{
-    InputBaseState, TextDecoration,
+    InputBaseState, TextDecoration, WrappingIndent,
     layout::{LastLayout, WhitespaceIndicators},
     mode::LayoutMode,
 };
@@ -392,6 +392,76 @@ pub(super) struct TextElement<M: InputModeKind> {
     placeholder: SharedString,
 }
 
+/// Per-frame text, colors and wrapping metrics used to lay out the element.
+struct DisplayMetrics {
+    text: Rope,
+    text_style: TextStyle,
+    text_size: Pixels,
+    text_color: Hsla,
+    muted_color: Hsla,
+    masked: bool,
+    disabled: bool,
+    line_number_width: Pixels,
+    line_number_len: usize,
+    wrap_width: Option<Pixels>,
+    wrapping_indent: WrappingIndent,
+    ime_marked_range: Option<Range<usize>>,
+    text_align: TextAlign,
+}
+
+/// Visible buffer lines plus the offsets used to shape and hit-test them.
+struct VisibleLines {
+    range: Range<usize>,
+    buffer_lines: Vec<usize>,
+    top: Pixels,
+    /// Visible byte range in the original text, used for highlighting.
+    byte_range: Range<usize>,
+    /// Line start offsets in the display text (masked when applicable).
+    line_byte_offsets: Vec<usize>,
+    /// Visible range expressed in the display text coordinate space.
+    range_offset: Range<usize>,
+}
+
+/// Paths computed after line layout that paint over the shaped lines.
+struct OverlayPaths {
+    cursor_bounds: Option<Bounds<Pixels>>,
+    cursor_scroll_offset: Point<Pixels>,
+    current_row: Option<usize>,
+    search_match_paths: Vec<(Path<Pixels>, bool)>,
+    selection_path: Option<Path<Pixels>>,
+    hover_highlight_path: Option<Path<Pixels>>,
+    document_color_paths: Vec<(Path<Pixels>, Hsla)>,
+}
+
+// `position_for_index` for example
+//
+// #### text
+//
+// Hello 世界，this is GPUI component.
+// The GPUI Component is a collection of UI components for
+// GPUI framework, including Button, Input, Checkbox, Radio,
+// Dropdown, Tab, and more...
+//
+// wrap_width: 444px, line_height: 20px
+//
+// #### lines[0]
+//
+// | index | pos              | line |
+// |-------|------------------|------|
+// | 5     | (37 px, 0.0)     | 0    |
+// | 38    | (261.7 px, 20.0) | 0    |
+// | 40    | None             | -    |
+//
+// #### lines[1]
+//
+// | index | position              | line |
+// |-------|-----------------------|------|
+// | 5     | (43.578125 px, 0.0)   | 0    |
+// | 56    | (422.21094 px, 0.0)   | 0    |
+// | 57    | (11.6328125 px, 20.0) | 1    |
+// | 114   | (429.85938 px, 20.0)  | 1    |
+// | 115   | (11.3125 px, 40.0)    | 2    |
+
 impl<M: InputModeKind> TextElement<M> {
     pub(super) fn new(state: Entity<InputBaseState<M>>) -> Self {
         Self {
@@ -404,6 +474,94 @@ impl<M: InputModeKind> TextElement<M> {
     pub(super) fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.placeholder = placeholder.into();
         self
+    }
+
+    /// Prepare the display map and gather the text, colors and wrapping metrics
+    /// needed by this prepaint pass.
+    fn display_metrics(
+        &self,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> DisplayMetrics {
+        let style = window.text_style();
+        let font = style.font();
+        let text_size = style.font_size.to_pixels(window.rem_size());
+
+        self.state.update(cx, |state, cx| {
+            state.display_map.set_font(font, text_size, cx);
+            state.display_map.ensure_text_prepared(&state.text, cx);
+        });
+
+        let state = self.state.read(cx);
+        let multi_line = state.is_multi_line();
+        let text = state.text.clone();
+        let text_style = window.text_style();
+        let disabled = state.disabled;
+        let dim = |color: Hsla| if disabled { color.opacity(0.5) } else { color };
+        let text_color = dim(text_style.color);
+        let muted_color = dim(state.editor_style.muted_foreground);
+        let masked = state.masked;
+        let text_align = state.text_align;
+        let marked_range = state.ime_marked_range.as_ref().map(|m| m.start..m.end);
+
+        // Calculate the width of the line numbers
+        let (line_number_width, line_number_len) =
+            Self::layout_line_numbers(&state, &text, text_size, &text_style, window);
+
+        let wrap_width = if multi_line && state.soft_wrap {
+            Some(bounds.size.width - line_number_width - RIGHT_MARGIN)
+        } else {
+            None
+        };
+
+        let wrapping_indent = state.wrapping_indent;
+        let layout_changed = state.last_layout.as_ref().is_none_or(|last| {
+            last.wrap_width != wrap_width || last.wrapping_indent != wrapping_indent
+        });
+
+        if layout_changed {
+            self.state.update(cx, |state, cx| {
+                state.display_map.on_layout_changed(wrap_width, cx);
+                state.display_map.set_wrapping_indent(wrapping_indent, cx);
+            });
+        }
+
+        DisplayMetrics {
+            ime_marked_range: ime_marked_display_range(&text, marked_range, masked),
+            text,
+            text_style,
+            text_size,
+            text_color,
+            muted_color,
+            masked,
+            disabled,
+            line_number_width,
+            line_number_len,
+            wrap_width,
+            wrapping_indent,
+            text_align,
+        }
+    }
+
+    /// The text shown for this frame: placeholder when empty, mask characters
+    /// when masked, otherwise the buffer text.
+    fn display_text<'a>(&self, display: &'a DisplayMetrics) -> (Cow<'a, Rope>, Hsla) {
+        if display.text.len() == 0 {
+            (
+                Cow::Owned(Rope::from(self.placeholder.as_str())),
+                display.muted_color,
+            )
+        } else if display.masked {
+            (
+                Cow::Owned(Rope::from(
+                    MASK_CHAR.to_string().repeat(display.text.chars().count()),
+                )),
+                display.text_color,
+            )
+        } else {
+            (Cow::Borrowed(&display.text), display.text_color)
+        }
     }
 
     fn paint_mouse_listeners(&mut self, window: &mut Window, _: &mut App) {
@@ -821,6 +979,57 @@ impl<M: InputModeKind> TextElement<M> {
         paths
     }
 
+    /// Lay out every overlay in the same order and with the same accumulated
+    /// `bounds` origin changes as the paint pass expects.
+    fn layout_overlays(
+        &self,
+        last_layout: &mut LastLayout,
+        bounds: &mut Bounds<Pixels>,
+        document_colors: &[(Range<usize>, Hsla)],
+        scroll_size: Size<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> OverlayPaths {
+        let (cursor_bounds, cursor_scroll_offset, current_row) =
+            self.layout_cursor(last_layout, bounds, scroll_size, window, cx);
+        last_layout.cursor_bounds = cursor_bounds;
+
+        let search_match_paths = self.layout_search_matches(last_layout, bounds, cx);
+        let selection_path = self.layout_selections(last_layout, bounds, window, cx);
+        let hover_highlight_path = self.layout_hover_highlight(last_layout, bounds, cx);
+        let document_color_paths =
+            self.layout_document_colors(document_colors, last_layout, bounds, cx);
+
+        OverlayPaths {
+            cursor_bounds,
+            cursor_scroll_offset,
+            current_row,
+            search_match_paths,
+            selection_path,
+            hover_highlight_path,
+            document_color_paths,
+        }
+    }
+
+    /// Publish the layout that the editor scrollbar reads during its prepaint.
+    fn publish_scrollbar_snapshot(
+        state: &InputBaseState<M>,
+        input_bounds: Bounds<Pixels>,
+        last_layout: &LastLayout,
+        scroll_size: Size<Pixels>,
+        cursor_scroll_offset: Point<Pixels>,
+    ) {
+        state
+            .editor_scrollbar_snapshot
+            .set(Some(EditorScrollbarSnapshot::new(
+                input_bounds,
+                last_layout,
+                scroll_size,
+                cursor_scroll_offset,
+                state,
+            )));
+    }
+
     fn layout_selections(
         &self,
         last_layout: &LastLayout,
@@ -933,6 +1142,87 @@ impl<M: InputModeKind> TextElement<M> {
         (visible_range, visible_buffer_lines, visible_top)
     }
 
+    /// Resolve the visible buffer lines and their offsets, converting them to
+    /// the masked display coordinate space when the input is masked.
+    fn visible_lines(
+        &self,
+        state: &InputBaseState<M>,
+        text: &Rope,
+        line_height: Pixels,
+        input_height: Pixels,
+    ) -> VisibleLines {
+        let (visible_range, visible_buffer_lines, visible_top) =
+            self.calculate_visible_range(state, line_height, input_height);
+        let visible_start_offset = state.text.line_start_offset(visible_range.start);
+        let visible_end_offset = state
+            .text
+            .line_end_offset(visible_range.end.saturating_sub(1));
+
+        let visible_line_byte_offsets: Vec<usize> = visible_buffer_lines
+            .iter()
+            .map(|&bl| state.text.line_start_offset(bl))
+            .collect();
+
+        // For password input (masked: true), convert byte offsets to masked display byte offsets so that
+        // layout_match_range and position_for_index work in the correct coordinate space.
+        let (line_byte_offsets, range_offset) = if state.masked {
+            let offsets = visible_line_byte_offsets
+                .iter()
+                .map(|&o| masked_display_offset(text, o))
+                .collect();
+            let range_offset = masked_display_offset(text, visible_start_offset)
+                ..masked_display_offset(text, visible_end_offset);
+            (offsets, range_offset)
+        } else {
+            (
+                visible_line_byte_offsets,
+                visible_start_offset..visible_end_offset,
+            )
+        };
+
+        VisibleLines {
+            range: visible_range,
+            buffer_lines: visible_buffer_lines,
+            top: visible_top,
+            byte_range: visible_start_offset..visible_end_offset,
+            line_byte_offsets,
+            range_offset,
+        }
+    }
+
+    /// Build the initial last-layout snapshot; shaped lines are filled in later.
+    fn last_layout(
+        visible: VisibleLines,
+        line_height: Pixels,
+        display: &DisplayMetrics,
+        content_width: Pixels,
+    ) -> LastLayout {
+        let VisibleLines {
+            range,
+            buffer_lines,
+            top,
+            line_byte_offsets,
+            range_offset,
+            ..
+        } = visible;
+
+        LastLayout {
+            visible_range: range,
+            visible_buffer_lines: buffer_lines,
+            visible_line_byte_offsets: line_byte_offsets,
+            visible_top: top,
+            visible_range_offset: range_offset,
+            line_height,
+            wrap_width: display.wrap_width,
+            wrapping_indent: display.wrapping_indent,
+            line_number_width: display.line_number_width,
+            lines: Rc::new(vec![]),
+            cursor_bounds: None,
+            text_align: display.text_align,
+            content_width,
+        }
+    }
+
     /// Return (line_number_width, line_number_len)
     fn layout_line_numbers(
         state: &InputBaseState<M>,
@@ -974,6 +1264,70 @@ impl<M: InputModeKind> TextElement<M> {
         }
 
         (line_number_width, line_number_len)
+    }
+
+    /// Shape the line number column, one shaped line per soft line.
+    fn shape_line_numbers(
+        state: &InputBaseState<M>,
+        last_layout: &LastLayout,
+        current_row: Option<usize>,
+        display: &DisplayMetrics,
+        window: &mut Window,
+    ) -> Option<Vec<SmallVec<[ShapedLine; 1]>>> {
+        if !state.mode.line_number() {
+            return None;
+        }
+
+        let mut line_numbers = Vec::with_capacity(last_layout.visible_buffer_lines.len());
+        let other_line_runs = vec![TextRun {
+            len: display.line_number_len,
+            font: display.text_style.font(),
+            color: state.editor_style.muted_foreground,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        }];
+        let current_line_runs = vec![TextRun {
+            len: display.line_number_len,
+            font: display.text_style.font(),
+            color: state.editor_style.foreground,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        }];
+
+        // build line numbers
+        for (line, &buffer_line) in last_layout
+            .lines
+            .iter()
+            .zip(last_layout.visible_buffer_lines.iter())
+        {
+            let line_no: SharedString = format!(
+                "{:>width$}",
+                buffer_line + 1,
+                width = display.line_number_len
+            )
+            .into();
+
+            let runs = if current_row == Some(buffer_line) {
+                &current_line_runs
+            } else {
+                &other_line_runs
+            };
+
+            let mut sub_lines: SmallVec<[ShapedLine; 1]> = SmallVec::new();
+            sub_lines.push(window.text_system().shape_line(
+                line_no,
+                display.text_size,
+                &runs,
+                None,
+            ));
+            for _ in 0..line.wrapped_lines.len().saturating_sub(1) {
+                sub_lines.push(ShapedLine::default());
+            }
+            line_numbers.push(sub_lines);
+        }
+        Some(line_numbers)
     }
 
     /// Layout shaped lines for whitespace indicators (space and tab).
@@ -1410,6 +1764,127 @@ impl<M: InputModeKind> TextElement<M> {
         lines
     }
 
+    /// Shape the visible lines, their background colors and the width needed
+    /// for horizontal scrolling.
+    fn layout_content(
+        state: &InputBaseState<M>,
+        display: &DisplayMetrics,
+        display_text: &Rope,
+        last_layout: &mut LastLayout,
+        runs: &[TextRun],
+        window: &mut Window,
+        cx: &App,
+    ) -> (Vec<(Range<usize>, Hsla)>, Pixels) {
+        let document_colors = state
+            .extras
+            .document_color_swatches(&display.text, &last_layout.visible_range);
+
+        // Create shaped lines for whitespace indicators before layout
+        let whitespace_indicators = Self::layout_whitespace_indicators(
+            state,
+            display.text_size,
+            &display.text_style,
+            window,
+            cx,
+        );
+
+        let lines = Self::layout_lines(
+            state,
+            display_text,
+            last_layout,
+            display.text_size,
+            runs,
+            &document_colors,
+            whitespace_indicators,
+            window,
+        );
+
+        let longest_line_width = Self::longest_line_width(
+            state,
+            &display.text_style,
+            display.text_size,
+            display.wrap_width,
+            window,
+        );
+        last_layout.lines = Rc::new(lines);
+
+        (document_colors, longest_line_width)
+    }
+
+    /// Width of the widest line, used as the horizontal content size.
+    fn longest_line_width(
+        state: &InputBaseState<M>,
+        text_style: &TextStyle,
+        text_size: Pixels,
+        wrap_width: Option<Pixels>,
+        window: &mut Window,
+    ) -> Pixels {
+        let mut longest_line_width = wrap_width.unwrap_or(px(0.));
+        // 1. Single line
+        // 2. Multi-line with soft wrap disabled.
+        if state.is_single_line() || !state.soft_wrap {
+            let longest_row = state.display_map.longest_row();
+            let longest_line: SharedString = state.text.slice_line(longest_row).to_string().into();
+            longest_line_width = window
+                .text_system()
+                .shape_line(
+                    longest_line.clone(),
+                    text_size,
+                    &[TextRun {
+                        len: longest_line.len(),
+                        font: text_style.font(),
+                        color: gpui::black(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }],
+                    wrap_width,
+                )
+                .width;
+        }
+        longest_line_width
+    }
+
+    /// Size of the scrollable content, including trailing empty space and
+    /// inline-completion ghost lines.
+    fn editor_scroll_size(
+        state: &InputBaseState<M>,
+        display: &DisplayMetrics,
+        longest_line_width: Pixels,
+        line_height: Pixels,
+        ghost_lines_height: Pixels,
+        viewport: Size<Pixels>,
+        text_align: TextAlign,
+    ) -> Size<Pixels> {
+        let total_wrapped_lines = state.display_map.wrap_row_count();
+        let empty_bottom_height = empty_bottom_height(
+            state.is_code_editor(),
+            state.scroll_beyond_last_line,
+            viewport.height,
+            line_height,
+        );
+
+        // Empty bottom and ghost lines both describe extra height past the
+        // last content row, so take the max rather than summing — summing
+        // left a band of empty space the cursor could never reach.
+        let mut scroll_size = size(
+            if longest_line_width + display.line_number_width + RIGHT_MARGIN > viewport.width {
+                longest_line_width + display.line_number_width + RIGHT_MARGIN
+            } else {
+                longest_line_width
+            },
+            (total_wrapped_lines as f32 * line_height
+                + empty_bottom_height.max(ghost_lines_height))
+            .max(viewport.height),
+        );
+
+        // TODO: should be add some gap to right, to convenient to focus on boundary position
+        if text_align == TextAlign::Right || text_align == TextAlign::Center {
+            scroll_size.width = longest_line_width + display.line_number_width;
+        }
+        scroll_size
+    }
+
     /// First usize is the offset of skipped.
     fn highlight_lines(
         &mut self,
@@ -1693,373 +2168,85 @@ impl<M: InputModeKind> Element for TextElement<M> {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        let style = window.text_style();
-        let font = style.font();
-        let text_size = style.font_size.to_pixels(window.rem_size());
-
-        self.state.update(cx, |state, cx| {
-            state.display_map.set_font(font, text_size, cx);
-            state.display_map.ensure_text_prepared(&state.text, cx);
-        });
-
-        let state = self.state.read(cx);
-        let multi_line = state.is_multi_line();
-        let text = state.text.clone();
-        let is_empty = text.len() == 0;
-        let placeholder = self.placeholder.clone();
-
-        let text_style = window.text_style();
-        let disabled = state.disabled;
-        let dim = |color: Hsla| if disabled { color.opacity(0.5) } else { color };
-        let fg = dim(text_style.color);
-        let (display_text, text_color) = if is_empty {
-            (
-                &Rope::from(placeholder.as_str()),
-                dim(state.editor_style.muted_foreground),
-            )
-        } else if state.masked {
-            (
-                &Rope::from(MASK_CHAR.to_string().repeat(text.chars().count())),
-                fg,
-            )
-        } else {
-            (&text, fg)
-        };
-
-        // Calculate the width of the line numbers
-        let (line_number_width, line_number_len) =
-            Self::layout_line_numbers(&state, &text, text_size, &text_style, window);
-
-        let mut bounds = bounds;
-        let wrap_width = if multi_line && state.soft_wrap {
-            Some(bounds.size.width - line_number_width - RIGHT_MARGIN)
-        } else {
-            None
-        };
-
-        let wrapping_indent = state.wrapping_indent;
-        let wrap_width_changed = state
-            .last_layout
-            .as_ref()
-            .map(|l| l.wrap_width != wrap_width)
-            .unwrap_or(true);
-
-        let wrapping_indent_changed = state
-            .last_layout
-            .as_ref()
-            .map(|l| l.wrapping_indent != wrapping_indent)
-            .unwrap_or(true);
-
-        if wrap_width_changed || wrapping_indent_changed {
-            self.state.update(cx, |state, cx| {
-                state.display_map.on_layout_changed(wrap_width, cx);
-                state.display_map.set_wrapping_indent(wrapping_indent, cx);
-            });
-        }
+        let display = self.display_metrics(bounds, window, cx);
+        let is_empty = display.text.len() == 0;
+        let (display_text, text_color) = self.display_text(&display);
 
         let state = self.state.read(cx);
         let line_height = window.line_height();
-
-        let (visible_range, visible_buffer_lines, visible_top) =
-            self.calculate_visible_range(&state, line_height, bounds.size.height);
-        let visible_start_offset = state.text.line_start_offset(visible_range.start);
-        let visible_end_offset = state
-            .text
-            .line_end_offset(visible_range.end.saturating_sub(1));
-
-        let highlight_styles = self.highlight_lines(
-            &visible_buffer_lines,
-            visible_top,
-            visible_start_offset..visible_end_offset,
-            cx,
-        );
+        let visible = self.visible_lines(&state, &display.text, line_height, bounds.size.height);
+        let visible_byte_range = visible.byte_range.clone();
+        let highlight_styles =
+            self.highlight_lines(&visible.buffer_lines, visible.top, visible_byte_range, cx);
 
         let state = self.state.read(cx);
+        let mut bounds = bounds;
+        let mut last_layout = Self::last_layout(visible, line_height, &display, bounds.size.width);
 
-        let visible_line_byte_offsets: Vec<usize> = visible_buffer_lines
-            .iter()
-            .map(|&bl| state.text.line_start_offset(bl))
-            .collect();
-
-        // For password input (masked: true), convert byte offsets to masked display byte offsets so that
-        // layout_match_range and position_for_index work in the correct coordinate space.
-        let (visible_line_byte_offsets, visible_range_offset) = if state.masked {
-            let offsets = visible_line_byte_offsets
-                .iter()
-                .map(|&o| masked_display_offset(&text, o))
-                .collect();
-            let range_offset = masked_display_offset(&text, visible_start_offset)
-                ..masked_display_offset(&text, visible_end_offset);
-            (offsets, range_offset)
-        } else {
-            (
-                visible_line_byte_offsets,
-                visible_start_offset..visible_end_offset,
-            )
-        };
-
-        let mut last_layout = LastLayout {
-            visible_range,
-            visible_buffer_lines,
-            visible_line_byte_offsets,
-            visible_top,
-            visible_range_offset,
-            line_height,
-            wrap_width,
-            wrapping_indent,
-            line_number_width,
-            lines: Rc::new(vec![]),
-            cursor_bounds: None,
-            text_align: state.text_align,
-            content_width: bounds.size.width,
-        };
-
-        let run = TextRun {
-            len: display_text.len(),
-            font: style.font(),
-            color: text_color,
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        let marked_run = TextRun {
-            len: 0,
-            font: style.font(),
-            color: text_color,
-            background_color: None,
-            underline: Some(UnderlineStyle {
-                thickness: px(1.),
-                color: Some(text_color),
-                wavy: false,
-            }),
-            strikethrough: None,
-        };
-
-        let ime_marked_range = ime_marked_display_range(
-            &text,
-            state.ime_marked_range.as_ref().map(|m| m.start..m.end),
-            state.masked,
-        );
-
-        let runs = if let (false, Some(highlight_styles)) = (is_empty, highlight_styles) {
-            let mut runs = Vec::with_capacity(highlight_styles.len() + 2);
-
-            for (range, style) in &highlight_styles {
-                let mut run = text_style.clone().highlight(*style).to_run(range.len());
-                if disabled {
-                    run.color = run.color.opacity(0.5);
-                }
-
-                runs.extend(split_run_for_ime_underline(
-                    run,
-                    range.clone(),
-                    ime_marked_range.clone(),
-                    marked_run.underline,
-                ));
-            }
-            runs
-        } else {
-            split_run_for_ime_underline(
-                run,
-                0..display_text.len(),
-                ime_marked_range,
-                marked_run.underline,
-            )
-            .into_vec()
-        };
-
-        let document_colors = state
-            .extras
-            .document_color_swatches(&text, &last_layout.visible_range);
-
-        // Create shaped lines for whitespace indicators before layout
-        let whitespace_indicators =
-            Self::layout_whitespace_indicators(&state, text_size, &text_style, window, cx);
-
-        let lines = Self::layout_lines(
-            &state,
+        let runs = build_runs(
+            &display,
             &display_text,
-            &last_layout,
-            text_size,
-            &runs,
-            &document_colors,
-            whitespace_indicators,
-            window,
+            text_color,
+            is_empty,
+            highlight_styles,
         );
 
-        let mut longest_line_width = wrap_width.unwrap_or(px(0.));
-        // 1. Single line
-        // 2. Multi-line with soft wrap disabled.
-        if state.is_single_line() || !state.soft_wrap {
-            let longest_row = state.display_map.longest_row();
-            let longest_line: SharedString = state.text.slice_line(longest_row).to_string().into();
-            longest_line_width = window
-                .text_system()
-                .shape_line(
-                    longest_line.clone(),
-                    text_size,
-                    &[TextRun {
-                        len: longest_line.len(),
-                        font: style.font(),
-                        color: gpui::black(),
-                        background_color: None,
-                        underline: None,
-                        strikethrough: None,
-                    }],
-                    wrap_width,
-                )
-                .width;
-        }
-        last_layout.lines = Rc::new(lines);
-
-        let (ghost_first_line, ghost_lines) = Self::layout_inline_completion(
-            state,
-            &last_layout.visible_range,
-            text_size,
+        let (document_colors, longest_line_width) = Self::layout_content(
+            &state,
+            &display,
+            &display_text,
+            &mut last_layout,
+            &runs,
             window,
             cx,
         );
-        let ghost_line_count = ghost_lines.len();
-        let ghost_lines_height = ghost_line_count as f32 * line_height;
 
-        let total_wrapped_lines = state.display_map.wrap_row_count();
-        let empty_bottom_height = empty_bottom_height(
-            state.is_code_editor(),
-            state.scroll_beyond_last_line,
-            bounds.size.height,
+        let (ghost_first_line, ghost_lines) = Self::layout_inline_completion(
+            &state,
+            &last_layout.visible_range,
+            display.text_size,
+            window,
+            cx,
+        );
+        let ghost_lines_height = ghost_lines.len() as f32 * line_height;
+        let scroll_size = Self::editor_scroll_size(
+            &state,
+            &display,
+            longest_line_width,
             line_height,
+            ghost_lines_height,
+            bounds.size,
+            last_layout.text_align,
         );
-
-        // Empty bottom and ghost lines both describe extra height past the
-        // last content row, so take the max rather than summing — summing
-        // left a band of empty space the cursor could never reach.
-        let mut scroll_size = size(
-            if longest_line_width + line_number_width + RIGHT_MARGIN > bounds.size.width {
-                longest_line_width + line_number_width + RIGHT_MARGIN
-            } else {
-                longest_line_width
-            },
-            (total_wrapped_lines as f32 * line_height
-                + empty_bottom_height.max(ghost_lines_height))
-            .max(bounds.size.height),
-        );
-
-        // TODO: should be add some gap to right, to convenient to focus on boundary position
-        if last_layout.text_align == TextAlign::Right || last_layout.text_align == TextAlign::Center
-        {
-            scroll_size.width = longest_line_width + line_number_width;
-        }
-
-        // `position_for_index` for example
-        //
-        // #### text
-        //
-        // Hello 世界，this is GPUI component.
-        // The GPUI Component is a collection of UI components for
-        // GPUI framework, including Button, Input, Checkbox, Radio,
-        // Dropdown, Tab, and more...
-        //
-        // wrap_width: 444px, line_height: 20px
-        //
-        // #### lines[0]
-        //
-        // | index | pos              | line |
-        // |-------|------------------|------|
-        // | 5     | (37 px, 0.0)     | 0    |
-        // | 38    | (261.7 px, 20.0) | 0    |
-        // | 40    | None             | -    |
-        //
-        // #### lines[1]
-        //
-        // | index | position              | line |
-        // |-------|-----------------------|------|
-        // | 5     | (43.578125 px, 0.0)   | 0    |
-        // | 56    | (422.21094 px, 0.0)   | 0    |
-        // | 57    | (11.6328125 px, 20.0) | 1    |
-        // | 114   | (429.85938 px, 20.0)  | 1    |
-        // | 115   | (11.3125 px, 40.0)    | 2    |
-
-        // Calculate the scroll offset to keep the cursor in view
 
         // Save the unscrolled x before layout_cursor modifies bounds.origin with scroll_offset.
         // Fold icons and their hitboxes must use this value so they stay fixed in the gutter
         // regardless of horizontal scroll position.
         let input_bounds = bounds;
         let original_x = bounds.origin.x;
-
-        let (cursor_bounds, cursor_scroll_offset, current_row) =
-            self.layout_cursor(&last_layout, &mut bounds, scroll_size, window, cx);
-        last_layout.cursor_bounds = cursor_bounds;
-
-        let search_match_paths = self.layout_search_matches(&last_layout, &mut bounds, cx);
-        let selection_path = self.layout_selections(&last_layout, &mut bounds, window, cx);
-        let hover_highlight_path = self.layout_hover_highlight(&last_layout, &mut bounds, cx);
-        let document_color_paths =
-            self.layout_document_colors(&document_colors, &last_layout, &bounds, cx);
+        let overlays = self.layout_overlays(
+            &mut last_layout,
+            &mut bounds,
+            &document_colors,
+            scroll_size,
+            window,
+            cx,
+        );
 
         let state = self.state.read(cx);
-        let line_numbers = if state.mode.line_number() {
-            let mut line_numbers = Vec::with_capacity(last_layout.visible_buffer_lines.len());
-            let other_line_runs = vec![TextRun {
-                len: line_number_len,
-                font: style.font(),
-                color: state.editor_style.muted_foreground,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            }];
-            let current_line_runs = vec![TextRun {
-                len: line_number_len,
-                font: style.font(),
-                color: state.editor_style.foreground,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            }];
-
-            // build line numbers
-            for (line, &buffer_line) in last_layout
-                .lines
-                .iter()
-                .zip(last_layout.visible_buffer_lines.iter())
-            {
-                let line_no: SharedString =
-                    format!("{:>width$}", buffer_line + 1, width = line_number_len).into();
-
-                let runs = if current_row == Some(buffer_line) {
-                    &current_line_runs
-                } else {
-                    &other_line_runs
-                };
-
-                let mut sub_lines: SmallVec<[ShapedLine; 1]> = SmallVec::new();
-                sub_lines.push(
-                    window
-                        .text_system()
-                        .shape_line(line_no, text_size, &runs, None),
-                );
-                for _ in 0..line.wrapped_lines.len().saturating_sub(1) {
-                    sub_lines.push(ShapedLine::default());
-                }
-                line_numbers.push(sub_lines);
-            }
-            Some(line_numbers)
-        } else {
-            None
-        };
+        let line_numbers =
+            Self::shape_line_numbers(&state, &last_layout, overlays.current_row, &display, window);
 
         let hover_definition_hitbox = M::hover_definition_hitbox(state, window, cx);
         let indent_guides_path =
-            self.layout_indent_guides(state, &bounds, &last_layout, &text_style, window);
-        state
-            .editor_scrollbar_snapshot
-            .set(Some(EditorScrollbarSnapshot::new(
-                input_bounds,
-                &last_layout,
-                scroll_size,
-                cursor_scroll_offset,
-                state,
-            )));
+            self.layout_indent_guides(state, &bounds, &last_layout, &display.text_style, window);
+        Self::publish_scrollbar_snapshot(
+            state,
+            input_bounds,
+            &last_layout,
+            scroll_size,
+            overlays.cursor_scroll_offset,
+        );
         let fold_icon_layout =
             self.layout_fold_icons(original_x, &bounds, &last_layout, window, cx);
 
@@ -2068,14 +2255,14 @@ impl<M: InputModeKind> Element for TextElement<M> {
             last_layout,
             scroll_size,
             line_numbers,
-            cursor_bounds,
-            cursor_scroll_offset,
-            current_row,
-            selection_path,
-            search_match_paths,
-            hover_highlight_path,
+            cursor_bounds: overlays.cursor_bounds,
+            cursor_scroll_offset: overlays.cursor_scroll_offset,
+            current_row: overlays.current_row,
+            selection_path: overlays.selection_path,
+            search_match_paths: overlays.search_match_paths,
+            hover_highlight_path: overlays.hover_highlight_path,
             hover_definition_hitbox,
-            document_color_paths,
+            document_color_paths: overlays.document_color_paths,
             indent_guides_path,
             fold_icon_layout,
             ghost_first_line,
@@ -2575,6 +2762,68 @@ fn split_run_for_ime_underline(
     .into_iter()
     .filter(|run| run.len > 0)
     .collect()
+}
+
+/// Build the display runs, splitting the IME-marked range so it can be
+/// underlined.
+fn build_runs(
+    display: &DisplayMetrics,
+    display_text: &Rope,
+    text_color: Hsla,
+    is_empty: bool,
+    highlight_styles: Option<Vec<(Range<usize>, HighlightStyle)>>,
+) -> Vec<TextRun> {
+    let run = TextRun {
+        len: display_text.len(),
+        font: display.text_style.font(),
+        color: text_color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let marked_run = TextRun {
+        len: 0,
+        font: display.text_style.font(),
+        color: text_color,
+        background_color: None,
+        underline: Some(UnderlineStyle {
+            thickness: px(1.),
+            color: Some(text_color),
+            wavy: false,
+        }),
+        strikethrough: None,
+    };
+
+    if let (false, Some(highlight_styles)) = (is_empty, highlight_styles) {
+        let mut runs = Vec::with_capacity(highlight_styles.len() + 2);
+
+        for (range, style) in &highlight_styles {
+            let mut run = display
+                .text_style
+                .clone()
+                .highlight(*style)
+                .to_run(range.len());
+            if display.disabled {
+                run.color = run.color.opacity(0.5);
+            }
+
+            runs.extend(split_run_for_ime_underline(
+                run,
+                range.clone(),
+                display.ime_marked_range.clone(),
+                marked_run.underline,
+            ));
+        }
+        runs
+    } else {
+        split_run_for_ime_underline(
+            run,
+            0..display_text.len(),
+            display.ime_marked_range.clone(),
+            marked_run.underline,
+        )
+        .into_vec()
+    }
 }
 
 /// Whether any of these runs paints a glyph background, used to skip the background
