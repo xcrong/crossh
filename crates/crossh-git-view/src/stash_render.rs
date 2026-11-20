@@ -156,10 +156,7 @@ impl GitWindow {
     ) -> AnyElement {
         let selected = self.session.stash.selected.as_deref() == Some(stash.selector.as_str());
         let selector = stash.selector.clone();
-        let apply_selector = stash.selector.clone();
-        let pop_selector = stash.selector.clone();
-        let drop_selector = stash.selector.clone();
-        let row = selectable_row(
+        selectable_row(
             SharedString::from(format!("git-stash-{}", stash.selector)),
             selected,
             if compact { px(106.) } else { px(78.) },
@@ -169,111 +166,117 @@ impl GitWindow {
         .flex()
         .flex_col()
         .gap_1()
-        .child(
-            div()
-                .w_full()
-                .min_w_0()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .text_xs()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme::accent())
-                        .child(SharedString::from(stash.selector.clone())),
-                )
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .truncate()
-                        .text_sm()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme::text())
-                        .child(SharedString::from(stash.message.clone())),
-                )
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .text_xs()
-                        .text_color(theme::faint_text())
-                        .child(SharedString::from(stash.date.clone())),
-                ),
-        )
-        .child(
-            div()
-                .w_full()
-                .min_w_0()
-                .flex()
-                .items_center()
-                .gap_2()
-                .flex_wrap()
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .truncate()
-                        .text_xs()
-                        .text_color(theme::faint_text())
-                        .child(SharedString::from(stash.id.clone())),
-                )
-                .child(
-                    Button::new(SharedString::from(format!(
-                        "git-stash-apply-{}",
-                        stash.selector
-                    )))
-                    .size(ButtonSize::Small)
-                    .variant(ButtonVariant::Secondary)
-                    .disabled(matches!(self.session.operation, OperationState::Running))
-                    .label(i18n::text("git.apply_stash"))
-                    .icon(icons::icon(icons::IconName::Download, 12.).text_color(theme::text()))
-                    .on_click(cx.listener(
-                        move |this, _event, _window, cx| {
-                            this.apply_stash(apply_selector.clone(), cx);
-                            cx.stop_propagation();
-                        },
-                    )),
-                )
-                .child(
-                    Button::new(SharedString::from(format!(
-                        "git-stash-pop-{}",
-                        stash.selector
-                    )))
-                    .size(ButtonSize::Small)
-                    .variant(ButtonVariant::Ghost)
-                    .disabled(matches!(self.session.operation, OperationState::Running))
-                    .label(i18n::text("git.pop_stash"))
-                    .icon(icons::icon(icons::IconName::Upload, 12.).text_color(theme::muted_text()))
-                    .on_click(cx.listener(
-                        move |this, _event, _window, cx| {
-                            this.pop_stash(pop_selector.clone(), cx);
-                            cx.stop_propagation();
-                        },
-                    )),
-                )
-                .child(
-                    Button::new(SharedString::from(format!(
-                        "git-stash-drop-{}",
-                        stash.selector
-                    )))
-                    .size(ButtonSize::Icon(px(26.)))
-                    .variant(ButtonVariant::Ghost)
-                    .disabled(matches!(self.session.operation, OperationState::Running))
-                    .tooltip(i18n::text("git.drop_stash"))
-                    .icon(icons::icon(icons::IconName::Trash, 12.).text_color(theme::danger()))
-                    .on_click(cx.listener(
-                        move |this, _event, _window, cx| {
-                            this.request_drop_stash(drop_selector.clone(), cx);
-                            cx.stop_propagation();
-                        },
-                    )),
-                ),
-        )
+        .child(self.render_stash_header(stash))
+        .child(self.render_stash_actions(stash, cx))
         .on_click(cx.listener(move |this, _event, _window, cx| {
             this.select_stash(selector.clone(), cx);
-        }));
-        row.into_any_element()
+        }))
+        .into_any_element()
+    }
+
+    /// Stash 行首行：selector / 描述 / 日期。
+    fn render_stash_header(&self, stash: &StashSummary) -> AnyElement {
+        div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::accent())
+                    .child(SharedString::from(stash.selector.clone())),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::text())
+                    .child(SharedString::from(stash.message.clone())),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_xs()
+                    .text_color(theme::faint_text())
+                    .child(SharedString::from(stash.date.clone())),
+            )
+            .into_any_element()
+    }
+
+    /// Stash 行动作行：提交 id 文本 + apply / pop / drop 按钮。
+    fn render_stash_actions(&self, stash: &StashSummary, cx: &mut Context<Self>) -> AnyElement {
+        let apply_selector = stash.selector.clone();
+        let pop_selector = stash.selector.clone();
+        let drop_selector = stash.selector.clone();
+        let running = matches!(self.session.operation, OperationState::Running);
+        div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap_2()
+            .flex_wrap()
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_xs()
+                    .text_color(theme::faint_text())
+                    .child(SharedString::from(stash.id.clone())),
+            )
+            .child(
+                Button::new(SharedString::from(format!(
+                    "git-stash-apply-{}",
+                    stash.selector
+                )))
+                .size(ButtonSize::Small)
+                .variant(ButtonVariant::Secondary)
+                .disabled(running)
+                .label(i18n::text("git.apply_stash"))
+                .icon(icons::icon(icons::IconName::Download, 12.).text_color(theme::text()))
+                .on_click(cx.listener(move |this, _event, _window, cx| {
+                    this.apply_stash(apply_selector.clone(), cx);
+                    cx.stop_propagation();
+                })),
+            )
+            .child(
+                Button::new(SharedString::from(format!(
+                    "git-stash-pop-{}",
+                    stash.selector
+                )))
+                .size(ButtonSize::Small)
+                .variant(ButtonVariant::Ghost)
+                .disabled(running)
+                .label(i18n::text("git.pop_stash"))
+                .icon(icons::icon(icons::IconName::Upload, 12.).text_color(theme::muted_text()))
+                .on_click(cx.listener(move |this, _event, _window, cx| {
+                    this.pop_stash(pop_selector.clone(), cx);
+                    cx.stop_propagation();
+                })),
+            )
+            .child(
+                Button::new(SharedString::from(format!(
+                    "git-stash-drop-{}",
+                    stash.selector
+                )))
+                .size(ButtonSize::Icon(px(26.)))
+                .variant(ButtonVariant::Ghost)
+                .disabled(running)
+                .tooltip(i18n::text("git.drop_stash"))
+                .icon(icons::icon(icons::IconName::Trash, 12.).text_color(theme::danger()))
+                .on_click(cx.listener(move |this, _event, _window, cx| {
+                    this.request_drop_stash(drop_selector.clone(), cx);
+                    cx.stop_propagation();
+                })),
+            )
+            .into_any_element()
     }
 }
