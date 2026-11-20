@@ -459,36 +459,31 @@ impl AppShell {
     }
 }
 
-pub(crate) fn render_command_palette(
-    shell: &mut AppShell,
-    _window: &mut Window,
+/// 搜索输入（焦点归属）：截断由 handle_command_palette_key 内部保证，
+/// 此处不再重复 stop；未处理键继续冒泡到 shell 根节点作失焦兜底与屏蔽。
+fn render_palette_input(
+    focus: FocusHandle,
+    scroll: ScrollHandle,
+    query_state: &SharedTextState,
     cx: &mut Context<AppShell>,
-) -> AnyElement {
-    let Some(palette) = shell.command_palette.as_ref() else {
-        return div().into_any_element();
-    };
-    let filtered = palette.filtered();
-    let selected = palette.selected;
-    let focus = palette.focus.clone();
-    let scroll = palette.scroll.clone();
-    let query_state = SharedTextState::new(palette.query.value.clone())
-        .with_cursor(palette.query.cursor)
-        .with_anchor(palette.query.anchor)
-        .with_ime_marked_text(palette.query.ime_marked_text.clone())
-        .with_ime_replacement(palette.query.ime_replacement);
-
-    // 搜索输入（焦点归属）：截断由 handle_command_palette_key 内部保证，
-    // 此处不再重复 stop；未处理键继续冒泡到 shell 根节点作失焦兜底与屏蔽。
-    let input = ModalField::new("command-palette-input", focus.clone(), &query_state)
+) -> impl IntoElement + use<> {
+    ModalField::new("command-palette-input", focus, query_state)
         .placeholder("Type a command...".to_string())
         .entity(cx.entity())
         .scrollable(scroll)
         .on_key_down(cx.listener(|this, ev, window, cx| {
             this.handle_command_palette_key(ev, window, cx);
-        }));
+        }))
+}
 
-    let list = if filtered.is_empty() {
-        div()
+/// 过滤结果列表：空态提示，或可滚动的命令行集合。
+fn render_palette_list(
+    filtered: &[PaletteCommand],
+    selected: usize,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    if filtered.is_empty() {
+        return div()
             .flex_1()
             .flex()
             .items_center()
@@ -497,82 +492,69 @@ pub(crate) fn render_command_palette(
             .text_sm()
             .text_color(theme::faint_text())
             .child(SharedString::from("No matching commands"))
-            .into_any_element()
-    } else {
-        let mut container = div().flex_1().min_h_0().flex().flex_col().gap_1().p_2();
-        container.style().overflow.y = Some(gpui::Overflow::Scroll);
-        for (idx, cmd) in filtered.iter().enumerate() {
-            let is_selected = idx == selected;
-            let label = SharedString::from(cmd.label.clone());
-            let shortcut = cmd
-                .shortcut
-                .clone()
-                .map(SharedString::from)
-                .unwrap_or_default();
-            let icon = cmd.icon;
-            let row = div()
-                .id(SharedString::from(format!("palette-row-{idx}")))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .gap_2()
-                .px_3()
-                .h(px(36.))
-                .rounded(px(theme::RADIUS_SM))
-                .cursor_pointer()
-                .when(is_selected, |el| el.bg(theme::accent_soft()))
-                .hover(|s| s.bg(theme::raised()))
-                .child(icons::icon(icon, 14.).text_color(if is_selected {
-                    theme::accent()
-                } else {
-                    theme::muted_text()
-                }))
-                .child(
+            .into_any_element();
+    }
+
+    let mut container = div().flex_1().min_h_0().flex().flex_col().gap_1().p_2();
+    container.style().overflow.y = Some(gpui::Overflow::Scroll);
+    for (idx, cmd) in filtered.iter().enumerate() {
+        let is_selected = idx == selected;
+        let label = SharedString::from(cmd.label.clone());
+        let shortcut = cmd
+            .shortcut
+            .clone()
+            .map(SharedString::from)
+            .unwrap_or_default();
+        let icon = cmd.icon;
+        let row = div()
+            .id(SharedString::from(format!("palette-row-{idx}")))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .h(px(36.))
+            .rounded(px(theme::RADIUS_SM))
+            .cursor_pointer()
+            .when(is_selected, |el| el.bg(theme::accent_soft()))
+            .hover(|s| s.bg(theme::raised()))
+            .child(icons::icon(icon, 14.).text_color(if is_selected {
+                theme::accent()
+            } else {
+                theme::muted_text()
+            }))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_sm()
+                    .text_color(theme::text())
+                    .child(label),
+            )
+            .when(!shortcut.is_empty(), |el| {
+                el.child(
                     div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_sm()
-                        .text_color(theme::text())
-                        .child(label),
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(theme::faint_text())
+                        .child(shortcut),
                 )
-                .when(!shortcut.is_empty(), |el| {
-                    el.child(
-                        div()
-                            .flex_shrink_0()
-                            .text_xs()
-                            .text_color(theme::faint_text())
-                            .child(shortcut),
-                    )
-                })
-                .on_click(cx.listener(move |this, _ev, window, cx| {
-                    // 点击直接执行该项
-                    if let Some(palette) = this.command_palette.as_mut() {
-                        palette.selected = idx;
-                    }
-                    this.execute_palette_selected(window, cx);
-                }));
-            container = container.child(row);
-        }
-        container.into_any_element()
-    };
+            })
+            .on_click(cx.listener(move |this, _ev, window, cx| {
+                // 点击直接执行该项
+                if let Some(palette) = this.command_palette.as_mut() {
+                    palette.selected = idx;
+                }
+                this.execute_palette_selected(window, cx);
+            }));
+        container = container.child(row);
+    }
+    container.into_any_element()
+}
 
-    let header = div().flex_shrink_0().px_3().pt_3().pb_2().child(input);
-
-    let card = div()
-        .w(px(560.))
-        .max_h(px(420.))
-        .flex()
-        .flex_col()
-        .bg(theme::surface())
-        .border_1()
-        .border_color(theme::border_strong())
-        .rounded(px(theme::RADIUS_MD))
-        .shadow_lg()
-        .child(header)
-        .child(div().h(px(1.)).w_full().flex_shrink_0().bg(theme::border()))
-        .child(list);
-
+/// 面板遮罩：点击背景关闭面板，卡片内点击阻止冒泡。
+fn render_palette_scrim(card: impl IntoElement, cx: &mut Context<AppShell>) -> AnyElement {
     div()
         .id("command-palette-scrim")
         .absolute()
@@ -600,6 +582,46 @@ pub(crate) fn render_command_palette(
                 .child(card),
         )
         .into_any_element()
+}
+
+pub(crate) fn render_command_palette(
+    shell: &mut AppShell,
+    _window: &mut Window,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    let Some(palette) = shell.command_palette.as_ref() else {
+        return div().into_any_element();
+    };
+    let filtered = palette.filtered();
+    let selected = palette.selected;
+    let focus = palette.focus.clone();
+    let scroll = palette.scroll.clone();
+    let query_state = SharedTextState::new(palette.query.value.clone())
+        .with_cursor(palette.query.cursor)
+        .with_anchor(palette.query.anchor)
+        .with_ime_marked_text(palette.query.ime_marked_text.clone())
+        .with_ime_replacement(palette.query.ime_replacement);
+
+    let input = render_palette_input(focus, scroll, &query_state, cx);
+    let list = render_palette_list(&filtered, selected, cx);
+
+    let header = div().flex_shrink_0().px_3().pt_3().pb_2().child(input);
+
+    let card = div()
+        .w(px(560.))
+        .max_h(px(420.))
+        .flex()
+        .flex_col()
+        .bg(theme::surface())
+        .border_1()
+        .border_color(theme::border_strong())
+        .rounded(px(theme::RADIUS_MD))
+        .shadow_lg()
+        .child(header)
+        .child(div().h(px(1.)).w_full().flex_shrink_0().bg(theme::border()))
+        .child(list);
+
+    render_palette_scrim(card, cx)
 }
 
 #[cfg(test)]
