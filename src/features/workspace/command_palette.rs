@@ -122,8 +122,17 @@ impl PaletteCommand {
     }
 }
 
-/// 静态命令列表（MVP）。
+/// 静态命令列表（MVP）。按展示顺序拼接各分组，顺序即面板顺序。
 pub(crate) fn palette_commands() -> Vec<PaletteCommand> {
+    let mut commands = terminal_commands();
+    commands.extend(workspace_commands());
+    commands.extend(split_commands());
+    commands.extend(viewer_commands());
+    commands
+}
+
+/// 终端与项目入口。
+fn terminal_commands() -> Vec<PaletteCommand> {
     vec![
         PaletteCommand {
             id: "new_terminal",
@@ -149,6 +158,12 @@ pub(crate) fn palette_commands() -> Vec<PaletteCommand> {
             shortcut: Some("⌘W".into()),
             keywords: &[],
         },
+    ]
+}
+
+/// 侧栏、时间戳、临时终端与设置等开关类命令。
+fn workspace_commands() -> Vec<PaletteCommand> {
+    vec![
         PaletteCommand {
             id: "toggle_host_sidebar",
             label: i18n::text("app_menu.toggle_host_sidebar"),
@@ -181,6 +196,12 @@ pub(crate) fn palette_commands() -> Vec<PaletteCommand> {
             shortcut: Some("⌘,".into()),
             keywords: &[],
         },
+    ]
+}
+
+/// 分栏与外部编辑器。
+fn split_commands() -> Vec<PaletteCommand> {
+    vec![
         PaletteCommand {
             id: "split_horizontal",
             label: i18n::text("palette.split_horizontal"),
@@ -205,6 +226,12 @@ pub(crate) fn palette_commands() -> Vec<PaletteCommand> {
             shortcut: None,
             keywords: &[],
         },
+    ]
+}
+
+/// Git 查看器、笔记、退出与窗口缩放。
+fn viewer_commands() -> Vec<PaletteCommand> {
+    vec![
         PaletteCommand {
             id: "open_git_viewer",
             label: i18n::text("palette.open_git_viewer"),
