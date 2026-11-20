@@ -733,6 +733,12 @@ impl GitWindow {
                 .into_any_element();
         };
         let key = ChangeKey::from(entry);
+        let staged = entry.staged;
+        let path = entry.path.clone();
+        let status = entry.status;
+        let insertions = entry.insertions;
+        let deletions = entry.deletions;
+
         let header = pane_toolbar()
             .when(compact, |header| {
                 header.child(
@@ -756,16 +762,16 @@ impl GitWindow {
                     .text_sm()
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme::text())
-                    .child(SharedString::from(entry.path.clone())),
+                    .child(SharedString::from(path.clone())),
             )
-            .child(status_glyph(entry.status))
+            .child(status_glyph(status))
             .child(
-                Badge::new(if entry.staged {
+                Badge::new(if staged {
                     i18n::text("git.staged")
                 } else {
                     i18n::text("git.working")
                 })
-                .tone(if entry.staged {
+                .tone(if staged {
                     BadgeTone::Success
                 } else {
                     BadgeTone::Neutral
@@ -779,118 +785,13 @@ impl GitWindow {
                     .text_color(theme::muted_text())
                     .child(SharedString::from(format!(
                         "+{} −{}",
-                        entry.insertions, entry.deletions
+                        insertions, deletions
                     ))),
             );
 
-        let body = match &self.session.diff {
-            DiffState::Idle => Hint::new(i18n::text("git.no_selection"))
-                .centered()
-                .into_any_element(),
-            DiffState::Loading(loading_key) if loading_key == &key => {
-                Hint::new(i18n::text("git.loading"))
-                    .centered()
-                    .into_any_element()
-            }
-            DiffState::Ready(ready_key, Some(file_diff))
-                if ready_key == &key && file_diff.binary =>
-            {
-                Hint::new(i18n::text("git.binary"))
-                    .centered()
-                    .into_any_element()
-            }
-            DiffState::Ready(ready_key, Some(file_diff))
-                if ready_key == &key && file_diff.lines.is_empty() =>
-            {
-                Hint::new(i18n::text("git.no_diff"))
-                    .centered()
-                    .into_any_element()
-            }
-            DiffState::Ready(ready_key, Some(file_diff)) if ready_key == &key => {
-                let content_width = diff_content_width(file_diff);
-                let key = key.clone();
-                let staged = entry.staged;
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .min_w_0()
-                    .relative()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        uniform_list(
-                            if compact {
-                                "git-diff-scroll-compact"
-                            } else {
-                                "git-diff-scroll"
-                            },
-                            file_diff.lines.len(),
-                            cx.processor(
-                                move |this, range: std::ops::Range<usize>, _window, cx| match &this
-                                    .session
-                                    .diff
-                                {
-                                    DiffState::Ready(ready_key, Some(file_diff))
-                                        if ready_key == &key =>
-                                    {
-                                        file_diff.lines[range]
-                                            .iter()
-                                            .map(|line| {
-                                                let hunk_action = (line.kind == DiffLineKind::Hunk)
-                                                    .then_some(line.hunk_index)
-                                                    .flatten()
-                                                    .map(|hunk_index| {
-                                                        this.render_hunk_action(
-                                                            staged, hunk_index, cx,
-                                                        )
-                                                    });
-                                                render_diff_line(line, content_width, hunk_action)
-                                            })
-                                            .collect::<Vec<_>>()
-                                    }
-                                    _ => Vec::new(),
-                                },
-                            ),
-                        )
-                        .track_scroll(&self.diff_scroll)
-                        .flex_1()
-                        .size_full()
-                        .min_w_0()
-                        .font_family("Lilex")
-                        .with_sizing_behavior(ListSizingBehavior::Auto)
-                        .with_horizontal_sizing_behavior(
-                            ListHorizontalSizingBehavior::Unconstrained,
-                        ),
-                    )
-                    // 常显、加粗的横向滚动条：长行只靠 Shift+滚轮发现不了。
-                    .child(
-                        div().absolute().inset_0().child(
-                            Scrollbar::horizontal(&self.diff_scroll)
-                                .id("git-diff-scrollbar")
-                                .mode(ScrollbarMode::Always)
-                                .styles(|styles| {
-                                    styles.thumb(|thumb| thumb.width(px(6.)).bg(theme::accent()))
-                                })
-                                .viewport_from_layout(),
-                        ),
-                    )
-                    .into_any_element()
-            }
-            DiffState::Ready(ready_key, None) if ready_key == &key => {
-                Hint::new(i18n::text("git.no_diff"))
-                    .centered()
-                    .into_any_element()
-            }
-            DiffState::Error(error_key, message) if error_key == &key => {
-                Hint::new(message.clone()).centered().into_any_element()
-            }
-            _ => Hint::new(i18n::text("git.loading"))
-                .centered()
-                .into_any_element(),
-        };
-
-        let conflict_actions = (entry.status == ChangeStatus::Conflict)
-            .then(|| self.render_conflict_actions(compact, entry.path.clone(), cx));
+        let body = self.render_diff_body(&key, staged, compact, cx);
+        let conflict_actions = (status == ChangeStatus::Conflict)
+            .then(|| self.render_conflict_actions(compact, path, cx));
 
         div()
             .flex_1()
@@ -902,6 +803,133 @@ impl GitWindow {
             .child(header)
             .when_some(conflict_actions, |panel, actions| panel.child(actions))
             .child(body)
+            .into_any_element()
+    }
+
+    /// 按当前 diff 状态渲染面板主体。
+    ///
+    /// 提示分支提前返回，避免在借用 `self.session.diff` 的同时调用
+    /// 需要 `&mut self` 的 diff 行列表渲染。
+    fn render_diff_body(
+        &mut self,
+        key: &ChangeKey,
+        staged: bool,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (content_width, line_count) = match &self.session.diff {
+            DiffState::Idle => {
+                return Hint::new(i18n::text("git.no_selection"))
+                    .centered()
+                    .into_any_element();
+            }
+            DiffState::Loading(loading_key) if loading_key == key => {
+                return Hint::new(i18n::text("git.loading"))
+                    .centered()
+                    .into_any_element();
+            }
+            DiffState::Ready(ready_key, Some(file_diff))
+                if ready_key == key && file_diff.binary =>
+            {
+                return Hint::new(i18n::text("git.binary"))
+                    .centered()
+                    .into_any_element();
+            }
+            DiffState::Ready(ready_key, Some(file_diff))
+                if ready_key == key && file_diff.lines.is_empty() =>
+            {
+                return Hint::new(i18n::text("git.no_diff"))
+                    .centered()
+                    .into_any_element();
+            }
+            DiffState::Ready(ready_key, Some(file_diff)) if ready_key == key => {
+                (diff_content_width(file_diff), file_diff.lines.len())
+            }
+            DiffState::Ready(ready_key, None) if ready_key == key => {
+                return Hint::new(i18n::text("git.no_diff"))
+                    .centered()
+                    .into_any_element();
+            }
+            DiffState::Error(error_key, message) if error_key == key => {
+                return Hint::new(message.clone()).centered().into_any_element();
+            }
+            _ => {
+                return Hint::new(i18n::text("git.loading"))
+                    .centered()
+                    .into_any_element();
+            }
+        };
+        self.render_diff_lines(key, staged, content_width, line_count, compact, cx)
+    }
+
+    fn render_diff_lines(
+        &mut self,
+        key: &ChangeKey,
+        staged: bool,
+        content_width: Pixels,
+        line_count: usize,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let key = key.clone();
+        div()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .relative()
+            .flex()
+            .flex_col()
+            .child(
+                uniform_list(
+                    if compact {
+                        "git-diff-scroll-compact"
+                    } else {
+                        "git-diff-scroll"
+                    },
+                    line_count,
+                    cx.processor(
+                        move |this, range: std::ops::Range<usize>, _window, cx| match &this
+                            .session
+                            .diff
+                        {
+                            DiffState::Ready(ready_key, Some(file_diff)) if ready_key == &key => {
+                                file_diff.lines[range]
+                                    .iter()
+                                    .map(|line| {
+                                        let hunk_action = (line.kind == DiffLineKind::Hunk)
+                                            .then_some(line.hunk_index)
+                                            .flatten()
+                                            .map(|hunk_index| {
+                                                this.render_hunk_action(staged, hunk_index, cx)
+                                            });
+                                        render_diff_line(line, content_width, hunk_action)
+                                    })
+                                    .collect::<Vec<_>>()
+                            }
+                            _ => Vec::new(),
+                        },
+                    ),
+                )
+                .track_scroll(&self.diff_scroll)
+                .flex_1()
+                .size_full()
+                .min_w_0()
+                .font_family("Lilex")
+                .with_sizing_behavior(ListSizingBehavior::Auto)
+                .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained),
+            )
+            // 常显、加粗的横向滚动条：长行只靠 Shift+滚轮发现不了。
+            .child(
+                div().absolute().inset_0().child(
+                    Scrollbar::horizontal(&self.diff_scroll)
+                        .id("git-diff-scrollbar")
+                        .mode(ScrollbarMode::Always)
+                        .styles(|styles| {
+                            styles.thumb(|thumb| thumb.width(px(6.)).bg(theme::accent()))
+                        })
+                        .viewport_from_layout(),
+                ),
+            )
             .into_any_element()
     }
 
