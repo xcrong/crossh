@@ -78,6 +78,8 @@ use crate::alacritty::{
 };
 use crate::mappings::colors::to_vte_rgb;
 use crate::mappings::keys::to_esc_str;
+#[cfg(not(windows))]
+use alacritty_terminal::tty;
 use crossh_terminal::{ProgramState, ProgramStatus, StatusUpdate};
 
 /// Process-wide flag set by headless hosts (e.g. the eval CLI) that have no
@@ -962,6 +964,426 @@ impl TerminalMode {
     }
 }
 
+#[derive(Default)]
+struct ShellParams {
+    program: String,
+    args: Option<Vec<String>>,
+    title_override: Option<String>,
+}
+
+impl ShellParams {
+    fn new(program: String, args: Option<Vec<String>>, title_override: Option<String>) -> Self {
+        log::debug!("Using {program} as shell");
+        Self {
+            program,
+            args,
+            title_override,
+        }
+    }
+}
+
+fn shell_params(shell: &Shell) -> Option<ShellParams> {
+    match shell.clone() {
+        Shell::System => {
+            if cfg!(windows) {
+                Some(ShellParams::new(
+                    shell::get_windows_system_shell(),
+                    None,
+                    None,
+                ))
+            } else {
+                None
+            }
+        }
+        Shell::Program(program) => Some(ShellParams::new(program, None, None)),
+        Shell::WithArguments {
+            program,
+            args,
+            title_override,
+        } => Some(ShellParams::new(program, Some(args), title_override)),
+    }
+}
+
+struct ShellSetup {
+    params: Option<ShellParams>,
+    title_override: Option<String>,
+    kind: ShellKind,
+    #[cfg(windows)]
+    program: Option<String>,
+}
+
+fn prepare_shell(shell: &Shell, env: &mut HashMap<String, String>, version: &str) -> ShellSetup {
+    prepare_terminal_env(env, version);
+    let params = shell_params(shell);
+    let title_override = params.as_ref().and_then(|e| e.title_override.clone());
+    #[cfg(windows)]
+    let program = resolve_shell_program(&params);
+
+    // Note: when remoting, this shell_kind will scrutinize `ssh` or
+    // `wsl.exe` as a shell and fall back to posix or powershell based on
+    // the compilation target. This is fine right now due to the restricted
+    // way we use the return value, but would become incorrect if we
+    // supported remoting into windows.
+    let kind = shell.shell_kind(cfg!(windows));
+    ShellSetup {
+        params,
+        title_override,
+        kind,
+        #[cfg(windows)]
+        program,
+    }
+}
+
+fn prepare_terminal_env(env: &mut HashMap<String, String>, version: &str) {
+    // Remove SHLVL so the spawned shell initializes it to 1, matching
+    // the behavior of standalone terminal emulators like iTerm2/Kitty/Alacritty.
+    env.remove("SHLVL");
+
+    // If the parent environment doesn't have a locale set
+    // (As is the case when launched from a .app on MacOS),
+    // and the Project doesn't have a locale set, then
+    // set a fallback for our child environment to use.
+    if std::env::var("LANG").is_err() {
+        env.entry("LANG".to_string())
+            .or_insert_with(|| "en_US.UTF-8".to_string());
+    }
+
+    insert_zed_terminal_env(env, &version);
+}
+
+fn scrolling_history(task_is_some: bool, max_scroll_history_lines: Option<usize>) -> usize {
+    if task_is_some {
+        // Tasks like `cargo build --all` may produce a lot of output, ergo allow maximum scrolling.
+        // After the task finishes, we do not allow appending to that terminal, so small tasks output should not
+        // cause excessive memory usage over time.
+        MAX_SCROLL_HISTORY_LINES
+    } else {
+        max_scroll_history_lines
+            .unwrap_or(DEFAULT_SCROLL_HISTORY_LINES)
+            .min(MAX_SCROLL_HISTORY_LINES)
+    }
+}
+
+struct TermSetup {
+    config: AlacrittyTermConfig,
+    term: Arc<AlacrittyTermLock>,
+    events_tx: futures::channel::mpsc::UnboundedSender<PtyEvent>,
+    events_rx: UnboundedReceiver<PtyEvent>,
+    reply_gate: Arc<AtomicBool>,
+}
+
+fn setup_term(
+    scrolling_history: usize,
+    cursor_shape: SettingsCursorShape,
+    alternate_scroll: AlternateScroll,
+) -> TermSetup {
+    let config = pty_term_config(scrolling_history, cursor_shape);
+    // Spawn a task so the Alacritty EventLoop (or the subprocess reader) can communicate with us
+    // TODO: Remove with a bounded sender which can be dispatched on &self
+    let (events_tx, events_rx) = unbounded();
+    let reply_gate = Arc::new(AtomicBool::new(false));
+    // Set up the terminal...
+    let term = new_term(
+        &config,
+        TerminalBounds::default(),
+        events_tx.clone(),
+        alternate_scroll,
+        reply_gate.clone(),
+    );
+    TermSetup {
+        config,
+        term,
+        events_tx,
+        events_rx,
+        reply_gate,
+    }
+}
+
+struct BackendContext {
+    shell_params: Option<ShellParams>,
+    working_directory: Option<PathBuf>,
+    env: HashMap<String, String>,
+    window_id: u64,
+    #[cfg(windows)]
+    shell_kind: ShellKind,
+    #[cfg(not(windows))]
+    child_signal_mask: Option<tty::SignalMask>,
+}
+
+fn spawn_headless_backend(
+    context: BackendContext,
+    title_override: &Option<String>,
+    term: Arc<AlacrittyTermLock>,
+    events_tx: futures::channel::mpsc::UnboundedSender<PtyEvent>,
+    background_executor: &BackgroundExecutor,
+) -> Result<(TerminalType, Option<SubprocessHandle>)> {
+    let (program, args) = match &context.shell_params {
+        Some(params) => (
+            params.program.clone(),
+            params.args.clone().unwrap_or_default(),
+        ),
+        None => (shell::get_system_shell(), Vec::new()),
+    };
+    let subprocess = match spawn_task_subprocess(
+        program,
+        args,
+        context.env.clone(),
+        context.working_directory.clone(),
+        term,
+        events_tx,
+        background_executor,
+    ) {
+        Ok(subprocess) => subprocess,
+        Err(error) => {
+            bail!(TerminalError {
+                directory: context.working_directory,
+                program: context
+                    .shell_params
+                    .as_ref()
+                    .map(|params| params.program.clone()),
+                args: context
+                    .shell_params
+                    .as_ref()
+                    .and_then(|params| params.args.clone()),
+                title_override: title_override.clone(),
+                source: std::io::Error::other(format!("{error:#}")),
+            });
+        }
+    };
+    Ok((TerminalType::DisplayOnly, Some(subprocess)))
+}
+
+fn spawn_pty_backend(
+    context: BackendContext,
+    title_override: &Option<String>,
+    term: Arc<AlacrittyTermLock>,
+    events_tx: futures::channel::mpsc::UnboundedSender<PtyEvent>,
+) -> Result<TerminalType> {
+    let alacritty_shell = context.shell_params.as_ref().map(|params| {
+        (
+            params.program.clone(),
+            params.args.clone().unwrap_or_default(),
+        )
+    });
+    let pty_options = pty_options(
+        alacritty_shell,
+        context.working_directory.clone(),
+        context.env.clone(),
+        // We pass in the foreground thread's signal mask to the child process via pty_options,
+        // so terminal construction can run on a background thread without breaking Ctrl-C and other signals
+        // otherwise the terminal would inherit the background executor's signal mask which blocks
+        // some terminal signals
+        #[cfg(not(windows))]
+        context.child_signal_mask,
+        #[cfg(windows)]
+        context.shell_kind.tty_escape_args(),
+    );
+
+    // Setup the pty...
+    let pty = match open_pty(&pty_options, TerminalBounds::default(), context.window_id) {
+        Ok(pty) => pty,
+        Err(error) => {
+            bail!(TerminalError {
+                directory: context.working_directory,
+                program: context
+                    .shell_params
+                    .as_ref()
+                    .map(|params| params.program.clone()),
+                args: context
+                    .shell_params
+                    .as_ref()
+                    .and_then(|params| params.args.clone()),
+                title_override: title_override.clone(),
+                source: error,
+            });
+        }
+    };
+
+    let pty_info = PtyProcessInfo::new(ProcessIdGetter::from(&pty));
+
+    // And connect them together
+    let pty_tx = spawn_event_loop(term.clone(), events_tx, pty, pty_options.drain_on_exit)?;
+
+    Ok(TerminalType::Pty {
+        resources: PtyResources::Active(pty_tx),
+        info: Arc::new(pty_info),
+    })
+}
+
+fn spawn_backend(
+    no_pty: bool,
+    context: BackendContext,
+    title_override: &Option<String>,
+    term: Arc<AlacrittyTermLock>,
+    events_tx: futures::channel::mpsc::UnboundedSender<PtyEvent>,
+    background_executor: &BackgroundExecutor,
+) -> Result<(TerminalType, Option<SubprocessHandle>)> {
+    // When `no_pty` is set (headless hosts), run the task as a plain
+    // subprocess and pump its piped output into the same emulator the
+    // PTY path would feed.
+    if no_pty {
+        spawn_headless_backend(
+            context,
+            title_override,
+            term,
+            events_tx,
+            background_executor,
+        )
+    } else {
+        Ok((
+            spawn_pty_backend(context, title_override, term, events_tx)?,
+            None,
+        ))
+    }
+}
+
+fn terminal_cwd_history(
+    is_remote_terminal: bool,
+    working_directory: Option<&PathBuf>,
+) -> Vec<CwdHistoryEntry> {
+    if is_remote_terminal {
+        Vec::new()
+    } else {
+        working_directory
+            .map(|working_directory| {
+                vec![CwdHistoryEntry {
+                    scrollback_position: i32::MIN,
+                    working_directory: working_directory.clone(),
+                }]
+            })
+            .unwrap_or_default()
+    }
+}
+
+struct TerminalBuildOptions {
+    task: Option<TaskState>,
+    terminal_type: TerminalType,
+    subprocess: Option<SubprocessHandle>,
+    completion_tx: Option<Sender<Option<ExitStatus>>>,
+    term: Arc<AlacrittyTermLock>,
+    config: AlacrittyTermConfig,
+    terminal_title_override: Option<String>,
+    path_hyperlink_regexes: Vec<String>,
+    path_hyperlink_timeout: Duration,
+    is_remote_terminal: bool,
+    shell: Shell,
+    reply_gate: Arc<AtomicBool>,
+    background_executor: BackgroundExecutor,
+    path_style: PathStyle,
+    cwd_history: Vec<CwdHistoryEntry>,
+    #[cfg(windows)]
+    shell_program: Option<String>,
+}
+
+fn assemble_terminal(options: TerminalBuildOptions) -> Terminal {
+    Terminal {
+        task: options.task,
+        terminal_type: options.terminal_type,
+        subprocess: options.subprocess,
+        completion_tx: options.completion_tx,
+        term: options.term,
+        term_config: options.config,
+        output_processor: Processor::<StdSyncHandler>::new(),
+        title_override: options.terminal_title_override,
+        events: VecDeque::with_capacity(10), //Should never get this high.
+        last_content: Default::default(),
+        last_mouse: None,
+        mouse_down_position: None,
+        matches: Vec::new(),
+
+        selection_head: None,
+        breadcrumb_text: String::new(),
+        program_status: None,
+        scroll_px: px(0.),
+        next_link_id: 0,
+        selection_phase: SelectionPhase::Ended,
+        hyperlink_regex_searches: RegexSearches::new(
+            &options.path_hyperlink_regexes,
+            options.path_hyperlink_timeout,
+        ),
+        vi_mode_enabled: false,
+        is_remote_terminal: options.is_remote_terminal,
+        remote_working_directory: None,
+        replaying_remote: false,
+        reply_gate: options.reply_gate,
+        last_mouse_move_time: Instant::now(),
+        last_hyperlink_search_position: None,
+        mouse_down_hyperlink: None,
+        #[cfg(windows)]
+        shell_program: options.shell_program,
+        template: CopyTemplate {
+            shell: options.shell,
+        },
+        child_exited: None,
+        keyboard_input_sent: false,
+        init_command_startup_marker: None,
+        init_command_startup_tx: None,
+        event_loop_task: Task::ready(Ok(())),
+        background_executor: options.background_executor,
+        path_style: options.path_style,
+        cwd_history: options.cwd_history,
+        pending_cwd_boundary: None,
+        #[cfg(any(test, feature = "test-support"))]
+        input_log: Vec::new(),
+        #[cfg(test)]
+        suppress_hyperlink_throttle_once: false,
+        #[cfg(any(test, feature = "test-support"))]
+        pty_write_log: Default::default(),
+    }
+}
+
+fn write_activation_script(terminal: &Terminal, scripts: Vec<String>, shell_kind: ShellKind) {
+    for activation_script in scripts {
+        terminal.write_to_pty(activation_script.into_bytes());
+        // Simulate enter key press
+        // NOTE(PowerShell): using `\r\n` will put PowerShell in a continuation mode (infamous >> character)
+        // and generally mess up the rendering.
+        terminal.write_to_pty(b"\x0d");
+    }
+    // In order to clear the screen at this point, we have two options:
+    // 1. We can send a shell-specific command such as "clear" or "cls"
+    // 2. We can "echo" a marker message that we will then catch when handling a Wakeup event
+    //    and clear the screen using `terminal.clear()` method
+    // We cannot issue a `terminal.clear()` command at this point as alacritty is evented
+    // and while we have sent the activation script to the pty, it will be executed asynchronously.
+    // Therefore, we somehow need to wait for the activation script to finish executing before we
+    // can proceed with clearing the screen.
+    terminal.write_to_pty(shell_kind.clear_screen_command().as_bytes());
+    // Simulate enter key press
+    terminal.write_to_pty(b"\x0d");
+}
+
+fn terminal_mode_parts(
+    mode: TerminalMode,
+) -> (Option<TaskState>, Option<Sender<Option<ExitStatus>>>) {
+    match mode.0 {
+        TerminalModeKind::Interactive => (None, None),
+        TerminalModeKind::InteractiveWithCompletion(completion_tx) => (None, Some(completion_tx)),
+        TerminalModeKind::Task {
+            state,
+            completion_tx,
+        } => (Some(state), Some(completion_tx)),
+    }
+}
+
+#[cfg(not(windows))]
+fn capture_child_signal_mask() -> Result<Option<tty::SignalMask>> {
+    current_child_signal_mask()
+        .map(Some)
+        .context("failed to capture terminal child signal mask")
+}
+
+#[cfg(windows)]
+fn resolve_shell_program(shell_params: &Option<ShellParams>) -> Option<String> {
+    use crate::result_ext::ResultExt;
+
+    shell_params.as_ref().map(|params| {
+        TerminalBuilder::resolve_path(&params.program)
+            .log_err()
+            .unwrap_or(params.program.clone())
+    })
+}
+
 pub struct TerminalBuilder {
     terminal: Terminal,
     events_rx: UnboundedReceiver<PtyEvent>,
@@ -1127,291 +1549,67 @@ impl TerminalBuilder {
         // When set, run the command as a plain subprocess instead.
         let no_pty = HeadlessTerminal::is_enabled(cx);
         #[cfg(not(windows))]
-        let child_signal_mask = match current_child_signal_mask()
-            .context("failed to capture terminal child signal mask")
-        {
-            Ok(signal_mask) => Some(signal_mask),
+        let child_signal_mask = match capture_child_signal_mask() {
+            Ok(signal_mask) => signal_mask,
             Err(error) => return Task::ready(Err(error)),
         };
         let fut = async move {
-            let (task, completion_tx) = match mode.0 {
-                TerminalModeKind::Interactive => (None, None),
-                TerminalModeKind::InteractiveWithCompletion(completion_tx) => {
-                    (None, Some(completion_tx))
-                }
-                TerminalModeKind::Task {
-                    state,
-                    completion_tx,
-                } => (Some(state), Some(completion_tx)),
+            let (task, completion_tx) = terminal_mode_parts(mode);
+
+            let shell_setup = prepare_shell(&shell, &mut env, version);
+
+            let scrolling_history = scrolling_history(task.is_some(), max_scroll_history_lines);
+            let TermSetup {
+                config,
+                term,
+                events_tx,
+                events_rx,
+                reply_gate,
+            } = setup_term(scrolling_history, cursor_shape, alternate_scroll);
+            let cwd_history = terminal_cwd_history(is_remote_terminal, working_directory.as_ref());
+            let backend = BackendContext {
+                shell_params: shell_setup.params,
+                working_directory,
+                env,
+                window_id,
+                #[cfg(windows)]
+                shell_kind: shell_setup.kind,
+                #[cfg(not(windows))]
+                child_signal_mask,
             };
 
-            // Remove SHLVL so the spawned shell initializes it to 1, matching
-            // the behavior of standalone terminal emulators like iTerm2/Kitty/Alacritty.
-            env.remove("SHLVL");
-
-            // If the parent environment doesn't have a locale set
-            // (As is the case when launched from a .app on MacOS),
-            // and the Project doesn't have a locale set, then
-            // set a fallback for our child environment to use.
-            if std::env::var("LANG").is_err() {
-                env.entry("LANG".to_string())
-                    .or_insert_with(|| "en_US.UTF-8".to_string());
-            }
-
-            insert_zed_terminal_env(&mut env, &version);
-
-            #[derive(Default)]
-            struct ShellParams {
-                program: String,
-                args: Option<Vec<String>>,
-                title_override: Option<String>,
-            }
-
-            impl ShellParams {
-                fn new(
-                    program: String,
-                    args: Option<Vec<String>>,
-                    title_override: Option<String>,
-                ) -> Self {
-                    log::debug!("Using {program} as shell");
-                    Self {
-                        program,
-                        args,
-                        title_override,
-                    }
-                }
-            }
-
-            let shell_params = match shell.clone() {
-                Shell::System => {
-                    if cfg!(windows) {
-                        Some(ShellParams::new(
-                            shell::get_windows_system_shell(),
-                            None,
-                            None,
-                        ))
-                    } else {
-                        None
-                    }
-                }
-                Shell::Program(program) => Some(ShellParams::new(program, None, None)),
-                Shell::WithArguments {
-                    program,
-                    args,
-                    title_override,
-                } => Some(ShellParams::new(program, Some(args), title_override)),
-            };
-            let terminal_title_override =
-                shell_params.as_ref().and_then(|e| e.title_override.clone());
-
-            #[cfg(windows)]
-            let shell_program = shell_params.as_ref().map(|params| {
-                use crate::result_ext::ResultExt;
-
-                Self::resolve_path(&params.program)
-                    .log_err()
-                    .unwrap_or(params.program.clone())
-            });
-
-            // Note: when remoting, this shell_kind will scrutinize `ssh` or
-            // `wsl.exe` as a shell and fall back to posix or powershell based on
-            // the compilation target. This is fine right now due to the restricted
-            // way we use the return value, but would become incorrect if we
-            // supported remoting into windows.
-            let shell_kind = shell.shell_kind(cfg!(windows));
-
-            let scrolling_history = if task.is_some() {
-                // Tasks like `cargo build --all` may produce a lot of output, ergo allow maximum scrolling.
-                // After the task finishes, we do not allow appending to that terminal, so small tasks output should not
-                // cause excessive memory usage over time.
-                MAX_SCROLL_HISTORY_LINES
-            } else {
-                max_scroll_history_lines
-                    .unwrap_or(DEFAULT_SCROLL_HISTORY_LINES)
-                    .min(MAX_SCROLL_HISTORY_LINES)
-            };
-            let config = pty_term_config(scrolling_history, cursor_shape);
-
-            //Spawn a task so the Alacritty EventLoop (or the subprocess reader) can communicate with us
-            //TODO: Remove with a bounded sender which can be dispatched on &self
-            let (events_tx, events_rx) = unbounded();
-            let reply_gate = Arc::new(AtomicBool::new(false));
-            //Set up the terminal...
-            let term = new_term(
-                &config,
-                TerminalBounds::default(),
-                events_tx.clone(),
-                alternate_scroll,
-                reply_gate.clone(),
-            );
-
-            // When `no_pty` is set (headless hosts), run the task as a plain
-            // subprocess and pump its piped output into the same emulator the
-            // PTY path would feed.
-            let (terminal_type, subprocess) = if no_pty {
-                let (program, args) = match &shell_params {
-                    Some(params) => (
-                        params.program.clone(),
-                        params.args.clone().unwrap_or_default(),
-                    ),
-                    None => (shell::get_system_shell(), Vec::new()),
-                };
-                let subprocess = match spawn_task_subprocess(
-                    program,
-                    args,
-                    env.clone(),
-                    working_directory.clone(),
-                    term.clone(),
-                    events_tx,
-                    &background_executor,
-                ) {
-                    Ok(subprocess) => subprocess,
-                    Err(error) => {
-                        bail!(TerminalError {
-                            directory: working_directory,
-                            program: shell_params.as_ref().map(|params| params.program.clone()),
-                            args: shell_params.as_ref().and_then(|params| params.args.clone()),
-                            title_override: terminal_title_override,
-                            source: std::io::Error::other(format!("{error:#}")),
-                        });
-                    }
-                };
-                (TerminalType::DisplayOnly, Some(subprocess))
-            } else {
-                let alacritty_shell = shell_params.as_ref().map(|params| {
-                    (
-                        params.program.clone(),
-                        params.args.clone().unwrap_or_default(),
-                    )
-                });
-                let pty_options = pty_options(
-                    alacritty_shell,
-                    working_directory.clone(),
-                    env.clone(),
-                    // We pass in the foreground thread's signal mask to the child process via pty_options,
-                    // so terminal construction can run on a background thread without breaking Ctrl-C and other signals
-                    // otherwise the terminal would inherit the background executor's signal mask which blocks
-                    // some terminal signals
-                    #[cfg(not(windows))]
-                    child_signal_mask,
-                    #[cfg(windows)]
-                    shell_kind.tty_escape_args(),
-                );
-
-                //Setup the pty...
-                let pty = match open_pty(&pty_options, TerminalBounds::default(), window_id) {
-                    Ok(pty) => pty,
-                    Err(error) => {
-                        bail!(TerminalError {
-                            directory: working_directory,
-                            program: shell_params.as_ref().map(|params| params.program.clone()),
-                            args: shell_params.as_ref().and_then(|params| params.args.clone()),
-                            title_override: terminal_title_override,
-                            source: error,
-                        });
-                    }
-                };
-
-                let pty_info = PtyProcessInfo::new(ProcessIdGetter::from(&pty));
-
-                //And connect them together
-                let pty_tx =
-                    spawn_event_loop(term.clone(), events_tx, pty, pty_options.drain_on_exit)?;
-
-                (
-                    TerminalType::Pty {
-                        resources: PtyResources::Active(pty_tx),
-                        info: Arc::new(pty_info),
-                    },
-                    None,
-                )
-            };
+            let (terminal_type, subprocess) = spawn_backend(
+                no_pty,
+                backend,
+                &shell_setup.title_override,
+                term.clone(),
+                events_tx,
+                &background_executor,
+            )?;
 
             let no_task = task.is_none();
-            let terminal = Terminal {
+            let terminal = assemble_terminal(TerminalBuildOptions {
                 task,
                 terminal_type,
                 subprocess,
                 completion_tx,
                 term,
-                term_config: config,
-                output_processor: Processor::<StdSyncHandler>::new(),
-                title_override: terminal_title_override,
-                events: VecDeque::with_capacity(10), //Should never get this high.
-                last_content: Default::default(),
-                last_mouse: None,
-                mouse_down_position: None,
-                matches: Vec::new(),
-
-                selection_head: None,
-                breadcrumb_text: String::new(),
-                program_status: None,
-                scroll_px: px(0.),
-                next_link_id: 0,
-                selection_phase: SelectionPhase::Ended,
-                hyperlink_regex_searches: RegexSearches::new(
-                    &path_hyperlink_regexes,
-                    path_hyperlink_timeout,
-                ),
-                vi_mode_enabled: false,
+                config,
+                terminal_title_override: shell_setup.title_override,
+                path_hyperlink_regexes,
+                path_hyperlink_timeout,
                 is_remote_terminal,
-                remote_working_directory: None,
-                replaying_remote: false,
+                shell,
                 reply_gate,
-                last_mouse_move_time: Instant::now(),
-                last_hyperlink_search_position: None,
-                mouse_down_hyperlink: None,
-                #[cfg(windows)]
-                shell_program,
-                template: CopyTemplate { shell },
-                child_exited: None,
-                keyboard_input_sent: false,
-                init_command_startup_marker: None,
-                init_command_startup_tx: None,
-                event_loop_task: Task::ready(Ok(())),
                 background_executor,
                 path_style,
-                cwd_history: if is_remote_terminal {
-                    Vec::new()
-                } else {
-                    working_directory
-                        .as_ref()
-                        .map(|working_directory| {
-                            vec![CwdHistoryEntry {
-                                scrollback_position: i32::MIN,
-                                working_directory: working_directory.clone(),
-                            }]
-                        })
-                        .unwrap_or_default()
-                },
-                pending_cwd_boundary: None,
-                #[cfg(any(test, feature = "test-support"))]
-                input_log: Vec::new(),
-                #[cfg(test)]
-                suppress_hyperlink_throttle_once: false,
-                #[cfg(any(test, feature = "test-support"))]
-                pty_write_log: Default::default(),
-            };
+                cwd_history,
+                #[cfg(windows)]
+                shell_program: shell_setup.program,
+            });
 
             if !activation_script.is_empty() && no_task {
-                for activation_script in activation_script {
-                    terminal.write_to_pty(activation_script.into_bytes());
-                    // Simulate enter key press
-                    // NOTE(PowerShell): using `\r\n` will put PowerShell in a continuation mode (infamous >> character)
-                    // and generally mess up the rendering.
-                    terminal.write_to_pty(b"\x0d");
-                }
-                // In order to clear the screen at this point, we have two options:
-                // 1. We can send a shell-specific command such as "clear" or "cls"
-                // 2. We can "echo" a marker message that we will then catch when handling a Wakeup event
-                //    and clear the screen using `terminal.clear()` method
-                // We cannot issue a `terminal.clear()` command at this point as alacritty is evented
-                // and while we have sent the activation script to the pty, it will be executed asynchronously.
-                // Therefore, we somehow need to wait for the activation script to finish executing before we
-                // can proceed with clearing the screen.
-                terminal.write_to_pty(shell_kind.clear_screen_command().as_bytes());
-                // Simulate enter key press
-                terminal.write_to_pty(b"\x0d");
+                write_activation_script(&terminal, activation_script, shell_setup.kind);
             }
 
             Ok(TerminalBuilder {
