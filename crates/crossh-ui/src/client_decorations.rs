@@ -40,12 +40,80 @@ pub fn client_side_decorations(
         Decorations::Server => window.set_client_inset(px(0.0)),
     }
 
+    let frame = render_decorated_frame(element, decorations, tiling);
+
+    apply_backdrop_decoration(
+        div().id("window-backdrop").bg(transparent_black()),
+        decorations,
+        tiling,
+        is_resizable,
+    )
+    .size_full()
+    .child(frame)
+    .map(|backdrop| match decorations {
+        Decorations::Client { .. } if is_resizable => backdrop.child(render_resize_hitbox(tiling)),
+        _ => backdrop,
+    })
+}
+
+/// backdrop 的圆角、内边距，以及可缩放窗口的边缘 resize 事件。
+fn apply_backdrop_decoration(
+    backdrop: Stateful<Div>,
+    decorations: Decorations,
+    tiling: Tiling,
+    is_resizable: bool,
+) -> Stateful<Div> {
+    match decorations {
+        Decorations::Server => backdrop,
+        Decorations::Client { .. } => backdrop
+            .when(!tiling.top && !tiling.left, |this| {
+                this.rounded_tl(CLIENT_SIDE_DECORATION_ROUNDING)
+            })
+            .when(!tiling.top && !tiling.right, |this| {
+                this.rounded_tr(CLIENT_SIDE_DECORATION_ROUNDING)
+            })
+            .when(!tiling.bottom && !tiling.left, |this| {
+                this.rounded_bl(CLIENT_SIDE_DECORATION_ROUNDING)
+            })
+            .when(!tiling.bottom && !tiling.right, |this| {
+                this.rounded_br(CLIENT_SIDE_DECORATION_ROUNDING)
+            })
+            .when(!tiling.top, |this| this.pt(CLIENT_SIDE_DECORATION_SHADOW))
+            .when(!tiling.bottom, |this| {
+                this.pb(CLIENT_SIDE_DECORATION_SHADOW)
+            })
+            .when(!tiling.left, |this| this.pl(CLIENT_SIDE_DECORATION_SHADOW))
+            .when(!tiling.right, |this| this.pr(CLIENT_SIDE_DECORATION_SHADOW))
+            .when(is_resizable, |this| {
+                this.on_mouse_move(|_event, window, _cx| window.refresh())
+                    .on_mouse_down(MouseButton::Left, move |event, window, _cx| {
+                        let size = window.window_bounds().get_bounds().size;
+                        let Some(edge) = resize_edge(
+                            event.position,
+                            CLIENT_SIDE_DECORATION_SHADOW,
+                            size,
+                            tiling,
+                        ) else {
+                            return;
+                        };
+                        window.start_window_resize(edge);
+                    })
+            }),
+    }
+}
+
+/// 可见的窗口外框：圆角、1px 边框、阴影与内容裁剪。
+fn render_decorated_frame(
+    element: impl IntoElement,
+    decorations: Decorations,
+    tiling: Tiling,
+) -> Div {
     div()
-        .id("window-backdrop")
-        .bg(transparent_black())
-        .map(|backdrop| match decorations {
-            Decorations::Server => backdrop,
-            Decorations::Client { .. } => backdrop
+        .cursor(CursorStyle::Arrow)
+        .map(|frame| match decorations {
+            Decorations::Server => frame,
+            Decorations::Client { .. } => frame
+                .border_color(theme::border())
                 .when(!tiling.top && !tiling.left, |this| {
                     this.rounded_tl(CLIENT_SIDE_DECORATION_ROUNDING)
                 })
@@ -58,118 +126,70 @@ pub fn client_side_decorations(
                 .when(!tiling.bottom && !tiling.right, |this| {
                     this.rounded_br(CLIENT_SIDE_DECORATION_ROUNDING)
                 })
-                .when(!tiling.top, |this| this.pt(CLIENT_SIDE_DECORATION_SHADOW))
-                .when(!tiling.bottom, |this| {
-                    this.pb(CLIENT_SIDE_DECORATION_SHADOW)
+                .when(!tiling.top, |this| this.border_t(BORDER_SIZE))
+                .when(!tiling.bottom, |this| this.border_b(BORDER_SIZE))
+                .when(!tiling.left, |this| this.border_l(BORDER_SIZE))
+                .when(!tiling.right, |this| this.border_r(BORDER_SIZE))
+                .when(!tiling.is_tiled(), |this| {
+                    this.shadow(vec![
+                        gpui::BoxShadow::new(
+                            px(0.),
+                            px(0.),
+                            Hsla {
+                                h: 0.,
+                                s: 0.,
+                                l: 0.,
+                                a: 0.4,
+                            },
+                        )
+                        .blur_radius(CLIENT_SIDE_DECORATION_SHADOW / 2.),
+                    ])
                 })
-                .when(!tiling.left, |this| this.pl(CLIENT_SIDE_DECORATION_SHADOW))
-                .when(!tiling.right, |this| this.pr(CLIENT_SIDE_DECORATION_SHADOW))
-                .when(is_resizable, |this| {
-                    this.on_mouse_move(|_event, window, _cx| window.refresh())
-                        .on_mouse_down(MouseButton::Left, move |event, window, _cx| {
-                            let size = window.window_bounds().get_bounds().size;
-                            let Some(edge) = resize_edge(
-                                event.position,
-                                CLIENT_SIDE_DECORATION_SHADOW,
-                                size,
-                                tiling,
-                            ) else {
-                                return;
-                            };
-                            window.start_window_resize(edge);
-                        })
-                }),
+                // 方形内容（状态栏缺失的页面底部等）不露出圆角外。
+                .overflow_hidden(),
+        })
+        .on_mouse_move(|_event, _, cx| {
+            cx.stop_propagation();
         })
         .size_full()
-        .child(
-            div()
-                .cursor(CursorStyle::Arrow)
-                .map(|frame| match decorations {
-                    Decorations::Server => frame,
-                    Decorations::Client { .. } => frame
-                        .border_color(theme::border())
-                        .when(!tiling.top && !tiling.left, |this| {
-                            this.rounded_tl(CLIENT_SIDE_DECORATION_ROUNDING)
-                        })
-                        .when(!tiling.top && !tiling.right, |this| {
-                            this.rounded_tr(CLIENT_SIDE_DECORATION_ROUNDING)
-                        })
-                        .when(!tiling.bottom && !tiling.left, |this| {
-                            this.rounded_bl(CLIENT_SIDE_DECORATION_ROUNDING)
-                        })
-                        .when(!tiling.bottom && !tiling.right, |this| {
-                            this.rounded_br(CLIENT_SIDE_DECORATION_ROUNDING)
-                        })
-                        .when(!tiling.top, |this| this.border_t(BORDER_SIZE))
-                        .when(!tiling.bottom, |this| this.border_b(BORDER_SIZE))
-                        .when(!tiling.left, |this| this.border_l(BORDER_SIZE))
-                        .when(!tiling.right, |this| this.border_r(BORDER_SIZE))
-                        .when(!tiling.is_tiled(), |this| {
-                            this.shadow(vec![
-                                gpui::BoxShadow::new(
-                                    px(0.),
-                                    px(0.),
-                                    Hsla {
-                                        h: 0.,
-                                        s: 0.,
-                                        l: 0.,
-                                        a: 0.4,
-                                    },
-                                )
-                                .blur_radius(CLIENT_SIDE_DECORATION_SHADOW / 2.),
-                            ])
-                        })
-                        // 方形内容（状态栏缺失的页面底部等）不露出圆角外。
-                        .overflow_hidden(),
-                })
-                .on_mouse_move(|_event, _, cx| {
-                    cx.stop_propagation();
-                })
-                .size_full()
-                .child(element),
-        )
-        .map(|backdrop| match decorations {
-            Decorations::Client { .. } if is_resizable => backdrop.child(
-                canvas(
-                    |_bounds, window, _cx| {
-                        window.insert_hitbox(
-                            Bounds::new(
-                                point(px(0.0), px(0.0)),
-                                window.window_bounds().get_bounds().size,
-                            ),
-                            HitboxBehavior::Normal,
-                        )
-                    },
-                    move |_bounds, hitbox, window, _cx| {
-                        let mouse = window.mouse_position();
-                        let size = window.window_bounds().get_bounds().size;
-                        let Some(edge) =
-                            resize_edge(mouse, CLIENT_SIDE_DECORATION_SHADOW, size, tiling)
-                        else {
-                            return;
-                        };
-                        window.set_cursor_style(
-                            match edge {
-                                ResizeEdge::Top | ResizeEdge::Bottom => CursorStyle::ResizeUpDown,
-                                ResizeEdge::Left | ResizeEdge::Right => {
-                                    CursorStyle::ResizeLeftRight
-                                }
-                                ResizeEdge::TopLeft | ResizeEdge::BottomRight => {
-                                    CursorStyle::ResizeUpLeftDownRight
-                                }
-                                ResizeEdge::TopRight | ResizeEdge::BottomLeft => {
-                                    CursorStyle::ResizeUpRightDownLeft
-                                }
-                            },
-                            &hitbox,
-                        );
-                    },
-                )
-                .size_full()
-                .absolute(),
-            ),
-            _ => backdrop,
-        })
+        .child(element)
+}
+
+/// 覆盖整个窗口的 resize 热区，鼠标位于边缘时切换对应光标。
+fn render_resize_hitbox(tiling: Tiling) -> impl IntoElement {
+    canvas(
+        |_bounds, window, _cx| {
+            window.insert_hitbox(
+                Bounds::new(
+                    point(px(0.0), px(0.0)),
+                    window.window_bounds().get_bounds().size,
+                ),
+                HitboxBehavior::Normal,
+            )
+        },
+        move |_bounds, hitbox, window, _cx| {
+            let mouse = window.mouse_position();
+            let size = window.window_bounds().get_bounds().size;
+            let Some(edge) = resize_edge(mouse, CLIENT_SIDE_DECORATION_SHADOW, size, tiling) else {
+                return;
+            };
+            window.set_cursor_style(
+                match edge {
+                    ResizeEdge::Top | ResizeEdge::Bottom => CursorStyle::ResizeUpDown,
+                    ResizeEdge::Left | ResizeEdge::Right => CursorStyle::ResizeLeftRight,
+                    ResizeEdge::TopLeft | ResizeEdge::BottomRight => {
+                        CursorStyle::ResizeUpLeftDownRight
+                    }
+                    ResizeEdge::TopRight | ResizeEdge::BottomLeft => {
+                        CursorStyle::ResizeUpRightDownLeft
+                    }
+                },
+                &hitbox,
+            );
+        },
+    )
+    .size_full()
+    .absolute()
 }
 
 fn resize_edge(
