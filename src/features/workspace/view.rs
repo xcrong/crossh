@@ -497,7 +497,24 @@ pub(crate) fn render_workspace_status_bar(
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
     let pane = shell.workspace.active_pane();
-    let mut left = div()
+    let left = render_status_left_pane(
+        render_status_left_basic(shell, cx),
+        shell,
+        available_width,
+        pane,
+        cx,
+    );
+    let right = render_status_right(shell, cx);
+
+    StatusBar::new("workspace-status-bar")
+        .child(left)
+        .child(right)
+        .into_any_element()
+}
+
+/// 左侧基础开关：设置与 host 侧边栏。
+fn render_status_left_basic(shell: &AppShell, cx: &mut Context<AppShell>) -> gpui::Div {
+    div()
         .min_w_0()
         .flex()
         .items_center()
@@ -517,7 +534,17 @@ pub(crate) fn render_workspace_status_bar(
             shell.workspace_settings.show_host_sidebar,
             AppShell::toggle_host_sidebar,
             cx,
-        ));
+        ))
+}
+
+/// 在左侧容器上追加 pane 区：时间戳/分屏/焦点开关、compose 按钮与编辑器/path/git 状态。
+fn render_status_left_pane(
+    mut left: gpui::Div,
+    shell: &AppShell,
+    available_width: Pixels,
+    pane: Option<&PaneSnapshot>,
+    cx: &mut Context<AppShell>,
+) -> gpui::Div {
     if pane.is_some() {
         let show_timestamps = pane
             .and_then(|pane| shell.workspace.pane_view(pane.id))
@@ -541,28 +568,27 @@ pub(crate) fn render_workspace_status_bar(
             cx,
         ));
     }
-    {
-        let compose_active = shell.workspace.compose_visible_for_focused();
-        left = left.child(
-            Button::new("status-compose")
-                .size(ButtonSize::Icon(px(22.)))
-                .variant(ButtonVariant::Ghost)
-                .selected(compose_active)
-                .disabled(pane.is_none())
-                .icon(
-                    icons::icon(icons::IconName::Keyboard, 13.).text_color(if compose_active {
-                        theme::accent()
-                    } else {
-                        theme::muted_text()
-                    }),
-                )
-                .tooltip(i18n::text("tooltip.compose_bar"))
-                .on_click(cx.listener(|this, _ev, window, cx| {
-                    this.toggle_compose_bar(window, cx);
-                }))
-                .into_any_element(),
-        );
-    }
+
+    let compose_active = shell.workspace.compose_visible_for_focused();
+    left = left.child(
+        Button::new("status-compose")
+            .size(ButtonSize::Icon(px(22.)))
+            .variant(ButtonVariant::Ghost)
+            .selected(compose_active)
+            .disabled(pane.is_none())
+            .icon(
+                icons::icon(icons::IconName::Keyboard, 13.).text_color(if compose_active {
+                    theme::accent()
+                } else {
+                    theme::muted_text()
+                }),
+            )
+            .tooltip(i18n::text("tooltip.compose_bar"))
+            .on_click(cx.listener(|this, _ev, window, cx| {
+                this.toggle_compose_bar(window, cx);
+            }))
+            .into_any_element(),
+    );
 
     if let Some(pane) = pane {
         left = left.child(render_open_in_editor_button(pane.cwd.clone(), shell, cx));
@@ -578,8 +604,12 @@ pub(crate) fn render_workspace_status_bar(
             ));
         }
     }
+    left
+}
 
-    let right = div()
+/// 右侧开关：scratch、链接预览、系统监控、笔记与更新指示器。
+fn render_status_right(shell: &AppShell, cx: &mut Context<AppShell>) -> gpui::Div {
+    div()
         .flex()
         .items_center()
         .gap_1()
@@ -633,12 +663,7 @@ pub(crate) fn render_workspace_status_bar(
                 }))
                 .into_any_element(),
         )
-        .child(render_update_indicator(shell, cx));
-
-    StatusBar::new("workspace-status-bar")
-        .child(left)
-        .child(right)
-        .into_any_element()
+        .child(render_update_indicator(shell, cx))
 }
 
 fn render_workspace_terminal_toggle(
