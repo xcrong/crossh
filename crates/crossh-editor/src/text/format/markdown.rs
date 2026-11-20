@@ -320,6 +320,116 @@ fn new_span(pos: Option<markdown::unist::Position>, cx: &NodeContext) -> Option<
     })
 }
 
+fn ast_html(val: mdast::Html, cx: &mut NodeContext) -> BlockNode {
+    match super::html::parse(&val.value, cx) {
+        Ok(el) => BlockNode::Root {
+            children: Arc::unwrap_or_clone(el.blocks),
+            span: new_span(val.position, cx),
+        },
+        Err(err) => {
+            if cfg!(debug_assertions) {
+                tracing::warn!("error parsing html: {:#?}", err);
+            }
+
+            BlockNode::Paragraph(Paragraph::new(val.value))
+        }
+    }
+}
+
+fn ast_list(list: mdast::List, source: &str, cx: &mut NodeContext) -> BlockNode {
+    let children = list
+        .children
+        .into_iter()
+        .map(|c| ast_to_node(source, c, cx))
+        .collect();
+    BlockNode::List {
+        ordered: list.ordered,
+        children,
+        span: new_span(list.position, cx),
+    }
+}
+
+fn ast_list_item(val: mdast::ListItem, source: &str, cx: &mut NodeContext) -> BlockNode {
+    let children = val
+        .children
+        .into_iter()
+        .map(|c| ast_to_node(source, c, cx))
+        .collect();
+    BlockNode::ListItem {
+        children,
+        spread: val.spread,
+        checked: val.checked,
+        span: new_span(val.position, cx),
+    }
+}
+
+fn ast_mdx_paragraph(
+    children: &[mdast::Node],
+    position: Option<markdown::unist::Position>,
+    cx: &mut NodeContext,
+) -> BlockNode {
+    let mut paragraph = Paragraph::default();
+    children.iter().for_each(|c| {
+        parse_paragraph(&mut paragraph, c, cx);
+    });
+    paragraph.span = new_span(position, cx);
+    BlockNode::Paragraph(paragraph)
+}
+
+fn ast_table(val: mdast::Table, cx: &mut NodeContext) -> BlockNode {
+    let mut table = Table::default();
+    table.column_aligns = val
+        .align
+        .clone()
+        .into_iter()
+        .map(|align| align.into())
+        .collect();
+    val.children.iter().for_each(|c| {
+        if let Node::TableRow(row) = c {
+            parse_table_row(&mut table, row, cx);
+        }
+    });
+    table.span = new_span(val.position, cx);
+
+    BlockNode::Table(table)
+}
+
+fn ast_footnote(def: mdast::FootnoteDefinition, cx: &mut NodeContext) -> BlockNode {
+    let mut paragraph = Paragraph::default();
+    let prefix = format!("[{}]: ", def.identifier);
+    paragraph.push(InlineNode::new(&prefix).marks(vec![(
+        0..prefix.len(),
+        TextMark {
+            italic: true,
+            ..Default::default()
+        },
+    )]));
+
+    def.children.iter().for_each(|c| {
+        parse_paragraph(&mut paragraph, c, cx);
+    });
+    paragraph.span = new_span(def.position, cx);
+    BlockNode::Paragraph(paragraph)
+}
+
+fn ast_definition(def: mdast::Definition, cx: &mut NodeContext) -> BlockNode {
+    cx.add_ref(
+        def.identifier.clone().into(),
+        LinkMark {
+            url: def.url.clone().into(),
+            identifier: Some(def.identifier.clone().into()),
+            title: def.title.clone().map(Into::into),
+        },
+    );
+
+    BlockNode::Definition {
+        identifier: def.identifier.clone().into(),
+        url: def.url.clone().into(),
+        title: def.title.clone().map(|s| s.into()),
+        span: new_span(def.position, cx),
+    }
+}
+
 fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockNode {
     let span = new_span(value.position().cloned(), cx);
     let parse_cx = MarkdownParseContext::new(source, cx.offset);
@@ -349,31 +459,8 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
                 span: new_span(val.position, cx),
             }
         }
-        Node::List(list) => {
-            let children = list
-                .children
-                .into_iter()
-                .map(|c| ast_to_node(source, c, cx))
-                .collect();
-            BlockNode::List {
-                ordered: list.ordered,
-                children,
-                span: new_span(list.position, cx),
-            }
-        }
-        Node::ListItem(val) => {
-            let children = val
-                .children
-                .into_iter()
-                .map(|c| ast_to_node(source, c, cx))
-                .collect();
-            BlockNode::ListItem {
-                children,
-                spread: val.spread,
-                checked: val.checked,
-                span: new_span(val.position, cx),
-            }
-        }
+        Node::List(list) => ast_list(list, source, cx),
+        Node::ListItem(val) => ast_list_item(val, source, cx),
         Node::Break(val) => BlockNode::Break {
             html: false,
             span: new_span(val.position, cx),
@@ -400,19 +487,7 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
             None,
             new_span(val.position, cx),
         )),
-        Node::Html(val) => match super::html::parse(&val.value, cx) {
-            Ok(el) => BlockNode::Root {
-                children: Arc::unwrap_or_clone(el.blocks),
-                span: new_span(val.position, cx),
-            },
-            Err(err) => {
-                if cfg!(debug_assertions) {
-                    tracing::warn!("error parsing html: {:#?}", err);
-                }
-
-                BlockNode::Paragraph(Paragraph::new(val.value))
-            }
-        },
+        Node::Html(val) => ast_html(val, cx),
         Node::MdxFlowExpression(val) => BlockNode::CodeBlock(CodeBlock::new(
             val.value.into(),
             Some("mdx".into()),
@@ -428,76 +503,14 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
             Some("toml".into()),
             new_span(val.position, cx),
         )),
-        Node::MdxJsxTextElement(val) => {
-            let mut paragraph = Paragraph::default();
-            val.children.iter().for_each(|c| {
-                parse_paragraph(&mut paragraph, c, cx);
-            });
-            paragraph.span = new_span(val.position, cx);
-            BlockNode::Paragraph(paragraph)
-        }
-        Node::MdxJsxFlowElement(val) => {
-            let mut paragraph = Paragraph::default();
-            val.children.iter().for_each(|c| {
-                parse_paragraph(&mut paragraph, c, cx);
-            });
-            paragraph.span = new_span(val.position, cx);
-            BlockNode::Paragraph(paragraph)
-        }
+        Node::MdxJsxTextElement(val) => ast_mdx_paragraph(&val.children, val.position, cx),
+        Node::MdxJsxFlowElement(val) => ast_mdx_paragraph(&val.children, val.position, cx),
         Node::ThematicBreak(val) => BlockNode::HorizontalRule {
             span: new_span(val.position, cx),
         },
-        Node::Table(val) => {
-            let mut table = Table::default();
-            table.column_aligns = val
-                .align
-                .clone()
-                .into_iter()
-                .map(|align| align.into())
-                .collect();
-            val.children.iter().for_each(|c| {
-                if let Node::TableRow(row) = c {
-                    parse_table_row(&mut table, row, cx);
-                }
-            });
-            table.span = new_span(val.position, cx);
-
-            BlockNode::Table(table)
-        }
-        Node::FootnoteDefinition(def) => {
-            let mut paragraph = Paragraph::default();
-            let prefix = format!("[{}]: ", def.identifier);
-            paragraph.push(InlineNode::new(&prefix).marks(vec![(
-                0..prefix.len(),
-                TextMark {
-                    italic: true,
-                    ..Default::default()
-                },
-            )]));
-
-            def.children.iter().for_each(|c| {
-                parse_paragraph(&mut paragraph, c, cx);
-            });
-            paragraph.span = new_span(def.position, cx);
-            BlockNode::Paragraph(paragraph)
-        }
-        Node::Definition(def) => {
-            cx.add_ref(
-                def.identifier.clone().into(),
-                LinkMark {
-                    url: def.url.clone().into(),
-                    identifier: Some(def.identifier.clone().into()),
-                    title: def.title.clone().map(Into::into),
-                },
-            );
-
-            BlockNode::Definition {
-                identifier: def.identifier.clone().into(),
-                url: def.url.clone().into(),
-                title: def.title.clone().map(|s| s.into()),
-                span: new_span(def.position, cx),
-            }
-        }
+        Node::Table(val) => ast_table(val, cx),
+        Node::FootnoteDefinition(def) => ast_footnote(def, cx),
+        Node::Definition(def) => ast_definition(def, cx),
         _ => {
             if cfg!(debug_assertions) {
                 tracing::warn!("unsupported node: {:#?}", value);
