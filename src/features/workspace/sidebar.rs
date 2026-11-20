@@ -3,7 +3,7 @@
 //! 项目顺序严格取快照 `projects`；活跃项目来自 `snapshot.active_project`。
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
@@ -390,18 +390,14 @@ fn project_dot_color(project: &ProjectSnapshot, shell: &AppShell, cx: &gpui::App
     conn_state_dot_color(&state)
 }
 
-fn render_project_row(
+/// 项目行的右键菜单项；`cwd` 会被 `reveal-finder` 消费。
+fn project_row_menu_entries(
     project: &ProjectSnapshot,
-    duplicate: bool,
-    shell: &AppShell,
-    cx: &mut Context<AppShell>,
-) -> AnyElement {
+    selected: bool,
+    cwd: PathBuf,
+) -> Vec<MenuEntry<ShellMenuAction>> {
     let project_id = project.id;
-    let selected = shell.workspace.snapshot.active_project == Some(project_id);
-    let label = project_label(project, duplicate);
-    let detail = project.root.to_string_lossy().into_owned();
-    let cwd = project.root.clone();
-    let menu_entries = vec![
+    vec![
         MenuEntry::Item(MenuItem {
             id: "activate-project".into(),
             label: i18n::text("context_menu.switch"),
@@ -452,7 +448,21 @@ fn render_project_row(
             danger: false,
             action: ShellMenuAction::RevealInFinder(cwd),
         }),
-    ];
+    ]
+}
+
+fn render_project_row(
+    project: &ProjectSnapshot,
+    duplicate: bool,
+    shell: &AppShell,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    let project_id = project.id;
+    let selected = shell.workspace.snapshot.active_project == Some(project_id);
+    let label = project_label(project, duplicate);
+    let detail = project.root.to_string_lossy().into_owned();
+    let cwd = project.root.clone();
+    let menu_entries = project_row_menu_entries(project, selected, cwd);
 
     let dot = div()
         .w(px(7.))
