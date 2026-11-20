@@ -6,9 +6,10 @@
 use std::rc::Rc;
 
 use gpui::{
-    Anchor, App, ClickEvent, ElementId, InteractiveElement, IntoElement, KeyDownEvent,
-    ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, anchored,
-    deferred, div, point, prelude::FluentBuilder, px,
+    Anchor, AnyElement, App, ClickEvent, Deferred, Div, ElementId, InteractiveElement, IntoElement,
+    KeyDownEvent, ParentElement, Pixels, RenderOnce, SharedString, Size, Stateful,
+    StatefulInteractiveElement, Styled, Window, anchored, deferred, div, point,
+    prelude::FluentBuilder, px,
 };
 
 use crossh_ui::icons;
@@ -198,128 +199,168 @@ impl RenderOnce for Select {
         }
 
         // 触发器内容：label/placeholder + chevron
-        let label_content: gpui::AnyElement = if let Some(label) = display_label {
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .child(label)
-                .into_any_element()
-        } else if let Some(ph) = placeholder.clone() {
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_color(theme::faint_text())
-                .child(ph)
-                .into_any_element()
-        } else {
-            div().flex_1().into_any_element()
-        };
-
         trigger = trigger
-            .child(label_content)
+            .child(render_select_label(display_label, placeholder))
             .child(icons::icon(icons::IconName::ChevronDown, 14.).text_color(theme::muted_text()));
 
         // 外层容器：触发器 + （可选）遮罩与面板
         let mut outer = div().flex().flex_col().child(trigger);
 
         if is_open {
-            // 全屏 scrim：浮层覆盖整个窗口（snap_to_window 会把锚定在触发器
-            // 上的视口尺寸遮罩对齐回窗口原点），点击任意处（含触发器自身）
-            // 关闭面板并阻止冒泡，避免触发 trigger 的 on_click 二次翻转。
             let viewport = window.viewport_size();
-            let scrim_id = ElementId::Name(format!("{}-scrim", self.id).into());
-            let mut scrim = div()
-                .id(scrim_id)
-                .w(viewport.width)
-                .h(viewport.height)
-                .occlude();
-            if let Some(handler) = on_toggle.clone() {
-                scrim = scrim.on_click(move |event, window, cx| {
-                    handler(event, window, cx);
-                    cx.stop_propagation();
-                });
-            }
-            let scrim_layer = deferred(anchored().snap_to_window().child(scrim)).priority(0);
-
-            // 下拉面板：deferred 浮层锚定在触发器正下方，越界时由
-            // snap_to_window_with_margin 钳制回视口（替代原手写 clamp）。
-            let panel_id = ElementId::Name(format!("{}-panel", self.id).into());
-            let mut panel = div()
-                .id(panel_id)
-                .w(px(SELECT_FALLBACK_WIDTH))
-                .max_h(px(SELECT_MAX_HEIGHT))
-                .p_1()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .overflow_y_scroll()
-                .bg(theme::overlay())
-                .border_1()
-                .border_color(theme::border_strong())
-                .rounded(px(theme::RADIUS_SM))
-                .shadow_md();
-
-            for (idx, option) in options.iter().enumerate() {
-                let selected = Some(idx) == selected_index;
-                let label = option.label.clone();
-                let row_id = ElementId::Name(format!("{}-option-{}", self.id, option.id).into());
-                let mut row = div()
-                    .id(row_id)
-                    .h(px(SELECT_ITEM_HEIGHT))
-                    .flex_shrink_0()
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .rounded(px(theme::RADIUS_SM))
-                    .text_xs()
-                    .text_color(theme::text())
-                    .when(selected, |this| this.bg(theme::accent_soft()))
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme::raised()));
-
-                if let Some(handler) = on_select.clone() {
-                    row = row.on_click(move |_event, window, cx| {
-                        // 阻止冒泡：面板是触发器的子元素，若不拦截，
-                        // 行点击会继续冒泡到触发器的 on_click 二次翻转。
-                        cx.stop_propagation();
-                        handler(idx, window, cx);
-                    });
-                }
-
-                // 选中标识
-                if selected {
-                    row = row.child(
-                        icons::icon(icons::IconName::Check, 13.).text_color(theme::accent()),
-                    );
-                } else {
-                    row = row.child(div().w(px(13.)).h(px(13.)));
-                }
-
-                row = row.child(div().flex_1().min_w_0().truncate().child(label));
-
-                panel = panel.child(row);
-            }
-
-            let panel_layer = deferred(
-                anchored()
-                    .anchor(Anchor::TopLeft)
-                    .offset(point(
-                        px(0.),
-                        px(SELECT_TRIGGER_HEIGHT + SELECT_TRIGGER_GAP),
-                    ))
-                    .snap_to_window_with_margin(px(8.))
-                    .child(panel),
-            )
-            .priority(1);
-
-            outer = outer.child(scrim_layer).child(panel_layer);
+            outer = outer
+                .child(render_select_scrim(&self.id, viewport, &on_toggle))
+                .child(render_select_panel(
+                    &self.id,
+                    &options,
+                    selected_index,
+                    &on_select,
+                ));
         }
 
         outer
     }
+}
+
+/// 触发器的显示文本：选中 label、占位文本或空占位盒。
+fn render_select_label(
+    display_label: Option<SharedString>,
+    placeholder: Option<SharedString>,
+) -> AnyElement {
+    if let Some(label) = display_label {
+        div()
+            .flex_1()
+            .min_w_0()
+            .truncate()
+            .child(label)
+            .into_any_element()
+    } else if let Some(placeholder) = placeholder {
+        div()
+            .flex_1()
+            .min_w_0()
+            .truncate()
+            .text_color(theme::faint_text())
+            .child(placeholder)
+            .into_any_element()
+    } else {
+        div().flex_1().into_any_element()
+    }
+}
+
+/// 面板中的单行选项。
+fn render_select_option_row(
+    id: &ElementId,
+    option: &SelectOption,
+    idx: usize,
+    selected: bool,
+    on_select: &Option<SelectHandler>,
+) -> Stateful<Div> {
+    let label = option.label.clone();
+    let row_id = ElementId::Name(format!("{id}-option-{}", option.id).into());
+    let mut row = div()
+        .id(row_id)
+        .h(px(SELECT_ITEM_HEIGHT))
+        .flex_shrink_0()
+        .px_2()
+        .flex()
+        .items_center()
+        .gap_2()
+        .rounded(px(theme::RADIUS_SM))
+        .text_xs()
+        .text_color(theme::text())
+        .when(selected, |this| this.bg(theme::accent_soft()))
+        .cursor_pointer()
+        .hover(|style| style.bg(theme::raised()));
+
+    if let Some(handler) = on_select {
+        let handler = handler.clone();
+        row = row.on_click(move |_event, window, cx| {
+            // 阻止冒泡：面板是触发器的子元素，若不拦截，
+            // 行点击会继续冒泡到触发器的 on_click 二次翻转。
+            cx.stop_propagation();
+            handler(idx, window, cx);
+        });
+    }
+
+    // 选中标识
+    if selected {
+        row = row.child(icons::icon(icons::IconName::Check, 13.).text_color(theme::accent()));
+    } else {
+        row = row.child(div().w(px(13.)).h(px(13.)));
+    }
+
+    row.child(div().flex_1().min_w_0().truncate().child(label))
+}
+
+/// 全屏 scrim：浮层覆盖整个窗口（snap_to_window 会把锚定在触发器上的
+/// 视口尺寸遮罩对齐回窗口原点），点击任意处（含触发器自身）关闭面板并
+/// 阻止冒泡，避免触发 trigger 的 on_click 二次翻转。
+fn render_select_scrim(
+    id: &ElementId,
+    viewport: Size<Pixels>,
+    on_toggle: &Option<ToggleHandler>,
+) -> Deferred {
+    let scrim_id = ElementId::Name(format!("{id}-scrim").into());
+    let mut scrim = div()
+        .id(scrim_id)
+        .w(viewport.width)
+        .h(viewport.height)
+        .occlude();
+    if let Some(handler) = on_toggle {
+        let handler = handler.clone();
+        scrim = scrim.on_click(move |event, window, cx| {
+            handler(event, window, cx);
+            cx.stop_propagation();
+        });
+    }
+    deferred(anchored().snap_to_window().child(scrim)).priority(0)
+}
+
+/// 下拉面板：deferred 浮层锚定在触发器正下方，越界时由
+/// snap_to_window_with_margin 钳制回视口（替代原手写 clamp）。
+fn render_select_panel(
+    id: &ElementId,
+    options: &[SelectOption],
+    selected_index: Option<usize>,
+    on_select: &Option<SelectHandler>,
+) -> Deferred {
+    let panel_id = ElementId::Name(format!("{id}-panel").into());
+    let mut panel = div()
+        .id(panel_id)
+        .w(px(SELECT_FALLBACK_WIDTH))
+        .max_h(px(SELECT_MAX_HEIGHT))
+        .p_1()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .overflow_y_scroll()
+        .bg(theme::overlay())
+        .border_1()
+        .border_color(theme::border_strong())
+        .rounded(px(theme::RADIUS_SM))
+        .shadow_md();
+
+    for (idx, option) in options.iter().enumerate() {
+        panel = panel.child(render_select_option_row(
+            id,
+            option,
+            idx,
+            Some(idx) == selected_index,
+            on_select,
+        ));
+    }
+
+    deferred(
+        anchored()
+            .anchor(Anchor::TopLeft)
+            .offset(point(
+                px(0.),
+                px(SELECT_TRIGGER_HEIGHT + SELECT_TRIGGER_GAP),
+            ))
+            .snap_to_window_with_margin(px(8.))
+            .child(panel),
+    )
+    .priority(1)
 }
 
 #[cfg(test)]
