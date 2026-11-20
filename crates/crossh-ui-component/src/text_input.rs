@@ -10,9 +10,9 @@ use crossh_ui_base::{
     use_cursor_split,
 };
 use gpui::{
-    App, Bounds, DispatchPhase, ElementId, Entity, EntityInputHandler, FocusHandle,
+    App, Bounds, DispatchPhase, Div, ElementId, Entity, EntityInputHandler, FocusHandle,
     InteractiveElement, IntoElement, KeyContext, KeyDownEvent, MouseButton, MouseMoveEvent,
-    MouseUpEvent, ParentElement, Pixels, RenderOnce, Rgba, SharedString,
+    MouseUpEvent, ParentElement, Pixels, RenderOnce, Rgba, SharedString, Stateful,
     StatefulInteractiveElement, Styled, Window, canvas, div, point, prelude::FluentBuilder, px,
     size,
 };
@@ -334,112 +334,17 @@ impl<V: EntityInputHandler + 'static> RenderOnce for TextInput<V> {
         let masked = display.is_some();
         let has_selection = should_highlight_selection(selection, masked);
         let (sel_start, sel_end) = normalize_selection(selection).unwrap_or((0, 0));
+        let run = TextRun::new(focused, caret_height, ime_marked_text);
 
-        let mut children: Vec<gpui::AnyElement> = Vec::new();
-        if value.is_empty() {
-            if focused {
-                children.push(text_caret(caret_height).into_any_element());
-            }
-            if ime_marked_text.is_empty() {
-                if let Some(placeholder) = placeholder {
-                    children.push(
-                        div()
-                            .min_w_0()
-                            .flex_1()
-                            .truncate()
-                            .child(placeholder)
-                            .into_any_element(),
-                    );
-                }
-            } else {
-                children.push(marked_element(ime_marked_text).into_any_element());
-            }
+        let mut children: Vec<gpui::AnyElement> = if value.is_empty() {
+            empty_text_children(run, placeholder)
         } else if has_selection {
-            let val = value.as_ref();
-            let s = sel_start.min(val.len());
-            let e = sel_end.min(val.len());
-            // 容错：若切片落在字符内部，回退到末尾 caret 渲染，避免 panic。
-            let valid = is_valid_selection(val, s, e);
-            if valid {
-                if !val[..s].is_empty() {
-                    children.push(text_span(val[..s].to_string()).into_any_element());
-                }
-                children.push(
-                    div()
-                        .flex_shrink_0()
-                        .whitespace_nowrap()
-                        .bg(theme::accent_soft())
-                        .text_color(theme::text())
-                        .child(SharedString::from(val[s..e].to_string()))
-                        .into_any_element(),
-                );
-                if !val[e..].is_empty() {
-                    children.push(text_span(val[e..].to_string()).into_any_element());
-                }
-                if !ime_marked_text.is_empty() {
-                    children.push(marked_text_span(ime_marked_text).into_any_element());
-                }
-            } else {
-                children.push(
-                    div()
-                        .min_w_0()
-                        .flex_shrink_0()
-                        .whitespace_nowrap()
-                        .child(display_text)
-                        .into_any_element(),
-                );
-                if focused {
-                    children.push(text_caret(caret_height).into_any_element());
-                }
-                if !ime_marked_text.is_empty() {
-                    children.push(marked_element(ime_marked_text).into_any_element());
-                }
-            }
+            selection_text_children(&value, display_text, sel_start, sel_end, run)
         } else {
-            let val = value.as_ref();
-            let cursor_pos = clamp_to_char_boundary(val, cursor.unwrap_or(val.len()));
-            // 有明确 cursor 位时按 before/caret/after 拆分，否则整体显示后置 caret。
-            let use_cursor_split = use_cursor_split(cursor, masked);
-            if use_cursor_split {
-                if !val[..cursor_pos].is_empty() {
-                    children.push(text_span(val[..cursor_pos].to_string()).into_any_element());
-                }
-                if focused {
-                    children.push(text_caret(caret_height).into_any_element());
-                }
-                if !ime_marked_text.is_empty() {
-                    children.push(marked_text_span(ime_marked_text).into_any_element());
-                }
-                if !val[cursor_pos..].is_empty() {
-                    children.push(text_span(val[cursor_pos..].to_string()).into_any_element());
-                }
-            } else {
-                children.push(
-                    div()
-                        .min_w_0()
-                        .flex_shrink_0()
-                        .whitespace_nowrap()
-                        .child(display_text)
-                        .into_any_element(),
-                );
-                if focused {
-                    children.push(text_caret(caret_height).into_any_element());
-                }
-                if !ime_marked_text.is_empty() {
-                    children.push(marked_element(ime_marked_text).into_any_element());
-                }
-            }
-        }
+            cursor_text_children(&value, display_text, cursor, masked, run)
+        };
         if let Some(icon) = suffix_icon {
-            children.push(
-                div()
-                    .ml_auto()
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .child(icons::icon(icon, 13.).text_color(theme::muted_text()))
-                    .into_any_element(),
-            );
+            children.push(suffix_icon_child(icon));
         }
 
         let click_focus = focus.clone();
@@ -487,115 +392,13 @@ impl<V: EntityInputHandler + 'static> RenderOnce for TextInput<V> {
             .children(children);
 
         if let Some(handler) = pointer {
-            let down_bounds = text_bounds.clone();
-            let down_handler = handler.clone();
-            let down_text = pointer_text.clone();
-            root = root.on_mouse_down(MouseButton::Left, move |event, window, cx| {
-                let Some(bounds) = down_bounds.get() else {
-                    return;
-                };
-                down_handler(
-                    &TextPointerEvent {
-                        phase: TextPointerPhase::Down,
-                        byte_offset: text_offset_for_point(
-                            window,
-                            &down_text,
-                            event.position.x - bounds.origin.x,
-                            text_size,
-                        ),
-                        extend: event.modifiers.shift,
-                        click_count: event.click_count,
-                        text_bounds: bounds,
-                    },
-                    window,
-                    cx,
-                );
-            });
-
-            // 在别处按下说明上一次按下已无从松开:补一个 Up,免得选中态一直挂着。
-            let out_bounds = text_bounds.clone();
-            let out_handler = handler.clone();
-            root = root.on_mouse_down_out(move |_, window, cx| {
-                out_handler(
-                    &TextPointerEvent {
-                        phase: TextPointerPhase::Up,
-                        byte_offset: 0,
-                        extend: false,
-                        click_count: 0,
-                        text_bounds: out_bounds.get().unwrap_or_default(),
-                    },
-                    window,
-                    cx,
-                );
-            });
-
-            // 按下后指针可能移出输入框,拖动 / 松开只能走窗口级监听。
-            let capture_bounds = text_bounds.clone();
-            let drag_bounds = text_bounds.clone();
-            let up_bounds = text_bounds.clone();
-            let drag_handler = handler.clone();
-            let up_handler = handler;
-            let drag_text = pointer_text.clone();
-            root = root.child(
-                canvas(
-                    move |bounds, _window, _cx| {
-                        let width = (bounds.size.width - padding_x * 2.).max(px(0.));
-                        capture_bounds.set(Some(Bounds {
-                            origin: point(bounds.origin.x + padding_x, bounds.origin.y),
-                            size: size(width, bounds.size.height),
-                        }));
-                    },
-                    move |_bounds, (), window, _cx| {
-                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-                            if !matches!(phase, DispatchPhase::Bubble)
-                                || event.pressed_button != Some(MouseButton::Left)
-                            {
-                                return;
-                            }
-                            let Some(bounds) = drag_bounds.get() else {
-                                return;
-                            };
-                            drag_handler(
-                                &TextPointerEvent {
-                                    phase: TextPointerPhase::Drag,
-                                    byte_offset: text_offset_for_point(
-                                        window,
-                                        &drag_text,
-                                        event.position.x - bounds.origin.x,
-                                        text_size,
-                                    ),
-                                    extend: false,
-                                    click_count: 0,
-                                    text_bounds: bounds,
-                                },
-                                window,
-                                cx,
-                            );
-                        });
-                        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-                            if !matches!(phase, DispatchPhase::Bubble)
-                                || event.button != MouseButton::Left
-                            {
-                                return;
-                            }
-                            up_handler(
-                                &TextPointerEvent {
-                                    phase: TextPointerPhase::Up,
-                                    byte_offset: 0,
-                                    extend: false,
-                                    click_count: event.click_count,
-                                    text_bounds: up_bounds.get().unwrap_or_default(),
-                                },
-                                window,
-                                cx,
-                            );
-                        });
-                    },
-                )
-                .absolute()
-                .left_0()
-                .top_0()
-                .size_full(),
+            root = attach_pointer_handlers(
+                root,
+                handler,
+                text_bounds,
+                pointer_text,
+                text_size,
+                padding_x,
             );
         }
 
@@ -604,6 +407,303 @@ impl<V: EntityInputHandler + 'static> RenderOnce for TextInput<V> {
             entity.expect("entity required for IME input"),
         ))
     }
+}
+
+/// 三个 children 分支共享的聚焦 / caret / IME 标记输入。
+struct TextRun {
+    focused: bool,
+    caret_height: Pixels,
+    ime_marked_text: SharedString,
+}
+
+impl TextRun {
+    fn new(focused: bool, caret_height: Pixels, ime_marked_text: SharedString) -> Self {
+        Self {
+            focused,
+            caret_height,
+            ime_marked_text,
+        }
+    }
+}
+
+/// 空值态的 children：聚焦 caret → placeholder，或有 IME 标记时只显示标记。
+fn empty_text_children(run: TextRun, placeholder: Option<SharedString>) -> Vec<gpui::AnyElement> {
+    let mut children = Vec::new();
+    if run.focused {
+        children.push(text_caret(run.caret_height).into_any_element());
+    }
+    if run.ime_marked_text.is_empty() {
+        if let Some(placeholder) = placeholder {
+            children.push(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .child(placeholder)
+                    .into_any_element(),
+            );
+        }
+    } else {
+        children.push(marked_element(run.ime_marked_text).into_any_element());
+    }
+    children
+}
+
+/// 选区态的 children：before → 高亮中段 → after → IME 标记；
+/// 切片落在字符内部时回退为整体文本 + caret + 标记。
+fn selection_text_children(
+    value: &SharedString,
+    display_text: SharedString,
+    sel_start: usize,
+    sel_end: usize,
+    run: TextRun,
+) -> Vec<gpui::AnyElement> {
+    let mut children = Vec::new();
+    let val = value.as_ref();
+    let s = sel_start.min(val.len());
+    let e = sel_end.min(val.len());
+    // 容错：若切片落在字符内部，回退到末尾 caret 渲染，避免 panic。
+    if is_valid_selection(val, s, e) {
+        if !val[..s].is_empty() {
+            children.push(text_span(val[..s].to_string()).into_any_element());
+        }
+        children.push(
+            div()
+                .flex_shrink_0()
+                .whitespace_nowrap()
+                .bg(theme::accent_soft())
+                .text_color(theme::text())
+                .child(SharedString::from(val[s..e].to_string()))
+                .into_any_element(),
+        );
+        if !val[e..].is_empty() {
+            children.push(text_span(val[e..].to_string()).into_any_element());
+        }
+        if !run.ime_marked_text.is_empty() {
+            children.push(marked_text_span(run.ime_marked_text).into_any_element());
+        }
+    } else {
+        children.push(
+            div()
+                .min_w_0()
+                .flex_shrink_0()
+                .whitespace_nowrap()
+                .child(display_text)
+                .into_any_element(),
+        );
+        if run.focused {
+            children.push(text_caret(run.caret_height).into_any_element());
+        }
+        if !run.ime_marked_text.is_empty() {
+            children.push(marked_element(run.ime_marked_text).into_any_element());
+        }
+    }
+    children
+}
+
+/// 无选区态的 children：有明确 cursor 位时按 before/caret/标记/after 拆分，
+/// 否则整体显示文本后置 caret 与标记。
+fn cursor_text_children(
+    value: &SharedString,
+    display_text: SharedString,
+    cursor: Option<usize>,
+    masked: bool,
+    run: TextRun,
+) -> Vec<gpui::AnyElement> {
+    let mut children = Vec::new();
+    let val = value.as_ref();
+    let cursor_pos = clamp_to_char_boundary(val, cursor.unwrap_or(val.len()));
+    // 有明确 cursor 位时按 before/caret/after 拆分，否则整体显示后置 caret。
+    if use_cursor_split(cursor, masked) {
+        if !val[..cursor_pos].is_empty() {
+            children.push(text_span(val[..cursor_pos].to_string()).into_any_element());
+        }
+        if run.focused {
+            children.push(text_caret(run.caret_height).into_any_element());
+        }
+        if !run.ime_marked_text.is_empty() {
+            children.push(marked_text_span(run.ime_marked_text).into_any_element());
+        }
+        if !val[cursor_pos..].is_empty() {
+            children.push(text_span(val[cursor_pos..].to_string()).into_any_element());
+        }
+    } else {
+        children.push(
+            div()
+                .min_w_0()
+                .flex_shrink_0()
+                .whitespace_nowrap()
+                .child(display_text)
+                .into_any_element(),
+        );
+        if run.focused {
+            children.push(text_caret(run.caret_height).into_any_element());
+        }
+        if !run.ime_marked_text.is_empty() {
+            children.push(marked_element(run.ime_marked_text).into_any_element());
+        }
+    }
+    children
+}
+
+/// 给输入框挂上按下 / 移出 / 拖拽 / 松开的指针监听，落点换算为字节偏移后交给 `handler`。
+fn attach_pointer_handlers(
+    root: Stateful<Div>,
+    handler: PointerHandler,
+    text_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    pointer_text: SharedString,
+    text_size: Pixels,
+    padding_x: Pixels,
+) -> Stateful<Div> {
+    let root = attach_press_handlers(root, &handler, &text_bounds, &pointer_text, text_size);
+    attach_drag_handlers(
+        root,
+        handler,
+        text_bounds,
+        pointer_text,
+        text_size,
+        padding_x,
+    )
+}
+
+/// 按下与「在别处按下」两个即时监听。
+fn attach_press_handlers(
+    mut root: Stateful<Div>,
+    handler: &PointerHandler,
+    text_bounds: &Rc<Cell<Option<Bounds<Pixels>>>>,
+    pointer_text: &SharedString,
+    text_size: Pixels,
+) -> Stateful<Div> {
+    let down_bounds = text_bounds.clone();
+    let down_handler = handler.clone();
+    let down_text = pointer_text.clone();
+    root = root.on_mouse_down(MouseButton::Left, move |event, window, cx| {
+        let Some(bounds) = down_bounds.get() else {
+            return;
+        };
+        down_handler(
+            &TextPointerEvent {
+                phase: TextPointerPhase::Down,
+                byte_offset: text_offset_for_point(
+                    window,
+                    &down_text,
+                    event.position.x - bounds.origin.x,
+                    text_size,
+                ),
+                extend: event.modifiers.shift,
+                click_count: event.click_count,
+                text_bounds: bounds,
+            },
+            window,
+            cx,
+        );
+    });
+
+    // 在别处按下说明上一次按下已无从松开:补一个 Up,免得选中态一直挂着。
+    let out_bounds = text_bounds.clone();
+    let out_handler = handler.clone();
+    root = root.on_mouse_down_out(move |_, window, cx| {
+        out_handler(
+            &TextPointerEvent {
+                phase: TextPointerPhase::Up,
+                byte_offset: 0,
+                extend: false,
+                click_count: 0,
+                text_bounds: out_bounds.get().unwrap_or_default(),
+            },
+            window,
+            cx,
+        );
+    });
+    root
+}
+
+/// 按下后指针可能移出输入框,拖动 / 松开只能走窗口级监听。
+fn attach_drag_handlers(
+    root: Stateful<Div>,
+    handler: PointerHandler,
+    text_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    pointer_text: SharedString,
+    text_size: Pixels,
+    padding_x: Pixels,
+) -> Stateful<Div> {
+    let capture_bounds = text_bounds.clone();
+    let drag_bounds = text_bounds.clone();
+    let up_bounds = text_bounds.clone();
+    let drag_handler = handler.clone();
+    let up_handler = handler;
+    let drag_text = pointer_text.clone();
+    root.child(
+        canvas(
+            move |bounds, _window, _cx| {
+                let width = (bounds.size.width - padding_x * 2.).max(px(0.));
+                capture_bounds.set(Some(Bounds {
+                    origin: point(bounds.origin.x + padding_x, bounds.origin.y),
+                    size: size(width, bounds.size.height),
+                }));
+            },
+            move |_bounds, (), window, _cx| {
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                    if !matches!(phase, DispatchPhase::Bubble)
+                        || event.pressed_button != Some(MouseButton::Left)
+                    {
+                        return;
+                    }
+                    let Some(bounds) = drag_bounds.get() else {
+                        return;
+                    };
+                    drag_handler(
+                        &TextPointerEvent {
+                            phase: TextPointerPhase::Drag,
+                            byte_offset: text_offset_for_point(
+                                window,
+                                &drag_text,
+                                event.position.x - bounds.origin.x,
+                                text_size,
+                            ),
+                            extend: false,
+                            click_count: 0,
+                            text_bounds: bounds,
+                        },
+                        window,
+                        cx,
+                    );
+                });
+                window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                    if !matches!(phase, DispatchPhase::Bubble) || event.button != MouseButton::Left
+                    {
+                        return;
+                    }
+                    up_handler(
+                        &TextPointerEvent {
+                            phase: TextPointerPhase::Up,
+                            byte_offset: 0,
+                            extend: false,
+                            click_count: event.click_count,
+                            text_bounds: up_bounds.get().unwrap_or_default(),
+                        },
+                        window,
+                        cx,
+                    );
+                });
+            },
+        )
+        .absolute()
+        .left_0()
+        .top_0()
+        .size_full(),
+    )
+}
+
+/// 框内后缀图标：固定在右侧，不挤占文本。
+fn suffix_icon_child(icon: icons::IconName) -> gpui::AnyElement {
+    div()
+        .ml_auto()
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .child(icons::icon(icon, 13.).text_color(theme::muted_text()))
+        .into_any_element()
 }
 
 fn marked_element(text: SharedString) -> impl IntoElement {
