@@ -64,7 +64,7 @@ impl Render for AppShell {
         let linux_titlebar =
             crate::features::workspace::linux_titlebar::render_linux_titlebar(window, cx);
 
-        let mut root =
+        let root = configure_shell_root(
             div()
                 .id("app-shell")
                 .key_context("AppShell")
@@ -74,46 +74,71 @@ impl Render for AppShell {
                 .relative()
                 .size_full()
                 .bg(theme::canvas())
-                .text_color(theme::text())
-                .on_action(cx.listener(AppShell::handle_new_terminal))
-                .on_action(cx.listener(AppShell::handle_close_active_tab))
-                .on_action(cx.listener(AppShell::handle_cycle_next_tab))
-                .on_action(cx.listener(AppShell::handle_cycle_prev_tab))
-                .on_action(cx.listener(AppShell::handle_switch_to_tab1))
-                .on_action(cx.listener(AppShell::handle_switch_to_tab2))
-                .on_action(cx.listener(AppShell::handle_switch_to_tab3))
-                .on_action(cx.listener(AppShell::handle_switch_to_tab4))
-                .on_action(cx.listener(AppShell::handle_switch_to_tab5))
-                .on_action(cx.listener(AppShell::handle_switch_to_tab6))
-                .on_action(cx.listener(AppShell::handle_switch_to_tab7))
-                .on_action(cx.listener(AppShell::handle_switch_to_tab8))
-                .on_action(cx.listener(AppShell::handle_switch_to_tab9))
-                .on_action(cx.listener(AppShell::handle_split_terminal_horizontal))
-                .on_action(cx.listener(AppShell::handle_split_terminal_vertical))
-                .on_action(cx.listener(AppShell::handle_focus_split_left))
-                .on_action(cx.listener(AppShell::handle_focus_split_right))
-                .on_action(cx.listener(AppShell::handle_focus_split_up))
-                .on_action(cx.listener(AppShell::handle_focus_split_down))
-                .on_action(cx.listener(|this, _: &crate::OpenProject, _, cx| {
-                    this.choose_project_directory(cx)
-                }))
-                .on_action(cx.listener(|this, _: &crate::ToggleHostSidebar, _, cx| {
-                    this.toggle_host_sidebar(cx)
-                }))
-                .on_action(
-                    cx.listener(|this, _: &crate::ToggleScratchTerminal, window, cx| {
-                        this.toggle_scratch_terminal(window, cx)
-                    }),
-                )
-                .on_action(cx.listener(|this, _: &crate::ToggleTimestamps, _, cx| {
-                    this.toggle_timestamps(cx)
-                }))
-                .on_action(cx.listener(AppShell::handle_quit))
-                .on_key_down(cx.listener(AppShell::handle_shell_key_down))
-                .children(linux_titlebar)
-                .child(workspace)
-                .child(status_bar);
+                .text_color(theme::text()),
+            cx,
+        )
+        .children(linux_titlebar)
+        .child(workspace)
+        .child(status_bar);
 
+        let root = self.render_shell_overlays(root, window, cx);
+        crossh_ui::client_decorations::client_side_decorations(root, window, cx)
+    }
+}
+
+/// 挂载 `#app-shell` 的动作与按键监听。
+///
+/// 只有在所有不透明元素 materialize 之后才能调用：监听器会借用 `cx`，
+/// 提前挂载会让 Rust 2024 的借用检查卡住后续渲染 helper。
+fn configure_shell_root(
+    root: gpui::Stateful<gpui::Div>,
+    cx: &mut Context<AppShell>,
+) -> gpui::Stateful<gpui::Div> {
+    root.on_action(cx.listener(AppShell::handle_new_terminal))
+        .on_action(cx.listener(AppShell::handle_close_active_tab))
+        .on_action(cx.listener(AppShell::handle_cycle_next_tab))
+        .on_action(cx.listener(AppShell::handle_cycle_prev_tab))
+        .on_action(cx.listener(AppShell::handle_switch_to_tab1))
+        .on_action(cx.listener(AppShell::handle_switch_to_tab2))
+        .on_action(cx.listener(AppShell::handle_switch_to_tab3))
+        .on_action(cx.listener(AppShell::handle_switch_to_tab4))
+        .on_action(cx.listener(AppShell::handle_switch_to_tab5))
+        .on_action(cx.listener(AppShell::handle_switch_to_tab6))
+        .on_action(cx.listener(AppShell::handle_switch_to_tab7))
+        .on_action(cx.listener(AppShell::handle_switch_to_tab8))
+        .on_action(cx.listener(AppShell::handle_switch_to_tab9))
+        .on_action(cx.listener(AppShell::handle_split_terminal_horizontal))
+        .on_action(cx.listener(AppShell::handle_split_terminal_vertical))
+        .on_action(cx.listener(AppShell::handle_focus_split_left))
+        .on_action(cx.listener(AppShell::handle_focus_split_right))
+        .on_action(cx.listener(AppShell::handle_focus_split_up))
+        .on_action(cx.listener(AppShell::handle_focus_split_down))
+        .on_action(
+            cx.listener(|this, _: &crate::OpenProject, _, cx| this.choose_project_directory(cx)),
+        )
+        .on_action(
+            cx.listener(|this, _: &crate::ToggleHostSidebar, _, cx| this.toggle_host_sidebar(cx)),
+        )
+        .on_action(
+            cx.listener(|this, _: &crate::ToggleScratchTerminal, window, cx| {
+                this.toggle_scratch_terminal(window, cx)
+            }),
+        )
+        .on_action(
+            cx.listener(|this, _: &crate::ToggleTimestamps, _, cx| this.toggle_timestamps(cx)),
+        )
+        .on_action(cx.listener(AppShell::handle_quit))
+        .on_key_down(cx.listener(AppShell::handle_shell_key_down))
+}
+
+impl AppShell {
+    /// 把浮层按既有层级顺序叠加到已 materialize 的根节点上。
+    fn render_shell_overlays(
+        &mut self,
+        mut root: gpui::Stateful<gpui::Div>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
         let system_monitor_card =
             crate::features::workspace::system_monitor::render_system_monitor_card(
                 self, window, cx,
@@ -149,6 +174,6 @@ impl Render for AppShell {
                 |this, cx| this.close_context_menu(cx),
             ));
         }
-        crossh_ui::client_decorations::client_side_decorations(root, window, cx)
+        root
     }
 }
