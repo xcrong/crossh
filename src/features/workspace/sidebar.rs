@@ -50,23 +50,6 @@ pub fn render_sidebar(
             .or_insert(0usize) += 1;
     }
 
-    let mut project_list = div().id("project-list").flex().flex_col().gap_1();
-    if projects.is_empty() {
-        project_list = project_list.child(
-            Hint::new(i18n::text("sidebar.no_projects"))
-                .padding_x(px(8.))
-                .padding_y(px(8.))
-                .radius(px(theme::RADIUS_SM)),
-        );
-    } else {
-        for project in &projects {
-            let duplicate = name_counts
-                .get(&project_display_name(project).to_ascii_lowercase())
-                .is_some_and(|count| *count > 1);
-            project_list = project_list.child(render_project_row(project, duplicate, shell, cx));
-        }
-    }
-
     let mut list = scroll_y(&shell.sidebar_scroll)
         .id("host-list")
         .flex_1()
@@ -76,41 +59,33 @@ pub fn render_sidebar(
         .gap_3()
         .px_3()
         .py_3();
-    list = list.child(project_list);
+    list = list.child(render_project_list(&projects, &name_counts, shell, cx));
 
-    let footer = div()
-        .flex_shrink_0()
-        .border_t_1()
-        .border_color(theme::border())
-        .px_2()
-        .py_2()
-        .child(
-            Button::new("sidebar-open-project")
-                .variant(ButtonVariant::Secondary)
-                .icon(icons::icon(icons::IconName::FolderOpen, 14.))
-                .label(i18n::text("rail_add.open_local_project"))
-                .full_width()
-                .on_click(cx.listener(|this, _ev, _window, cx| {
-                    this.choose_project_directory(cx);
-                })),
-        );
+    SidePanel::left(
+        "sidebar-resize",
+        shell.sidebar_width.clone(),
+        shell.sidebar_dragging.clone(),
+    )
+    .min_width(theme::SIDEBAR_MIN_WIDTH)
+    .max_width(theme::SIDEBAR_MAX_WIDTH)
+    .bg(theme::sidebar())
+    .border_color(theme::border())
+    .line()
+    .child(
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(render_sidebar_titlebar())
+            .child(render_sidebar_search(shell, search_focus, cx))
+            .child(list)
+            .child(render_sidebar_footer(cx)),
+    )
+    .into_any_element()
+}
 
-    let search = filter_row("host-search-wrap").child(
-        filter_text_input(
-            "host-search",
-            search_focus.clone(),
-            shell.search_query.value.clone(),
-            i18n::text("sidebar.search_placeholder"),
-            shell.search_query.ime_marked_text.clone(),
-            shell.search_query.selection(),
-            shell.search_query.cursor,
-        )
-        .entity(cx.entity())
-        .on_key_down(cx.listener(AppShell::handle_search_key))
-        .on_pointer_select(cx.listener(AppShell::handle_search_pointer)),
-    );
-
-    let titlebar = div()
+fn render_sidebar_titlebar() -> impl IntoElement {
+    div()
         .relative()
         .h(px(theme::TITLEBAR_HEIGHT))
         .flex_shrink_0()
@@ -140,28 +115,72 @@ pub fn render_sidebar(
                 .text_color(theme::text())
                 .child(SharedString::from("crossh")),
         )
-        .child(div().flex_1());
-    SidePanel::left(
-        "sidebar-resize",
-        shell.sidebar_width.clone(),
-        shell.sidebar_dragging.clone(),
+        .child(div().flex_1())
+}
+
+fn render_sidebar_search(
+    shell: &AppShell,
+    search_focus: gpui::FocusHandle,
+    cx: &mut Context<AppShell>,
+) -> impl IntoElement {
+    filter_row("host-search-wrap").child(
+        filter_text_input(
+            "host-search",
+            search_focus,
+            shell.search_query.value.clone(),
+            i18n::text("sidebar.search_placeholder"),
+            shell.search_query.ime_marked_text.clone(),
+            shell.search_query.selection(),
+            shell.search_query.cursor,
+        )
+        .entity(cx.entity())
+        .on_key_down(cx.listener(AppShell::handle_search_key))
+        .on_pointer_select(cx.listener(AppShell::handle_search_pointer)),
     )
-    .min_width(theme::SIDEBAR_MIN_WIDTH)
-    .max_width(theme::SIDEBAR_MAX_WIDTH)
-    .bg(theme::sidebar())
-    .border_color(theme::border())
-    .line()
-    .child(
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(titlebar)
-            .child(search)
-            .child(list)
-            .child(footer),
-    )
-    .into_any_element()
+}
+
+fn render_project_list(
+    projects: &[&ProjectSnapshot],
+    name_counts: &BTreeMap<String, usize>,
+    shell: &AppShell,
+    cx: &mut Context<AppShell>,
+) -> impl IntoElement {
+    let mut project_list = div().id("project-list").flex().flex_col().gap_1();
+    if projects.is_empty() {
+        project_list = project_list.child(
+            Hint::new(i18n::text("sidebar.no_projects"))
+                .padding_x(px(8.))
+                .padding_y(px(8.))
+                .radius(px(theme::RADIUS_SM)),
+        );
+    } else {
+        for project in projects {
+            let duplicate = name_counts
+                .get(&project_display_name(project).to_ascii_lowercase())
+                .is_some_and(|count| *count > 1);
+            project_list = project_list.child(render_project_row(project, duplicate, shell, cx));
+        }
+    }
+    project_list
+}
+
+fn render_sidebar_footer(cx: &mut Context<AppShell>) -> impl IntoElement {
+    div()
+        .flex_shrink_0()
+        .border_t_1()
+        .border_color(theme::border())
+        .px_2()
+        .py_2()
+        .child(
+            Button::new("sidebar-open-project")
+                .variant(ButtonVariant::Secondary)
+                .icon(icons::icon(icons::IconName::FolderOpen, 14.))
+                .label(i18n::text("rail_add.open_local_project"))
+                .full_width()
+                .on_click(cx.listener(|this, _ev, _window, cx| {
+                    this.choose_project_directory(cx);
+                })),
+        )
 }
 
 /// 收起主机栏时保留活跃项目，便于直接切换工作目标。
