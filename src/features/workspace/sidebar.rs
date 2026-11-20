@@ -191,6 +191,37 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
             .entry(project_display_name(project).to_ascii_lowercase())
             .or_insert(0usize) += 1;
     }
+    let activity = render_rail_activity(shell, &name_counts, cx);
+    let add_entries = rail_add_menu_entries(&shell.workspace.snapshot.projects);
+
+    Rail::left("sidebar-rail", theme::SIDEBAR_RAIL_WIDTH)
+        .bg(theme::sidebar())
+        .border_color(theme::border())
+        .child(
+            div()
+                .w(px(30.))
+                .h(px(30.))
+                .mb_2()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(theme::RADIUS_SM))
+                .bg(theme::accent_soft())
+                .border_1()
+                .border_color(theme::border_strong())
+                .child(icons::logo(19.)),
+        )
+        .child(activity)
+        .child(render_rail_add_button(add_entries, cx))
+        .into_any_element()
+}
+
+/// Rail 中部的活跃项目头像列表；仅展示拥有 live session 的项目。
+fn render_rail_activity(
+    shell: &AppShell,
+    name_counts: &BTreeMap<String, usize>,
+    cx: &mut Context<AppShell>,
+) -> impl IntoElement {
     let mut activity = div()
         .id("sidebar-rail-activity")
         .w_full()
@@ -238,60 +269,45 @@ pub fn render_sidebar_rail(shell: &AppShell, cx: &mut Context<AppShell>) -> AnyE
             }),
         ));
     }
-    let add_entries = rail_add_menu_entries(&shell.workspace.snapshot.projects);
+    activity
+}
 
-    Rail::left("sidebar-rail", theme::SIDEBAR_RAIL_WIDTH)
-        .bg(theme::sidebar())
-        .border_color(theme::border())
+/// Rail 底部的“+”按钮，点击后弹出打开项目/最近项目的上下文菜单。
+fn render_rail_add_button(
+    add_entries: Vec<MenuEntry<ShellMenuAction>>,
+    cx: &mut Context<AppShell>,
+) -> impl IntoElement {
+    div()
+        .id("sidebar-rail-add")
+        .w(px(30.))
+        .h(px(30.))
+        .mt_1()
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(theme::RADIUS_SM))
+        .cursor_pointer()
+        .text_color(theme::muted_text())
+        .border_1()
+        .border_color(theme::border_strong())
+        .hover(|style| style.bg(theme::surface()).text_color(theme::text()))
+        .tooltip(|_window, cx| {
+            cx.new(|_| Tooltip::new(i18n::text("tooltip.open_target")))
+                .into()
+        })
         .child(
-            div()
-                .w(px(30.))
-                .h(px(30.))
-                .mb_2()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(theme::RADIUS_SM))
-                .bg(theme::accent_soft())
-                .border_1()
-                .border_color(theme::border_strong())
-                .child(icons::logo(19.)),
-        )
-        .child(activity)
-        .child(
-            div()
-                .id("sidebar-rail-add")
-                .w(px(30.))
-                .h(px(30.))
-                .mt_1()
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(theme::RADIUS_SM))
-                .cursor_pointer()
+            icons::icon(icons::IconName::Plus, 15.)
                 .text_color(theme::muted_text())
-                .border_1()
-                .border_color(theme::border_strong())
-                .hover(|style| style.bg(theme::surface()).text_color(theme::text()))
-                .tooltip(|_window, cx| {
-                    cx.new(|_| Tooltip::new(i18n::text("tooltip.open_target")))
-                        .into()
-                })
-                .child(
-                    icons::icon(icons::IconName::Plus, 15.)
-                        .text_color(theme::muted_text())
-                        .hover(|style| style.text_color(theme::text())),
-                )
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
-                        cx.stop_propagation();
-                        this.open_context_menu(ev.position, add_entries.clone(), cx);
-                    }),
-                ),
+                .hover(|style| style.text_color(theme::text())),
         )
-        .into_any_element()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
+                cx.stop_propagation();
+                this.open_context_menu(ev.position, add_entries.clone(), cx);
+            }),
+        )
 }
 
 fn rail_add_menu_entries(projects: &[ProjectSnapshot]) -> Vec<MenuEntry<ShellMenuAction>> {
