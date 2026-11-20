@@ -23,7 +23,7 @@ use crossh_core::editor_launcher;
 use crossh_core::git_status::GitStatus;
 use crossh_core::i18n;
 use crossh_session::workspace::{
-    Axis, PaneId, PaneNodeSnapshot, PaneSnapshot, PaneStatus, TabSnapshot,
+    Axis, PaneId, PaneNodeSnapshot, PaneSnapshot, PaneStatus, SplitId, TabSnapshot,
 };
 use crossh_terminal_view::TerminalItem as _;
 use crossh_ui::{icons, theme};
@@ -218,82 +218,8 @@ fn render_pane_node(
                 div().flex_1().w_full().min_w_0().min_h_0()
             };
 
-            let split_id = *id;
-            let drag_cell = shell.workspace.split_drag_cell.clone();
-            let divider = if is_row {
-                div()
-                    .id(("split-divider", split_id.0))
-                    .w(px(TERMINAL_SPLIT_HANDLE_WIDTH))
-                    .h_full()
-                    .flex_none()
-                    .cursor_col_resize()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .w(px(1.))
-                            .h_full()
-                            .bg(theme::border())
-                            .hover(|style| style.bg(theme::accent())),
-                    )
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        move |event: &MouseDownEvent, window, _| {
-                            drag_cell.set(Some(SplitDrag {
-                                split_id,
-                                axis: Axis::Row,
-                                total_px: width.as_f32(),
-                                start_ratio: ratio,
-                                start_position: event.position.x.as_f32(),
-                                ratio,
-                            }));
-                            window.refresh();
-                        },
-                    )
-            } else {
-                div()
-                    .id(("split-divider", split_id.0))
-                    .w_full()
-                    .h(px(TERMINAL_SPLIT_HANDLE_WIDTH))
-                    .flex_none()
-                    .cursor_row_resize()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .h(px(1.))
-                            .w_full()
-                            .bg(theme::border())
-                            .hover(|style| style.bg(theme::accent())),
-                    )
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        move |event: &MouseDownEvent, window, _| {
-                            drag_cell.set(Some(SplitDrag {
-                                split_id,
-                                axis: Axis::Column,
-                                total_px: height.as_f32(),
-                                start_ratio: ratio,
-                                start_position: event.position.y.as_f32(),
-                                ratio,
-                            }));
-                            window.refresh();
-                        },
-                    )
-            };
-
-            let (first_width, first_height) = if is_row {
-                (first_px, height)
-            } else {
-                (width, first_px)
-            };
-            let (second_width, second_height) = if is_row {
-                (px((total - total * ratio).max(0.)), height)
-            } else {
-                (width, px((total - total * ratio).max(0.)))
-            };
+            let ((first_width, first_height), (second_width, second_height)) =
+                split_child_sizes(is_row, width, height, total, ratio);
             container
                 .child(first_wrapper.child(render_pane_node(
                     shell,
@@ -303,7 +229,9 @@ fn render_pane_node(
                     first_height,
                     cx,
                 )))
-                .child(divider)
+                .child(render_split_divider(
+                    shell, *id, *axis, width, height, ratio,
+                ))
                 .child(second_wrapper.child(render_pane_node(
                     shell,
                     tab,
@@ -314,6 +242,98 @@ fn render_pane_node(
                 )))
                 .into_any_element()
         }
+    }
+}
+
+/// 分屏两侧子区域的像素尺寸：主轴按比例分配，交叉轴沿用父尺寸。
+fn split_child_sizes(
+    is_row: bool,
+    width: Pixels,
+    height: Pixels,
+    total: f32,
+    ratio: f32,
+) -> ((Pixels, Pixels), (Pixels, Pixels)) {
+    let first_px = px((total * ratio).max(0.));
+    let second_px = px((total - total * ratio).max(0.));
+    if is_row {
+        ((first_px, height), (second_px, height))
+    } else {
+        ((width, first_px), (width, second_px))
+    }
+}
+
+/// 分屏手柄：8px 命中区内的 1px 分隔线，按下时写入 `SplitDrag` 供全局监听换算比例。
+fn render_split_divider(
+    shell: &AppShell,
+    split_id: SplitId,
+    axis: Axis,
+    width: Pixels,
+    height: Pixels,
+    ratio: f32,
+) -> impl IntoElement {
+    let drag_cell = shell.workspace.split_drag_cell.clone();
+    if axis == Axis::Row {
+        div()
+            .id(("split-divider", split_id.0))
+            .w(px(TERMINAL_SPLIT_HANDLE_WIDTH))
+            .h_full()
+            .flex_none()
+            .cursor_col_resize()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .w(px(1.))
+                    .h_full()
+                    .bg(theme::border())
+                    .hover(|style| style.bg(theme::accent())),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                move |event: &MouseDownEvent, window, _| {
+                    drag_cell.set(Some(SplitDrag {
+                        split_id,
+                        axis: Axis::Row,
+                        total_px: width.as_f32(),
+                        start_ratio: ratio,
+                        start_position: event.position.x.as_f32(),
+                        ratio,
+                    }));
+                    window.refresh();
+                },
+            )
+    } else {
+        div()
+            .id(("split-divider", split_id.0))
+            .w_full()
+            .h(px(TERMINAL_SPLIT_HANDLE_WIDTH))
+            .flex_none()
+            .cursor_row_resize()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .h(px(1.))
+                    .w_full()
+                    .bg(theme::border())
+                    .hover(|style| style.bg(theme::accent())),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                move |event: &MouseDownEvent, window, _| {
+                    drag_cell.set(Some(SplitDrag {
+                        split_id,
+                        axis: Axis::Column,
+                        total_px: height.as_f32(),
+                        start_ratio: ratio,
+                        start_position: event.position.y.as_f32(),
+                        ratio,
+                    }));
+                    window.refresh();
+                },
+            )
     }
 }
 
