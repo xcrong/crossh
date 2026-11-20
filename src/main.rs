@@ -44,57 +44,20 @@ fn main() {
         std::env::args().skip(1),
         std::env::current_dir().map_err(|error| error.to_string()),
     );
-    match cli {
+    // 各 CLI 分支返回 `true` 表示落到 GUI 启动；`process::exit` 分支类型为 `!`。
+    let continue_gui = match cli {
         app::cli::CliCommand::Help => {
             app::cli::print_help();
-            return;
+            false
         }
         app::cli::CliCommand::Version => {
             println!("crossh {}", env!("CARGO_PKG_VERSION"));
-            return;
+            false
         }
-        app::cli::CliCommand::Git(result) => match result {
-            Ok(crossh_core::git_launcher::GitCliCommand::Open(cwd)) => {
-                if let Err(error) = crossh_core::git_launcher::spawn_git_process(&cwd) {
-                    eprintln!("crossh git: failed to start crossh-git: {error}");
-                    std::process::exit(1);
-                }
-                return;
-            }
-            Ok(crossh_core::git_launcher::GitCliCommand::Help) => {
-                crossh_core::git_launcher::print_help("crossh git");
-                return;
-            }
-            Err(error) => {
-                eprintln!("crossh git: {error}\n");
-                crossh_core::git_launcher::print_help("crossh git");
-                std::process::exit(2);
-            }
-        },
-        app::cli::CliCommand::Note(result) => match result {
-            Ok(crossh_core::note_launcher::NoteCliCommand::Open) => {
-                if let Err(error) = crossh_core::note_launcher::spawn_note_process() {
-                    eprintln!("crossh note: failed to start crossh-note: {error}");
-                    std::process::exit(1);
-                }
-                return;
-            }
-            Ok(crossh_core::note_launcher::NoteCliCommand::Help) => {
-                crossh_core::note_launcher::print_help("crossh note");
-                return;
-            }
-            Err(error) => {
-                eprintln!("crossh note: {error}\n");
-                crossh_core::note_launcher::print_help("crossh note");
-                std::process::exit(2);
-            }
-        },
-        app::cli::CliCommand::Daemon(action) => {
-            std::process::exit(run_daemon_command(action));
-        }
-        app::cli::CliCommand::Ls => {
-            std::process::exit(run_ls_command());
-        }
+        app::cli::CliCommand::Git(result) => dispatch_git(result),
+        app::cli::CliCommand::Note(result) => dispatch_note(result),
+        app::cli::CliCommand::Daemon(action) => std::process::exit(run_daemon_command(action)),
+        app::cli::CliCommand::Ls => std::process::exit(run_ls_command()),
         app::cli::CliCommand::Run(argv) => {
             if argv.is_empty() {
                 eprintln!("usage: crossh run -- <command> [args...]");
@@ -102,54 +65,111 @@ fn main() {
             }
             std::process::exit(run_run_command(&argv));
         }
-        app::cli::CliCommand::Capture(id) => {
-            std::process::exit(run_capture_command(&id));
-        }
+        app::cli::CliCommand::Capture(id) => std::process::exit(run_capture_command(&id)),
         app::cli::CliCommand::Unknown(argument) => {
             eprintln!("unknown argument: {argument}\n");
             eprintln!("try `crossh open <path>` or `crossh --help`");
             std::process::exit(2);
         }
-        app::cli::CliCommand::Open(raw) => {
-            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
-            let directory = match app::single_instance::resolve_open_path(&raw, &cwd) {
-                Ok(directory) => directory,
-                Err(error) => {
-                    eprintln!("crossh: {error}");
-                    std::process::exit(2);
-                }
-            };
-            if let Err(error) = run_open_command(directory.clone()) {
-                eprintln!("crossh open: {error}");
+        app::cli::CliCommand::Open(raw) => dispatch_open(raw),
+        app::cli::CliCommand::Main => dispatch_main(),
+    };
+    if continue_gui {
+        run_gui();
+    }
+}
+
+/// `crossh git`：成功后已交由子进程处理，主进程退出；返回 `false` 阻止 GUI 启动。
+fn dispatch_git(result: Result<crossh_core::git_launcher::GitCliCommand, String>) -> bool {
+    match result {
+        Ok(crossh_core::git_launcher::GitCliCommand::Open(cwd)) => {
+            if let Err(error) = crossh_core::git_launcher::spawn_git_process(&cwd) {
+                eprintln!("crossh git: failed to start crossh-git: {error}");
                 std::process::exit(1);
             }
-            match app::single_instance::try_forward(None) {
-                app::single_instance::ForwardOutcome::Forwarded => {
-                    println!(
-                        "crossh: opened {} in the running instance",
-                        directory.display()
-                    );
-                    return;
-                }
-                app::single_instance::ForwardOutcome::Rejected(error) => {
-                    eprintln!("crossh: {error}");
-                    std::process::exit(2);
-                }
-                app::single_instance::ForwardOutcome::NoInstance => {}
-            }
+            false
         }
-        app::cli::CliCommand::Main => match app::single_instance::try_forward(None) {
-            app::single_instance::ForwardOutcome::Forwarded => {
-                println!("crossh is already running");
-                return;
+        Ok(crossh_core::git_launcher::GitCliCommand::Help) => {
+            crossh_core::git_launcher::print_help("crossh git");
+            false
+        }
+        Err(error) => {
+            eprintln!("crossh git: {error}\n");
+            crossh_core::git_launcher::print_help("crossh git");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// `crossh note`：与 [`dispatch_git`] 同语义。
+fn dispatch_note(result: Result<crossh_core::note_launcher::NoteCliCommand, String>) -> bool {
+    match result {
+        Ok(crossh_core::note_launcher::NoteCliCommand::Open) => {
+            if let Err(error) = crossh_core::note_launcher::spawn_note_process() {
+                eprintln!("crossh note: failed to start crossh-note: {error}");
+                std::process::exit(1);
             }
-            app::single_instance::ForwardOutcome::Rejected(error) => {
-                eprintln!("crossh: {error}");
-                std::process::exit(2);
-            }
-            app::single_instance::ForwardOutcome::NoInstance => {}
-        },
+            false
+        }
+        Ok(crossh_core::note_launcher::NoteCliCommand::Help) => {
+            crossh_core::note_launcher::print_help("crossh note");
+            false
+        }
+        Err(error) => {
+            eprintln!("crossh note: {error}\n");
+            crossh_core::note_launcher::print_help("crossh note");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// `crossh open <path>`：daemon 打开项目后尝试转发；`true` 表示本地启动 GUI。
+fn dispatch_open(raw: std::path::PathBuf) -> bool {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
+    let directory = match app::single_instance::resolve_open_path(&raw, &cwd) {
+        Ok(directory) => directory,
+        Err(error) => {
+            eprintln!("crossh: {error}");
+            std::process::exit(2);
+        }
     };
+    if let Err(error) = run_open_command(directory.clone()) {
+        eprintln!("crossh open: {error}");
+        std::process::exit(1);
+    }
+    match app::single_instance::try_forward(None) {
+        app::single_instance::ForwardOutcome::Forwarded => {
+            println!(
+                "crossh: opened {} in the running instance",
+                directory.display()
+            );
+            false
+        }
+        app::single_instance::ForwardOutcome::Rejected(error) => {
+            eprintln!("crossh: {error}");
+            std::process::exit(2);
+        }
+        app::single_instance::ForwardOutcome::NoInstance => true,
+    }
+}
+
+/// 无子命令启动：已有实例则转发并退出，否则返回 `true` 继续 GUI。
+fn dispatch_main() -> bool {
+    match app::single_instance::try_forward(None) {
+        app::single_instance::ForwardOutcome::Forwarded => {
+            println!("crossh is already running");
+            false
+        }
+        app::single_instance::ForwardOutcome::Rejected(error) => {
+            eprintln!("crossh: {error}");
+            std::process::exit(2);
+        }
+        app::single_instance::ForwardOutcome::NoInstance => true,
+    }
+}
+
+/// 启动 GUI：日志、tokio 运行时、GPUI 应用装配与窗口初始化。
+fn run_gui() {
     app::bootstrap::init();
 
     // 预热 tokio 运行时（单例，限 2 worker 线程，控内存）。
