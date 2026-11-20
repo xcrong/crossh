@@ -1138,6 +1138,25 @@ pub struct AxisPrepaintState {
     visibility_requested: bool,
 }
 
+/// Stack-only timing for one visibility update.
+struct VisibilityTiming {
+    enter: Duration,
+    exit: Duration,
+    now: Instant,
+}
+
+/// Per-frame inputs shared by both axis passes.
+struct AxisLayoutContext {
+    has_both: bool,
+    scroll_size: Size<Pixels>,
+    hitbox: Hitbox,
+    mode: ScrollbarMode,
+    visibility: VisibilitySample,
+    visible: bool,
+    expand: Duration,
+    now: Instant,
+}
+
 impl Element for Scrollbar {
     type RequestLayoutState = ();
     type PrepaintState = PrepaintState;
@@ -1204,230 +1223,34 @@ impl Element for Scrollbar {
             motion.expand()
         };
 
-        let mut inner = state.get();
-        let current_offset = self.scroll_handle.offset();
-        if current_offset != inner.last_scroll_offset {
-            inner = inner.with_last_scroll(current_offset, Some(now));
-        }
-
-        let is_hovered = inner.hovered_axis.is_some() || inner.hovered_on_thumb.is_some();
-        let is_dragging = inner.dragged_axis.is_some();
-        let is_currently_visible = inner.visibility.sample(now).opacity > 0.0;
-        let visible = hover_keeps_visible(mode, is_hovered, is_currently_visible)
-            || wants_visible(
-                mode,
-                is_hovered,
-                is_dragging,
-                inner.last_scroll_time,
-                motion.idle(),
-                now,
-            );
-        inner.visibility.set_visible(
-            visible,
-            motion.entrance_for(mode, inner.hovered_on_thumb.is_some()),
-            enter,
-            exit,
-            now,
-        );
-        let visibility = inner.visibility.sample(now);
-        if visibility.running {
-            window.request_animation_frame();
-        }
-
-        if !is_hovered && !is_dragging {
-            if let Some(last_time) = inner.last_scroll_time {
-                let elapsed = now.saturating_duration_since(last_time);
-                if elapsed < motion.idle() && !inner.idle_timer_scheduled {
-                    inner.idle_timer_scheduled = true;
-                    let state = state.clone();
-                    let current_view = window.current_view();
-                    let next_delay = motion.idle() - elapsed;
-                    window
-                        .spawn(cx, async move |cx| {
-                            cx.background_executor().timer(next_delay).await;
-                            state.set(state.get().with_idle_timer_scheduled(false));
-                            cx.update(|_, cx| cx.notify(current_view)).ok();
-                        })
-                        .detach();
-                }
-            }
-        }
-        state.set(inner);
+        let timing = VisibilityTiming { enter, exit, now };
+        let (visibility, visible) =
+            self.update_scrollbar_visibility(&state, mode, motion, timing, window, cx);
 
         let mut states = vec![];
-        let mut has_both = self.axis.is_both();
-        let scroll_size = self
-            .scroll_size
-            .unwrap_or(self.scroll_handle.content_size());
+        let mut layout = AxisLayoutContext {
+            has_both: self.axis.is_both(),
+            scroll_size: self
+                .scroll_size
+                .unwrap_or(self.scroll_handle.content_size()),
+            hitbox,
+            mode,
+            visibility,
+            visible,
+            expand,
+            now,
+        };
 
         for axis in self.axis.all().into_iter() {
-            let is_vertical = axis.is_vertical();
-            let track_width = self
-                .styles
-                .track
-                .width
-                .or(cx.theme().scrollbar.styles().track.width)
-                .unwrap_or(WIDTH);
-            let (scroll_area_size, container_size, scroll_position) = if is_vertical {
-                (
-                    scroll_size.height,
-                    hitbox.size.height,
-                    self.scroll_handle.offset().y,
-                )
-            } else {
-                (
-                    scroll_size.width,
-                    hitbox.size.width,
-                    self.scroll_handle.offset().x,
-                )
-            };
-
-            // The horizontal scrollbar is set avoid overlapping with the vertical scrollbar, if the vertical scrollbar is visible.
-            let margin_end = if has_both && !is_vertical {
-                track_width
-            } else {
-                px(0.)
-            };
-
-            // Hide scrollbar, if the scroll area is smaller than the container.
-            if scroll_area_size <= container_size {
-                has_both = false;
-                continue;
+            match self.prepaint_axis(axis, &layout, &state, window, cx) {
+                Some(axis_state) => states.push(axis_state),
+                // Hide scrollbar, if the scroll area is smaller than the container.
+                None => layout.has_both = false,
             }
-
-            let bounds = Bounds {
-                origin: if is_vertical {
-                    point(
-                        hitbox.origin.x + hitbox.size.width - track_width,
-                        hitbox.origin.y,
-                    )
-                } else {
-                    point(
-                        hitbox.origin.x,
-                        hitbox.origin.y + hitbox.size.height - track_width,
-                    )
-                },
-                size: gpui::Size {
-                    width: if is_vertical {
-                        track_width
-                    } else {
-                        hitbox.size.width
-                    },
-                    height: if is_vertical {
-                        hitbox.size.height
-                    } else {
-                        track_width
-                    },
-                },
-            };
-
-            let is_always_to_show = mode.is_always();
-            let is_hover_to_show = mode.is_hover();
-            let is_hovered_on_bar = state.get().hovered_axis == Some(axis);
-            let is_hovered_on_thumb = state.get().hovered_on_thumb == Some(axis);
-
-            let (thumb_bg, bar_bg, bar_border, mut thumb_width, inset, radius, min_length) =
-                if state.get().dragged_axis == Some(axis) {
-                    self.style_for_active(cx)
-                } else if (is_hover_to_show || mode == ScrollbarMode::Scrolling)
-                    && (is_hovered_on_bar || is_hovered_on_thumb)
-                {
-                    if is_hovered_on_thumb {
-                        self.style_for_hovered_thumb(cx)
-                    } else {
-                        self.style_for_hovered_bar(cx)
-                    }
-                } else if is_always_to_show && (is_hovered_on_bar || is_hovered_on_thumb) {
-                    if is_hovered_on_thumb {
-                        self.style_for_hovered_thumb(cx)
-                    } else {
-                        self.style_for_hovered_bar(cx)
-                    }
-                } else {
-                    self.style_for_normal(cx)
-                };
-
-            let mut width_animation = if is_vertical {
-                state.get().vertical_width
-            } else {
-                state.get().horizontal_width
-            };
-            let (animated_width, running) = width_animation.set_target(thumb_width, expand, now);
-            let mut updated = state.get();
-            if is_vertical {
-                updated.vertical_width = width_animation;
-            } else {
-                updated.horizontal_width = width_animation;
-            }
-            state.set(updated);
-            thumb_width = animated_width;
-            if running {
-                window.request_animation_frame();
-            }
-
-            let thumb_size = (container_size / scroll_area_size * container_size).max(min_length);
-            let thumb_start = -(scroll_position / (scroll_area_size - container_size)
-                * (container_size - margin_end - thumb_size));
-            let thumb_end = (thumb_start + thumb_size).min(container_size - margin_end);
-
-            // The clickable area of the thumb
-            let thumb_length = thumb_end - thumb_start - inset * 2;
-            let thumb_bounds = if is_vertical {
-                Bounds::from_anchor_and_size(
-                    Anchor::TopRight,
-                    bounds.top_right() + point(-inset, inset + thumb_start),
-                    size(track_width, thumb_length),
-                )
-            } else {
-                Bounds::from_anchor_and_size(
-                    Anchor::BottomLeft,
-                    bounds.bottom_left() + point(inset + thumb_start, -inset),
-                    size(thumb_length, track_width),
-                )
-            };
-
-            // The actual render area of the thumb
-            let thumb_fill_bounds = if is_vertical {
-                Bounds::from_anchor_and_size(
-                    Anchor::TopRight,
-                    bounds.top_right() + point(-inset, inset + thumb_start),
-                    size(thumb_width, thumb_length),
-                )
-            } else {
-                Bounds::from_anchor_and_size(
-                    Anchor::BottomLeft,
-                    bounds.bottom_left() + point(inset + thumb_start, -inset),
-                    size(thumb_length, thumb_width),
-                )
-            };
-
-            let bar_hitbox = window.with_content_mask(Some(ContentMask { bounds }), |window| {
-                window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal)
-            });
-
-            states.push(AxisPrepaintState {
-                axis,
-                bar_hitbox,
-                bounds,
-                radius,
-                bg: bar_bg,
-                border: bar_border,
-                thumb_bounds,
-                thumb_fill_bounds,
-                thumb_bg,
-                scroll_size: scroll_area_size,
-                container_size,
-                thumb_size: thumb_length,
-                margin_end,
-                track_width,
-                visibility_opacity: visibility.opacity,
-                visibility_position: visibility.position,
-                visibility_requested: visible,
-            })
         }
 
         PrepaintState {
-            hitbox,
+            hitbox: layout.hitbox,
             states,
             scrollbar_state: state,
         }
@@ -1681,6 +1504,282 @@ impl Element for Scrollbar {
             },
         );
     }
+}
+
+impl Scrollbar {
+    /// Advance the scrollbar visibility for this frame and arm the idle timer
+    /// when the hold has not expired yet.
+    fn update_scrollbar_visibility(
+        &self,
+        state: &ScrollbarState,
+        mode: ScrollbarMode,
+        motion: ScrollbarMotion,
+        timing: VisibilityTiming,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (VisibilitySample, bool) {
+        let VisibilityTiming { enter, exit, now } = timing;
+        let mut inner = state.get();
+        let current_offset = self.scroll_handle.offset();
+        if current_offset != inner.last_scroll_offset {
+            inner = inner.with_last_scroll(current_offset, Some(now));
+        }
+
+        let is_hovered = inner.hovered_axis.is_some() || inner.hovered_on_thumb.is_some();
+        let is_dragging = inner.dragged_axis.is_some();
+        let is_currently_visible = inner.visibility.sample(now).opacity > 0.0;
+        let visible = hover_keeps_visible(mode, is_hovered, is_currently_visible)
+            || wants_visible(
+                mode,
+                is_hovered,
+                is_dragging,
+                inner.last_scroll_time,
+                motion.idle(),
+                now,
+            );
+        inner.visibility.set_visible(
+            visible,
+            motion.entrance_for(mode, inner.hovered_on_thumb.is_some()),
+            enter,
+            exit,
+            now,
+        );
+        let visibility = inner.visibility.sample(now);
+        if visibility.running {
+            window.request_animation_frame();
+        }
+
+        if !is_hovered && !is_dragging {
+            if let Some(last_time) = inner.last_scroll_time {
+                let elapsed = now.saturating_duration_since(last_time);
+                if elapsed < motion.idle() && !inner.idle_timer_scheduled {
+                    inner.idle_timer_scheduled = true;
+                    let state = ScrollbarState::clone(state);
+                    let current_view = window.current_view();
+                    let next_delay = motion.idle() - elapsed;
+                    window
+                        .spawn(cx, async move |cx| {
+                            cx.background_executor().timer(next_delay).await;
+                            state.set(state.get().with_idle_timer_scheduled(false));
+                            cx.update(|_, cx| cx.notify(current_view)).ok();
+                        })
+                        .detach();
+                }
+            }
+        }
+        state.set(inner);
+
+        (visibility, visible)
+    }
+
+    fn prepaint_axis(
+        &self,
+        axis: Axis,
+        layout: &AxisLayoutContext,
+        state: &ScrollbarState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<AxisPrepaintState> {
+        let is_vertical = axis.is_vertical();
+        let track_width = self
+            .styles
+            .track
+            .width
+            .or(cx.theme().scrollbar.styles().track.width)
+            .unwrap_or(WIDTH);
+        let (scroll_area_size, container_size, scroll_position) = if is_vertical {
+            (
+                layout.scroll_size.height,
+                layout.hitbox.size.height,
+                self.scroll_handle.offset().y,
+            )
+        } else {
+            (
+                layout.scroll_size.width,
+                layout.hitbox.size.width,
+                self.scroll_handle.offset().x,
+            )
+        };
+
+        // The horizontal scrollbar is set avoid overlapping with the vertical scrollbar, if the vertical scrollbar is visible.
+        let margin_end = if layout.has_both && !is_vertical {
+            track_width
+        } else {
+            px(0.)
+        };
+
+        // Hide scrollbar, if the scroll area is smaller than the container.
+        if scroll_area_size <= container_size {
+            return None;
+        }
+
+        let bounds = axis_bounds(&layout.hitbox, track_width, is_vertical);
+        let (thumb_bg, bar_bg, bar_border, mut thumb_width, inset, radius, min_length) =
+            self.style_for_axis(state.get(), axis, layout.mode, cx);
+
+        thumb_width = self.animate_axis_width(axis, state, thumb_width, layout, window);
+
+        let thumb_size = (container_size / scroll_area_size * container_size).max(min_length);
+        let thumb_start = -(scroll_position / (scroll_area_size - container_size)
+            * (container_size - margin_end - thumb_size));
+        let thumb_end = (thumb_start + thumb_size).min(container_size - margin_end);
+
+        // The clickable area and the actual render area of the thumb.
+        let thumb_length = thumb_end - thumb_start - inset * 2;
+        let (thumb_bounds, thumb_fill_bounds) = thumb_areas(
+            is_vertical,
+            bounds,
+            track_width,
+            thumb_width,
+            inset,
+            thumb_start,
+            thumb_length,
+        );
+
+        let bar_hitbox = window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal)
+        });
+
+        Some(AxisPrepaintState {
+            axis,
+            bar_hitbox,
+            bounds,
+            radius,
+            bg: bar_bg,
+            border: bar_border,
+            thumb_bounds,
+            thumb_fill_bounds,
+            thumb_bg,
+            scroll_size: scroll_area_size,
+            container_size,
+            thumb_size: thumb_length,
+            margin_end,
+            track_width,
+            visibility_opacity: layout.visibility.opacity,
+            visibility_position: layout.visibility.position,
+            visibility_requested: layout.visible,
+        })
+    }
+
+    fn animate_axis_width(
+        &self,
+        axis: Axis,
+        state: &ScrollbarState,
+        target: Pixels,
+        layout: &AxisLayoutContext,
+        window: &mut Window,
+    ) -> Pixels {
+        let is_vertical = axis.is_vertical();
+        let mut width_animation = if is_vertical {
+            state.get().vertical_width
+        } else {
+            state.get().horizontal_width
+        };
+        let (animated_width, running) =
+            width_animation.set_target(target, layout.expand, layout.now);
+        let mut updated = state.get();
+        if is_vertical {
+            updated.vertical_width = width_animation;
+        } else {
+            updated.horizontal_width = width_animation;
+        }
+        state.set(updated);
+        if running {
+            window.request_animation_frame();
+        }
+        animated_width
+    }
+
+    fn style_for_axis(
+        &self,
+        inner: ScrollbarStateInner,
+        axis: Axis,
+        mode: ScrollbarMode,
+        cx: &App,
+    ) -> (Background, Hsla, Hsla, Pixels, Pixels, Pixels, Pixels) {
+        let is_hovered_on_bar = inner.hovered_axis == Some(axis);
+        let is_hovered_on_thumb = inner.hovered_on_thumb == Some(axis);
+        let hovered = is_hovered_on_bar || is_hovered_on_thumb;
+        if inner.dragged_axis == Some(axis) {
+            self.style_for_active(cx)
+        } else if (mode.is_hover() || mode == ScrollbarMode::Scrolling) && hovered {
+            self.style_for_hovered_axis(is_hovered_on_thumb, cx)
+        } else if mode.is_always() && hovered {
+            self.style_for_hovered_axis(is_hovered_on_thumb, cx)
+        } else {
+            self.style_for_normal(cx)
+        }
+    }
+
+    fn style_for_hovered_axis(
+        &self,
+        on_thumb: bool,
+        cx: &App,
+    ) -> (Background, Hsla, Hsla, Pixels, Pixels, Pixels, Pixels) {
+        if on_thumb {
+            self.style_for_hovered_thumb(cx)
+        } else {
+            self.style_for_hovered_bar(cx)
+        }
+    }
+}
+
+fn axis_bounds(hitbox: &Hitbox, track_width: Pixels, is_vertical: bool) -> Bounds<Pixels> {
+    Bounds {
+        origin: if is_vertical {
+            point(
+                hitbox.origin.x + hitbox.size.width - track_width,
+                hitbox.origin.y,
+            )
+        } else {
+            point(
+                hitbox.origin.x,
+                hitbox.origin.y + hitbox.size.height - track_width,
+            )
+        },
+        size: gpui::Size {
+            width: if is_vertical {
+                track_width
+            } else {
+                hitbox.size.width
+            },
+            height: if is_vertical {
+                hitbox.size.height
+            } else {
+                track_width
+            },
+        },
+    }
+}
+
+fn thumb_areas(
+    is_vertical: bool,
+    bounds: Bounds<Pixels>,
+    track_width: Pixels,
+    thumb_width: Pixels,
+    inset: Pixels,
+    thumb_start: Pixels,
+    thumb_length: Pixels,
+) -> (Bounds<Pixels>, Bounds<Pixels>) {
+    let (anchor, origin, track_size, fill_size) = if is_vertical {
+        (
+            Anchor::TopRight,
+            bounds.top_right() + point(-inset, inset + thumb_start),
+            size(track_width, thumb_length),
+            size(thumb_width, thumb_length),
+        )
+    } else {
+        (
+            Anchor::BottomLeft,
+            bounds.bottom_left() + point(inset + thumb_start, -inset),
+            size(thumb_length, track_width),
+            size(thumb_length, thumb_width),
+        )
+    };
+    (
+        Bounds::from_anchor_and_size(anchor, origin, track_size),
+        Bounds::from_anchor_and_size(anchor, origin, fill_size),
+    )
 }
 
 #[cfg(test)]
