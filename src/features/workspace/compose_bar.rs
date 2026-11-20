@@ -1,5 +1,5 @@
 use gpui::{
-    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
+    AnyElement, Context, Div, InteractiveElement, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, Window, div, px,
 };
 
@@ -67,162 +67,210 @@ pub(crate) fn render_compose_bar(
 
     if value.is_empty() {
         // 空状态：单行，显示 caret + placeholder 或 IME
-        let mut row = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .min_h(px(20.))
-            .flex_shrink_0();
-        if focused {
-            row = row.child(text_caret(px(20.)));
-        }
-        if ime_marked_text.is_empty() {
-            row = row.child(
-                div()
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .text_color(theme::faint_text())
-                    .child(SharedString::from(i18n::text("compose.placeholder"))),
-            );
-        } else {
-            row = row.child(marked_text_span(ime_marked_text.clone()));
-        }
-        input = input.child(row);
+        input = input.child(render_compose_empty_row(focused, &ime_marked_text));
     } else {
         // 按 \n 拆行，逐行渲染，正确处理选区/光标跨行
-        let lines: Vec<&str> = value.split('\n').collect();
-        // 计算每行在原字符串中的字节范围
-        let mut line_start = 0usize;
-        let mut line_ranges: Vec<(usize, usize)> = Vec::new();
-        for line in &lines {
-            let start = line_start;
-            let end = start + line.len();
-            line_ranges.push((start, end));
-            line_start = end + 1; // 跳过 \n
-        }
         let cursor_line = value[..cursor].chars().filter(|c| *c == '\n').count();
         let (sel_start, sel_end) = selection
             .map(|(a, b)| if a < b { (a, b) } else { (b, a) })
             .unwrap_or((cursor, cursor));
-        let has_selection = selection.is_some() && sel_start != sel_end;
-
-        for (idx, line) in lines.iter().enumerate() {
-            let (l_start, l_end) = line_ranges[idx];
-            // 判断该行是否包含光标
-            let is_cursor_line = idx == cursor_line;
-            // 该行与选区的重叠区间（行内字节偏移）
-            let sel_in_line = if has_selection {
-                let overlap_start = sel_start.max(l_start).min(l_end);
-                let overlap_end = sel_end.max(l_start).min(l_end).max(overlap_start);
-                if overlap_start < overlap_end {
-                    Some((overlap_start - l_start, overlap_end - l_start))
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            // 该行与 IME 替换区间的重叠
-            let ime_in_line = if let Some((ime_s, ime_e)) = ime_replacement {
-                if !ime_marked_text.is_empty() && ime_s >= l_start && ime_s <= l_end {
-                    // IME 替换区在该行内（通常单行）
-                    Some((ime_s - l_start, ime_e.min(l_end) - l_start))
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            let mut row = div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .min_h(px(20.))
-                .flex_shrink_0();
-
-            if is_cursor_line {
-                // 光标所在行的渲染：按选区/IME 拆分
-                if let Some((s, e)) = sel_in_line {
-                    // 有选区：before + highlighted + after
-                    row = row.child(text_span(line[..s].to_string()));
-                    row = row.child(
-                        div()
-                            .flex_shrink_0()
-                            .whitespace_nowrap()
-                            .bg(theme::accent_soft())
-                            .text_color(theme::text())
-                            .child(SharedString::from(line[s..e].to_string())),
-                    );
-                    row = row.child(text_span(line[e..].to_string()));
-                    // 选区行不显示 caret
-                } else {
-                    // 无选区：按光标位置拆分
-                    let cursor_col_byte = if cursor >= l_start && cursor <= l_end {
-                        cursor - l_start
-                    } else {
-                        // 光标在行末换行符位置或空行
-                        line.len()
-                    };
-                    // 处理 IME 位于光标处的情况
-                    if let Some((ime_s, _)) = ime_in_line {
-                        // IME 替换区起点即光标位置
-                        let before = &line[..ime_s];
-                        let after_start = ime_replacement.unwrap().1.min(l_end) - l_start;
-                        let after = &line[after_start..];
-                        row = row.child(text_span(before.to_string()));
-                        if !ime_marked_text.is_empty() {
-                            row = row.child(marked_text_span(ime_marked_text.clone()));
-                        }
-                        row = row.child(text_span(after.to_string()));
-                        if focused && sel_in_line.is_none() {
-                            // IME 时 caret 隐藏，待提交后显示
-                        }
-                    } else {
-                        let cursor_byte = cursor_col_byte.min(line.len());
-                        row = row.child(text_span(line[..cursor_byte].to_string()));
-                        if focused {
-                            row = row.child(text_caret(px(20.)));
-                        }
-                        if !ime_marked_text.is_empty() && is_cursor_line {
-                            // 非替换区的 IME（光标处直接插入）
-                            row = row.child(marked_text_span(ime_marked_text.clone()));
-                        }
-                        row = row.child(text_span(line[cursor_byte..].to_string()));
-                    }
-                }
-            } else {
-                // 非光标行：仅处理跨行选区高亮
-                if let Some((s, e)) = sel_in_line {
-                    row = row.child(text_span(line[..s].to_string()));
-                    row = row.child(
-                        div()
-                            .flex_shrink_0()
-                            .whitespace_nowrap()
-                            .bg(theme::accent_soft())
-                            .text_color(theme::text())
-                            .child(SharedString::from(line[s..e].to_string())),
-                    );
-                    row = row.child(text_span(line[e..].to_string()));
-                } else {
-                    row = row.child(text_span(line.to_string()));
-                }
-            }
-            // 空行保证高度
-            if line.is_empty() && !is_cursor_line {
-                row = row.child(div().h(px(20.)).w(px(1.)).flex_shrink_0());
-            }
+        let ctx = ComposeLineContext {
+            cursor_line,
+            cursor,
+            sel_start,
+            sel_end,
+            has_selection: selection.is_some() && sel_start != sel_end,
+            ime_marked_text: &ime_marked_text,
+            ime_replacement,
+            focused,
+        };
+        for row in render_compose_rows(&value, &ctx) {
             input = input.child(row);
         }
-        // 额外处理：值以 \n 结尾时，split 会产生末尾空行，已在上面渲染；
-        // 但需确保光标在末尾空行时能显示 caret（已通过 cursor_line 计算覆盖）
     }
     input = input.child(ime_input_canvas(focus.clone(), cx.entity()));
 
     let has_text = !value.trim().is_empty();
     let can_send = has_text && shell.workspace.focused_pane().is_some();
+    let send_button = render_compose_send_button(can_send, cx);
 
-    let send_button = Button::new("compose-send")
+    render_compose_bar_frame(input, send_button.into_any_element())
+}
+
+/// 逐行渲染所需的共享状态：光标行、选区、IME 与焦点。
+struct ComposeLineContext<'a> {
+    cursor_line: usize,
+    cursor: usize,
+    sel_start: usize,
+    sel_end: usize,
+    has_selection: bool,
+    ime_marked_text: &'a str,
+    ime_replacement: Option<(usize, usize)>,
+    focused: bool,
+}
+
+/// 单行基础容器，空态行与多行行共用同一套布局。
+fn compose_row() -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .min_h(px(20.))
+        .flex_shrink_0()
+}
+
+/// 空值行：caret + placeholder（或 IME 组合文本）。
+fn render_compose_empty_row(focused: bool, ime_marked_text: &str) -> Div {
+    let mut row = compose_row();
+    if focused {
+        row = row.child(text_caret(px(20.)));
+    }
+    if ime_marked_text.is_empty() {
+        row = row.child(
+            div()
+                .flex_shrink_0()
+                .whitespace_nowrap()
+                .text_color(theme::faint_text())
+                .child(SharedString::from(i18n::text("compose.placeholder"))),
+        );
+    } else {
+        row = row.child(marked_text_span(ime_marked_text));
+    }
+    row
+}
+
+/// 该行与选区的重叠区间（行内字节偏移）。
+fn compose_sel_overlap(
+    range: (usize, usize),
+    ctx: &ComposeLineContext<'_>,
+) -> Option<(usize, usize)> {
+    if !ctx.has_selection {
+        return None;
+    }
+    let (l_start, l_end) = range;
+    let overlap_start = ctx.sel_start.max(l_start).min(l_end);
+    let overlap_end = ctx.sel_end.max(l_start).min(l_end).max(overlap_start);
+    (overlap_start < overlap_end).then_some((overlap_start - l_start, overlap_end - l_start))
+}
+
+/// 该行与 IME 替换区间的重叠（行内字节偏移，通常单行）。
+fn compose_ime_overlap(
+    range: (usize, usize),
+    ctx: &ComposeLineContext<'_>,
+) -> Option<(usize, usize)> {
+    let (l_start, l_end) = range;
+    let (ime_s, ime_e) = ctx.ime_replacement?;
+    if !ctx.ime_marked_text.is_empty() && ime_s >= l_start && ime_s <= l_end {
+        Some((ime_s - l_start, ime_e.min(l_end) - l_start))
+    } else {
+        None
+    }
+}
+
+/// 选区高亮段：before + highlighted + after。
+fn compose_selection_spans(mut row: Div, line: &str, (s, e): (usize, usize)) -> Div {
+    row = row.child(text_span(line[..s].to_string()));
+    row = row.child(
+        div()
+            .flex_shrink_0()
+            .whitespace_nowrap()
+            .bg(theme::accent_soft())
+            .text_color(theme::text())
+            .child(SharedString::from(line[s..e].to_string())),
+    );
+    row.child(text_span(line[e..].to_string()))
+}
+
+/// 渲染一行：光标行按选区/IME/普通拆分，非光标行仅处理跨行选区高亮。
+fn render_compose_line_row(
+    line: &str,
+    range: (usize, usize),
+    idx: usize,
+    ctx: &ComposeLineContext<'_>,
+) -> Div {
+    let (l_start, l_end) = range;
+    // 判断该行是否包含光标
+    let is_cursor_line = idx == ctx.cursor_line;
+    let sel_in_line = compose_sel_overlap(range, ctx);
+    let ime_in_line = compose_ime_overlap(range, ctx);
+
+    let mut row = compose_row();
+    if is_cursor_line {
+        // 光标所在行的渲染：按选区/IME 拆分
+        if let Some((s, e)) = sel_in_line {
+            // 有选区：before + highlighted + after
+            row = compose_selection_spans(row, line, (s, e));
+            // 选区行不显示 caret
+        } else {
+            // 无选区：按光标位置拆分
+            let cursor_col_byte = if ctx.cursor >= l_start && ctx.cursor <= l_end {
+                ctx.cursor - l_start
+            } else {
+                // 光标在行末换行符位置或空行
+                line.len()
+            };
+            // 处理 IME 位于光标处的情况
+            if let Some((ime_s, _)) = ime_in_line {
+                // IME 替换区起点即光标位置
+                let before = &line[..ime_s];
+                let after_start = ctx.ime_replacement.unwrap().1.min(l_end) - l_start;
+                let after = &line[after_start..];
+                row = row.child(text_span(before.to_string()));
+                if !ctx.ime_marked_text.is_empty() {
+                    row = row.child(marked_text_span(ctx.ime_marked_text));
+                }
+                row = row.child(text_span(after.to_string()));
+                if ctx.focused && sel_in_line.is_none() {
+                    // IME 时 caret 隐藏，待提交后显示
+                }
+            } else {
+                let cursor_byte = cursor_col_byte.min(line.len());
+                row = row.child(text_span(line[..cursor_byte].to_string()));
+                if ctx.focused {
+                    row = row.child(text_caret(px(20.)));
+                }
+                if !ctx.ime_marked_text.is_empty() && is_cursor_line {
+                    // 非替换区的 IME（光标处直接插入）
+                    row = row.child(marked_text_span(ctx.ime_marked_text));
+                }
+                row = row.child(text_span(line[cursor_byte..].to_string()));
+            }
+        }
+    } else if let Some((s, e)) = sel_in_line {
+        // 非光标行：仅处理跨行选区高亮
+        row = compose_selection_spans(row, line, (s, e));
+    } else {
+        row = row.child(text_span(line.to_string()));
+    }
+    // 空行保证高度
+    if line.is_empty() && !is_cursor_line {
+        row = row.child(div().h(px(20.)).w(px(1.)).flex_shrink_0());
+    }
+    row
+}
+
+/// 按 `\n` 拆行并逐行渲染；末尾空行由 `split` 自然产生。
+fn render_compose_rows(value: &str, ctx: &ComposeLineContext<'_>) -> Vec<Div> {
+    let lines: Vec<&str> = value.split('\n').collect();
+    // 计算每行在原字符串中的字节范围
+    let mut line_start = 0usize;
+    let mut line_ranges: Vec<(usize, usize)> = Vec::new();
+    for line in &lines {
+        let start = line_start;
+        let end = start + line.len();
+        line_ranges.push((start, end));
+        line_start = end + 1; // 跳过 \n
+    }
+    lines
+        .iter()
+        .enumerate()
+        .map(|(idx, line)| render_compose_line_row(line, line_ranges[idx], idx, ctx))
+        .collect()
+}
+
+/// 发送按钮：图标颜色、禁用态、文案与快捷键行为。
+fn render_compose_send_button(can_send: bool, cx: &mut Context<AppShell>) -> impl IntoElement {
+    Button::new("compose-send")
         .size(ButtonSize::Medium)
         .variant(ButtonVariant::Primary)
         .disabled(!can_send)
@@ -238,8 +286,11 @@ pub(crate) fn render_compose_bar(
         .on_click(cx.listener(|this, _ev, window, cx| {
             this.send_compose(cx);
             window.focus(&this.compose_focus, cx);
-        }));
+        }))
+}
 
+/// 最外层 `compose-bar` 容器。
+fn render_compose_bar_frame(input: impl IntoElement, send_button: AnyElement) -> AnyElement {
     div()
         .id("compose-bar")
         .w_full()
@@ -254,6 +305,6 @@ pub(crate) fn render_compose_bar(
         .border_t_1()
         .border_color(theme::border())
         .child(input)
-        .child(send_button.into_any_element())
+        .child(send_button)
         .into_any_element()
 }
