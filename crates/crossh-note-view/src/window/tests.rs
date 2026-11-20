@@ -7,7 +7,11 @@
 use super::*;
 use crate::test_support::expected;
 use crossh_note::Note;
-use gpui::TestAppContext;
+use crossh_ui::widgets::text_width;
+use gpui::{
+    Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, TestAppContext,
+    VisualTestContext, point, px,
+};
 
 /// 查找动作会走到编辑器的命中/高亮渲染，那条路径读 `GlobalState`。
 /// `NoteWindow::new` 不初始化它（生产路径由 `crossh_editor::init` 负责），
@@ -1630,71 +1634,67 @@ fn note_empty_hint_clears_when_typing_resumes(cx: &mut TestAppContext) {
     );
 }
 
-/// 回归（评审轮）：`TextInput` 的鼠标选区必须真的接在 GPUI 事件链上——
-/// 按下、拖动、双击、三击、Shift+点击都要落成 `search_query` 的光标 / 选区。
+// 回归（评审轮）：`TextInput` 的鼠标选区必须真的接在 GPUI 事件链上——
+// 按下、拖动、双击、三击、Shift+点击都要落成 `search_query` 的光标 / 选区。
+// 下面按阶段拆成 5 个测试，共用同一组坐标与鼠标事件 helper。
+
+/// 每一步先写状态、再画一帧：命中测试读的是上一帧的 hitbox / bounds。
+fn reset_search(view: &Entity<NoteWindow>, cx: &mut VisualTestContext, value: &str) {
+    view.update_in(cx, |note_window, _window, _cx| {
+        note_window.search_query = TextEditingState::new(value);
+    });
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+}
+
+/// 文本起点 + 前缀宽度 → 屏幕坐标（前缀为空即内容区左边界）。
 ///
 /// 坐标取搜索框内容区：`debug_bounds` 给的是边框盒，原点右移 `padding_x`
 /// （`filter_text_input` 用 `TextInput` 默认 8px），纵向取中线。落点一律对齐到
 /// `text_width` 量出的前缀宽度（字符边界），只在确定性位置断言。
 /// 注意：聚焦后 caret 自占 2px，会把它之后的文本整体右移；但坐标换算只用前缀宽度
 /// （不含 caret），所以断言仍是确定的字符边界，只是那一下的视觉落点可能偏 2px。
-#[gpui::test]
-fn note_search_text_input_mouse_places_caret_and_selects(cx: &mut TestAppContext) {
-    use crossh_ui::widgets::text_width;
-    use gpui::{
-        Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, VisualTestContext,
-        point, px,
-    };
+fn search_point(cx: &mut VisualTestContext, prefix: &str) -> Point<Pixels> {
+    let input = cx
+        .debug_bounds("note-search")
+        .expect("note-search 输入框应已渲染");
+    let width = cx.update(|window, _cx| text_width(window, prefix, px(12.)));
+    point(input.origin.x + px(8.) + width, input.center().y)
+}
 
-    let dir = tempfile::TempDir::new().unwrap();
-    let store = NoteStore::open(dir.path().join("note.db")).unwrap();
-    let (view, cx) =
-        cx.add_window_view(|window, cx| NoteWindow::with_store_for_test(window, cx, store));
-    cx.run_until_parked();
+fn mouse_down(
+    cx: &mut VisualTestContext,
+    position: Point<Pixels>,
+    click_count: usize,
+    modifiers: Modifiers,
+) {
+    cx.simulate_event(MouseDownEvent {
+        position,
+        button: MouseButton::Left,
+        modifiers,
+        click_count,
+        first_mouse: false,
+    });
+}
 
-    // 每一步先写状态、再画一帧：命中测试读的是上一帧的 hitbox / bounds。
-    let reset = |cx: &mut VisualTestContext, value: &str| {
-        view.update_in(cx, |note_window, _window, _cx| {
-            note_window.search_query = TextEditingState::new(value);
-        });
-        cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
-    };
-    // 文本起点 + 前缀宽度 → 屏幕坐标（前缀为空即内容区左边界）。
-    let at = |cx: &mut VisualTestContext, prefix: &str| {
-        let input = cx
-            .debug_bounds("note-search")
-            .expect("note-search 输入框应已渲染");
-        let width = cx.update(|window, _cx| text_width(window, prefix, px(12.)));
-        point(input.origin.x + px(8.) + width, input.center().y)
-    };
-    let mouse_down = |cx: &mut VisualTestContext,
-                      position: gpui::Point<gpui::Pixels>,
-                      click_count: usize,
-                      modifiers: Modifiers| {
-        cx.simulate_event(MouseDownEvent {
-            position,
-            button: MouseButton::Left,
-            modifiers,
-            click_count,
-            first_mouse: false,
-        });
-    };
-    let mouse_up = |cx: &mut VisualTestContext,
-                    position: gpui::Point<gpui::Pixels>,
-                    click_count: usize,
-                    modifiers: Modifiers| {
-        cx.simulate_event(MouseUpEvent {
-            position,
-            button: MouseButton::Left,
-            modifiers,
-            click_count,
-        });
-    };
+fn mouse_up(
+    cx: &mut VisualTestContext,
+    position: Point<Pixels>,
+    click_count: usize,
+    modifiers: Modifiers,
+) {
+    cx.simulate_event(MouseUpEvent {
+        position,
+        button: MouseButton::Left,
+        modifiers,
+        click_count,
+    });
+}
 
-    // 前提：字体给出单调递增的前缀宽度，下面的边界断言都建立在这上面。
-    // 量宽异常（没有可用字体）时先在这里失败，别让人误以为是鼠标链路坏了。
+/// 前提：字体给出单调递增的前缀宽度，下面的边界断言都建立在这上面。
+/// 量宽异常（没有可用字体）时先在这里失败，别让人误以为是鼠标链路坏了。
+fn assert_search_font_metrics(cx: &mut VisualTestContext) {
     let (w_ab, w_abc) = cx.update(|window, _cx| {
         (
             text_width(window, "ab", px(12.)),
@@ -1705,10 +1705,20 @@ fn note_search_text_input_mouse_places_caret_and_selects(cx: &mut TestAppContext
         w_abc > w_ab,
         "测试字体量宽异常：ab = {w_ab:?}，abc = {w_abc:?}"
     );
+}
+
+#[gpui::test]
+fn note_search_mouse_click_places_caret(cx: &mut TestAppContext) {
+    let _dir = tempfile::TempDir::new().unwrap();
+    let store = NoteStore::open(_dir.path().join("note.db")).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| NoteWindow::with_store_for_test(window, cx, store));
+    cx.run_until_parked();
+    assert_search_font_metrics(cx);
 
     // 1. 单击：caret 落在 "abc" 之后，松开清掉空锚点。
-    reset(cx, "abcdef");
-    let after_abc = at(cx, "abc");
+    reset_search(&view, cx, "abcdef");
+    let after_abc = search_point(cx, "abc");
     mouse_down(cx, after_abc, 1, Modifiers::default());
     mouse_up(cx, after_abc, 1, Modifiers::default());
     view.update_in(cx, |note_window, _window, _cx| {
@@ -1719,11 +1729,21 @@ fn note_search_text_input_mouse_places_caret_and_selects(cx: &mut TestAppContext
         assert_eq!(note_window.search_query.anchor, None, "松开后不留空锚点");
         assert_eq!(note_window.search_query.selection(), None);
     });
+}
+
+#[gpui::test]
+fn note_search_mouse_drag_selects_range(cx: &mut TestAppContext) {
+    let _dir = tempfile::TempDir::new().unwrap();
+    let store = NoteStore::open(_dir.path().join("note.db")).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| NoteWindow::with_store_for_test(window, cx, store));
+    cx.run_until_parked();
+    assert_search_font_metrics(cx);
 
     // 2. 拖动：从文本起点拖到末尾，须选出整段。
-    reset(cx, "abcdef");
-    let start = at(cx, "");
-    let end = at(cx, "abcdef");
+    reset_search(&view, cx, "abcdef");
+    let start = search_point(cx, "");
+    let end = search_point(cx, "abcdef");
     mouse_down(cx, start, 1, Modifiers::default());
     cx.simulate_event(MouseMoveEvent {
         position: end,
@@ -1742,10 +1762,20 @@ fn note_search_text_input_mouse_places_caret_and_selects(cx: &mut TestAppContext
             Some("abcdef")
         );
     });
+}
+
+#[gpui::test]
+fn note_search_mouse_double_click_selects_word(cx: &mut TestAppContext) {
+    let _dir = tempfile::TempDir::new().unwrap();
+    let store = NoteStore::open(_dir.path().join("note.db")).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| NoteWindow::with_store_for_test(window, cx, store));
+    cx.run_until_parked();
+    assert_search_font_metrics(cx);
 
     // 3. 双击词内：选中整个词。
-    reset(cx, "foo bar");
-    let inside_foo = at(cx, "fo");
+    reset_search(&view, cx, "foo bar");
+    let inside_foo = search_point(cx, "fo");
     mouse_down(cx, inside_foo, 2, Modifiers::default());
     mouse_up(cx, inside_foo, 2, Modifiers::default());
     view.update_in(cx, |note_window, _window, _cx| {
@@ -1756,9 +1786,20 @@ fn note_search_text_input_mouse_places_caret_and_selects(cx: &mut TestAppContext
         );
         assert_eq!(note_window.search_query.selection(), Some((0, 3)));
     });
+}
+
+#[gpui::test]
+fn note_search_mouse_triple_click_selects_all(cx: &mut TestAppContext) {
+    let _dir = tempfile::TempDir::new().unwrap();
+    let store = NoteStore::open(_dir.path().join("note.db")).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| NoteWindow::with_store_for_test(window, cx, store));
+    cx.run_until_parked();
+    assert_search_font_metrics(cx);
 
     // 4. 三击：全选。
-    reset(cx, "foo bar");
+    reset_search(&view, cx, "foo bar");
+    let inside_foo = search_point(cx, "fo");
     mouse_down(cx, inside_foo, 3, Modifiers::default());
     mouse_up(cx, inside_foo, 3, Modifiers::default());
     view.update_in(cx, |note_window, _window, _cx| {
@@ -1768,13 +1809,23 @@ fn note_search_text_input_mouse_places_caret_and_selects(cx: &mut TestAppContext
             "三击应全选"
         );
     });
+}
+
+#[gpui::test]
+fn note_search_mouse_shift_click_extends_selection(cx: &mut TestAppContext) {
+    let _dir = tempfile::TempDir::new().unwrap();
+    let store = NoteStore::open(_dir.path().join("note.db")).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| NoteWindow::with_store_for_test(window, cx, store));
+    cx.run_until_parked();
+    assert_search_font_metrics(cx);
 
     // 5. Shift+点击：从已有 caret 扩展选区。
-    reset(cx, "abcdef");
-    let after_ab = at(cx, "ab");
+    reset_search(&view, cx, "abcdef");
+    let after_ab = search_point(cx, "ab");
     mouse_down(cx, after_ab, 1, Modifiers::default());
     mouse_up(cx, after_ab, 1, Modifiers::default());
-    let after_abcd = at(cx, "abcd");
+    let after_abcd = search_point(cx, "abcd");
     mouse_down(
         cx,
         after_abcd,

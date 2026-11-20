@@ -24,7 +24,7 @@
 
 - `cargo test -p crossh-core text_editing`
 - `cargo test -p crossh-ui-component`
-- `cargo test -p crossh-note-view note_search_text_input_mouse_places_caret_and_selects`（窗口级：点击、拖拽、双击、三击、Shift+点击）
+- `cargo test -p crossh-note-view note_search_mouse`（窗口级：点击、拖拽、双击、三击、Shift+点击）
 - macOS 手动烟测：地址栏、侧栏搜索、Git 筛选与 remote 输入、Note 搜索/查找。
 
 ## 关键词
