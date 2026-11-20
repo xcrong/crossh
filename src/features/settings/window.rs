@@ -4,6 +4,8 @@
 //! 渲染时从 `AppShell` 读取，用户改动通过 `AppShell` 的既有 setter 应用并持久化。
 //! 这样终端重放、i18n 全局同步、最近目录同步等副作用都仍由主窗口统一处理。
 
+use std::path::PathBuf;
+
 use gpui::{
     AnyElement, App, AppContext, Bounds, ClickEvent, Context, Entity, FontWeight,
     InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString, Size,
@@ -21,6 +23,7 @@ use crossh_ui::{icons, theme};
 use crossh_ui_component::{
     Button, ButtonSize, ButtonVariant, Select, SelectOption, Stepper, ToggleSwitch, scroll_y,
 };
+use crossh_update::UpdateCandidate;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingsSection {
@@ -417,110 +420,26 @@ impl SettingsWindow {
 
         match status {
             UpdateStatus::Available(candidate) => {
-                let version = candidate.version.to_string();
-                let download = settings_icon_button(
-                    "settings-updates-download",
-                    icons::IconName::Download,
-                    i18n::text("settings.updates_download"),
-                    cx.listener(|this, _ev, _window, cx| {
-                        this.updates.update(cx, |updates, cx| updates.download(cx));
-                    }),
-                );
-                let mut actions = div().flex().items_center().gap_1().child(download);
-                if let Some(release_url) = candidate.release_url.clone() {
-                    actions = actions.child(settings_icon_button(
-                        "settings-updates-release",
-                        icons::IconName::Link,
-                        i18n::text("settings.updates_release"),
-                        move |_ev, _window, cx| cx.open_url(&release_url),
-                    ));
-                }
-                content = content.child(responsive_settings_row(
-                    rust_i18n::t!("settings.updates_available", version = version).to_string(),
-                    if candidate.notes.is_empty() {
-                        i18n::text("settings.updates_available_description")
-                    } else {
-                        candidate.notes
-                    },
-                    actions.into_any_element(),
-                    compact_layout,
-                ));
+                content = content.child(render_update_available_row(candidate, compact_layout, cx));
             }
             UpdateStatus::Downloading {
                 candidate,
                 downloaded,
                 total,
             } => {
-                let fraction = if total == 0 {
-                    0.
-                } else {
-                    (downloaded as f32 / total as f32).clamp(0., 1.)
-                };
-                let title = rust_i18n::t!(
-                    "settings.updates_downloading",
-                    version = candidate.version.to_string()
-                )
-                .to_string();
-                let bar = Progress::new("settings-updates-progress")
-                    .value(fraction * 100.)
-                    .accessibility_label(title.clone())
-                    .w_full()
-                    .child(
-                        ProgressTrack::new()
-                            .w_full()
-                            .h(px(6.))
-                            .rounded_full()
-                            .bg(theme::border())
-                            .child(
-                                ProgressIndicator::new()
-                                    .h_full()
-                                    .w(relative(fraction))
-                                    .rounded_full()
-                                    .bg(theme::accent()),
-                            ),
-                    );
-                let numbers = format!(
-                    "{} / {} · {:.0}%",
-                    format_update_bytes(downloaded),
-                    format_update_bytes(total),
-                    fraction * 100.
-                );
-                content = content.child(responsive_settings_row(
-                    title,
-                    i18n::text("settings.updates_downloading_description"),
-                    div()
-                        .w_full()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(bar)
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme::muted_text())
-                                .child(SharedString::from(numbers)),
-                        )
-                        .into_any_element(),
+                content = content.child(render_update_downloading_row(
+                    candidate,
+                    downloaded,
+                    total,
                     compact_layout,
                 ));
             }
             UpdateStatus::Ready { candidate, package } => {
-                let package_text = package.display().to_string();
-                let install = settings_icon_button(
-                    "settings-updates-install",
-                    icons::IconName::RefreshCw,
-                    i18n::text("settings.updates_install"),
-                    cx.listener(|this, _ev, _window, cx| this.install_update(cx)),
-                );
-                content = content.child(responsive_settings_row(
-                    rust_i18n::t!(
-                        "settings.updates_ready",
-                        version = candidate.version.to_string()
-                    )
-                    .to_string(),
-                    package_text,
-                    install,
+                content = content.child(render_update_ready_row(
+                    candidate,
+                    package,
                     compact_layout,
+                    cx,
                 ));
             }
             _ => {}
@@ -683,6 +602,126 @@ fn settings_heading(key: &str) -> AnyElement {
         .text_color(theme::text())
         .child(SharedString::from(i18n::text(key)))
         .into_any_element()
+}
+
+fn render_update_available_row(
+    candidate: UpdateCandidate,
+    compact_layout: bool,
+    cx: &mut Context<SettingsWindow>,
+) -> AnyElement {
+    let version = candidate.version.to_string();
+    let download = settings_icon_button(
+        "settings-updates-download",
+        icons::IconName::Download,
+        i18n::text("settings.updates_download"),
+        cx.listener(|this, _ev, _window, cx| {
+            this.updates.update(cx, |updates, cx| updates.download(cx));
+        }),
+    );
+    let mut actions = div().flex().items_center().gap_1().child(download);
+    if let Some(release_url) = candidate.release_url.clone() {
+        actions = actions.child(settings_icon_button(
+            "settings-updates-release",
+            icons::IconName::Link,
+            i18n::text("settings.updates_release"),
+            move |_ev, _window, cx| cx.open_url(&release_url),
+        ));
+    }
+    responsive_settings_row(
+        rust_i18n::t!("settings.updates_available", version = version).to_string(),
+        if candidate.notes.is_empty() {
+            i18n::text("settings.updates_available_description")
+        } else {
+            candidate.notes
+        },
+        actions.into_any_element(),
+        compact_layout,
+    )
+}
+
+fn render_update_downloading_row(
+    candidate: UpdateCandidate,
+    downloaded: u64,
+    total: u64,
+    compact_layout: bool,
+) -> AnyElement {
+    let fraction = if total == 0 {
+        0.
+    } else {
+        (downloaded as f32 / total as f32).clamp(0., 1.)
+    };
+    let title = rust_i18n::t!(
+        "settings.updates_downloading",
+        version = candidate.version.to_string()
+    )
+    .to_string();
+    let bar = Progress::new("settings-updates-progress")
+        .value(fraction * 100.)
+        .accessibility_label(title.clone())
+        .w_full()
+        .child(
+            ProgressTrack::new()
+                .w_full()
+                .h(px(6.))
+                .rounded_full()
+                .bg(theme::border())
+                .child(
+                    ProgressIndicator::new()
+                        .h_full()
+                        .w(relative(fraction))
+                        .rounded_full()
+                        .bg(theme::accent()),
+                ),
+        );
+    let numbers = format!(
+        "{} / {} · {:.0}%",
+        format_update_bytes(downloaded),
+        format_update_bytes(total),
+        fraction * 100.
+    );
+    responsive_settings_row(
+        title,
+        i18n::text("settings.updates_downloading_description"),
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(bar)
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::muted_text())
+                    .child(SharedString::from(numbers)),
+            )
+            .into_any_element(),
+        compact_layout,
+    )
+}
+
+fn render_update_ready_row(
+    candidate: UpdateCandidate,
+    package: PathBuf,
+    compact_layout: bool,
+    cx: &mut Context<SettingsWindow>,
+) -> AnyElement {
+    let package_text = package.display().to_string();
+    let install = settings_icon_button(
+        "settings-updates-install",
+        icons::IconName::RefreshCw,
+        i18n::text("settings.updates_install"),
+        cx.listener(|this, _ev, _window, cx| this.install_update(cx)),
+    );
+    responsive_settings_row(
+        rust_i18n::t!(
+            "settings.updates_ready",
+            version = candidate.version.to_string()
+        )
+        .to_string(),
+        package_text,
+        install,
+        compact_layout,
+    )
 }
 
 fn responsive_settings_row(
