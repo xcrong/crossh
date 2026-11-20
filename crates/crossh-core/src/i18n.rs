@@ -154,6 +154,10 @@ mod tests {
             text_for("toast.pasted", Locale::SimplifiedChinese),
             "已粘贴"
         );
+    }
+
+    #[test]
+    fn resource_lookup_supports_git_text_and_formatting() {
         assert_eq!(
             rust_i18n::t!(
                 "git.selection_count",
