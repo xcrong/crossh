@@ -1239,6 +1239,312 @@ impl NoteWindow {
             .child(actions)
             .into_any_element()
     }
+
+    /// 列表顶部横幅：库错误 / 查询失败 / 中性提示 / 洗库提示，按此顺序堆叠。
+    fn render_list_banners(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut banners: Vec<AnyElement> = Vec::new();
+        // 列表顶部错误行：store 打不开 / 查询失败 / 洗过库时可见。
+        if let Some(e) = self.store_error.clone() {
+            banners.push(
+                div()
+                    .id("note-store-error")
+                    .w_full()
+                    .px_2()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(theme::danger())
+                    .text_xs()
+                    .text_color(theme::danger())
+                    .child(SharedString::from(e))
+                    .into_any_element(),
+            );
+        }
+        if let Some(e) = self.list_error.clone() {
+            banners.push(
+                div()
+                    .id("note-list-error")
+                    .w_full()
+                    .px_2()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(theme::danger())
+                    .text_xs()
+                    .text_color(theme::danger())
+                    .child(SharedString::from(e))
+                    .into_any_element(),
+            );
+        }
+        // 列表顶部中性提示行（如撤销恢复被搜索挡住）。与错误行同构，但用 accent 色：
+        // 这不是"现在坏了"，而是"操作生效了，只是当前视图看不到"。
+        if let Some(msg) = self.list_notice.clone() {
+            banners.push(
+                div()
+                    .id("note-list-notice")
+                    .debug_selector(|| "note-list-notice".into())
+                    .w_full()
+                    .px_2()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(theme::accent())
+                    .text_xs()
+                    .text_color(theme::accent())
+                    .child(SharedString::from(msg))
+                    .into_any_element(),
+            );
+        }
+        // 洗库提示：与错误行同构（列表顶部一条醒目行），但用 warning 色——
+        // 这不是“现在坏了”，而是“旧数据已经搬到别处了”，指向还在的备份文件。
+        // 可关闭：永久占一行会挤列表；关掉后备份路径已写进日志（见 `dismiss_recovery_notice`）。
+        if let Some(msg) = self.recovery_notice.clone() {
+            banners.push(
+                div()
+                    .id("note-recovery-notice")
+                    .debug_selector(|| "note-recovery-notice".into())
+                    .w_full()
+                    .px_2()
+                    .py_1()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .border_b_1()
+                    .border_color(theme::warning())
+                    .text_xs()
+                    .text_color(theme::warning())
+                    .child(div().min_w_0().flex_1().child(SharedString::from(msg)))
+                    .child(
+                        // 包一层 div 只因为 Button 不带 `debug_selector`：测试靠它断言
+                        // 关闭按钮真的存在并点击它。
+                        div()
+                            .debug_selector(|| "note-recovery-dismiss".into())
+                            .flex_shrink_0()
+                            .child(
+                                Button::new("note-recovery-dismiss")
+                                    .size(ButtonSize::Icon(px(18.)))
+                                    .variant(ButtonVariant::Ghost)
+                                    .icon(
+                                        icons::icon(icons::IconName::X, 11.)
+                                            .text_color(theme::warning()),
+                                    )
+                                    .tooltip(text("note.action.dismiss"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.dismiss_recovery_notice(cx)
+                                    })),
+                            ),
+                    )
+                    .into_any_element(),
+            );
+        }
+        banners
+    }
+
+    /// 列表主体：空态占位或虚拟列表。
+    fn render_list_body(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        // 空列表占位：区分“无笔记”与“搜索无匹配”，保持 260px 列宽不溢出。
+        let is_searching = !self.search_query.value.trim().is_empty();
+        let empty_hint = if is_searching {
+            text("note.list.no_matches")
+        } else {
+            text("note.list.empty")
+        };
+        if self.notes.is_empty() {
+            div()
+                .id("note-list-empty")
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .p_4()
+                .text_sm()
+                .text_color(theme::muted_text())
+                .child(empty_hint)
+                .into_any_element()
+        } else {
+            // 虚拟列表：只渲染可视区的行。旧实现 `.children(notes.iter().map(..))`
+            // 全量渲染，几百条笔记就是几百个 div，每次按键都重绘。
+            // processor 内按索引取单行：早前在 render 与闭包外各 clone 一份 `notes`，
+            // 也就是**每帧把全部笔记正文拷两遍**（单条上限 1 MiB），现在只拷可视行。
+            let count = self.notes.len();
+            uniform_list(
+                "note-list",
+                count,
+                cx.processor(move |this, range: Range<usize>, _window, cx| {
+                    range
+                        .filter_map(|ix| {
+                            // 用 `get`：列表长度与本帧传入的 count 理应一致，
+                            // 但两者之间若有一帧错位，宁可少画一行也不能 panic。
+                            let note = this.notes.get(ix)?.clone();
+                            Some(this.render_note_row(&note, cx))
+                        })
+                        .collect::<Vec<_>>()
+                }),
+            )
+            .track_scroll(&self.list_scroll)
+            .flex_1()
+            .min_h_0()
+            .with_sizing_behavior(ListSizingBehavior::Auto)
+            .into_any_element()
+        }
+    }
+
+    /// 左侧列表栏：搜索条 + 顶部横幅 + 列表本体 + 可拖拽分隔条。
+    fn render_note_list_pane(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let banners = self.render_list_banners(cx);
+        let body = self.render_list_body(cx);
+        // 筛选条收敛到侧栏顶部：与侧栏/Git 同一样式（框内搜索图标 + 统一 m_2 边距）。
+        let search = filter_row("note-search-wrap").child(
+            filter_text_input(
+                "note-search",
+                self.search_focus.clone(),
+                self.search_query.value.clone(),
+                text("note.list.search_placeholder"),
+                self.search_query.ime_marked_text.clone(),
+                self.search_query.selection(),
+                self.search_query.cursor,
+            )
+            .entity(cx.entity())
+            .on_key_down(cx.listener(Self::handle_search_key))
+            .on_pointer_select(cx.listener(Self::handle_search_pointer)),
+        );
+        // 列表栏宽度可拖拽（SplitResizer 直接写 list_width，拖拽中每次鼠标移动重绘）。
+        let list_width = clamp_list_pane_width(self.list_width.get());
+        let resizer = SplitResizer::new(
+            "note-list-resize",
+            self.list_dragging.clone(),
+            self.list_width.clone(),
+        )
+        .min_width(LIST_PANE_MIN_WIDTH)
+        .max_width(LIST_PANE_MAX_WIDTH);
+        div()
+            .relative()
+            .w(px(list_width))
+            .flex_shrink_0()
+            .h_full()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .border_r_1()
+            .border_color(theme::border())
+            .bg(theme::surface())
+            .child(search)
+            .children(banners)
+            .child(body)
+            .child(resizer)
+            .into_any_element()
+    }
+
+    /// 右侧栏：Markdown 预览或编辑区（含落库失败横幅）。
+    fn render_note_right_pane(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if self.preview {
+            // 预览渲染需要 owned String（渲染器拿 &str）：从 Rope 直接物化一次，
+            // 不经 `value()` 中间再拷一遍。
+            let md = self.content_state.read(cx).text().to_string();
+            div()
+                .id("note-preview")
+                .flex_1()
+                .min_h_0()
+                .h_full()
+                .min_w(px(320.))
+                .bg(theme::canvas())
+                .text_color(theme::text())
+                .overflow_y_scroll()
+                // 正文按阅读宽度收窄并居中：满宽长行在 900px 窗口里难以阅读，
+                // 代码块也不再撑破容器。外层滚动，TextView 自身不滚动。
+                // 左右留白与编辑模式（`EDITOR_PADDING_X`）保持一致，
+                // 免得切换预览/编辑时正文左右跳动。
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(PREVIEW_MAX_WIDTH))
+                        .mx_auto()
+                        .px(px(EDITOR_PADDING_X))
+                        .py_4()
+                        .child(render_markdown(&md)),
+                )
+                .into_any_element()
+        } else {
+            // 落库失败横幅：贴在编辑区上方。用户此前只能看到"保存没反应"+ 永久亮着的
+            // "未保存"，无从判断是磁盘满、库损坏还是别的。
+            let persist_banner: Option<AnyElement> = self.persist_error.clone().map(|e| {
+                div()
+                    .id("note-persist-error")
+                    .w_full()
+                    .flex_shrink_0()
+                    .mx(px(EDITOR_PADDING_X))
+                    .mt(px(EDITOR_PADDING_Y))
+                    .px_3()
+                    .py_2()
+                    .mb_2()
+                    .rounded(px(theme::RADIUS_SM))
+                    .bg(theme::danger().opacity(0.12))
+                    .border_1()
+                    .border_color(theme::danger())
+                    .text_xs()
+                    .text_color(theme::danger())
+                    .child(SharedString::from(e))
+                    .into_any_element()
+            });
+            // 编辑区铺满整个右栏：原先在外面套 `p_2` + 边框 + 圆角做成"卡片"，
+            // 于是分隔线与列表之间空出 8px，还多出一圈与左侧列表冲突的圆角框。
+            // 呼吸空间改由 `TextareaState::set_editor_paddings` 提供（见 `new`），
+            // 它会把 padding 计入滚动条几何，滚动到底不会切掉最后一行。
+            div()
+                .flex_1()
+                .min_h_0()
+                .h_full()
+                .min_w(px(320.))
+                .flex()
+                .flex_col()
+                .overflow_hidden()
+                .bg(theme::canvas())
+                .text_color(theme::text())
+                .children(persist_banner)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .h_full()
+                        .w_full()
+                        .overflow_hidden()
+                        .bg(theme::canvas())
+                        .text_color(theme::text())
+                        .child(Textarea::new(&self.content_state)),
+                )
+                .into_any_element()
+        }
+    }
+
+    /// 根节点上的窗口级 action 绑定；顺序即分发顺序，勿随意调整。
+    fn configure_note_root(root: gpui::Div, cx: &mut Context<Self>) -> gpui::Div {
+        root.on_action(
+            cx.listener(|this, _: &CloseNoteWindow, window, cx| this.request_close(window, cx)),
+        )
+        .on_action(cx.listener(|this, _: &NewNote, window, cx| this.new_note(window, cx)))
+        .on_action(cx.listener(|this, _: &SaveNote, window, cx| this.save_current(window, cx)))
+        .on_action(
+            cx.listener(|this, _: &TogglePreview, window, cx| this.toggle_preview(window, cx)),
+        )
+        // Escape 只退出预览；预览已关时兜底走脏检查关窗，避免"按了没反应"。
+        .on_action(cx.listener(|this, _: &EscapePreview, window, cx| {
+            if this.preview {
+                this.toggle_preview(window, cx);
+            } else {
+                this.request_close(window, cx);
+            }
+        }))
+        .on_action(cx.listener(|this, _: &DeleteNote, window, cx| this.delete_current(window, cx)))
+        // 列表键盘导航：Up/ctrl-p 上一条，Down/ctrl-n 下一条（复用脏保护）。
+        .on_action(
+            cx.listener(|this, _: &SelectNextNote, window, cx| this.move_selection(1, window, cx)),
+        )
+        .on_action(
+            cx.listener(|this, _: &SelectPrevNote, window, cx| this.move_selection(-1, window, cx)),
+        )
+        .key_context(NOTE_WINDOW_CONTEXT)
+        .on_action(cx.listener(|this, _: &ToggleFind, window, cx| this.toggle_find(window, cx)))
+        .on_action(cx.listener(|this, _: &FindNext, _, cx| this.find_next(cx)))
+        .on_action(cx.listener(|this, _: &FindPrev, _, cx| this.find_prev(cx)))
+        .on_action(cx.listener(|this, _: &CloseFind, window, cx| this.close_find(window, cx)))
+    }
 }
 
 impl EntityInputHandler for NoteWindow {
@@ -1371,261 +1677,9 @@ impl Focusable for NoteWindow {
 impl gpui::Render for NoteWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         sync_editor_theme(cx);
-        // 列表顶部错误行：store 打不开 / 查询失败 / 洗过库时可见。
-        let mut list_top: Vec<AnyElement> = Vec::new();
-        if let Some(e) = self.store_error.clone() {
-            list_top.push(
-                div()
-                    .id("note-store-error")
-                    .w_full()
-                    .px_2()
-                    .py_1()
-                    .border_b_1()
-                    .border_color(theme::danger())
-                    .text_xs()
-                    .text_color(theme::danger())
-                    .child(SharedString::from(e))
-                    .into_any_element(),
-            );
-        }
-        if let Some(e) = self.list_error.clone() {
-            list_top.push(
-                div()
-                    .id("note-list-error")
-                    .w_full()
-                    .px_2()
-                    .py_1()
-                    .border_b_1()
-                    .border_color(theme::danger())
-                    .text_xs()
-                    .text_color(theme::danger())
-                    .child(SharedString::from(e))
-                    .into_any_element(),
-            );
-        }
-        // 列表顶部中性提示行（如撤销恢复被搜索挡住）。与错误行同构，但用 accent 色：
-        // 这不是"现在坏了"，而是"操作生效了，只是当前视图看不到"。
-        if let Some(msg) = self.list_notice.clone() {
-            list_top.push(
-                div()
-                    .id("note-list-notice")
-                    .debug_selector(|| "note-list-notice".into())
-                    .w_full()
-                    .px_2()
-                    .py_1()
-                    .border_b_1()
-                    .border_color(theme::accent())
-                    .text_xs()
-                    .text_color(theme::accent())
-                    .child(SharedString::from(msg))
-                    .into_any_element(),
-            );
-        }
-        // 洗库提示：与错误行同构（列表顶部一条醒目行），但用 warning 色——
-        // 这不是“现在坏了”，而是“旧数据已经搬到别处了”，指向还在的备份文件。
-        // 可关闭：永久占一行会挤列表；关掉后备份路径已写进日志（见 `dismiss_recovery_notice`）。
-        if let Some(msg) = self.recovery_notice.clone() {
-            list_top.push(
-                div()
-                    .id("note-recovery-notice")
-                    .debug_selector(|| "note-recovery-notice".into())
-                    .w_full()
-                    .px_2()
-                    .py_1()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .border_b_1()
-                    .border_color(theme::warning())
-                    .text_xs()
-                    .text_color(theme::warning())
-                    .child(div().min_w_0().flex_1().child(SharedString::from(msg)))
-                    .child(
-                        // 包一层 div 只因为 Button 不带 `debug_selector`：测试靠它断言
-                        // 关闭按钮真的存在并点击它。
-                        div()
-                            .debug_selector(|| "note-recovery-dismiss".into())
-                            .flex_shrink_0()
-                            .child(
-                                Button::new("note-recovery-dismiss")
-                                    .size(ButtonSize::Icon(px(18.)))
-                                    .variant(ButtonVariant::Ghost)
-                                    .icon(
-                                        icons::icon(icons::IconName::X, 11.)
-                                            .text_color(theme::warning()),
-                                    )
-                                    .tooltip(text("note.action.dismiss"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.dismiss_recovery_notice(cx)
-                                    })),
-                            ),
-                    )
-                    .into_any_element(),
-            );
-        }
 
-        // 空列表占位：区分“无笔记”与“搜索无匹配”，保持 260px 列宽不溢出。
-        let is_searching = !self.search_query.value.trim().is_empty();
-        let empty_hint = if is_searching {
-            text("note.list.no_matches")
-        } else {
-            text("note.list.empty")
-        };
-        let list_body: AnyElement = if self.notes.is_empty() {
-            div()
-                .id("note-list-empty")
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .p_4()
-                .text_sm()
-                .text_color(theme::muted_text())
-                .child(empty_hint)
-                .into_any_element()
-        } else {
-            // 虚拟列表：只渲染可视区的行。旧实现 `.children(notes.iter().map(..))`
-            // 全量渲染，几百条笔记就是几百个 div，每次按键都重绘。
-            // processor 内按索引取单行：早前在 render 与闭包外各 clone 一份 `notes`，
-            // 也就是**每帧把全部笔记正文拷两遍**（单条上限 1 MiB），现在只拷可视行。
-            let count = self.notes.len();
-            uniform_list(
-                "note-list",
-                count,
-                cx.processor(move |this, range: Range<usize>, _window, cx| {
-                    range
-                        .filter_map(|ix| {
-                            // 用 `get`：列表长度与本帧传入的 count 理应一致，
-                            // 但两者之间若有一帧错位，宁可少画一行也不能 panic。
-                            let note = this.notes.get(ix)?.clone();
-                            Some(this.render_note_row(&note, cx))
-                        })
-                        .collect::<Vec<_>>()
-                }),
-            )
-            .track_scroll(&self.list_scroll)
-            .flex_1()
-            .min_h_0()
-            .with_sizing_behavior(ListSizingBehavior::Auto)
-            .into_any_element()
-        };
-
-        // 筛选条收敛到侧栏顶部：与侧栏/Git 同一样式（框内搜索图标 + 统一 m_2 边距）。
-        let search = filter_row("note-search-wrap").child(
-            filter_text_input(
-                "note-search",
-                self.search_focus.clone(),
-                self.search_query.value.clone(),
-                text("note.list.search_placeholder"),
-                self.search_query.ime_marked_text.clone(),
-                self.search_query.selection(),
-                self.search_query.cursor,
-            )
-            .entity(cx.entity())
-            .on_key_down(cx.listener(Self::handle_search_key))
-            .on_pointer_select(cx.listener(Self::handle_search_pointer)),
-        );
-        // 列表栏宽度可拖拽（SplitResizer 直接写 list_width，拖拽中每次鼠标移动重绘）。
-        let list_width = clamp_list_pane_width(self.list_width.get());
-        let resizer = SplitResizer::new(
-            "note-list-resize",
-            self.list_dragging.clone(),
-            self.list_width.clone(),
-        )
-        .min_width(LIST_PANE_MIN_WIDTH)
-        .max_width(LIST_PANE_MAX_WIDTH);
-        let list = div()
-            .relative()
-            .w(px(list_width))
-            .flex_shrink_0()
-            .h_full()
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .border_r_1()
-            .border_color(theme::border())
-            .bg(theme::surface())
-            .child(search)
-            .children(list_top)
-            .child(list_body)
-            .child(resizer);
-        let right: AnyElement = if self.preview {
-            // 预览渲染需要 owned String（渲染器拿 &str）：从 Rope 直接物化一次，
-            // 不经 `value()` 中间再拷一遍。
-            let md = self.content_state.read(cx).text().to_string();
-            div()
-                .id("note-preview")
-                .flex_1()
-                .min_h_0()
-                .h_full()
-                .min_w(px(320.))
-                .bg(theme::canvas())
-                .text_color(theme::text())
-                .overflow_y_scroll()
-                // 正文按阅读宽度收窄并居中：满宽长行在 900px 窗口里难以阅读，
-                // 代码块也不再撑破容器。外层滚动，TextView 自身不滚动。
-                // 左右留白与编辑模式（`EDITOR_PADDING_X`）保持一致，
-                // 免得切换预览/编辑时正文左右跳动。
-                .child(
-                    div()
-                        .w_full()
-                        .max_w(px(PREVIEW_MAX_WIDTH))
-                        .mx_auto()
-                        .px(px(EDITOR_PADDING_X))
-                        .py_4()
-                        .child(render_markdown(&md)),
-                )
-                .into_any_element()
-        } else {
-            // 落库失败横幅：贴在编辑区上方。用户此前只能看到"保存没反应"+ 永久亮着的
-            // "未保存"，无从判断是磁盘满、库损坏还是别的。
-            let persist_banner: Option<AnyElement> = self.persist_error.clone().map(|e| {
-                div()
-                    .id("note-persist-error")
-                    .w_full()
-                    .flex_shrink_0()
-                    .mx(px(EDITOR_PADDING_X))
-                    .mt(px(EDITOR_PADDING_Y))
-                    .px_3()
-                    .py_2()
-                    .mb_2()
-                    .rounded(px(theme::RADIUS_SM))
-                    .bg(theme::danger().opacity(0.12))
-                    .border_1()
-                    .border_color(theme::danger())
-                    .text_xs()
-                    .text_color(theme::danger())
-                    .child(SharedString::from(e))
-                    .into_any_element()
-            });
-            // 编辑区铺满整个右栏：原先在外面套 `p_2` + 边框 + 圆角做成"卡片"，
-            // 于是分隔线与列表之间空出 8px，还多出一圈与左侧列表冲突的圆角框。
-            // 呼吸空间改由 `TextareaState::set_editor_paddings` 提供（见 `new`），
-            // 它会把 padding 计入滚动条几何，滚动到底不会切掉最后一行。
-            div()
-                .flex_1()
-                .min_h_0()
-                .h_full()
-                .min_w(px(320.))
-                .flex()
-                .flex_col()
-                .overflow_hidden()
-                .bg(theme::canvas())
-                .text_color(theme::text())
-                .children(persist_banner)
-                .child(
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .h_full()
-                        .w_full()
-                        .overflow_hidden()
-                        .bg(theme::canvas())
-                        .text_color(theme::text())
-                        .child(Textarea::new(&self.content_state)),
-                )
-                .into_any_element()
-        };
+        let list = self.render_note_list_pane(cx);
+        let right = self.render_note_right_pane(cx);
 
         let body = div()
             .flex_1()
@@ -1645,44 +1699,14 @@ impl gpui::Render for NoteWindow {
             (self.find_open && !self.preview).then(|| self.render_find_panel(window, cx));
 
         let context_menu = self.context_menu.clone();
-        let mut root = div()
+        let root = div()
             .size_full()
             .flex()
             .flex_col()
             .bg(theme::canvas())
             .text_color(theme::text())
-            .track_focus(&self.window_focus)
-            .on_action(
-                cx.listener(|this, _: &CloseNoteWindow, window, cx| this.request_close(window, cx)),
-            )
-            .on_action(cx.listener(|this, _: &NewNote, window, cx| this.new_note(window, cx)))
-            .on_action(cx.listener(|this, _: &SaveNote, window, cx| this.save_current(window, cx)))
-            .on_action(
-                cx.listener(|this, _: &TogglePreview, window, cx| this.toggle_preview(window, cx)),
-            )
-            // Escape 只退出预览；预览已关时兜底走脏检查关窗，避免"按了没反应"。
-            .on_action(cx.listener(|this, _: &EscapePreview, window, cx| {
-                if this.preview {
-                    this.toggle_preview(window, cx);
-                } else {
-                    this.request_close(window, cx);
-                }
-            }))
-            .on_action(
-                cx.listener(|this, _: &DeleteNote, window, cx| this.delete_current(window, cx)),
-            )
-            // 列表键盘导航：Up/ctrl-p 上一条，Down/ctrl-n 下一条（复用脏保护）。
-            .on_action(cx.listener(|this, _: &SelectNextNote, window, cx| {
-                this.move_selection(1, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &SelectPrevNote, window, cx| {
-                this.move_selection(-1, window, cx)
-            }))
-            .key_context(NOTE_WINDOW_CONTEXT)
-            .on_action(cx.listener(|this, _: &ToggleFind, window, cx| this.toggle_find(window, cx)))
-            .on_action(cx.listener(|this, _: &FindNext, _, cx| this.find_next(cx)))
-            .on_action(cx.listener(|this, _: &FindPrev, _, cx| this.find_prev(cx)))
-            .on_action(cx.listener(|this, _: &CloseFind, window, cx| this.close_find(window, cx)))
+            .track_focus(&self.window_focus);
+        let mut root = Self::configure_note_root(root, cx)
             .children(linux_titlebar)
             .child(body)
             .children(find_panel)
