@@ -109,6 +109,18 @@ fn sync_editor_theme(cx: &mut App) {
     c.primary_foreground = Hsla::from(theme::canvas());
 }
 
+/// 状态栏一帧所需的派生状态；集中算好，左右两段渲染只读它。
+struct NoteStatusState {
+    total: usize,
+    pinned: usize,
+    char_count: usize,
+    dirty: bool,
+    save_disabled: bool,
+    title: String,
+    delete_armed: bool,
+    undo_armed: bool,
+}
+
 pub struct NoteWindow {
     store: Option<NoteStore>,
     // open_default 失败时的原因（store 为 None 时必有值），渲染错误行用。
@@ -1056,15 +1068,35 @@ impl NoteWindow {
     }
 
     fn render_status_bar(&self, _window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let total = self.notes.len();
-        let pinned = self.notes.iter().filter(|n| n.pinned).count();
-        // `len_chars()` 是 O(1) 的树长度，不扫全文（早前是 `value().chars().count()`，
-        // 每帧把整篇正文物化再数一遍）。
-        let char_count = self.content_state.read(cx).text().len_chars();
-        let dirty = self.is_dirty(cx);
-        let save_disabled = self.is_save_disabled(cx);
-        let title = self.status_title(cx);
+        let state = NoteStatusState {
+            total: self.notes.len(),
+            pinned: self.notes.iter().filter(|n| n.pinned).count(),
+            // `len_chars()` 是 O(1) 的树长度，不扫全文（早前是 `value().chars().count()`，
+            // 每帧把整篇正文物化再数一遍）。
+            char_count: self.content_state.read(cx).text().len_chars(),
+            dirty: self.is_dirty(cx),
+            save_disabled: self.is_save_disabled(cx),
+            title: self.status_title(cx),
+            // 删除二次确认进行中：在状态栏明示“再按一次确认删除”。
+            delete_armed: self.selected_id.is_some() && self.pending_delete_id == self.selected_id,
+            // 软删后可撤销：与“再按一次确认删除”同一处表达状态，不引入 Toast/弹窗。
+            undo_armed: self.pending_restore_id.is_some(),
+        };
+        let left = self.render_note_status_left(&state, cx);
+        let actions = self.render_note_status_actions(&state, cx);
 
+        StatusBar::new("note-status-bar")
+            .child(left)
+            .child(actions)
+            .into_any_element()
+    }
+
+    /// 状态栏左段：图标、标题，以及按状态顺序追加的度量徽标。
+    fn render_note_status_left(
+        &self,
+        state: &NoteStatusState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let mut left = div()
             .min_w_0()
             .flex()
@@ -1077,20 +1109,21 @@ impl NoteWindow {
                     .max_w(px(240.))
                     .truncate()
                     .text_color(theme::text())
-                    .child(SharedString::from(title)),
+                    .child(SharedString::from(state.title.clone())),
             );
-        if total > 0 {
+        if state.total > 0 {
             left = left.child(
                 StatusMetric::new(
-                    rust_i18n::t!("note.status.note_count", count = total).to_string(),
+                    rust_i18n::t!("note.status.note_count", count = state.total).to_string(),
                 )
                 .tone(BadgeTone::Neutral),
             );
         }
-        if pinned > 0 {
-            left = left.child(StatusMetric::new(format!("📌 {}", pinned)).tone(BadgeTone::Accent));
+        if state.pinned > 0 {
+            left = left
+                .child(StatusMetric::new(format!("📌 {}", state.pinned)).tone(BadgeTone::Accent));
         }
-        if dirty {
+        if state.dirty {
             left =
                 left.child(StatusMetric::new(text("note.status.unsaved")).tone(BadgeTone::Warning));
         }
@@ -1112,31 +1145,35 @@ impl NoteWindow {
                     .child(text("note.error.empty_content")),
             );
         }
-        // 删除二次确认进行中：在状态栏明示“再按一次确认删除”。
-        let delete_armed = self.selected_id.is_some() && self.pending_delete_id == self.selected_id;
-        if delete_armed {
+        if state.delete_armed {
             left = left.child(
                 StatusMetric::new(text("note.status.confirm_delete")).tone(BadgeTone::Danger),
             );
         }
-        // 软删后可撤销：与“再按一次确认删除”同一处表达状态，不引入 Toast/弹窗。
-        let undo_armed = self.pending_restore_id.is_some();
-        if undo_armed {
+        if state.undo_armed {
             left = left.child(
                 StatusMetric::new(text("note.status.deleted_undoable")).tone(BadgeTone::Warning),
             );
         }
         if self.preview {
             left = left.child(StatusMetric::new(text("note.action.preview")).tone(BadgeTone::Info));
-        } else if char_count > 0 {
+        } else if state.char_count > 0 {
             left = left.child(
                 StatusMetric::new(
-                    rust_i18n::t!("note.status.char_count", count = char_count).to_string(),
+                    rust_i18n::t!("note.status.char_count", count = state.char_count).to_string(),
                 )
                 .tone(BadgeTone::Neutral),
             );
         }
+        left
+    }
 
+    /// 状态栏右段：新建 / 保存 /（可撤销时）撤销 / 删除 / 预览。
+    fn render_note_status_actions(
+        &self,
+        state: &NoteStatusState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let mut actions = div()
             .flex_shrink_0()
             .flex()
@@ -1155,21 +1192,23 @@ impl NoteWindow {
                     .size(ButtonSize::Icon(px(22.)))
                     .variant(ButtonVariant::Ghost)
                     .icon(icons::icon(icons::IconName::Save, 13.).text_color(
-                        if dirty && !save_disabled {
+                        if state.dirty && !state.save_disabled {
                             theme::accent()
                         } else {
                             theme::muted_text()
                         },
                     ))
                     .tooltip(text("note.action.save"))
-                    .disabled(save_disabled)
+                    .disabled(state.save_disabled)
                     .on_click(cx.listener(|this, _, window, cx| this.save_current(window, cx))),
             );
         // 软删后**额外**多一个撤销位，而不是用它替换删除按钮：`pending_restore_id`
         // 会一直留到下次删除、切换选中笔记或撤销为止，替换的话鼠标用户在整个会话里
         // 都点不到删除（⌘D 只绑在编辑器的 Input context，列表侧没有入口）。
         // 代价只是多一个 22px 图标位。
-        if let Some(id) = self.pending_restore_id {
+        if state.undo_armed
+            && let Some(id) = self.pending_restore_id
+        {
             actions = actions.child(
                 // Button 本身不带 `debug_selector`（那是 gpui 的 Element 能力），包一层
                 // div 只为让测试能断言「撤销按钮在/不在」。
@@ -1191,53 +1230,56 @@ impl NoteWindow {
                     ),
             );
         }
-        let actions = actions
-            .child(
-                Button::new("note-status-delete")
-                    .size(ButtonSize::Icon(px(22.)))
-                    // 二次确认进行中变红，松手即 UI 级确认（无弹窗）。
-                    .variant(if delete_armed {
-                        ButtonVariant::Danger
-                    } else {
-                        ButtonVariant::Ghost
-                    })
-                    .icon(
-                        icons::icon(icons::IconName::Trash, 13.).text_color(if delete_armed {
-                            theme::canvas()
-                        } else {
-                            theme::muted_text()
-                        }),
-                    )
-                    .tooltip(if delete_armed {
-                        text("note.action.confirm_delete")
-                    } else {
-                        text("note.action.delete")
-                    })
-                    .disabled(self.selected_id.is_none())
-                    .on_click(cx.listener(|this, _, window, cx| this.delete_current(window, cx))),
-            )
-            .child(
-                Button::new("note-status-preview")
-                    .size(ButtonSize::Icon(px(22.)))
-                    .variant(ButtonVariant::Ghost)
-                    .selected(self.preview)
-                    .icon(if self.preview {
-                        icons::icon(icons::IconName::Pencil, 13.).text_color(theme::accent())
-                    } else {
-                        icons::icon(icons::IconName::FileText, 13.).text_color(theme::muted_text())
-                    })
-                    .tooltip(if self.preview {
-                        text("note.action.edit")
-                    } else {
-                        text("note.action.preview")
-                    })
-                    .on_click(cx.listener(|this, _, window, cx| this.toggle_preview(window, cx))),
-            );
+        actions
+            .child(self.render_note_status_delete_button(state, cx))
+            .child(self.render_note_status_preview_button(cx))
+    }
 
-        StatusBar::new("note-status-bar")
-            .child(left)
-            .child(actions)
-            .into_any_element()
+    fn render_note_status_delete_button(
+        &self,
+        state: &NoteStatusState,
+        cx: &mut Context<Self>,
+    ) -> Button {
+        Button::new("note-status-delete")
+            .size(ButtonSize::Icon(px(22.)))
+            // 二次确认进行中变红，松手即 UI 级确认（无弹窗）。
+            .variant(if state.delete_armed {
+                ButtonVariant::Danger
+            } else {
+                ButtonVariant::Ghost
+            })
+            .icon(
+                icons::icon(icons::IconName::Trash, 13.).text_color(if state.delete_armed {
+                    theme::canvas()
+                } else {
+                    theme::muted_text()
+                }),
+            )
+            .tooltip(if state.delete_armed {
+                text("note.action.confirm_delete")
+            } else {
+                text("note.action.delete")
+            })
+            .disabled(self.selected_id.is_none())
+            .on_click(cx.listener(|this, _, window, cx| this.delete_current(window, cx)))
+    }
+
+    fn render_note_status_preview_button(&self, cx: &mut Context<Self>) -> Button {
+        Button::new("note-status-preview")
+            .size(ButtonSize::Icon(px(22.)))
+            .variant(ButtonVariant::Ghost)
+            .selected(self.preview)
+            .icon(if self.preview {
+                icons::icon(icons::IconName::Pencil, 13.).text_color(theme::accent())
+            } else {
+                icons::icon(icons::IconName::FileText, 13.).text_color(theme::muted_text())
+            })
+            .tooltip(if self.preview {
+                text("note.action.edit")
+            } else {
+                text("note.action.preview")
+            })
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_preview(window, cx)))
     }
 
     /// 列表顶部横幅：库错误 / 查询失败 / 中性提示 / 洗库提示，按此顺序堆叠。
