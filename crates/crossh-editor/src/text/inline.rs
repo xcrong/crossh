@@ -6,10 +6,10 @@ use std::{
 };
 
 use gpui::{
-    App, BorderStyle, Bounds, ClickEvent, CursorStyle, Edges, Element, ElementId, GlobalElementId,
-    Half, HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId,
-    MouseButton, MouseClickEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    SharedString, StyledText, TextLayout, Window, point, px, quad,
+    App, BorderStyle, Bounds, ClickEvent, CursorStyle, Edges, Element, ElementId, EntityId,
+    GlobalElementId, Half, HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId, IntoElement,
+    LayoutId, MouseButton, MouseClickEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    Point, SharedString, StyledText, TextLayout, Window, point, px, quad,
 };
 
 use crate::{
@@ -53,6 +53,191 @@ impl InlineState {
 }
 
 impl Inline {
+    /// Paint the selection highlight, and set the IBeam / pointing-hand cursors.
+    ///
+    /// Returns `(is_selectable, is_selection)` for the mouse listeners installed
+    /// by the caller.
+    fn paint_selection_and_cursor(
+        &self,
+        text_layout: &TextLayout,
+        bounds: &Bounds<Pixels>,
+        hitbox: &Hitbox,
+        state: &mut InlineState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (bool, bool) {
+        let (is_selectable, is_selection, selection) =
+            self.layout_selections(text_layout, bounds, window, cx);
+
+        state.selection = selection;
+
+        if is_selection || is_selectable {
+            window.set_cursor_style(CursorStyle::IBeam, hitbox);
+        }
+
+        // link cursor pointer
+        let mouse_position = window.mouse_position();
+        if let Some(_) = Self::link_for_position(text_layout, &self.links, mouse_position) {
+            window.set_cursor_style(CursorStyle::PointingHand, hitbox);
+        }
+
+        if let Some(selection) = &state.selection {
+            let color = GlobalState::global(cx)
+                .text_view_state()
+                .map(|state| state.read(cx).text_view_style.selection())
+                .unwrap_or_else(|| crate::Theme::global(cx).tokens.colors.selection);
+            Self::paint_selection(selection, text_layout, bounds, window, color);
+        }
+
+        (is_selectable, is_selection)
+    }
+
+    /// Register this run with the selection adapter and install the multi-click
+    /// (word / paragraph) selection listener.
+    fn install_multi_click_listener(
+        &self,
+        text_layout: &TextLayout,
+        hitbox: &Hitbox,
+        current_view: EntityId,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if let Some(text_view_state) = GlobalState::global(cx).text_view_state().cloned() {
+            let text_bounds = self.text_line_bounds(
+                text_layout,
+                text_layout.line_height(),
+                window.content_mask().bounds,
+            );
+            text_view_state.update(cx, |state, _| {
+                state.selection_adapter.register_inline(text_bounds);
+            });
+        }
+
+        window.on_mouse_event({
+            let hitbox = (*hitbox).clone();
+            let text_layout = (*text_layout).clone();
+            let inline_state = self.state.clone();
+            let text = self.text.clone();
+            let text_view_state = GlobalState::global(cx).text_view_state().cloned();
+            move |event: &MouseDownEvent, phase, window, cx| {
+                if !phase.bubble()
+                    || !hitbox.is_hovered(window)
+                    || event.button != MouseButton::Left
+                {
+                    return;
+                }
+
+                let kind = match event.click_count {
+                    2 => TextViewMultiClickKind::Word,
+                    3 => TextViewMultiClickKind::Paragraph,
+                    _ => return,
+                };
+
+                let Some(range) = selection_for_multi_click(
+                    &text,
+                    &text_layout,
+                    hitbox.bounds,
+                    event.position,
+                    kind,
+                ) else {
+                    return;
+                };
+
+                let selected_text = text[range.clone()].to_string();
+
+                // This renderer owns multi-click selection. Prevent the
+                // window selection layer from handling the same press.
+                GlobalState::suppress_text_selection(cx);
+
+                if let Ok(mut inline_state) = inline_state.lock() {
+                    inline_state.selection = Some(range.into());
+                }
+                if let Some(text_view_state) = &text_view_state {
+                    text_view_state.update(cx, |state, cx| {
+                        state.set_multi_click_selection(event.position, kind, selected_text, cx);
+                    });
+                }
+                cx.notify(current_view);
+            }
+        });
+    }
+
+    /// Install the mouse-move listener that refreshes the hovered link index.
+    fn install_hover_listener(
+        &self,
+        text_layout: &TextLayout,
+        hitbox: &Hitbox,
+        current_view: EntityId,
+        state: &InlineState,
+        window: &mut Window,
+    ) {
+        // mouse move, update hovered link
+        window.on_mouse_event({
+            let hitbox = (*hitbox).clone();
+            let text_layout = (*text_layout).clone();
+            let mut hovered_index = state.hovered_index;
+            move |event: &MouseMoveEvent, phase, window, cx| {
+                if !phase.bubble() || !hitbox.is_hovered(window) {
+                    return;
+                }
+
+                let current = hovered_index;
+                let updated = text_layout.index_for_position(event.position).ok();
+                //  notify update when hovering over different links
+                if current != updated {
+                    hovered_index = updated;
+                    cx.notify(current_view);
+                }
+            }
+        });
+    }
+
+    /// Install the mouse-up listener that opens a link.
+    fn install_link_click_listener(
+        &self,
+        text_layout: &TextLayout,
+        hitbox: &Hitbox,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        // click to open link
+        window.on_mouse_event({
+            let links = self.links.clone();
+            let text_layout = (*text_layout).clone();
+            let hitbox = (*hitbox).clone();
+            let text_view_state = GlobalState::global(cx).text_view_state().cloned();
+            let link_click_handler = self.link_click_handler.clone();
+
+            move |event: &MouseUpEvent, phase, window, cx| {
+                if !phase.bubble() || !hitbox.is_hovered(window) {
+                    return;
+                }
+                if text_view_state
+                    .as_ref()
+                    .is_some_and(|state| state.read(cx).has_selection(cx))
+                {
+                    return;
+                }
+
+                if let Some(link) = Self::link_for_position(&text_layout, &links, event.position) {
+                    TextSelection::end(window, cx);
+                    cx.stop_propagation();
+                    let click = ClickEvent::Mouse(MouseClickEvent {
+                        down: MouseDownEvent {
+                            button: event.button,
+                            position: event.position,
+                            modifiers: event.modifiers,
+                            click_count: event.click_count,
+                            first_mouse: false,
+                        },
+                        up: event.clone(),
+                    });
+                    handle_link_click(&link_click_handler, link.url, click, window, cx);
+                }
+            }
+        });
+    }
+
     pub(super) fn new(
         id: impl Into<ElementId>,
         state: Arc<Mutex<InlineState>>,
@@ -431,155 +616,17 @@ impl Element for Inline {
         self.styled_text
             .paint(global_id, None, bounds, &mut (), &mut (), window, cx);
 
-        // layout selections
-        let (is_selectable, is_selection, selection) =
-            self.layout_selections(&text_layout, &bounds, window, cx);
-
-        state.selection = selection;
-
-        if is_selection || is_selectable {
-            window.set_cursor_style(CursorStyle::IBeam, &hitbox);
-        }
-
-        // link cursor pointer
-        let mouse_position = window.mouse_position();
-        if let Some(_) = Self::link_for_position(&text_layout, &self.links, mouse_position) {
-            window.set_cursor_style(CursorStyle::PointingHand, &hitbox);
-        }
-
-        if let Some(selection) = &state.selection {
-            let color = GlobalState::global(cx)
-                .text_view_state()
-                .map(|state| state.read(cx).text_view_style.selection())
-                .unwrap_or_else(|| crate::Theme::global(cx).tokens.colors.selection);
-            Self::paint_selection(selection, &text_layout, &bounds, window, color);
-        }
+        let (is_selectable, is_selection) =
+            self.paint_selection_and_cursor(&text_layout, &bounds, hitbox, &mut state, window, cx);
 
         if is_selectable {
-            if let Some(text_view_state) = GlobalState::global(cx).text_view_state().cloned() {
-                let text_bounds = self.text_line_bounds(
-                    &text_layout,
-                    text_layout.line_height(),
-                    window.content_mask().bounds,
-                );
-                text_view_state.update(cx, |state, _| {
-                    state.selection_adapter.register_inline(text_bounds);
-                });
-            }
-
-            window.on_mouse_event({
-                let hitbox = hitbox.clone();
-                let text_layout = text_layout.clone();
-                let inline_state = self.state.clone();
-                let text = self.text.clone();
-                let text_view_state = GlobalState::global(cx).text_view_state().cloned();
-                move |event: &MouseDownEvent, phase, window, cx| {
-                    if !phase.bubble()
-                        || !hitbox.is_hovered(window)
-                        || event.button != MouseButton::Left
-                    {
-                        return;
-                    }
-
-                    let kind = match event.click_count {
-                        2 => TextViewMultiClickKind::Word,
-                        3 => TextViewMultiClickKind::Paragraph,
-                        _ => return,
-                    };
-
-                    let Some(range) = selection_for_multi_click(
-                        &text,
-                        &text_layout,
-                        hitbox.bounds,
-                        event.position,
-                        kind,
-                    ) else {
-                        return;
-                    };
-
-                    let selected_text = text[range.clone()].to_string();
-
-                    // This renderer owns multi-click selection. Prevent the
-                    // window selection layer from handling the same press.
-                    GlobalState::suppress_text_selection(cx);
-
-                    if let Ok(mut inline_state) = inline_state.lock() {
-                        inline_state.selection = Some(range.into());
-                    }
-                    if let Some(text_view_state) = &text_view_state {
-                        text_view_state.update(cx, |state, cx| {
-                            state.set_multi_click_selection(
-                                event.position,
-                                kind,
-                                selected_text,
-                                cx,
-                            );
-                        });
-                    }
-                    cx.notify(current_view);
-                }
-            });
+            self.install_multi_click_listener(&text_layout, hitbox, current_view, window, cx);
         }
 
-        // mouse move, update hovered link
-        window.on_mouse_event({
-            let hitbox = hitbox.clone();
-            let text_layout = text_layout.clone();
-            let mut hovered_index = state.hovered_index;
-            move |event: &MouseMoveEvent, phase, window, cx| {
-                if !phase.bubble() || !hitbox.is_hovered(window) {
-                    return;
-                }
-
-                let current = hovered_index;
-                let updated = text_layout.index_for_position(event.position).ok();
-                //  notify update when hovering over different links
-                if current != updated {
-                    hovered_index = updated;
-                    cx.notify(current_view);
-                }
-            }
-        });
+        self.install_hover_listener(&text_layout, hitbox, current_view, &state, window);
 
         if !is_selection {
-            // click to open link
-            window.on_mouse_event({
-                let links = self.links.clone();
-                let text_layout = text_layout.clone();
-                let hitbox = hitbox.clone();
-                let text_view_state = GlobalState::global(cx).text_view_state().cloned();
-                let link_click_handler = self.link_click_handler.clone();
-
-                move |event: &MouseUpEvent, phase, window, cx| {
-                    if !phase.bubble() || !hitbox.is_hovered(window) {
-                        return;
-                    }
-                    if text_view_state
-                        .as_ref()
-                        .is_some_and(|state| state.read(cx).has_selection(cx))
-                    {
-                        return;
-                    }
-
-                    if let Some(link) =
-                        Self::link_for_position(&text_layout, &links, event.position)
-                    {
-                        TextSelection::end(window, cx);
-                        cx.stop_propagation();
-                        let click = ClickEvent::Mouse(MouseClickEvent {
-                            down: MouseDownEvent {
-                                button: event.button,
-                                position: event.position,
-                                modifiers: event.modifiers,
-                                click_count: event.click_count,
-                                first_mouse: false,
-                            },
-                            up: event.clone(),
-                        });
-                        handle_link_click(&link_click_handler, link.url, click, window, cx);
-                    }
-                }
-            });
+            self.install_link_click_listener(&text_layout, hitbox, window, cx);
         }
     }
 }
