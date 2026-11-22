@@ -1380,116 +1380,19 @@ impl Paragraph {
             let text_len = inline_node.text.len();
             text.push_str(&inline_node.text);
 
-            if let Some(image) = &inline_node.image {
-                if text.len() > 0 {
-                    if let Ok(mut state) = inline_node.state.lock() {
-                        state.set_text(text.clone().into());
-                    }
-                    child_nodes.push(
-                        Inline::new(
-                            ix,
-                            inline_node.state.clone(),
-                            links.clone(),
-                            highlights.clone(),
-                            node_cx.link_click_handler.clone(),
-                        )
-                        .into_any_element(),
-                    );
-                }
-                let link_click_handler = node_cx.link_click_handler.clone();
-                child_nodes.push(
-                    img(image_source(&image.url))
-                        .id(ix)
-                        .object_fit(ObjectFit::Contain)
-                        .max_w(relative(1.))
-                        .when_some(image.width, |this, width| this.w(width))
-                        .when_some(image.link.clone(), |this, link| {
-                            let link_click_handler = link_click_handler.clone();
-                            let aux_link = link.clone();
-                            let aux_link_click_handler = link_click_handler.clone();
-                            this.cursor_pointer()
-                                .on_click(move |event, window, cx| {
-                                    crate::TextSelection::end(window, cx);
-                                    cx.stop_propagation();
-                                    handle_link_click(
-                                        &link_click_handler,
-                                        link.url.clone(),
-                                        event.clone(),
-                                        window,
-                                        cx,
-                                    );
-                                })
-                                .on_aux_click(move |event, window, cx| {
-                                    crate::TextSelection::end(window, cx);
-                                    cx.stop_propagation();
-                                    handle_link_click(
-                                        &aux_link_click_handler,
-                                        aux_link.url.clone(),
-                                        event.clone(),
-                                        window,
-                                        cx,
-                                    );
-                                })
-                        })
-                        .into_any_element(),
+            if inline_node.image.is_some() {
+                Self::render_inline_image(
+                    ix,
+                    inline_node,
+                    &mut text,
+                    &mut links,
+                    &mut highlights,
+                    node_cx,
+                    &mut child_nodes,
                 );
-
-                text.clear();
-                links.clear();
-                highlights.clear();
                 offset = 0;
             } else {
-                let mut node_highlights = vec![];
-                for (range, style) in &inline_node.marks {
-                    let inner_range = (offset + range.start)..(offset + range.end);
-
-                    let mut highlight = HighlightStyle::default();
-                    if style.bold {
-                        highlight.font_weight = Some(FontWeight::BOLD);
-                    }
-                    if style.italic {
-                        highlight.font_style = Some(FontStyle::Italic);
-                    }
-                    if style.strikethrough {
-                        highlight.strikethrough = Some(gpui::StrikethroughStyle {
-                            thickness: gpui::px(1.),
-                            ..Default::default()
-                        });
-                    }
-                    if style.underline {
-                        highlight.underline = Some(gpui::UnderlineStyle {
-                            thickness: gpui::px(1.),
-                            ..Default::default()
-                        });
-                    }
-                    if style.code {
-                        highlight = highlight.highlight(node_cx.style.inline_code_highlight());
-                    }
-                    if let Some(color) = style.highlight {
-                        highlight.background_color = Some(color);
-                    }
-
-                    if let Some(mut link_mark) = style.link.clone() {
-                        highlight.color = Some(node_cx.style.link());
-                        highlight.underline = Some(gpui::UnderlineStyle {
-                            thickness: gpui::px(1.),
-                            ..Default::default()
-                        });
-
-                        // convert link references, replace link
-                        if let Some(identifier) = link_mark.identifier.as_ref() {
-                            if let Some(mark) = node_cx.link_refs.get(identifier) {
-                                link_mark = mark.clone();
-                            }
-                        }
-
-                        links.push((inner_range.clone(), link_mark));
-                    }
-
-                    node_highlights.push((inner_range, highlight));
-                }
-
-                highlights = gpui::combine_highlights(highlights, node_highlights).collect();
+                Self::apply_inline_marks(inline_node, offset, node_cx, &mut highlights, &mut links);
                 offset += text_len;
             }
             ix += 1;
@@ -1516,6 +1419,140 @@ impl Paragraph {
             .id(span.unwrap_or_default())
             .children(child_nodes)
             .into_any_element()
+    }
+
+    /// Render an inline image, flushing the text run accumulated before it.
+    fn render_inline_image(
+        ix: usize,
+        inline_node: &InlineNode,
+        text: &mut String,
+        links: &mut Vec<(Range<usize>, LinkMark)>,
+        highlights: &mut Vec<(Range<usize>, HighlightStyle)>,
+        node_cx: &NodeContext,
+        child_nodes: &mut Vec<AnyElement>,
+    ) {
+        let Some(image) = &inline_node.image else {
+            return;
+        };
+
+        if text.len() > 0 {
+            if let Ok(mut state) = inline_node.state.lock() {
+                state.set_text(text.clone().into());
+            }
+            child_nodes.push(
+                Inline::new(
+                    ix,
+                    inline_node.state.clone(),
+                    links.clone(),
+                    highlights.clone(),
+                    node_cx.link_click_handler.clone(),
+                )
+                .into_any_element(),
+            );
+        }
+        let link_click_handler = node_cx.link_click_handler.clone();
+        child_nodes.push(
+            img(image_source(&image.url))
+                .id(ix)
+                .object_fit(ObjectFit::Contain)
+                .max_w(relative(1.))
+                .when_some(image.width, |this, width| this.w(width))
+                .when_some(image.link.clone(), |this, link| {
+                    let link_click_handler = link_click_handler.clone();
+                    let aux_link = link.clone();
+                    let aux_link_click_handler = link_click_handler.clone();
+                    this.cursor_pointer()
+                        .on_click(move |event, window, cx| {
+                            crate::TextSelection::end(window, cx);
+                            cx.stop_propagation();
+                            handle_link_click(
+                                &link_click_handler,
+                                link.url.clone(),
+                                event.clone(),
+                                window,
+                                cx,
+                            );
+                        })
+                        .on_aux_click(move |event, window, cx| {
+                            crate::TextSelection::end(window, cx);
+                            cx.stop_propagation();
+                            handle_link_click(
+                                &aux_link_click_handler,
+                                aux_link.url.clone(),
+                                event.clone(),
+                                window,
+                                cx,
+                            );
+                        })
+                })
+                .into_any_element(),
+        );
+
+        text.clear();
+        links.clear();
+        highlights.clear();
+    }
+
+    /// Apply one inline node's marks to the accumulated highlights and links.
+    fn apply_inline_marks(
+        inline_node: &InlineNode,
+        offset: usize,
+        node_cx: &NodeContext,
+        highlights: &mut Vec<(Range<usize>, HighlightStyle)>,
+        links: &mut Vec<(Range<usize>, LinkMark)>,
+    ) {
+        let mut node_highlights = vec![];
+        for (range, style) in &inline_node.marks {
+            let inner_range = (offset + range.start)..(offset + range.end);
+
+            let mut highlight = HighlightStyle::default();
+            if style.bold {
+                highlight.font_weight = Some(FontWeight::BOLD);
+            }
+            if style.italic {
+                highlight.font_style = Some(FontStyle::Italic);
+            }
+            if style.strikethrough {
+                highlight.strikethrough = Some(gpui::StrikethroughStyle {
+                    thickness: gpui::px(1.),
+                    ..Default::default()
+                });
+            }
+            if style.underline {
+                highlight.underline = Some(gpui::UnderlineStyle {
+                    thickness: gpui::px(1.),
+                    ..Default::default()
+                });
+            }
+            if style.code {
+                highlight = highlight.highlight(node_cx.style.inline_code_highlight());
+            }
+            if let Some(color) = style.highlight {
+                highlight.background_color = Some(color);
+            }
+
+            if let Some(mut link_mark) = style.link.clone() {
+                highlight.color = Some(node_cx.style.link());
+                highlight.underline = Some(gpui::UnderlineStyle {
+                    thickness: gpui::px(1.),
+                    ..Default::default()
+                });
+
+                // convert link references, replace link
+                if let Some(identifier) = link_mark.identifier.as_ref() {
+                    if let Some(mark) = node_cx.link_refs.get(identifier) {
+                        link_mark = mark.clone();
+                    }
+                }
+
+                links.push((inner_range.clone(), link_mark));
+            }
+
+            node_highlights.push((inner_range, highlight));
+        }
+
+        let previous = std::mem::take(highlights);
+        *highlights = gpui::combine_highlights(previous, node_highlights).collect();
     }
 
     fn should_render_inline_flow(&self) -> bool {
