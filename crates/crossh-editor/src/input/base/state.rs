@@ -119,8 +119,22 @@ pub enum InputEvent {
 
 pub(super) const CONTEXT: &str = "Input";
 
+/// Registers every text-input key binding.
+///
+/// The groups are applied in this exact order because `App::bind_keys` appends
+/// to the keymap and later bindings for the same keystroke win.
 pub(crate) fn init(cx: &mut App) {
-    cx.bind_keys([
+    cx.bind_keys(editing_bindings());
+    cx.bind_keys(navigation_bindings());
+    cx.bind_keys(indent_bindings());
+    cx.bind_keys(selection_bindings());
+    cx.bind_keys(clipboard_bindings());
+    cx.bind_keys(misc_bindings());
+}
+
+/// Deletion and submit bindings.
+fn editing_bindings() -> Vec<KeyBinding> {
+    vec![
         KeyBinding::new("backspace", Backspace, Some(CONTEXT)),
         KeyBinding::new("shift-backspace", Backspace, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
@@ -173,6 +187,12 @@ pub(crate) fn init(cx: &mut App) {
             },
             Some(CONTEXT),
         ),
+    ]
+}
+
+/// Cursor movement bindings.
+fn navigation_bindings() -> Vec<KeyBinding> {
+    vec![
         KeyBinding::new("escape", Escape, Some(CONTEXT)),
         KeyBinding::new("up", MoveUp, Some(CONTEXT)),
         KeyBinding::new("down", MoveDown, Some(CONTEXT)),
@@ -180,6 +200,12 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("right", MoveRight, Some(CONTEXT)),
         KeyBinding::new("pageup", MovePageUp, Some(CONTEXT)),
         KeyBinding::new("pagedown", MovePageDown, Some(CONTEXT)),
+    ]
+}
+
+/// Indentation bindings.
+fn indent_bindings() -> Vec<KeyBinding> {
+    vec![
         KeyBinding::new("tab", IndentInline, Some(CONTEXT)),
         KeyBinding::new("shift-tab", OutdentInline, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
@@ -190,6 +216,12 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("cmd-[", Outdent, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-[", Outdent, Some(CONTEXT)),
+    ]
+}
+
+/// Selection bindings.
+fn selection_bindings() -> Vec<KeyBinding> {
+    vec![
         KeyBinding::new("shift-left", SelectLeft, Some(CONTEXT)),
         KeyBinding::new("shift-right", SelectRight, Some(CONTEXT)),
         KeyBinding::new("shift-up", SelectUp, Some(CONTEXT)),
@@ -214,6 +246,12 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("alt-shift-right", SelectToNextWordEnd, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-shift-right", SelectToNextWordEnd, Some(CONTEXT)),
+    ]
+}
+
+/// Clipboard, undo, and word-movement bindings.
+fn clipboard_bindings() -> Vec<KeyBinding> {
+    vec![
         #[cfg(target_os = "macos")]
         KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
@@ -264,6 +302,12 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("ctrl-z", Undo, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-y", Redo, Some(CONTEXT)),
+    ]
+}
+
+/// Code-action, search, and replace bindings.
+fn misc_bindings() -> Vec<KeyBinding> {
+    vec![
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-.", ToggleCodeActions, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
@@ -276,7 +320,7 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("cmd-shift-f", Replace, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-h", Replace, Some(CONTEXT)),
-    ]);
+    ]
 }
 
 /// The shared text-editing engine behind [`crate::input::InputState`],
