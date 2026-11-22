@@ -59,6 +59,269 @@ pub fn ambiguous_shrink_factor(shaped_width: Pixels, cell_width: Pixels) -> Opti
     None
 }
 
+/// 第一遍收集所需的只读布局上下文，避免在辅助函数间重复传参。
+struct GridLayoutContext<'a> {
+    text_style: &'a TextStyle,
+    hyperlink: Option<(HighlightStyle, &'a Range)>,
+    minimum_contrast: f32,
+    cell_width: Pixels,
+    base_font_pixels: Pixels,
+    theme: &'a CrosshTheme,
+    cx: &'a App,
+}
+
+/// 第一遍收集的可变累积状态。
+struct GridRunCollector {
+    batched_runs: Vec<BatchedTextRun>,
+    block_element_regions: Vec<BackgroundRegion>,
+    current_batch: Option<BatchedTextRun>,
+    cell_count: usize,
+    shaped_cache: std::collections::HashMap<(char, gpui::FontId), Pixels>,
+}
+
+impl GridRunCollector {
+    fn flush_current_batch(&mut self) {
+        if let Some(batch) = self.current_batch.take() {
+            self.batched_runs.push(batch);
+        }
+    }
+
+    /// 歧义宽度字符是否应按 2 格处理（字形步进超过格宽）。
+    fn is_overwide_cell(&mut self, ch: char, style: &TextRun, ctx: &GridLayoutContext) -> bool {
+        if ch.is_ascii() || ch == ' ' || ch.width().unwrap_or(1) != 1 {
+            return false;
+        }
+        let font_id = ctx.cx.text_system().resolve_font(&style.font);
+        let shaped = *self.shaped_cache.entry((ch, font_id)).or_insert_with(|| {
+            ctx.cx
+                .text_system()
+                .layout_width(font_id, ctx.base_font_pixels, ch)
+        });
+        ambiguous_shrink_factor(shaped, ctx.cell_width).is_some()
+    }
+
+    /// 追加一个非空白单元格的文本；必要时新建 batch 并更新 overwide 偏移。
+    fn append_text_cell(
+        &mut self,
+        point: Point,
+        cell: &Cell,
+        display_line: i32,
+        style: TextRun,
+        extra_offset: &mut i32,
+        ctx: &GridLayoutContext,
+    ) {
+        let cell_point = LayoutPoint::new(display_line, point.column as i32 + *extra_offset);
+        if TerminalElement::collect_block_element_regions(
+            cell_point,
+            cell.character(),
+            style.color,
+            &mut self.block_element_regions,
+        ) {
+            self.flush_current_batch();
+            return;
+        }
+
+        let ch = cell.character();
+        let is_overwide = self.is_overwide_cell(ch, &style, ctx);
+        let zero_width_chars = cell.zerowidth();
+        let cell_font_size = ctx.text_style.font_size;
+
+        // Overwide chars never batch with neighbours and occupy 2 cells
+        let can_append = if is_overwide {
+            false
+        } else if let Some(batch) = &self.current_batch {
+            batch.cell_count == 1
+                && batch.can_append(&style, cell_font_size)
+                && batch.start_point.line == cell_point.line
+                && batch.start_point.column + batch.cell_count as i32 == cell_point.column
+        } else {
+            false
+        };
+
+        if can_append {
+            let batch = self.current_batch.as_mut().unwrap();
+            batch.append_char(ch);
+            if let Some(chars) = zero_width_chars {
+                batch.append_zero_width_chars(chars);
+            }
+        } else {
+            self.flush_current_batch();
+            let mut new_batch =
+                BatchedTextRun::new_from_char(cell_point, ch, style, cell_font_size);
+            if is_overwide {
+                new_batch.cell_count = 2;
+            }
+            if let Some(chars) = zero_width_chars {
+                new_batch.append_zero_width_chars(chars);
+            }
+            self.current_batch = Some(new_batch);
+        }
+
+        if is_overwide {
+            *extra_offset += 1;
+        }
+    }
+}
+
+/// 追加/扩展一个背景区域：仅同 line、同色且相邻时才扩展。
+fn push_background_region(
+    regions: &mut Vec<BackgroundRegion>,
+    display_line: i32,
+    col: i32,
+    color: Hsla,
+) {
+    if let Some(last_region) = regions.last_mut()
+        && last_region.color == color
+        && last_region.start_line == display_line
+        && last_region.end_line == display_line
+        && last_region.end_col + 1 == col
+    {
+        last_region.end_col = col;
+        return;
+    }
+
+    regions.push(BackgroundRegion::new(display_line, col, color));
+}
+
+/// 第一遍：按行收集文本 batch、背景区域与 block element 区域。
+fn collect_grid_runs<T: TerminalLayoutCell>(
+    grid: impl Iterator<Item = T>,
+    start_line_offset: i32,
+    ctx: &GridLayoutContext,
+) -> (
+    Vec<BatchedTextRun>,
+    Vec<BackgroundRegion>,
+    Vec<BackgroundRegion>,
+    usize,
+) {
+    // Pre-allocate with estimated capacity to reduce reallocations
+    let estimated_cells = grid.size_hint().0;
+    let estimated_runs = estimated_cells / 10; // Estimate ~10 cells per run
+    let estimated_regions = estimated_cells / 20; // Estimate ~20 cells per background region
+
+    let mut collector = GridRunCollector {
+        batched_runs: Vec::with_capacity(estimated_runs),
+        block_element_regions: Vec::new(),
+        current_batch: None,
+        cell_count: 0,
+        shaped_cache: std::collections::HashMap::new(),
+    };
+    // Collect background regions for efficient merging
+    let mut background_regions: Vec<BackgroundRegion> = Vec::with_capacity(estimated_regions);
+
+    let linegroups = grid.into_iter().chunk_by(|cell| cell.point().line);
+    for (line_index, (_, line)) in linegroups.into_iter().enumerate() {
+        let display_line = start_line_offset + line_index as i32;
+
+        // Flush any existing batch at line boundaries
+        collector.flush_current_batch();
+
+        let mut previous_cell_had_extras = false;
+        let mut extra_offset: i32 = 0;
+
+        for cell in line {
+            let point = cell.point();
+            let cell = cell.cell();
+            let mut fg = cell.foreground();
+            let mut bg = cell.background();
+            if cell.is_inverse() {
+                mem::swap(&mut fg, &mut bg);
+            }
+
+            // Collect background regions (skip default background)
+            if !is_default_background_color(bg) {
+                push_background_region(
+                    &mut background_regions,
+                    display_line,
+                    point.column as i32,
+                    convert_color(&bg, ctx.theme),
+                );
+            }
+            // Skip wide character spacers - they're just placeholders for the second cell of wide characters
+            if cell.is_wide_char_spacer() {
+                continue;
+            }
+
+            // Skip spaces that follow cells with extras (emoji variation sequences)
+            if cell.character() == ' ' && previous_cell_had_extras {
+                previous_cell_had_extras = false;
+                continue;
+            }
+            // Update tracking for next iteration
+            previous_cell_had_extras = matches!(cell.zerowidth(), Some(chars) if !chars.is_empty());
+
+            if is_blank(cell) {
+                continue;
+            }
+
+            collector.cell_count += 1;
+            let mut style = TerminalElement::cell_style(
+                cell,
+                fg,
+                bg,
+                ctx.theme,
+                ctx.text_style,
+                ctx.minimum_contrast,
+            );
+            apply_hovered_link_style(point, ctx.hyperlink, &mut style);
+            collector.append_text_cell(point, cell, display_line, style, &mut extra_offset, ctx);
+        }
+    }
+
+    // Flush any remaining batch
+    collector.flush_current_batch();
+
+    (
+        collector.batched_runs,
+        background_regions,
+        collector.block_element_regions,
+        collector.cell_count,
+    )
+}
+
+/// 第二遍：合并背景区域，并按行拆分为单行 `LayoutRect`。
+fn background_regions_to_rects(regions: Vec<BackgroundRegion>) -> (Vec<LayoutRect>, usize) {
+    let region_count = regions.len();
+    let merged_regions = merge_background_regions(regions);
+    let mut rects = Vec::with_capacity(merged_regions.len() * 2); // Estimate 2 rects per merged region
+
+    // LayoutRect only supports single-line rectangles, so split multi-line regions
+    for region in merged_regions {
+        for line in region.start_line..=region.end_line {
+            rects.push(LayoutRect::new(
+                LayoutPoint::new(line, region.start_col),
+                (region.end_col - region.start_col + 1) as usize,
+                region.color,
+            ));
+        }
+    }
+
+    (rects, region_count)
+}
+
+fn log_grid_layout(
+    cell_count: usize,
+    batched_run_count: usize,
+    block_element_rect_count: usize,
+    block_element_region_count: usize,
+    rect_count: usize,
+    region_count: usize,
+    layout_time: std::time::Duration,
+) {
+    log::debug!(
+        "Terminal layout_grid: {} cells processed, \
+        {} batched runs created, {} block element rects (from {} regions), {} rects (from {} merged regions), \
+        layout took {:?}",
+        cell_count,
+        batched_run_count,
+        block_element_rect_count,
+        block_element_region_count,
+        rect_count,
+        region_count,
+        layout_time
+    );
+}
+
 impl TerminalElement {
     #[allow(clippy::too_many_arguments)]
     pub fn layout_grid<T: TerminalLayoutCell>(
@@ -77,203 +340,32 @@ impl TerminalElement {
     ) {
         let start_time = Instant::now();
         let theme = CrosshTheme::get(cx);
+        let ctx = GridLayoutContext {
+            text_style,
+            hyperlink,
+            minimum_contrast,
+            cell_width,
+            base_font_pixels: text_style.font_size.to_pixels(rem_size),
+            theme,
+            cx,
+        };
 
-        // Pre-allocate with estimated capacity to reduce reallocations
-        let estimated_cells = grid.size_hint().0;
-        let estimated_runs = estimated_cells / 10; // Estimate ~10 cells per run
-        let estimated_regions = estimated_cells / 20; // Estimate ~20 cells per background region
-
-        let mut batched_runs = Vec::with_capacity(estimated_runs);
-        let mut block_element_regions = Vec::new();
-        let mut cell_count = 0;
-
-        // Collect background regions for efficient merging
-        let mut background_regions: Vec<BackgroundRegion> = Vec::with_capacity(estimated_regions);
-        let mut current_batch: Option<BatchedTextRun> = None;
-        let base_font_pixels = text_style.font_size.to_pixels(rem_size);
-        let mut shaped_cache: std::collections::HashMap<(char, gpui::FontId), Pixels> =
-            std::collections::HashMap::new();
-
-        // First pass: collect all cells and their backgrounds
-        let linegroups = grid.into_iter().chunk_by(|cell| cell.point().line);
-        for (line_index, (_, line)) in linegroups.into_iter().enumerate() {
-            let display_line = start_line_offset + line_index as i32;
-
-            // Flush any existing batch at line boundaries
-            if let Some(batch) = current_batch.take() {
-                batched_runs.push(batch);
-            }
-
-            let mut previous_cell_had_extras = false;
-            let mut extra_offset: i32 = 0;
-
-            for cell in line {
-                let point = cell.point();
-                let cell = cell.cell();
-                let mut fg = cell.foreground();
-                let mut bg = cell.background();
-                if cell.is_inverse() {
-                    mem::swap(&mut fg, &mut bg);
-                }
-
-                // Collect background regions (skip default background)
-                if !is_default_background_color(bg) {
-                    let color = convert_color(&bg, theme);
-                    let col = point.column as i32;
-
-                    // Try to extend the last region if it's on the same line with the same color
-                    if let Some(last_region) = background_regions.last_mut()
-                        && last_region.color == color
-                        && last_region.start_line == display_line
-                        && last_region.end_line == display_line
-                        && last_region.end_col + 1 == col
-                    {
-                        last_region.end_col = col;
-                    } else {
-                        background_regions.push(BackgroundRegion::new(display_line, col, color));
-                    }
-                }
-                // Skip wide character spacers - they're just placeholders for the second cell of wide characters
-                if cell.is_wide_char_spacer() {
-                    continue;
-                }
-
-                // Skip spaces that follow cells with extras (emoji variation sequences)
-                if cell.character() == ' ' && previous_cell_had_extras {
-                    previous_cell_had_extras = false;
-                    continue;
-                }
-                // Update tracking for next iteration
-                previous_cell_had_extras =
-                    matches!(cell.zerowidth(), Some(chars) if !chars.is_empty());
-
-                //Layout current cell text
-                {
-                    if !is_blank(cell) {
-                        cell_count += 1;
-                        let mut cell_style = TerminalElement::cell_style(
-                            cell,
-                            fg,
-                            bg,
-                            theme,
-                            text_style,
-                            minimum_contrast,
-                        );
-                        apply_hovered_link_style(point, hyperlink, &mut cell_style);
-
-                        let original_col = point.column as i32;
-                        let render_col = original_col + extra_offset;
-                        let cell_point = LayoutPoint::new(display_line, render_col);
-                        if Self::collect_block_element_regions(
-                            cell_point,
-                            cell.character(),
-                            cell_style.color,
-                            &mut block_element_regions,
-                        ) {
-                            if let Some(batch) = current_batch.take() {
-                                batched_runs.push(batch);
-                            }
-                            continue;
-                        }
-
-                        let ch = cell.character();
-                        let mut is_overwide = false;
-                        if !ch.is_ascii() && ch != ' ' && ch.width().unwrap_or(1) == 1 {
-                            let font_id = cx.text_system().resolve_font(&cell_style.font);
-                            let shaped = *shaped_cache.entry((ch, font_id)).or_insert_with(|| {
-                                cx.text_system().layout_width(font_id, base_font_pixels, ch)
-                            });
-                            if ambiguous_shrink_factor(shaped, cell_width).is_some() {
-                                is_overwide = true;
-                            }
-                        }
-
-                        let zero_width_chars = cell.zerowidth();
-                        let cell_font_size = text_style.font_size;
-
-                        // Overwide chars never batch with neighbours and occupy 2 cells
-                        let can_append = if is_overwide {
-                            false
-                        } else if let Some(batch) = &current_batch {
-                            batch.cell_count == 1
-                                && batch.can_append(&cell_style, cell_font_size)
-                                && batch.start_point.line == cell_point.line
-                                && batch.start_point.column + batch.cell_count as i32
-                                    == cell_point.column
-                        } else {
-                            false
-                        };
-
-                        if can_append {
-                            let batch = current_batch.as_mut().unwrap();
-                            batch.append_char(ch);
-                            if let Some(chars) = zero_width_chars {
-                                batch.append_zero_width_chars(chars);
-                            }
-                        } else {
-                            if let Some(old_batch) = current_batch.take() {
-                                batched_runs.push(old_batch);
-                            }
-                            let mut new_batch = BatchedTextRun::new_from_char(
-                                cell_point,
-                                ch,
-                                cell_style,
-                                cell_font_size,
-                            );
-                            if is_overwide {
-                                new_batch.cell_count = 2;
-                            }
-                            if let Some(chars) = zero_width_chars {
-                                new_batch.append_zero_width_chars(chars);
-                            }
-                            current_batch = Some(new_batch);
-                        }
-
-                        if is_overwide {
-                            extra_offset += 1;
-                        }
-                    };
-                }
-            }
-        }
-
-        // Flush any remaining batch
-        if let Some(batch) = current_batch {
-            batched_runs.push(batch);
-        }
-
-        // Second pass: merge background regions and convert to layout rects
-        let region_count = background_regions.len();
-        let merged_regions = merge_background_regions(background_regions);
-        let mut rects = Vec::with_capacity(merged_regions.len() * 2); // Estimate 2 rects per merged region
-
-        // Convert merged regions to layout rects
-        // Since LayoutRect only supports single-line rectangles, we need to split multi-line regions
-        for region in merged_regions {
-            for line in region.start_line..=region.end_line {
-                rects.push(LayoutRect::new(
-                    LayoutPoint::new(line, region.start_col),
-                    (region.end_col - region.start_col + 1) as usize,
-                    region.color,
-                ));
-            }
-        }
+        let (batched_runs, background_regions, block_element_regions, cell_count) =
+            collect_grid_runs(grid, start_line_offset, &ctx);
+        let (rects, region_count) = background_regions_to_rects(background_regions);
 
         let block_element_region_count = block_element_regions.len();
         let block_element_rects = Self::block_element_regions_to_rects(block_element_regions);
         let layout_time = start_time.elapsed();
 
-        log::debug!(
-            "Terminal layout_grid: {} cells processed, \
-            {} batched runs created, {} block element rects (from {} regions), {} rects (from {} merged regions), \
-            layout took {:?}",
+        log_grid_layout(
             cell_count,
             batched_runs.len(),
             block_element_rects.len(),
             block_element_region_count,
             rects.len(),
             region_count,
-            layout_time
+            layout_time,
         );
 
         (rects, batched_runs, block_element_rects)
