@@ -7,9 +7,9 @@ use std::{
 use gpui::{
     AnyElement, App, DefiniteLength, Div, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla,
     Image, ImageFormat, InteractiveElement as _, IntoElement, Length, ObjectFit, Overflow,
-    ParentElement, Pixels, ScrollHandle, SharedString, SharedUri, StatefulInteractiveElement,
-    StyleRefinement, Styled, StyledImage as _, WhiteSpace, Window, div, img,
-    prelude::FluentBuilder as _, px, relative, rems,
+    ParentElement, Pixels, ScrollHandle, SharedString, SharedUri, Stateful,
+    StatefulInteractiveElement, StyleRefinement, Styled, StyledImage as _, WhiteSpace, Window, div,
+    img, prelude::FluentBuilder as _, px, relative, rems,
 };
 use markdown::mdast;
 
@@ -35,6 +35,20 @@ use super::{
 
 const CHECK_SVG_LIGHT: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none"><path d="m3.25 8.25 3 3 6.5-7" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
 const CHECK_SVG_DARK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none"><path d="m3.25 8.25 3 3 6.5-7" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
+
+// Scroll-table layout constants, shared by column measurement and row building.
+const CELL_PAD_PX: f32 = 16.0; // px_2 horizontal padding
+const CELL_MIN_PX: f32 = 48.0;
+// Shrinking columns stop (and the table starts to scroll) at a floor scaled to
+// their content: roughly the width at which the text wraps to
+// `CELL_WRAP_MAX_LINES` lines, clamped between the two bounds so moderate
+// columns can still wrap meaningfully while one huge column cannot push the
+// scroll threshold arbitrarily high.
+const CELL_WRAP_MAX_LINES: f32 = 2.0;
+const CELL_WRAP_MIN_PX: f32 = 160.0;
+const CELL_WRAP_MAX_PX: f32 = 480.0;
+const CELL_BORDER_PX: f32 = 1.0; // border_r_1 drawn by every column but the last
+const TABLE_BORDER_PX: f32 = 2.0; // the track's border_1, left + right
 
 /// The block-level nodes.
 #[derive(Debug, Clone, PartialEq)]
@@ -2071,22 +2085,89 @@ impl BlockNode {
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
-        const CELL_PAD_PX: f32 = 16.0; // px_2 horizontal padding
-        const CELL_MIN_PX: f32 = 48.0;
-        // Shrinking columns stop (and the table starts to scroll) at a floor
-        // scaled to their content: roughly the width at which the text wraps
-        // to `CELL_WRAP_MAX_LINES` lines, clamped between the two bounds so
-        // moderate columns can still wrap meaningfully while one huge column
-        // cannot push the scroll threshold arbitrarily high.
-        const CELL_WRAP_MAX_LINES: f32 = 2.0;
-        const CELL_WRAP_MIN_PX: f32 = 160.0;
-        const CELL_WRAP_MAX_PX: f32 = 480.0;
-        const CELL_BORDER_PX: f32 = 1.0; // border_r_1 drawn by every column but the last
-        const TABLE_BORDER_PX: f32 = 2.0; // the track's border_1, left + right
+        let style = &node_cx.style;
+        let (col_w, col_min_w, min_total_w) =
+            Self::measure_scroll_table_columns(table, col_count, style, window);
 
-        // Measure the widest text per column (max-content width). Never
-        // capped: a cap would clip overflowing text *and* leave it outside
-        // the scrollable width, making it unreachable.
+        let table_scroll_key = if let Some(span) = table.span {
+            SharedString::from(format!(
+                "{}-table-scroll-{}:{}",
+                window.current_view(),
+                span.start,
+                span.end
+            ))
+        } else {
+            SharedString::from(format!(
+                "{}-table-scroll-{}",
+                window.current_view(),
+                options.ix
+            ))
+        };
+        let scroll_handle = window
+            .use_keyed_state(table_scroll_key, cx, |_, _| ScrollHandle::default())
+            .read(cx)
+            .clone();
+
+        let rows =
+            Self::build_scroll_table_rows(table, &col_w, &col_min_w, style, node_cx, window, cx);
+
+        div()
+            .pb(rems(1.))
+            .w_full()
+            .child(
+                // Scroll viewport owns the visible frame, including any
+                // caller-provided radius. Keeping the border here makes the
+                // rounded frame stable while the wider row track moves below it.
+                //
+                // `horizontal_scroll_area` clips with `overflow_hidden` and
+                // delegates the wheel to a sibling `ScrollableMask`, so the
+                // gesture is locked to its starting axis and a horizontal swipe
+                // is consumed before an ancestor scroller (`gpui::list` under
+                // `TextView::scrollable`) can take its vertical component.
+                horizontal_scroll_area(
+                    ("table", options.ix),
+                    &scroll_handle,
+                    &StyleRefinement::default()
+                        .bg(cx.theme().tokens.colors.surface)
+                        .border_1()
+                        .border_color(style.border())
+                        .refine_style(style.table()),
+                    // Row track sized to `max(viewport, column floors)`:
+                    // `min_w_full` fills the frame while the columns can still
+                    // shrink-to-fit (their text wrapping), the definite
+                    // `w(min_total_w)` keeps the floors once they are reached,
+                    // letting the track exceed the viewport and scroll.
+                    div().min_w_full().w(px(min_total_w)).children(rows),
+                ),
+            )
+            // Custom actions row (e.g. copy / download) rendered below the
+            // table. The hook's element spans full width; alignment is up to
+            // the caller (e.g. `h_flex().justify_end()`). The gap keeps hover
+            // backgrounds of the action buttons off the table border, and the
+            // id scopes the caller's element ids per table, so plain ids like
+            // `"copy"` don't collide across tables (same as code blocks).
+            .children(node_cx.table_actions.clone().map(|f| {
+                div().id(("table-actions", options.ix)).mt_1().child(f(
+                    &table.table_data(),
+                    window,
+                    cx,
+                ))
+            }))
+            .into_any_element()
+    }
+
+    /// Measure the widest text per column (max-content width) for the scroll
+    /// table and derive the shrink floors.
+    ///
+    /// Returns `(col_w, col_min_w, min_total_w)`.
+    fn measure_scroll_table_columns(
+        table: &Table,
+        col_count: usize,
+        style: &TextViewStyle,
+        window: &mut Window,
+    ) -> (Vec<f32>, Vec<f32>, f32) {
+        // Never capped: a cap would clip overflowing text *and* leave it
+        // outside the scrollable width, making it unreachable.
         let text_style = window.text_style();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let mut col_w = vec![CELL_MIN_PX; col_count];
@@ -2118,7 +2199,6 @@ impl BlockNode {
                 *slot = slot.max(w + CELL_PAD_PX + border);
             }
         }
-        let style = &node_cx.style;
         // Nowrap cells (via the `table_cell` refinement, which cascades to
         // the cell text) must never shrink below their single-line content,
         // so their floor is the content width itself.
@@ -2137,24 +2217,20 @@ impl BlockNode {
         };
         let min_total_w: f32 = col_min_w.iter().sum::<f32>() + TABLE_BORDER_PX;
 
-        let table_scroll_key = if let Some(span) = table.span {
-            SharedString::from(format!(
-                "{}-table-scroll-{}:{}",
-                window.current_view(),
-                span.start,
-                span.end
-            ))
-        } else {
-            SharedString::from(format!(
-                "{}-table-scroll-{}",
-                window.current_view(),
-                options.ix
-            ))
-        };
-        let scroll_handle = window
-            .use_keyed_state(table_scroll_key, cx, |_, _| ScrollHandle::default())
-            .read(cx)
-            .clone();
+        (col_w, col_min_w, min_total_w)
+    }
+
+    /// Build the scroll-table row track, one flex row per table row with each
+    /// cell sized from the measured column widths and floors.
+    fn build_scroll_table_rows(
+        table: &Table,
+        col_w: &[f32],
+        col_min_w: &[f32],
+        style: &TextViewStyle,
+        node_cx: &NodeContext,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<Stateful<Div>> {
         let row_count = table.children.len();
         let mut rows = Vec::with_capacity(row_count);
         for (row_ix, row) in table.children.iter().enumerate() {
@@ -2209,49 +2285,7 @@ impl BlockNode {
             );
         }
 
-        div()
-            .pb(rems(1.))
-            .w_full()
-            .child(
-                // Scroll viewport owns the visible frame, including any
-                // caller-provided radius. Keeping the border here makes the
-                // rounded frame stable while the wider row track moves below it.
-                //
-                // `horizontal_scroll_area` clips with `overflow_hidden` and
-                // delegates the wheel to a sibling `ScrollableMask`, so the
-                // gesture is locked to its starting axis and a horizontal swipe
-                // is consumed before an ancestor scroller (`gpui::list` under
-                // `TextView::scrollable`) can take its vertical component.
-                horizontal_scroll_area(
-                    ("table", options.ix),
-                    &scroll_handle,
-                    &StyleRefinement::default()
-                        .bg(cx.theme().tokens.colors.surface)
-                        .border_1()
-                        .border_color(style.border())
-                        .refine_style(style.table()),
-                    // Row track sized to `max(viewport, column floors)`:
-                    // `min_w_full` fills the frame while the columns can still
-                    // shrink-to-fit (their text wrapping), the definite
-                    // `w(min_total_w)` keeps the floors once they are reached,
-                    // letting the track exceed the viewport and scroll.
-                    div().min_w_full().w(px(min_total_w)).children(rows),
-                ),
-            )
-            // Custom actions row (e.g. copy / download) rendered below the
-            // table. The hook's element spans full width; alignment is up to
-            // the caller (e.g. `h_flex().justify_end()`). The gap keeps hover
-            // backgrounds of the action buttons off the table border, and the
-            // id scopes the caller's element ids per table, so plain ids like
-            // `"copy"` don't collide across tables (same as code blocks).
-            .children(node_cx.table_actions.clone().map(|f| {
-                div().id(("table-actions", options.ix)).mt_1().child(f(
-                    &table.table_data(),
-                    window,
-                    cx,
-                ))
-            }))
-            .into_any_element()
+        rows
     }
 
     /// Default table layout: a flex grid whose columns are proportioned by
