@@ -255,7 +255,34 @@ impl TerminalView {
             tx,
         );
 
-        let entity = cx.new(|cx| {
+        let entity =
+            Self::new_daemon_entity(display_builder, &settings, &zed_settings, initial_cwd, cx);
+
+        // 接入链路 + 服务端事件转发。
+        let (ui_tx, ui_rx) = tokio::sync::mpsc::unbounded_channel::<UiMsg>();
+        let link = DaemonLink::spawn(mode, out_rx, ui_tx);
+        entity.update(cx, |this, _| {
+            this.daemon_link = Some(link);
+        });
+        Self::spawn_daemon_ui_loop(&entity, ui_rx, cx);
+
+        // 光标闪烁。
+        let blink_task = Self::spawn_cursor_blink(&entity, cx);
+        entity.update(cx, |this, _| {
+            this.blink_task = Some(blink_task);
+        });
+        entity
+    }
+
+    /// 创建 Remote VT 占位实体（无本地 PTY）并接好终端事件订阅。
+    fn new_daemon_entity(
+        display_builder: zed_terminal::TerminalBuilder,
+        settings: &TerminalSettings,
+        zed_settings: &terminal::terminal_settings::TerminalSettings,
+        initial_cwd: Option<String>,
+        cx: &mut App,
+    ) -> Entity<Self> {
+        cx.new(|cx| {
             let remote = cx.new(|terminal_cx| display_builder.subscribe(terminal_cx));
             let mut this = Self {
                 zed_terminal: remote.clone(),
@@ -294,77 +321,82 @@ impl TerminalView {
             this.attach_terminal(remote, cx);
             this.state = ConnState::Connecting;
             this
-        });
+        })
+    }
 
-        // 接入链路 + 服务端事件转发。
-        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel::<UiMsg>();
-        let link = DaemonLink::spawn(mode, out_rx, ui_tx);
-        entity.update(cx, |this, _| {
-            this.daemon_link = Some(link);
-        });
+    /// 处理一条 daemon UI 消息；返回 `true` 表示结束 UI 循环。
+    fn handle_ui_message(&mut self, msg: UiMsg, cx: &mut Context<Self>) -> bool {
+        match msg {
+            UiMsg::Attached { has_input, cwd } => {
+                self.has_input_rights = has_input;
+                // 回放开始：抑制重放字节触发的副作用回写。
+                self.zed_terminal.update(cx, |terminal, _| {
+                    terminal.set_remote_replaying(true);
+                });
+                self.apply_daemon_cwd(cwd.as_deref(), cx);
+                self.state = ConnState::Connected;
+                cx.emit(TerminalEvent::SessionAttached);
+                cx.notify();
+                false
+            }
+            UiMsg::Bytes(bytes) => {
+                log::debug!("gui-recv {}B", bytes.len());
+                self.zed_terminal
+                    .update(cx, |terminal, cx| terminal.write_remote_output(&bytes, cx));
+                false
+            }
+            UiMsg::ReplayDone => {
+                // 回放喂完：恢复查询应答等副作用回写。
+                self.zed_terminal.update(cx, |terminal, _| {
+                    terminal.set_remote_replaying(false);
+                });
+                // 重放字节自带旧几何（p10k 右提示绝对定位），首帧可能错位；
+                // 抖一下尺寸逼 shell 重画当前行，无需用户回车。两次上报，
+                // 落点回到真实尺寸（`last_reported_size` 不动，下次 paint 照常用）。
+                if let (Some(link), Some((cols, rows))) =
+                    (&self.daemon_link, self.last_reported_size)
+                {
+                    link.send(LinkCmd::Resize(cols.saturating_add(1), rows));
+                    link.send(LinkCmd::Resize(cols, rows));
+                }
+                false
+            }
+            UiMsg::Exited => {
+                // 自然结束：本地标记 + 上报，workspace 侧关闭标签。
+                self.state = ConnState::Closed;
+                cx.emit(TerminalEvent::Closed);
+                cx.notify();
+                true
+            }
+            UiMsg::Meta { has_input, cwd } => {
+                if self.has_input_rights != has_input {
+                    self.has_input_rights = has_input;
+                    cx.notify();
+                }
+                if let Some(cwd) = cwd.as_deref() {
+                    self.apply_daemon_cwd(Some(cwd), cx);
+                }
+                false
+            }
+            UiMsg::Dead(reason) => {
+                self.state = ConnState::Error(reason);
+                cx.notify();
+                true
+            }
+        }
+    }
+
+    /// 把 daemon 链路事件转发进视图，直到链路结束或实体释放。
+    fn spawn_daemon_ui_loop(
+        entity: &Entity<Self>,
+        mut ui_rx: tokio::sync::mpsc::UnboundedReceiver<UiMsg>,
+        cx: &mut App,
+    ) {
         entity.update(cx, |_, cx| {
             cx.spawn(async move |this, cx| {
                 while let Some(msg) = ui_rx.recv().await {
                     let end = this
-                        .update(cx, |this, cx| match msg {
-                            UiMsg::Attached { has_input, cwd } => {
-                                this.has_input_rights = has_input;
-                                // 回放开始：抑制重放字节触发的副作用回写。
-                                this.zed_terminal.update(cx, |terminal, _| {
-                                    terminal.set_remote_replaying(true);
-                                });
-                                this.apply_daemon_cwd(cwd.as_deref(), cx);
-                                this.state = ConnState::Connected;
-                                cx.emit(TerminalEvent::SessionAttached);
-                                cx.notify();
-                                false
-                            }
-                            UiMsg::Bytes(bytes) => {
-                                log::debug!("gui-recv {}B", bytes.len());
-                                this.zed_terminal.update(cx, |terminal, cx| {
-                                    terminal.write_remote_output(&bytes, cx)
-                                });
-                                false
-                            }
-                            UiMsg::ReplayDone => {
-                                // 回放喂完：恢复查询应答等副作用回写。
-                                this.zed_terminal.update(cx, |terminal, _| {
-                                    terminal.set_remote_replaying(false);
-                                });
-                                // 重放字节自带旧几何（p10k 右提示绝对定位），首帧可能错位；
-                                // 抖一下尺寸逼 shell 重画当前行，无需用户回车。两次上报，
-                                // 落点回到真实尺寸（`last_reported_size` 不动，下次 paint 照常用）。
-                                if let (Some(link), Some((cols, rows))) =
-                                    (&this.daemon_link, this.last_reported_size)
-                                {
-                                    link.send(LinkCmd::Resize(cols.saturating_add(1), rows));
-                                    link.send(LinkCmd::Resize(cols, rows));
-                                }
-                                false
-                            }
-                            UiMsg::Exited => {
-                                // 自然结束：本地标记 + 上报，workspace 侧关闭标签。
-                                this.state = ConnState::Closed;
-                                cx.emit(TerminalEvent::Closed);
-                                cx.notify();
-                                true
-                            }
-                            UiMsg::Meta { has_input, cwd } => {
-                                if this.has_input_rights != has_input {
-                                    this.has_input_rights = has_input;
-                                    cx.notify();
-                                }
-                                if let Some(cwd) = cwd.as_deref() {
-                                    this.apply_daemon_cwd(Some(cwd), cx);
-                                }
-                                false
-                            }
-                            UiMsg::Dead(reason) => {
-                                this.state = ConnState::Error(reason);
-                                cx.notify();
-                                true
-                            }
-                        })
+                        .update(cx, |this, cx| this.handle_ui_message(msg, cx))
                         .unwrap_or(true);
                     if end {
                         break;
@@ -373,10 +405,12 @@ impl TerminalView {
             })
             .detach();
         });
+    }
 
-        // 光标闪烁。
+    /// 启动光标闪烁任务（跟随焦点、终端闪烁开关与暂停窗口）。
+    fn spawn_cursor_blink(entity: &Entity<Self>, cx: &mut App) -> Task<()> {
         let weak = entity.downgrade();
-        let blink_task = cx.spawn(async move |cx| {
+        cx.spawn(async move |cx| {
             loop {
                 cx.background_executor().timer(CURSOR_BLINK_INTERVAL).await;
                 if weak
@@ -399,11 +433,7 @@ impl TerminalView {
                     break;
                 }
             }
-        });
-        entity.update(cx, |this, _| {
-            this.blink_task = Some(blink_task);
-        });
-        entity
+        })
     }
 
     /// daemon 下发 cwd：同步到终端实体与视图状态。
