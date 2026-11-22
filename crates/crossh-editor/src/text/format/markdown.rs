@@ -154,6 +154,95 @@ fn append_inline_html_blocks(paragraph: &mut Paragraph, blocks: Vec<BlockNode>) 
     Some(text)
 }
 
+/// Parse inline HTML, appending its inline blocks to `paragraph`.
+///
+/// Returns the plain text contained in those blocks, an empty string when the
+/// element has no inline representation, or the raw source when parsing fails.
+fn parse_html_inline(val: &mdast::Html, paragraph: &mut Paragraph, cx: &mut NodeContext) -> String {
+    match super::html::parse(&val.value, cx) {
+        Ok(el) => {
+            if let Some(inline_text) =
+                append_inline_html_blocks(paragraph, Arc::unwrap_or_clone(el.blocks))
+            {
+                inline_text
+            } else {
+                if cfg!(debug_assertions) {
+                    tracing::warn!("unsupported inline html tag: {:#?}", val.value);
+                }
+
+                String::new()
+            }
+        }
+        Err(err) => {
+            if cfg!(debug_assertions) {
+                tracing::warn!("failed parsing html: {:#?}", err);
+            }
+
+            val.value.clone()
+        }
+    }
+}
+
+fn parse_link_inline(val: &mdast::Link, paragraph: &mut Paragraph, cx: &mut NodeContext) -> String {
+    let link_mark = Some(LinkMark {
+        url: val.url.clone().into(),
+        title: val.title.clone().map(|s| s.into()),
+        ..Default::default()
+    });
+
+    merge_children_with_mark(
+        paragraph,
+        &val.children,
+        TextMark {
+            link: link_mark,
+            ..Default::default()
+        },
+        cx,
+    )
+}
+
+fn parse_link_reference_inline(
+    link: &mdast::LinkReference,
+    paragraph: &mut Paragraph,
+    cx: &mut NodeContext,
+) -> String {
+    let link_mark = LinkMark {
+        url: "".into(),
+        title: link.label.clone().map(Into::into),
+        identifier: Some(link.identifier.clone().into()),
+    };
+
+    merge_children_with_mark(
+        paragraph,
+        &link.children,
+        TextMark {
+            link: Some(link_mark),
+            ..Default::default()
+        },
+        cx,
+    )
+}
+
+fn parse_image_inline(raw: &mdast::Image, paragraph: &mut Paragraph) {
+    paragraph.push_image(ImageNode {
+        url: raw.url.clone().into(),
+        title: raw.title.clone().map(|t| t.into()),
+        alt: Some(raw.alt.clone().into()),
+        ..Default::default()
+    });
+}
+
+fn parse_footnote_reference_inline(foot: &mdast::FootnoteReference, paragraph: &mut Paragraph) {
+    let prefix = format!("[{}]", foot.identifier);
+    paragraph.push(InlineNode::new(&prefix).marks(vec![(
+        0..prefix.len(),
+        TextMark {
+            italic: true,
+            ..Default::default()
+        },
+    )]));
+}
+
 fn parse_paragraph(paragraph: &mut Paragraph, node: &mdast::Node, cx: &mut NodeContext) -> String {
     let span = node.position().map(|pos| Span {
         start: cx.offset + pos.start.offset,
@@ -202,30 +291,9 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &mdast::Node, cx: &mut NodeC
             );
         }
         Node::Link(val) => {
-            let link_mark = Some(LinkMark {
-                url: val.url.clone().into(),
-                title: val.title.clone().map(|s| s.into()),
-                ..Default::default()
-            });
-
-            text = merge_children_with_mark(
-                paragraph,
-                &val.children,
-                TextMark {
-                    link: link_mark,
-                    ..Default::default()
-                },
-                cx,
-            );
+            text = parse_link_inline(val, paragraph, cx);
         }
-        Node::Image(raw) => {
-            paragraph.push_image(ImageNode {
-                url: raw.url.clone().into(),
-                title: raw.title.clone().map(|t| t.into()),
-                alt: Some(raw.alt.clone().into()),
-                ..Default::default()
-            });
-        }
+        Node::Image(raw) => parse_image_inline(raw, paragraph),
         Node::InlineMath(raw) => {
             text = raw.value.clone();
             paragraph.push(
@@ -237,52 +305,12 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &mdast::Node, cx: &mut NodeC
             paragraph
                 .push(InlineNode::new(&text).marks(vec![(0..text.len(), TextMark::default())]));
         }
-        Node::Html(val) => match super::html::parse(&val.value, cx) {
-            Ok(el) => {
-                if let Some(inline_text) =
-                    append_inline_html_blocks(paragraph, Arc::unwrap_or_clone(el.blocks))
-                {
-                    text = inline_text;
-                } else {
-                    if cfg!(debug_assertions) {
-                        tracing::warn!("unsupported inline html tag: {:#?}", val.value);
-                    }
-                }
-            }
-            Err(err) => {
-                if cfg!(debug_assertions) {
-                    tracing::warn!("failed parsing html: {:#?}", err);
-                }
-
-                text.push_str(&val.value);
-            }
-        },
-        Node::FootnoteReference(foot) => {
-            let prefix = format!("[{}]", foot.identifier);
-            paragraph.push(InlineNode::new(&prefix).marks(vec![(
-                0..prefix.len(),
-                TextMark {
-                    italic: true,
-                    ..Default::default()
-                },
-            )]));
+        Node::Html(val) => {
+            text = parse_html_inline(val, paragraph, cx);
         }
+        Node::FootnoteReference(foot) => parse_footnote_reference_inline(foot, paragraph),
         Node::LinkReference(link) => {
-            let link_mark = LinkMark {
-                url: "".into(),
-                title: link.label.clone().map(Into::into),
-                identifier: Some(link.identifier.clone().into()),
-            };
-
-            text = merge_children_with_mark(
-                paragraph,
-                &link.children,
-                TextMark {
-                    link: Some(link_mark),
-                    ..Default::default()
-                },
-                cx,
-            );
+            text = parse_link_reference_inline(link, paragraph, cx);
         }
         _ => {
             if cfg!(debug_assertions) {
