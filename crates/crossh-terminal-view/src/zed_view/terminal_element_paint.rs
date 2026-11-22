@@ -11,7 +11,7 @@ use gpui::{
     WhiteSpace, Window, fill, point, px, quad, relative, size,
 };
 use itertools::Itertools;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use terminal::result_ext::ResultExt;
 use terminal::theme::CrosshTheme;
 use terminal::{Cursor, CursorShape, IndexedCell, Modes, Range, Terminal, TerminalBounds};
@@ -845,76 +845,10 @@ impl Element for TerminalElement {
                         }
                     });
 
-                    for rect in &layout.rects {
-                        rect.paint(origin, &layout.dimensions, window);
-                    }
+                    let text_paint_time = paint_grid_content(layout, origin, window, cx);
 
-                    for (relative_highlighted_range, color) in &layout.relative_highlighted_ranges {
-                        if let Some((start_y, highlighted_range_lines)) =
-                            to_highlighted_range_lines(relative_highlighted_range, layout, origin)
-                        {
-                            let hr = HighlightedRange {
-                                start_y,
-                                line_height: layout.dimensions.line_height,
-                                lines: highlighted_range_lines,
-                                color: *color,
-                            };
-                            hr.paint(window);
-                        }
-                    }
-
-                    // Paint batched text runs instead of individual cells
-                    let text_paint_start = Instant::now();
-                    for batch in &layout.batched_text_runs {
-                        batch.paint(origin, &layout.dimensions, window, cx);
-                    }
-                    for block_element_rect in &layout.block_element_rects {
-                        block_element_rect.paint(origin, &layout.dimensions, window);
-                    }
-                    let text_paint_time = text_paint_start.elapsed();
-
-                    if let Some(text_to_mark) = &marked_text_cloned
-                        && !text_to_mark.is_empty()
-                        && let Some(ime_bounds) = layout.ime_cursor_bounds
-                    {
-                        let ime_position = (ime_bounds + origin).origin;
-                        let mut ime_style = layout.base_text_style.clone();
-                        ime_style.underline = Some(UnderlineStyle {
-                            color: Some(ime_style.color),
-                            thickness: px(1.0),
-                            wavy: false,
-                        });
-
-                        let shaped_line = window.text_system().shape_line(
-                            text_to_mark.clone().into(),
-                            ime_style.font_size.to_pixels(window.rem_size()),
-                            &[TextRun {
-                                len: text_to_mark.len(),
-                                font: ime_style.font(),
-                                color: ime_style.color,
-                                underline: ime_style.underline,
-                                ..Default::default()
-                            }],
-                            None,
-                        );
-
-                        // Paint background to cover terminal text behind marked text
-                        let ime_background_bounds = Bounds::new(
-                            ime_position,
-                            size(shaped_line.width, layout.dimensions.line_height),
-                        );
-                        window.paint_quad(fill(ime_background_bounds, layout.background_color));
-
-                        shaped_line
-                            .paint(
-                                ime_position,
-                                layout.dimensions.line_height,
-                                gpui::TextAlign::Left,
-                                None,
-                                window,
-                                cx,
-                            )
-                            .log_err();
+                    if let Some(text_to_mark) = &marked_text_cloned {
+                        paint_marked_text(layout, origin, text_to_mark, window, cx);
                     }
 
                     if self.cursor_visible
@@ -936,6 +870,97 @@ impl Element for TerminalElement {
             );
         });
     }
+}
+
+/// Paints cell backgrounds, selection highlights, batched text runs, and block
+/// elements. Returns the time spent painting text runs and block elements.
+fn paint_grid_content(
+    layout: &LayoutState,
+    origin: GpuiPoint<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Duration {
+    for rect in &layout.rects {
+        rect.paint(origin, &layout.dimensions, window);
+    }
+
+    for (relative_highlighted_range, color) in &layout.relative_highlighted_ranges {
+        if let Some((start_y, highlighted_range_lines)) =
+            to_highlighted_range_lines(relative_highlighted_range, layout, origin)
+        {
+            let hr = HighlightedRange {
+                start_y,
+                line_height: layout.dimensions.line_height,
+                lines: highlighted_range_lines,
+                color: *color,
+            };
+            hr.paint(window);
+        }
+    }
+
+    // Paint batched text runs instead of individual cells
+    let text_paint_start = Instant::now();
+    for batch in &layout.batched_text_runs {
+        batch.paint(origin, &layout.dimensions, window, cx);
+    }
+    for block_element_rect in &layout.block_element_rects {
+        block_element_rect.paint(origin, &layout.dimensions, window);
+    }
+    text_paint_start.elapsed()
+}
+
+/// Paints the IME marked text, including its underline and covering background.
+fn paint_marked_text(
+    layout: &LayoutState,
+    origin: GpuiPoint<Pixels>,
+    text_to_mark: &str,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if text_to_mark.is_empty() {
+        return;
+    }
+    let Some(ime_bounds) = layout.ime_cursor_bounds else {
+        return;
+    };
+    let ime_position = (ime_bounds + origin).origin;
+    let mut ime_style = layout.base_text_style.clone();
+    ime_style.underline = Some(UnderlineStyle {
+        color: Some(ime_style.color),
+        thickness: px(1.0),
+        wavy: false,
+    });
+
+    let shaped_line = window.text_system().shape_line(
+        text_to_mark.into(),
+        ime_style.font_size.to_pixels(window.rem_size()),
+        &[TextRun {
+            len: text_to_mark.len(),
+            font: ime_style.font(),
+            color: ime_style.color,
+            underline: ime_style.underline,
+            ..Default::default()
+        }],
+        None,
+    );
+
+    // Paint background to cover terminal text behind marked text
+    let ime_background_bounds = Bounds::new(
+        ime_position,
+        size(shaped_line.width, layout.dimensions.line_height),
+    );
+    window.paint_quad(fill(ime_background_bounds, layout.background_color));
+
+    shaped_line
+        .paint(
+            ime_position,
+            layout.dimensions.line_height,
+            gpui::TextAlign::Left,
+            None,
+            window,
+            cx,
+        )
+        .log_err();
 }
 
 fn to_highlighted_range_lines(
