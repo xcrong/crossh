@@ -29,7 +29,16 @@ use crate::view::{SendKeystroke, SendText};
 /// local terminal-view host and are scoped to the `Terminal` key context.
 pub fn init(cx: &mut App) {
     #[cfg(target_os = "macos")]
-    cx.bind_keys([
+    cx.bind_keys(macos_key_bindings());
+
+    #[cfg(not(target_os = "macos"))]
+    cx.bind_keys(other_key_bindings());
+}
+
+/// Zed's macOS terminal bindings, including line-editing conveniences.
+#[cfg(target_os = "macos")]
+fn macos_key_bindings() -> Vec<KeyBinding> {
+    vec![
         KeyBinding::new("cmd-c", zed_terminal::Copy, Some("Terminal")),
         KeyBinding::new("cmd-v", zed_terminal::Paste, Some("Terminal")),
         KeyBinding::new("ctrl-cmd-v", zed_terminal::PasteText, Some("Terminal")),
@@ -103,10 +112,13 @@ pub fn init(cx: &mut App) {
             SendKeystroke("ctrl-w".to_string()),
             Some("Terminal"),
         ),
-    ]);
+    ]
+}
 
-    #[cfg(not(target_os = "macos"))]
-    cx.bind_keys([
+/// Zed's Linux terminal bindings, including word navigation conveniences.
+#[cfg(not(target_os = "macos"))]
+fn other_key_bindings() -> Vec<KeyBinding> {
+    vec![
         KeyBinding::new("ctrl-shift-c", zed_terminal::Copy, Some("Terminal")),
         KeyBinding::new("ctrl-shift-v", zed_terminal::Paste, Some("Terminal")),
         KeyBinding::new("shift-insert", zed_terminal::Paste, Some("Terminal")),
@@ -141,5 +153,5 @@ pub fn init(cx: &mut App) {
             SendKeystroke("ctrl-w".to_string()),
             Some("Terminal"),
         ),
-    ]);
+    ]
 }
