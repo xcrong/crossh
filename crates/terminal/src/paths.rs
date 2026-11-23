@@ -81,6 +81,105 @@ pub trait UrlExt {
     fn to_file_path_ext(&self, path_style: PathStyle) -> Result<PathBuf, FileUrlError>;
 }
 
+fn file_url_segments_to_pathbuf_posix(
+    estimated_capacity: usize,
+    host: Option<&str>,
+    segments: std::str::Split<'_, char>,
+) -> Result<PathBuf, FileUrlError> {
+    use percent_encoding::percent_decode;
+
+    if host.is_some() {
+        return Err(FileUrlError::Unsupported);
+    }
+
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve(estimated_capacity)
+        .map_err(|_| FileUrlError::TooLong)?;
+
+    for segment in segments {
+        bytes.push(b'/');
+        bytes.extend(percent_decode(segment.as_bytes()));
+    }
+
+    // A windows drive letter must end with a slash.
+    if bytes.len() > 2
+        && bytes[bytes.len() - 2].is_ascii_alphabetic()
+        && matches!(bytes[bytes.len() - 1], b':' | b'|')
+    {
+        bytes.push(b'/');
+    }
+
+    let path = String::from_utf8(bytes).map_err(|_| FileUrlError::InvalidEncoding)?;
+    debug_assert!(
+        PathStyle::Unix.is_absolute(&path),
+        "to_file_path() failed to produce an absolute Path"
+    );
+
+    Ok(PathBuf::from(path))
+}
+
+fn file_url_segments_to_pathbuf_windows(
+    estimated_capacity: usize,
+    host: Option<&str>,
+    mut segments: std::str::Split<'_, char>,
+) -> Result<PathBuf, FileUrlError> {
+    use percent_encoding::percent_decode_str;
+    let mut string = String::new();
+    string
+        .try_reserve(estimated_capacity)
+        .map_err(|_| FileUrlError::TooLong)?;
+    if let Some(host) = host {
+        string.push_str(r"\\");
+        string.push_str(host);
+    } else {
+        let first = segments.next().ok_or(FileUrlError::InvalidWindowsPath)?;
+
+        match first.len() {
+            2 => {
+                if !first.starts_with(|c: char| c.is_ascii_alphabetic())
+                    || first.as_bytes()[1] != b':'
+                {
+                    return Err(FileUrlError::InvalidWindowsPath);
+                }
+
+                string.push_str(first);
+            }
+
+            4 => {
+                if !first.starts_with(|c: char| c.is_ascii_alphabetic()) {
+                    return Err(FileUrlError::InvalidWindowsPath);
+                }
+                let bytes = first.as_bytes();
+                if bytes[1] != b'%' || bytes[2] != b'3' || (bytes[3] != b'a' && bytes[3] != b'A') {
+                    return Err(FileUrlError::InvalidWindowsPath);
+                }
+
+                string.push_str(&first[0..1]);
+                string.push(':');
+            }
+
+            _ => return Err(FileUrlError::InvalidWindowsPath),
+        }
+    };
+
+    for segment in segments {
+        string.push('\\');
+
+        // Currently non-unicode windows paths cannot be represented
+        match percent_decode_str(segment).decode_utf8() {
+            Ok(s) => string.push_str(&s),
+            Err(..) => return Err(FileUrlError::InvalidEncoding),
+        }
+    }
+    debug_assert!(
+        PathStyle::Windows.is_absolute(&string),
+        "to_file_path() failed to produce an absolute Path"
+    );
+    let path = PathBuf::from(string);
+    Ok(path)
+}
+
 impl UrlExt for url::Url {
     // Copied from `url::Url::to_file_path`, but the `cfg` handling is replaced with runtime branching on `PathStyle`
     fn to_file_path_ext(&self, source_path_style: PathStyle) -> Result<PathBuf, FileUrlError> {
@@ -111,107 +210,6 @@ impl UrlExt for url::Url {
             };
         }
 
-        fn file_url_segments_to_pathbuf_posix(
-            estimated_capacity: usize,
-            host: Option<&str>,
-            segments: std::str::Split<'_, char>,
-        ) -> Result<PathBuf, FileUrlError> {
-            use percent_encoding::percent_decode;
-
-            if host.is_some() {
-                return Err(FileUrlError::Unsupported);
-            }
-
-            let mut bytes = Vec::new();
-            bytes
-                .try_reserve(estimated_capacity)
-                .map_err(|_| FileUrlError::TooLong)?;
-
-            for segment in segments {
-                bytes.push(b'/');
-                bytes.extend(percent_decode(segment.as_bytes()));
-            }
-
-            // A windows drive letter must end with a slash.
-            if bytes.len() > 2
-                && bytes[bytes.len() - 2].is_ascii_alphabetic()
-                && matches!(bytes[bytes.len() - 1], b':' | b'|')
-            {
-                bytes.push(b'/');
-            }
-
-            let path = String::from_utf8(bytes).map_err(|_| FileUrlError::InvalidEncoding)?;
-            debug_assert!(
-                PathStyle::Unix.is_absolute(&path),
-                "to_file_path() failed to produce an absolute Path"
-            );
-
-            Ok(PathBuf::from(path))
-        }
-
-        fn file_url_segments_to_pathbuf_windows(
-            estimated_capacity: usize,
-            host: Option<&str>,
-            mut segments: std::str::Split<'_, char>,
-        ) -> Result<PathBuf, FileUrlError> {
-            use percent_encoding::percent_decode_str;
-            let mut string = String::new();
-            string
-                .try_reserve(estimated_capacity)
-                .map_err(|_| FileUrlError::TooLong)?;
-            if let Some(host) = host {
-                string.push_str(r"\\");
-                string.push_str(host);
-            } else {
-                let first = segments.next().ok_or(FileUrlError::InvalidWindowsPath)?;
-
-                match first.len() {
-                    2 => {
-                        if !first.starts_with(|c: char| c.is_ascii_alphabetic())
-                            || first.as_bytes()[1] != b':'
-                        {
-                            return Err(FileUrlError::InvalidWindowsPath);
-                        }
-
-                        string.push_str(first);
-                    }
-
-                    4 => {
-                        if !first.starts_with(|c: char| c.is_ascii_alphabetic()) {
-                            return Err(FileUrlError::InvalidWindowsPath);
-                        }
-                        let bytes = first.as_bytes();
-                        if bytes[1] != b'%'
-                            || bytes[2] != b'3'
-                            || (bytes[3] != b'a' && bytes[3] != b'A')
-                        {
-                            return Err(FileUrlError::InvalidWindowsPath);
-                        }
-
-                        string.push_str(&first[0..1]);
-                        string.push(':');
-                    }
-
-                    _ => return Err(FileUrlError::InvalidWindowsPath),
-                }
-            };
-
-            for segment in segments {
-                string.push('\\');
-
-                // Currently non-unicode windows paths cannot be represented
-                match percent_decode_str(segment).decode_utf8() {
-                    Ok(s) => string.push_str(&s),
-                    Err(..) => return Err(FileUrlError::InvalidEncoding),
-                }
-            }
-            debug_assert!(
-                PathStyle::Windows.is_absolute(&string),
-                "to_file_path() failed to produce an absolute Path"
-            );
-            let path = PathBuf::from(string);
-            Ok(path)
-        }
         Err(FileUrlError::Unsupported)
     }
 }
