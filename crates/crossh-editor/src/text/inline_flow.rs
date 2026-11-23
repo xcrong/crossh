@@ -406,99 +406,20 @@ fn layout_flow(
     let mut y = Pixels::ZERO;
 
     for line_range in line_ranges {
-        let mut line_fragments = Vec::new();
-        let mut line_width = Pixels::ZERO;
-        let mut actual_line_height = line_height;
-        let mut item_start = 0;
-
-        for (item_ix, item) in items.iter().enumerate() {
-            let item_end = item_start + item.len();
-            if item_end <= line_range.start {
-                item_start = item_end;
-                continue;
-            }
-            if item_start >= line_range.end {
-                break;
-            }
-
-            match item {
-                MeasureItem::Text {
-                    text,
-                    links,
-                    highlights,
-                } => {
-                    let local_start = line_range.start.max(item_start) - item_start;
-                    let local_end = line_range.end.min(item_end) - item_start;
-                    if local_start < local_end {
-                        let subtext = SharedString::from(text[local_start..local_end].to_string());
-                        let highlights =
-                            slice_ranges(highlights, local_start, local_end, |range, style| {
-                                (range, *style)
-                            });
-                        let links = slice_ranges(links, local_start, local_end, |range, link| {
-                            (range, link.clone())
-                        });
-                        let runs = runs_for_highlights(&subtext, text_style, highlights.clone());
-                        let shaped_line = shape_line(subtext.clone(), font_size, &runs, window);
-                        let width = shaped_line.width();
-                        line_width += width;
-                        line_fragments.push(LineFragmentLayout {
-                            item_ix,
-                            kind: LineFragmentKind::Text {
-                                text: subtext,
-                                links,
-                                highlights,
-                            },
-                            size: size(width, line_height),
-                            source_range: local_start..local_end,
-                        });
-                    }
-                }
-                MeasureItem::Image { .. } => {
-                    if line_range.start <= item_start && item_end <= line_range.end {
-                        let size = image_sizes[item_ix]
-                            .expect("image size should be measured before layout");
-                        line_width += size.width;
-                        actual_line_height = actual_line_height.max(size.height);
-                        line_fragments.push(LineFragmentLayout {
-                            item_ix,
-                            kind: LineFragmentKind::Image,
-                            size,
-                            source_range: 0..IMAGE_LEN,
-                        });
-                    }
-                }
-            }
-
-            item_start = item_end;
-        }
-
-        let mut x = Pixels::ZERO;
-        for fragment in line_fragments {
-            let origin = point(x, y + (actual_line_height - fragment.size.height) / 2.);
-            let positioned = match fragment.kind {
-                LineFragmentKind::Text {
-                    text,
-                    links,
-                    highlights,
-                } => PositionedFragment::Text {
-                    item_ix: fragment.item_ix,
-                    origin,
-                    size: fragment.size,
-                    source_range: fragment.source_range,
-                    text,
-                    links,
-                    highlights,
-                },
-                LineFragmentKind::Image => PositionedFragment::Image {
-                    item_ix: fragment.item_ix,
-                    origin,
-                    size: fragment.size,
-                },
-            };
-            x += fragment.size.width;
-            fragments.push(positioned);
-        }
+        let (line_fragments, line_width, actual_line_height) = layout_line_fragments(
+            items,
+            image_sizes,
+            &line_range,
+            text_style,
+            font_size,
+            line_height,
+            window,
+        );
+        fragments.extend(position_line_fragments(
+            line_fragments,
+            y,
+            actual_line_height,
+        ));
 
         max_width = max_width.max(line_width);
         y += actual_line_height;
@@ -508,6 +429,121 @@ fn layout_flow(
         fragments,
         size: size(max_width, y),
     }
+}
+
+fn layout_line_fragments(
+    items: &[MeasureItem],
+    image_sizes: &[Option<Size<Pixels>>],
+    line_range: &Range<usize>,
+    text_style: &TextStyle,
+    font_size: Pixels,
+    line_height: Pixels,
+    window: &mut Window,
+) -> (Vec<LineFragmentLayout>, Pixels, Pixels) {
+    let mut line_fragments = Vec::new();
+    let mut line_width = Pixels::ZERO;
+    let mut actual_line_height = line_height;
+    let mut item_start = 0;
+
+    for (item_ix, item) in items.iter().enumerate() {
+        let item_end = item_start + item.len();
+        if item_end <= line_range.start {
+            item_start = item_end;
+            continue;
+        }
+        if item_start >= line_range.end {
+            break;
+        }
+
+        match item {
+            MeasureItem::Text {
+                text,
+                links,
+                highlights,
+            } => {
+                let local_start = line_range.start.max(item_start) - item_start;
+                let local_end = line_range.end.min(item_end) - item_start;
+                if local_start < local_end {
+                    let subtext = SharedString::from(text[local_start..local_end].to_string());
+                    let highlights =
+                        slice_ranges(highlights, local_start, local_end, |range, style| {
+                            (range, *style)
+                        });
+                    let links = slice_ranges(links, local_start, local_end, |range, link| {
+                        (range, link.clone())
+                    });
+                    let runs = runs_for_highlights(&subtext, text_style, highlights.clone());
+                    let shaped_line = shape_line(subtext.clone(), font_size, &runs, window);
+                    let width = shaped_line.width();
+                    line_width += width;
+                    line_fragments.push(LineFragmentLayout {
+                        item_ix,
+                        kind: LineFragmentKind::Text {
+                            text: subtext,
+                            links,
+                            highlights,
+                        },
+                        size: size(width, line_height),
+                        source_range: local_start..local_end,
+                    });
+                }
+            }
+            MeasureItem::Image { .. } => {
+                if line_range.start <= item_start && item_end <= line_range.end {
+                    let size =
+                        image_sizes[item_ix].expect("image size should be measured before layout");
+                    line_width += size.width;
+                    actual_line_height = actual_line_height.max(size.height);
+                    line_fragments.push(LineFragmentLayout {
+                        item_ix,
+                        kind: LineFragmentKind::Image,
+                        size,
+                        source_range: 0..IMAGE_LEN,
+                    });
+                }
+            }
+        }
+
+        item_start = item_end;
+    }
+
+    (line_fragments, line_width, actual_line_height)
+}
+
+fn position_line_fragments(
+    line_fragments: Vec<LineFragmentLayout>,
+    y: Pixels,
+    actual_line_height: Pixels,
+) -> Vec<PositionedFragment> {
+    let mut positioned_fragments = Vec::new();
+    let mut x = Pixels::ZERO;
+    for fragment in line_fragments {
+        let origin = point(x, y + (actual_line_height - fragment.size.height) / 2.);
+        let positioned = match fragment.kind {
+            LineFragmentKind::Text {
+                text,
+                links,
+                highlights,
+            } => PositionedFragment::Text {
+                item_ix: fragment.item_ix,
+                origin,
+                size: fragment.size,
+                source_range: fragment.source_range,
+                text,
+                links,
+                highlights,
+            },
+            LineFragmentKind::Image => PositionedFragment::Image {
+                item_ix: fragment.item_ix,
+                origin,
+                size: fragment.size,
+            },
+        };
+        x += fragment.size.width;
+        positioned_fragments.push(positioned);
+    }
+
+    positioned_fragments
 }
 
 fn line_ranges(
