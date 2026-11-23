@@ -55,84 +55,47 @@ impl TerminalElement {
         }
     }
 
-    pub(super) fn register_mouse_listeners(
-        &mut self,
-        mode: Modes,
-        hitbox: &Hitbox,
+    fn install_mouse_move_listener(
+        terminal: Entity<Terminal>,
+        hitbox: Hitbox,
+        focus: FocusHandle,
         window: &mut Window,
     ) {
-        let focus = self.focus.clone();
-        let terminal = self.terminal.clone();
-        let terminal_view = self.terminal_view.clone();
+        window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
 
-        self.interactivity.on_mouse_down(MouseButton::Left, {
-            let terminal = terminal.clone();
-            let focus = focus.clone();
+            if e.pressed_button.is_some() && !cx.has_active_drag() && focus.is_focused(window) {
+                let hovered = hitbox.is_hovered(window);
 
-            move |e, window, cx| {
-                window.focus(&focus, cx);
                 terminal.update(cx, |terminal, cx| {
-                    terminal.mouse_down(e, cx);
-                    cx.notify();
+                    if terminal.selection_started() || hovered {
+                        terminal.mouse_drag(e, hitbox.bounds, cx);
+                        cx.notify();
+                    }
+                })
+            }
+
+            if hitbox.is_hovered(window) {
+                terminal.update(cx, |terminal, cx| {
+                    terminal.mouse_move(e, cx);
                 })
             }
         });
+    }
 
-        window.on_mouse_event({
-            let terminal = self.terminal.clone();
-            let hitbox = hitbox.clone();
-            let focus = focus.clone();
-            move |e: &MouseMoveEvent, phase, window, cx| {
-                if phase != DispatchPhase::Bubble {
-                    return;
-                }
-
-                if e.pressed_button.is_some() && !cx.has_active_drag() && focus.is_focused(window) {
-                    let hovered = hitbox.is_hovered(window);
-
-                    terminal.update(cx, |terminal, cx| {
-                        if terminal.selection_started() || hovered {
-                            terminal.mouse_drag(e, hitbox.bounds, cx);
-                            cx.notify();
-                        }
-                    })
-                }
-
-                if hitbox.is_hovered(window) {
-                    terminal.update(cx, |terminal, cx| {
-                        terminal.mouse_move(e, cx);
-                    })
-                }
-            }
-        });
-
-        self.interactivity.on_mouse_up(
-            MouseButton::Left,
-            TerminalElement::generic_button_handler(
-                terminal.clone(),
-                focus.clone(),
-                false,
-                move |terminal, e, cx| {
-                    terminal.mouse_up(e, cx);
-                },
-            ),
-        );
-        self.interactivity.on_mouse_down(
-            MouseButton::Middle,
-            TerminalElement::generic_button_handler(
-                terminal.clone(),
-                focus.clone(),
-                true,
-                move |terminal, e, cx| {
-                    terminal.mouse_down(e, cx);
-                },
-            ),
-        );
-
-        // Windows-Terminal-style right click: the press is either forwarded to
-        // the PTY (application mouse-tracking mode, unless Shift is held) or
-        // resolved by TerminalView as copy-selection / paste. No popup menu,
-        // and a bare click never synthesizes a word selection.
+    // Windows-Terminal-style right click: the press is either forwarded to
+    // the PTY (application mouse-tracking mode, unless Shift is held) or
+    // resolved by TerminalView as copy-selection / paste. No popup menu,
+    // and a bare click never synthesizes a word selection.
+    fn install_right_click_listeners(
+        &mut self,
+        mode: Modes,
+        terminal: &Entity<Terminal>,
+        terminal_view: Entity<TerminalView>,
+        focus: &FocusHandle,
+    ) {
         let forwards_right_click = mode.intersects(Modes::MOUSE_MODE);
         self.interactivity.on_mouse_down(MouseButton::Right, {
             let terminal = terminal.clone();
@@ -170,6 +133,62 @@ impl TerminalElement {
             MouseButton::Right,
             TerminalElement::right_button_handler(terminal.clone(), terminal_view, focus.clone()),
         );
+    }
+
+    pub(super) fn register_mouse_listeners(
+        &mut self,
+        mode: Modes,
+        hitbox: &Hitbox,
+        window: &mut Window,
+    ) {
+        let focus = self.focus.clone();
+        let terminal = self.terminal.clone();
+        let terminal_view = self.terminal_view.clone();
+
+        self.interactivity.on_mouse_down(MouseButton::Left, {
+            let terminal = terminal.clone();
+            let focus = focus.clone();
+
+            move |e, window, cx| {
+                window.focus(&focus, cx);
+                terminal.update(cx, |terminal, cx| {
+                    terminal.mouse_down(e, cx);
+                    cx.notify();
+                })
+            }
+        });
+
+        Self::install_mouse_move_listener(
+            self.terminal.clone(),
+            hitbox.clone(),
+            focus.clone(),
+            window,
+        );
+
+        self.interactivity.on_mouse_up(
+            MouseButton::Left,
+            TerminalElement::generic_button_handler(
+                terminal.clone(),
+                focus.clone(),
+                false,
+                move |terminal, e, cx| {
+                    terminal.mouse_up(e, cx);
+                },
+            ),
+        );
+        self.interactivity.on_mouse_down(
+            MouseButton::Middle,
+            TerminalElement::generic_button_handler(
+                terminal.clone(),
+                focus.clone(),
+                true,
+                move |terminal, e, cx| {
+                    terminal.mouse_down(e, cx);
+                },
+            ),
+        );
+
+        self.install_right_click_listeners(mode, &terminal, terminal_view, &focus);
 
         self.interactivity.on_scroll({
             let terminal = self.terminal.clone();
