@@ -9,10 +9,11 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Action, AnyElement, App, AppContext, Bounds, ClipboardEntry, Context, Entity, EntityId,
-    EventEmitter, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent, Keystroke,
-    ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled, Subscription,
-    SystemNotification, SystemNotificationResponse, Task, Window, div, point, px, size,
+    Action, AnyElement, App, AppContext, Bounds, ClipboardEntry, Context, Div, Entity, EntityId,
+    EventEmitter, FocusHandle, Hsla, InteractiveElement, IntoElement, KeyDownEvent, Keystroke,
+    ParentElement, Pixels, Render, SharedString, Stateful, StatefulInteractiveElement, Styled,
+    Subscription, SystemNotification, SystemNotificationResponse, Task, Window, div, point, px,
+    size,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -1029,34 +1030,9 @@ impl TerminalView {
         cx.dismiss_system_notification(response.tag.as_ref());
         Some(true)
     }
-}
 
-impl Render for TerminalView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.bell_pending {
-            self.bell_pending = false;
-            // crossh: always play system bell for now, no Zed settings
-            window.play_system_bell();
-        }
-
-        if let Some(builder) = self.pending_builder.take() {
-            if self.state == ConnState::Closed {
-                self.builder_task = None;
-                drop(builder);
-            } else {
-                let terminal = cx.new(|terminal_cx| builder.subscribe(terminal_cx));
-                self.attach_terminal(terminal, cx);
-            }
-        }
-
-        if self.builder_task.is_some() {
-            let message = self
-                .builder_error
-                .clone()
-                .unwrap_or_else(|| text::text("terminal.connecting"));
-            return status_view(&message, &self.focus);
-        }
-
+    /// 首次渲染时注册焦点订阅，并在允许的状态下领取一次焦点。
+    fn ensure_focus_subscriptions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.focus_in_subscription.is_none() {
             let focus = self.focus.clone();
             self.focus_in_subscription =
@@ -1074,25 +1050,25 @@ impl Render for TerminalView {
             self.focus.focus(window, cx);
             self.focused_once = true;
         }
+    }
 
-        let cursor_visible = {
-            let terminal = self.zed_terminal.read(cx);
-            let content = terminal.last_content();
-            (!self.focused || !self.blinking_terminal_enabled || self.cursor_blink_on)
-                && content.mode.contains(zed_terminal::Modes::SHOW_CURSOR)
-                && content.cursor.shape != zed_terminal::CursorShape::Hidden
-        };
-        let background = CrosshTheme::get(cx).terminal_background;
-        let focus = self.focus.clone();
-        let terminal_element = TerminalElement::new(
-            self.zed_terminal.clone(),
-            cx.entity(),
-            focus.clone(),
-            self.focused,
-            cursor_visible,
-        );
+    fn cursor_visible(&self, cx: &App) -> bool {
+        let terminal = self.zed_terminal.read(cx);
+        let content = terminal.last_content();
+        (!self.focused || !self.blinking_terminal_enabled || self.cursor_blink_on)
+            && content.mode.contains(zed_terminal::Modes::SHOW_CURSOR)
+            && content.cursor.shape != zed_terminal::CursorShape::Hidden
+    }
 
-        let mut root = div()
+    /// 终端根容器：焦点、动作分发、点击聚焦与内边距容器。
+    fn terminal_root(
+        &self,
+        focus: FocusHandle,
+        background: Hsla,
+        terminal_element: TerminalElement,
+        cx: &Context<Self>,
+    ) -> Stateful<Div> {
+        div()
             .id("terminal-view")
             .size_full()
             .relative()
@@ -1124,37 +1100,95 @@ impl Render for TerminalView {
                     .size_full()
                     .p(px(8.))
                     .child(terminal_element),
-            );
+            )
+    }
 
-        if let Some(message) = match &self.state {
-            ConnState::Error(message) => Some(message.clone()),
-            ConnState::Closed => Some(text::text("terminal.closed")),
-            ConnState::Connecting | ConnState::Connected => None,
-        } {
-            root = root.child(
-                div()
-                    .absolute()
-                    .top_2()
-                    .left_2()
-                    .px_2()
-                    .py_1()
-                    .text_xs()
-                    .child(SharedString::from(message)),
-            );
+    /// error/closed 状态下的覆盖层文案。
+    fn connection_overlay(&self) -> Option<AnyElement> {
+        let message = match &self.state {
+            ConnState::Error(message) => message.clone(),
+            ConnState::Closed => text::text("terminal.closed"),
+            ConnState::Connecting | ConnState::Connected => return None,
+        };
+        Some(
+            div()
+                .absolute()
+                .top_2()
+                .left_2()
+                .px_2()
+                .py_1()
+                .text_xs()
+                .child(SharedString::from(message))
+                .into_any_element(),
+        )
+    }
+
+    /// 失去输入权时显示只读标记（输入本身仍直达服务端并触发接管）。
+    fn readonly_badge(&self) -> Option<AnyElement> {
+        if self.state != ConnState::Connected || self.has_input_rights {
+            return None;
+        }
+        Some(
+            div()
+                .absolute()
+                .top_2()
+                .right_2()
+                .px_2()
+                .py_1()
+                .text_xs()
+                .child(text::text("terminal.readonly"))
+                .into_any_element(),
+        )
+    }
+}
+
+impl Render for TerminalView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.bell_pending {
+            self.bell_pending = false;
+            // crossh: always play system bell for now, no Zed settings
+            window.play_system_bell();
         }
 
-        // 失去输入权时显示只读标记（输入本身仍直达服务端并触发接管）。
-        if self.state == ConnState::Connected && !self.has_input_rights {
-            root = root.child(
-                div()
-                    .absolute()
-                    .top_2()
-                    .right_2()
-                    .px_2()
-                    .py_1()
-                    .text_xs()
-                    .child(text::text("terminal.readonly")),
-            );
+        if let Some(builder) = self.pending_builder.take() {
+            if self.state == ConnState::Closed {
+                self.builder_task = None;
+                drop(builder);
+            } else {
+                let terminal = cx.new(|terminal_cx| builder.subscribe(terminal_cx));
+                self.attach_terminal(terminal, cx);
+            }
+        }
+
+        if self.builder_task.is_some() {
+            let message = self
+                .builder_error
+                .clone()
+                .unwrap_or_else(|| text::text("terminal.connecting"));
+            return status_view(&message, &self.focus);
+        }
+
+        self.ensure_focus_subscriptions(window, cx);
+
+        let cursor_visible = self.cursor_visible(cx);
+        let background = CrosshTheme::get(cx).terminal_background;
+        let focus = self.focus.clone();
+        let terminal_element = TerminalElement::new(
+            self.zed_terminal.clone(),
+            cx.entity(),
+            focus.clone(),
+            self.focused,
+            cursor_visible,
+        );
+
+        let mut root = self.terminal_root(focus, background, terminal_element, cx);
+
+        if let Some(overlay) = self.connection_overlay() {
+            root = root.child(overlay);
+        }
+
+        if let Some(badge) = self.readonly_badge() {
+            root = root.child(badge);
         }
 
         root.into_any_element()
