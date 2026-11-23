@@ -437,92 +437,15 @@ fn path_match<T>(
             .then_some((elapsed_time.as_millis(), path_hyperlink_timeout.as_millis()))
     };
 
-    // This used to be: `let line = term.bounds_to_string(line_start, line_end)`, however, that
-    // api compresses tab characters into a single space, whereas we require a cell accurate
-    // string representation of the line. The below algorithm does this, but seems a bit odd.
-    // Maybe there is a clean api for doing this, but I couldn't find it.
-    let mut line = String::with_capacity(
-        (line_end.line.0 - line_start.line.0 + 1) as usize * term.grid().columns(),
-    );
-    let first_cell = &term.grid()[line_start];
-    let mut prev_len = 0;
-    line.push(first_cell.c);
-    let mut hovered_point_byte_offset = None;
-
-    if line_start == hovered {
-        hovered_point_byte_offset = Some(0);
-    }
-
-    for cell in term.grid().iter_from(line_start) {
-        if cell.point > line_end {
-            break;
-        }
-
-        if !cell.flags.intersects(WIDE_CHAR_SPACERS) {
-            prev_len = line.len();
-            match cell.c {
-                ' ' | '\t' => line.push(' '),
-                c => line.push(c),
-            }
-        }
-
-        if cell.point == hovered {
-            debug_assert!(hovered_point_byte_offset.is_none());
-            hovered_point_byte_offset = Some(prev_len);
-        }
-    }
-    let line = line.trim_ascii_end();
-    let hovered_point_byte_offset = hovered_point_byte_offset?;
-    if line.len() <= hovered_point_byte_offset {
-        return None;
-    }
-    let found_from_range = |path_range: StdRange<usize>,
-                            link_range: StdRange<usize>,
-                            position: Option<(u32, Option<u32>)>| {
-        let advance_point_by_str = |mut point: AlacPoint, s: &str| {
-            for _ in s.chars() {
-                point = term
-                    .expand_wide(point, AlacDirection::Right)
-                    .add(term, Boundary::Grid, 1);
-            }
-
-            // There does not appear to be an alacritty api that is
-            // "move to start of current wide char", so we have to do it ourselves.
-            let flags = term.grid().index(point).flags;
-            if flags.contains(Flags::LEADING_WIDE_CHAR_SPACER) {
-                AlacPoint::new(point.line + 1, Column(0))
-            } else if flags.contains(Flags::WIDE_CHAR_SPACER) {
-                AlacPoint::new(point.line, point.column - 1)
-            } else {
-                point
-            }
-        };
-
-        let link_start = advance_point_by_str(line_start, &line[..link_range.start]);
-        let link_end = advance_point_by_str(link_start, &line[link_range]);
-        let link_match = link_start
-            ..=term
-                .expand_wide(link_end, AlacDirection::Left)
-                .sub(term, Boundary::Grid, 1);
-
-        (
-            {
-                let mut path = line[path_range].to_string();
-                position.inspect(|(line, column)| {
-                    path += &format!(":{line}");
-                    column.inspect(|column| path += &format!(":{column}"));
-                });
-                path
-            },
-            link_match,
-        )
-    };
+    let (line, hovered_point_byte_offset) =
+        path_match_grid_line(term, line_start, line_end, hovered)?;
 
     for regex in path_hyperlink_regexes {
         let mut path_found = false;
 
-        for (line_start_offset, captures) in
-            regex.captures_iter(line).map(|captures| (0usize, captures))
+        for (line_start_offset, captures) in regex
+            .captures_iter(&line)
+            .map(|captures| (0usize, captures))
         {
             path_found = true;
             let match_range = captures.get(0).unwrap().range();
@@ -563,7 +486,14 @@ fn path_match<T>(
                 // No match, just skip.
                 continue;
             }
-            let found = found_from_range(path_range, link_range, line_column);
+            let found = path_match_found_from_range(
+                term,
+                line_start,
+                &line,
+                path_range,
+                link_range,
+                line_column,
+            );
 
             if found.1.contains(&hovered) {
                 return Some(found);
@@ -582,6 +512,104 @@ fn path_match<T>(
     }
 
     None
+}
+
+/// Builds the cell-accurate string for the hovered line range and locates the
+/// hovered cell's byte offset within it.
+///
+/// This used to be: `let line = term.bounds_to_string(line_start, line_end)`, however, that
+/// api compresses tab characters into a single space, whereas we require a cell accurate
+/// string representation of the line. The below algorithm does this, but seems a bit odd.
+/// Maybe there is a clean api for doing this, but I couldn't find it.
+fn path_match_grid_line<T>(
+    term: &Term<T>,
+    line_start: AlacPoint,
+    line_end: AlacPoint,
+    hovered: AlacPoint,
+) -> Option<(String, usize)> {
+    let mut line = String::with_capacity(
+        (line_end.line.0 - line_start.line.0 + 1) as usize * term.grid().columns(),
+    );
+    let first_cell = &term.grid()[line_start];
+    let mut prev_len = 0;
+    line.push(first_cell.c);
+    let mut hovered_point_byte_offset = None;
+
+    if line_start == hovered {
+        hovered_point_byte_offset = Some(0);
+    }
+
+    for cell in term.grid().iter_from(line_start) {
+        if cell.point > line_end {
+            break;
+        }
+
+        if !cell.flags.intersects(WIDE_CHAR_SPACERS) {
+            prev_len = line.len();
+            match cell.c {
+                ' ' | '\t' => line.push(' '),
+                c => line.push(c),
+            }
+        }
+
+        if cell.point == hovered {
+            debug_assert!(hovered_point_byte_offset.is_none());
+            hovered_point_byte_offset = Some(prev_len);
+        }
+    }
+    line.truncate(line.trim_ascii_end().len());
+    let hovered_point_byte_offset = hovered_point_byte_offset?;
+    if line.len() <= hovered_point_byte_offset {
+        return None;
+    }
+    Some((line, hovered_point_byte_offset))
+}
+
+fn path_match_found_from_range<T>(
+    term: &Term<T>,
+    line_start: AlacPoint,
+    line: &str,
+    path_range: StdRange<usize>,
+    link_range: StdRange<usize>,
+    position: Option<(u32, Option<u32>)>,
+) -> (String, Match) {
+    let advance_point_by_str = |mut point: AlacPoint, s: &str| {
+        for _ in s.chars() {
+            point = term
+                .expand_wide(point, AlacDirection::Right)
+                .add(term, Boundary::Grid, 1);
+        }
+
+        // There does not appear to be an alacritty api that is
+        // "move to start of current wide char", so we have to do it ourselves.
+        let flags = term.grid().index(point).flags;
+        if flags.contains(Flags::LEADING_WIDE_CHAR_SPACER) {
+            AlacPoint::new(point.line + 1, Column(0))
+        } else if flags.contains(Flags::WIDE_CHAR_SPACER) {
+            AlacPoint::new(point.line, point.column - 1)
+        } else {
+            point
+        }
+    };
+
+    let link_start = advance_point_by_str(line_start, &line[..link_range.start]);
+    let link_end = advance_point_by_str(link_start, &line[link_range]);
+    let link_match = link_start
+        ..=term
+            .expand_wide(link_end, AlacDirection::Left)
+            .sub(term, Boundary::Grid, 1);
+
+    (
+        {
+            let mut path = line[path_range].to_string();
+            position.inspect(|(line, column)| {
+                path += &format!(":{line}");
+                column.inspect(|column| path += &format!(":{column}"));
+            });
+            path
+        },
+        link_match,
+    )
 }
 
 #[cfg(test)]
