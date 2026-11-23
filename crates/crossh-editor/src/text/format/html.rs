@@ -271,70 +271,66 @@ fn trim_text(text: &str) -> String {
     out
 }
 
+fn push_merged(
+    paragraph: &mut Paragraph,
+    text: String,
+    marks: Vec<(Range<usize>, TextMark)>,
+    new_mark: Option<TextMark>,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let mut node = InlineNode::new(text).marks(marks);
+    if let Some(new_mark) = new_mark {
+        let len = node.text.len();
+        if let Some(last) = node.marks.last_mut()
+            && last.0.start == 0
+            && last.0.end == len
+        {
+            last.1.merge(new_mark);
+        } else {
+            node.marks.push((0..node.text.len(), new_mark));
+        }
+    }
+    paragraph.push(node);
+}
+
+fn merge_children_with_mark(node: &Node, paragraph: &mut Paragraph, new_mark: Option<TextMark>) {
+    let mut merged_text = String::new();
+    let mut merged_marks = Vec::new();
+
+    for child in node.children.borrow().iter() {
+        let mut child_paragraph = Paragraph::default();
+        parse_paragraph(&mut child_paragraph, &child);
+
+        for node in child_paragraph.children {
+            let offset = merged_text.len();
+            merged_text.push_str(&node.text);
+            for (range, child_mark) in node.marks {
+                merged_marks.push((range.start + offset..range.end + offset, child_mark));
+            }
+
+            if let Some(mut image) = node.image {
+                if let Some(link_mark) = new_mark.as_ref().and_then(|mark| mark.link.clone()) {
+                    image.link = Some(link_mark);
+                }
+
+                push_merged(
+                    paragraph,
+                    std::mem::take(&mut merged_text),
+                    std::mem::take(&mut merged_marks),
+                    new_mark.clone(),
+                );
+
+                paragraph.push(InlineNode::image(image));
+            }
+        }
+    }
+
+    push_merged(paragraph, merged_text, merged_marks, new_mark.clone());
+}
+
 fn parse_paragraph(paragraph: &mut Paragraph, node: &Rc<Node>) {
-    fn push_merged(
-        paragraph: &mut Paragraph,
-        text: String,
-        marks: Vec<(Range<usize>, TextMark)>,
-        new_mark: Option<TextMark>,
-    ) {
-        if text.is_empty() {
-            return;
-        }
-        let mut node = InlineNode::new(text).marks(marks);
-        if let Some(new_mark) = new_mark {
-            let len = node.text.len();
-            if let Some(last) = node.marks.last_mut()
-                && last.0.start == 0
-                && last.0.end == len
-            {
-                last.1.merge(new_mark);
-            } else {
-                node.marks.push((0..node.text.len(), new_mark));
-            }
-        }
-        paragraph.push(node);
-    }
-
-    fn merge_children_with_mark(
-        node: &Node,
-        paragraph: &mut Paragraph,
-        new_mark: Option<TextMark>,
-    ) {
-        let mut merged_text = String::new();
-        let mut merged_marks = Vec::new();
-
-        for child in node.children.borrow().iter() {
-            let mut child_paragraph = Paragraph::default();
-            parse_paragraph(&mut child_paragraph, &child);
-
-            for node in child_paragraph.children {
-                let offset = merged_text.len();
-                merged_text.push_str(&node.text);
-                for (range, child_mark) in node.marks {
-                    merged_marks.push((range.start + offset..range.end + offset, child_mark));
-                }
-
-                if let Some(mut image) = node.image {
-                    if let Some(link_mark) = new_mark.as_ref().and_then(|mark| mark.link.clone()) {
-                        image.link = Some(link_mark);
-                    }
-
-                    push_merged(
-                        paragraph,
-                        std::mem::take(&mut merged_text),
-                        std::mem::take(&mut merged_marks),
-                        new_mark.clone(),
-                    );
-
-                    paragraph.push(InlineNode::image(image));
-                }
-            }
-        }
-
-        push_merged(paragraph, merged_text, merged_marks, new_mark.clone());
-    }
-
     match &node.data {
         NodeData::Text { contents } => {
             let part = &contents.borrow();
