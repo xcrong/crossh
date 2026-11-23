@@ -1935,120 +1935,129 @@ impl BlockNode {
                 .w_full()
                 .min_w_0()
                 .when(*spread, |this| this.child(div()))
-                .children({
-                    let mut items: Vec<Div> = Vec::with_capacity(children.len());
-
-                    for (child_ix, child) in children.iter().enumerate() {
-                        match child {
-                            BlockNode::Paragraph { .. } => {
-                                let last_not_list = child_ix > 0
-                                    && !matches!(children[child_ix - 1], BlockNode::List { .. });
-
-                                let text = child.render_block(
-                                    NodeRenderOptions {
-                                        depth: options.depth + 1,
-                                        todo: checked.is_some(),
-                                        is_last: true,
-                                        ..options
-                                    },
-                                    node_cx,
-                                    window,
-                                    cx,
-                                );
-
-                                // Continuation paragraph — stack vertically below
-                                // the previous row, indented to align with the text
-                                // column (past bullet/number prefix).
-                                if last_not_list {
-                                    if let Some(preceding_row) = items.pop() {
-                                        items.push(
-                                            v_flex().child(preceding_row).child(
-                                                div()
-                                                    .w_full()
-                                                    .pl(rems(1.))
-                                                    .overflow_hidden()
-                                                    .child(text),
-                                            ),
-                                        );
-                                        continue;
-                                    }
-                                }
-
-                                items.push(Self::render_list_item_row(
-                                    text,
-                                    ix,
-                                    options,
-                                    *checked,
-                                    &node_cx.style,
-                                    window.line_height(),
-                                ));
-                            }
-                            BlockNode::List { .. } => {
-                                items.push(div().ml(rems(1.)).child(child.render_block(
-                                    NodeRenderOptions {
-                                        depth: options.depth + 1,
-                                        todo: checked.is_some(),
-                                        is_last: true,
-                                        ..options
-                                    },
-                                    node_cx,
-                                    window,
-                                    cx,
-                                )));
-                            }
-                            BlockNode::Root { .. }
-                            | BlockNode::Heading { .. }
-                            | BlockNode::Blockquote { .. }
-                            | BlockNode::CodeBlock(_)
-                            | BlockNode::Custom(_)
-                            | BlockNode::Table(_)
-                            | BlockNode::HorizontalRule { .. } => {
-                                let block = child.render_block(
-                                    NodeRenderOptions {
-                                        depth: options.depth + 1,
-                                        todo: checked.is_some(),
-                                        is_last: true,
-                                        ..options
-                                    },
-                                    node_cx,
-                                    window,
-                                    cx,
-                                );
-
-                                if child_ix == 0 {
-                                    items.push(Self::render_list_item_row(
-                                        block,
-                                        ix,
-                                        options,
-                                        *checked,
-                                        &node_cx.style,
-                                        window.line_height(),
-                                    ));
-                                } else {
-                                    // Indent continuation blocks to align with a
-                                    // nested sub-list (`ml(rems(1.))`) and with
-                                    // continuation paragraphs.
-                                    items.push(
-                                        div()
-                                            .w_full()
-                                            .min_w_0()
-                                            .pl(rems(1.))
-                                            .overflow_hidden()
-                                            .child(block),
-                                    );
-                                }
-                            }
-                            BlockNode::ListItem { .. }
-                            | BlockNode::Break { .. }
-                            | BlockNode::Definition { .. }
-                            | BlockNode::Unknown => {}
-                        }
-                    }
-                    items
-                })
+                .children(Self::build_list_item_children(
+                    children, ix, options, *checked, node_cx, window, cx,
+                ))
                 .into_any_element(),
             _ => div().into_any_element(),
         }
+    }
+
+    fn build_list_item_children(
+        children: &[BlockNode],
+        ix: usize,
+        options: NodeRenderOptions,
+        checked: Option<bool>,
+        node_cx: &NodeContext,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<Div> {
+        let mut items: Vec<Div> = Vec::with_capacity(children.len());
+
+        for (child_ix, child) in children.iter().enumerate() {
+            match child {
+                BlockNode::Paragraph { .. } => {
+                    let last_not_list =
+                        child_ix > 0 && !matches!(children[child_ix - 1], BlockNode::List { .. });
+
+                    let text = child.render_block(
+                        NodeRenderOptions {
+                            depth: options.depth + 1,
+                            todo: checked.is_some(),
+                            is_last: true,
+                            ..options
+                        },
+                        node_cx,
+                        window,
+                        cx,
+                    );
+
+                    // Continuation paragraph — stack vertically below
+                    // the previous row, indented to align with the text
+                    // column (past bullet/number prefix).
+                    if last_not_list {
+                        if let Some(preceding_row) = items.pop() {
+                            items.push(
+                                v_flex().child(preceding_row).child(
+                                    div().w_full().pl(rems(1.)).overflow_hidden().child(text),
+                                ),
+                            );
+                            continue;
+                        }
+                    }
+
+                    items.push(Self::render_list_item_row(
+                        text,
+                        ix,
+                        options,
+                        checked,
+                        &node_cx.style,
+                        window.line_height(),
+                    ));
+                }
+                BlockNode::List { .. } => {
+                    items.push(div().ml(rems(1.)).child(child.render_block(
+                        NodeRenderOptions {
+                            depth: options.depth + 1,
+                            todo: checked.is_some(),
+                            is_last: true,
+                            ..options
+                        },
+                        node_cx,
+                        window,
+                        cx,
+                    )));
+                }
+                BlockNode::Root { .. }
+                | BlockNode::Heading { .. }
+                | BlockNode::Blockquote { .. }
+                | BlockNode::CodeBlock(_)
+                | BlockNode::Custom(_)
+                | BlockNode::Table(_)
+                | BlockNode::HorizontalRule { .. } => {
+                    let block = child.render_block(
+                        NodeRenderOptions {
+                            depth: options.depth + 1,
+                            todo: checked.is_some(),
+                            is_last: true,
+                            ..options
+                        },
+                        node_cx,
+                        window,
+                        cx,
+                    );
+
+                    if child_ix == 0 {
+                        items.push(Self::render_list_item_row(
+                            block,
+                            ix,
+                            options,
+                            checked,
+                            &node_cx.style,
+                            window.line_height(),
+                        ));
+                    } else {
+                        // Indent continuation blocks to align with a
+                        // nested sub-list (`ml(rems(1.))`) and with
+                        // continuation paragraphs.
+                        items.push(
+                            div()
+                                .w_full()
+                                .min_w_0()
+                                .pl(rems(1.))
+                                .overflow_hidden()
+                                .child(block),
+                        );
+                    }
+                }
+                BlockNode::ListItem { .. }
+                | BlockNode::Break { .. }
+                | BlockNode::Definition { .. }
+                | BlockNode::Unknown => {}
+            }
+        }
+
+        items
     }
 
     /// Render a Markdown table. Dispatches to a horizontally scrollable layout
