@@ -667,99 +667,25 @@ impl<M: InputModeKind> TextElement<M> {
         let cursor_start = caret_for(sel_start_row, selected_range.start, false);
         let cursor_end = caret_for(sel_end_row, selected_range.end, false);
 
-        let cursor_bounds = {
-            let selection_changed = state.last_selected_range != Some(selected_range);
-            let auto_scrolling = state.auto_scroll.is_active();
-            if selection_changed && !is_selected_all {
-                // For Right alignment use 0 margin: cursor is clamped to bounds separately,
-                // so we never scroll the text for cursor-at-edge, avoiding a first-click jump.
-                let safety_margin = match last_layout.text_align {
-                    TextAlign::Left => RIGHT_MARGIN,
-                    TextAlign::Right => px(0.),
-                    TextAlign::Center => CURSOR_WIDTH,
-                };
+        if state.last_selected_range != Some(selected_range) && !is_selected_all {
+            scroll_offset = Self::adjust_scroll_for_cursor(
+                state,
+                last_layout,
+                bounds,
+                (cursor_pos, cursor_start, cursor_end),
+                scroll_offset,
+                top_bottom_margin,
+            );
+        }
 
-                scroll_offset.x = if scroll_offset.x + cursor_pos.x
-                    > (bounds.size.width - line_number_width - safety_margin)
-                {
-                    // cursor is out of right
-                    bounds.size.width - line_number_width - safety_margin - cursor_pos.x
-                } else if scroll_offset.x + cursor_pos.x < px(0.) {
-                    // cursor is out of left
-                    scroll_offset.x - cursor_pos.x
-                } else {
-                    scroll_offset.x
-                };
-
-                // Vertical cursor-follow is suppressed while auto-scroll manages the y axis,
-                // to prevent fighting the background scroll task.
-                if !auto_scrolling {
-                    // If we change the scroll_offset.y, GPUI will render and trigger the next run loop.
-                    // So, here we just adjust offset by `line_height` for move smooth.
-                    scroll_offset.y = if scroll_offset.y + cursor_pos.y
-                        > bounds.size.height - top_bottom_margin
-                    {
-                        // cursor is out of bottom
-                        scroll_offset.y - line_height
-                    } else if scroll_offset.y + cursor_pos.y < top_bottom_margin {
-                        // cursor is out of top
-                        (scroll_offset.y + line_height).min(px(0.))
-                    } else {
-                        scroll_offset.y
-                    };
-                }
-
-                // For selection to move scroll
-                if state.selection_reversed {
-                    if scroll_offset.x + cursor_start.x < px(0.) {
-                        // selection start is out of left
-                        scroll_offset.x = -cursor_start.x;
-                    }
-                    if !auto_scrolling && scroll_offset.y + cursor_start.y < px(0.) {
-                        // selection start is out of top
-                        scroll_offset.y = -cursor_start.y;
-                    }
-                } else {
-                    // TODO: Consider to remove this part,
-                    // maybe is not necessary (But selection_reversed is needed).
-                    if scroll_offset.x + cursor_end.x <= px(0.) {
-                        // selection end is out of left
-                        scroll_offset.x = -cursor_end.x;
-                    }
-                    if !auto_scrolling && scroll_offset.y + cursor_end.y <= px(0.) {
-                        // selection end is out of top
-                        scroll_offset.y = -cursor_end.y;
-                    }
-                }
-            }
-
-            // cursor bounds
-            let cursor_height = 0.85 * line_height;
-
-            // Match the caret to the deferred scroll target (applied below) that
-            // the text paints at; otherwise the caret follows the cursor-scroll
-            // while the text uses the deferred offset, flashing it mid-field.
-            let cursor_scroll_x = state
-                .deferred_scroll_offset
-                .map(|offset| offset.x)
-                .unwrap_or(scroll_offset.x);
-
-            // For Right alignment, clamp cursor within the right edge of bounds so it
-            // stays visible without having to shift the text via scroll_offset.
-            let cursor_x = bounds.left() + cursor_pos.x + line_number_width + cursor_scroll_x;
-            let cursor_x = if last_layout.text_align == TextAlign::Right {
-                cursor_x.min(bounds.right() - CURSOR_WIDTH)
-            } else {
-                cursor_x
-            };
-            Some(Bounds::new(
-                point(
-                    cursor_x,
-                    bounds.top() + cursor_pos.y + ((line_height - cursor_height) / 2.),
-                ),
-                size(CURSOR_WIDTH, cursor_height),
-            ))
-        };
+        let cursor_bounds = Self::cursor_bounds_for_positions(
+            state,
+            last_layout,
+            bounds,
+            cursor_pos,
+            line_number_width,
+            scroll_offset,
+        );
 
         if let Some(deferred_scroll_offset) = state.deferred_scroll_offset {
             scroll_offset = deferred_scroll_offset;
@@ -774,6 +700,123 @@ impl<M: InputModeKind> TextElement<M> {
         bounds.origin = bounds.origin + scroll_offset;
 
         (cursor_bounds, scroll_offset, current_row)
+    }
+
+    /// Applies cursor-follow scrolling for a changed selection and returns the
+    /// adjusted scroll offset. The caller decides when a cursor follow applies;
+    /// this only performs the horizontal and vertical adjustments.
+    fn adjust_scroll_for_cursor(
+        state: &InputBaseState<M>,
+        last_layout: &LastLayout,
+        bounds: &Bounds<Pixels>,
+        positions: (Point<Pixels>, Point<Pixels>, Point<Pixels>),
+        scroll_offset: Point<Pixels>,
+        top_bottom_margin: Pixels,
+    ) -> Point<Pixels> {
+        let (cursor_pos, cursor_start, cursor_end) = positions;
+        let line_height = last_layout.line_height;
+        let auto_scrolling = state.auto_scroll.is_active();
+        let mut scroll_offset = scroll_offset;
+
+        // For Right alignment use 0 margin: cursor is clamped to bounds separately,
+        // so we never scroll the text for cursor-at-edge, avoiding a first-click jump.
+        let safety_margin = match last_layout.text_align {
+            TextAlign::Left => RIGHT_MARGIN,
+            TextAlign::Right => px(0.),
+            TextAlign::Center => CURSOR_WIDTH,
+        };
+
+        scroll_offset.x = if scroll_offset.x + cursor_pos.x
+            > (bounds.size.width - last_layout.line_number_width - safety_margin)
+        {
+            // cursor is out of right
+            bounds.size.width - last_layout.line_number_width - safety_margin - cursor_pos.x
+        } else if scroll_offset.x + cursor_pos.x < px(0.) {
+            // cursor is out of left
+            scroll_offset.x - cursor_pos.x
+        } else {
+            scroll_offset.x
+        };
+
+        // Vertical cursor-follow is suppressed while auto-scroll manages the y axis,
+        // to prevent fighting the background scroll task.
+        if !auto_scrolling {
+            // If we change the scroll_offset.y, GPUI will render and trigger the next run loop.
+            // So, here we just adjust offset by `line_height` for move smooth.
+            scroll_offset.y =
+                if scroll_offset.y + cursor_pos.y > bounds.size.height - top_bottom_margin {
+                    // cursor is out of bottom
+                    scroll_offset.y - line_height
+                } else if scroll_offset.y + cursor_pos.y < top_bottom_margin {
+                    // cursor is out of top
+                    (scroll_offset.y + line_height).min(px(0.))
+                } else {
+                    scroll_offset.y
+                };
+        }
+
+        // For selection to move scroll
+        if state.selection_reversed {
+            if scroll_offset.x + cursor_start.x < px(0.) {
+                // selection start is out of left
+                scroll_offset.x = -cursor_start.x;
+            }
+            if !auto_scrolling && scroll_offset.y + cursor_start.y < px(0.) {
+                // selection start is out of top
+                scroll_offset.y = -cursor_start.y;
+            }
+        } else {
+            // TODO: Consider to remove this part,
+            // maybe is not necessary (But selection_reversed is needed).
+            if scroll_offset.x + cursor_end.x <= px(0.) {
+                // selection end is out of left
+                scroll_offset.x = -cursor_end.x;
+            }
+            if !auto_scrolling && scroll_offset.y + cursor_end.y <= px(0.) {
+                // selection end is out of top
+                scroll_offset.y = -cursor_end.y;
+            }
+        }
+
+        scroll_offset
+    }
+
+    /// Resolves the caret rectangle for `cursor_pos`, using the deferred scroll
+    /// target when one is pending so the caret matches where the text paints.
+    fn cursor_bounds_for_positions(
+        state: &InputBaseState<M>,
+        last_layout: &LastLayout,
+        bounds: &Bounds<Pixels>,
+        cursor_pos: Point<Pixels>,
+        line_number_width: Pixels,
+        scroll_offset: Point<Pixels>,
+    ) -> Option<Bounds<Pixels>> {
+        let line_height = last_layout.line_height;
+        let cursor_height = 0.85 * line_height;
+
+        // Match the caret to the deferred scroll target (applied by the caller) that
+        // the text paints at; otherwise the caret follows the cursor-scroll
+        // while the text uses the deferred offset, flashing it mid-field.
+        let cursor_scroll_x = state
+            .deferred_scroll_offset
+            .map(|offset| offset.x)
+            .unwrap_or(scroll_offset.x);
+
+        // For Right alignment, clamp cursor within the right edge of bounds so it
+        // stays visible without having to shift the text via scroll_offset.
+        let cursor_x = bounds.left() + cursor_pos.x + line_number_width + cursor_scroll_x;
+        let cursor_x = if last_layout.text_align == TextAlign::Right {
+            cursor_x.min(bounds.right() - CURSOR_WIDTH)
+        } else {
+            cursor_x
+        };
+        Some(Bounds::new(
+            point(
+                cursor_x,
+                bounds.top() + cursor_pos.y + ((line_height - cursor_height) / 2.),
+            ),
+            size(CURSOR_WIDTH, cursor_height),
+        ))
     }
 
     /// Layout the match range to a Path.
