@@ -1976,104 +1976,165 @@ impl Terminal {
         cx: &mut Context<Self>,
     ) {
         match event {
-            &InternalEvent::Resize(new_bounds) => {
-                let new_bounds = normalize_terminal_bounds(new_bounds);
-                trace!("Resizing: new_bounds={new_bounds:?}");
-
-                let columns_changed =
-                    self.last_content.terminal_bounds.num_columns() != new_bounds.num_columns();
-                self.last_content.terminal_bounds = new_bounds;
-
-                // 本地 PTY 才需要内核 resize；Remote 的尺寸由服务端 PTY 持有，
-                // 视图侧上报后等 daemon 回流（D8）。
-                if let TerminalType::Pty {
-                    resources: PtyResources::Active(pty_tx),
-                    ..
-                } = &self.terminal_type
-                {
-                    pty_tx.resize(new_bounds);
-                }
-
-                resize(term, new_bounds);
-                if columns_changed {
-                    self.reset_cwd_history();
-                }
-                // If there are matches we need to emit a wake up event to
-                // invalidate the matches and recalculate their locations
-                // in the new terminal layout
-                if !self.matches.is_empty() {
-                    cx.emit(Event::Wakeup);
-                }
-            }
-            InternalEvent::Clear => {
-                trace!("Clearing");
-                clear_saved_screen(term);
-                self.reset_cwd_history();
-                cx.emit(Event::Wakeup);
-            }
-            InternalEvent::Scroll(scroll) => {
-                trace!("Scrolling: scroll={scroll:?}");
-                scroll_display(term, *scroll);
-                self.refresh_hovered_word(window, cx);
-
-                if self.vi_mode_enabled {
-                    update_vi_cursor_for_scroll(term, *scroll);
-                    if let Some(selection_head) = update_selection_to_vi_cursor(term) {
-                        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-                        if let Some(selection_text) = selection_text(term) {
-                            cx.write_to_primary(ClipboardItem::new_string(selection_text));
-                        }
-
-                        self.selection_head = Some(selection_head);
-                        cx.emit(Event::SelectionsChanged)
-                    }
-                }
-            }
+            InternalEvent::Resize(new_bounds) => self.handle_resize_event(*new_bounds, term, cx),
+            InternalEvent::Clear => self.handle_clear_event(term, cx),
+            InternalEvent::Scroll(scroll) => self.handle_scroll_event(*scroll, term, window, cx),
             InternalEvent::SetSelection(selection) => {
-                trace!("Setting selection: selection={selection:?}");
-                set_term_selection(term, selection.as_ref());
+                self.handle_set_selection(selection.as_ref(), term, cx)
+            }
+            InternalEvent::UpdateSelection(position) => {
+                self.handle_update_selection(*position, term, cx)
+            }
+            InternalEvent::Copy(keep_selection) => {
+                self.handle_copy_event(*keep_selection, term, cx)
+            }
+            InternalEvent::ScrollToPoint(_)
+            | InternalEvent::MoveViCursorToPoint(_)
+            | InternalEvent::ToggleViMode
+            | InternalEvent::ViMotion(_) => self.handle_vi_event(event, term, window, cx),
+            InternalEvent::FindHyperlink(..) | InternalEvent::ProcessHyperlink(..) => {
+                self.handle_hyperlink_event(event, term, cx)
+            }
+        }
+    }
 
+    fn handle_resize_event(
+        &mut self,
+        new_bounds: TerminalBounds,
+        term: &mut AlacrittyTerm,
+        cx: &mut Context<Self>,
+    ) {
+        let new_bounds = normalize_terminal_bounds(new_bounds);
+        trace!("Resizing: new_bounds={new_bounds:?}");
+
+        let columns_changed =
+            self.last_content.terminal_bounds.num_columns() != new_bounds.num_columns();
+        self.last_content.terminal_bounds = new_bounds;
+
+        // 本地 PTY 才需要内核 resize；Remote 的尺寸由服务端 PTY 持有，
+        // 视图侧上报后等 daemon 回流（D8）。
+        if let TerminalType::Pty {
+            resources: PtyResources::Active(pty_tx),
+            ..
+        } = &self.terminal_type
+        {
+            pty_tx.resize(new_bounds);
+        }
+
+        resize(term, new_bounds);
+        if columns_changed {
+            self.reset_cwd_history();
+        }
+        // If there are matches we need to emit a wake up event to
+        // invalidate the matches and recalculate their locations
+        // in the new terminal layout
+        if !self.matches.is_empty() {
+            cx.emit(Event::Wakeup);
+        }
+    }
+
+    fn handle_clear_event(&mut self, term: &mut AlacrittyTerm, cx: &mut Context<Self>) {
+        trace!("Clearing");
+        clear_saved_screen(term);
+        self.reset_cwd_history();
+        cx.emit(Event::Wakeup);
+    }
+
+    fn handle_scroll_event(
+        &mut self,
+        scroll: Scroll,
+        term: &mut AlacrittyTerm,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        trace!("Scrolling: scroll={scroll:?}");
+        scroll_display(term, scroll);
+        self.refresh_hovered_word(window, cx);
+
+        if self.vi_mode_enabled {
+            update_vi_cursor_for_scroll(term, scroll);
+            if let Some(selection_head) = update_selection_to_vi_cursor(term) {
                 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
                 if let Some(selection_text) = selection_text(term) {
                     cx.write_to_primary(ClipboardItem::new_string(selection_text));
                 }
 
-                if let Some(selection) = selection {
-                    self.selection_head = Some(selection.head);
-                }
+                self.selection_head = Some(selection_head);
                 cx.emit(Event::SelectionsChanged)
             }
-            InternalEvent::UpdateSelection(position) => {
-                trace!("Updating selection: position={position:?}");
-                let (point, side) = grid_point_and_side(
-                    *position,
-                    self.last_content.terminal_bounds,
-                    display_offset(term),
-                );
+        }
+    }
 
-                if update_term_selection(term, point, side) {
-                    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-                    if let Some(selection_text) = selection_text(term) {
-                        cx.write_to_primary(ClipboardItem::new_string(selection_text));
-                    }
+    fn handle_set_selection(
+        &mut self,
+        selection: Option<&Selection>,
+        term: &mut AlacrittyTerm,
+        cx: &mut Context<Self>,
+    ) {
+        trace!("Setting selection: selection={selection:?}");
+        set_term_selection(term, selection);
 
-                    self.selection_head = Some(point);
-                    cx.emit(Event::SelectionsChanged)
-                }
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        if let Some(selection_text) = selection_text(term) {
+            cx.write_to_primary(ClipboardItem::new_string(selection_text));
+        }
+
+        if let Some(selection) = selection {
+            self.selection_head = Some(selection.head);
+        }
+        cx.emit(Event::SelectionsChanged)
+    }
+
+    fn handle_update_selection(
+        &mut self,
+        position: GpuiPoint<Pixels>,
+        term: &mut AlacrittyTerm,
+        cx: &mut Context<Self>,
+    ) {
+        trace!("Updating selection: position={position:?}");
+        let (point, side) = grid_point_and_side(
+            position,
+            self.last_content.terminal_bounds,
+            display_offset(term),
+        );
+
+        if update_term_selection(term, point, side) {
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            if let Some(selection_text) = selection_text(term) {
+                cx.write_to_primary(ClipboardItem::new_string(selection_text));
             }
 
-            InternalEvent::Copy(keep_selection) => {
-                trace!("Copying selection: keep_selection={keep_selection:?}");
-                if let Some(txt) = selection_text(term) {
-                    cx.write_to_clipboard(ClipboardItem::new_string(txt));
-                    if !keep_selection.unwrap_or_else(|| {
-                        let settings = TerminalSettings::get_global(cx);
-                        settings.keep_selection_on_copy
-                    }) {
-                        self.events.push_back(InternalEvent::SetSelection(None));
-                    }
-                }
+            self.selection_head = Some(point);
+            cx.emit(Event::SelectionsChanged)
+        }
+    }
+
+    fn handle_copy_event(
+        &mut self,
+        keep_selection: Option<bool>,
+        term: &mut AlacrittyTerm,
+        cx: &mut Context<Self>,
+    ) {
+        trace!("Copying selection: keep_selection={keep_selection:?}");
+        if let Some(txt) = selection_text(term) {
+            cx.write_to_clipboard(ClipboardItem::new_string(txt));
+            if !keep_selection.unwrap_or_else(|| {
+                let settings = TerminalSettings::get_global(cx);
+                settings.keep_selection_on_copy
+            }) {
+                self.events.push_back(InternalEvent::SetSelection(None));
             }
+        }
+    }
+
+    fn handle_vi_event(
+        &mut self,
+        event: &InternalEvent,
+        term: &mut AlacrittyTerm,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
             InternalEvent::ScrollToPoint(point) => {
                 trace!("Scrolling to point: point={point:?}");
                 scroll_to_point(term, *point);
@@ -2093,6 +2154,17 @@ impl Terminal {
                 trace!("Performing vi motion: motion={motion:?}");
                 vi_motion(term, *motion);
             }
+            _ => {}
+        }
+    }
+
+    fn handle_hyperlink_event(
+        &mut self,
+        event: &InternalEvent,
+        term: &mut AlacrittyTerm,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
             InternalEvent::FindHyperlink(position, open) => {
                 trace!("Finding hyperlink at position: position={position:?}, open={open:?}");
 
@@ -2123,6 +2195,7 @@ impl Terminal {
                 let history_size = term.history_size();
                 self.process_hyperlink(hyperlink.clone(), *open, history_size, cx);
             }
+            _ => {}
         }
     }
 
