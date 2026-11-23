@@ -4,11 +4,12 @@
 //! https://github.com/zed-industries/zed/blob/main/crates/gpui/examples/input.rs
 use gpui::TextAlign;
 use gpui::{
-    Action, App, AppContext, Bounds, ClipboardItem, Context, Edges, Entity, EntityInputHandler,
-    EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
-    Pixels, Point, Render, ScrollEvent, ScrollHandle, SharedString, Styled as _, Subscription,
-    UTF16Selection, Window, actions, div, point, prelude::FluentBuilder as _, px,
+    Action, App, AppContext, Bounds, ClipboardItem, Context, Div, Edges, Entity,
+    EntityInputHandler, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
+    KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement as _, Pixels, Point, Render, ScrollEvent, ScrollHandle, SharedString, Stateful,
+    Styled as _, Subscription, UTF16Selection, Window, actions, div, point,
+    prelude::FluentBuilder as _, px,
 };
 use ropey::{Rope, RopeSlice};
 use serde::Deserialize;
@@ -3144,6 +3145,101 @@ impl<M: InputModeKind> Focusable for InputBaseState<M> {
     }
 }
 
+impl<M: InputModeKind> InputBaseState<M> {
+    /// The input's element tree, without the mode-specific actions.
+    fn render_element(&self, entity: &Entity<Self>, window: &mut Window) -> Stateful<Div> {
+        div()
+            .id("input-state")
+            .key_context(CONTEXT)
+            .track_focus(&self.focus_handle)
+            .when(self.is_editable(), |this| {
+                this.on_action(window.listener_for(entity, InputBaseState::backspace))
+                    .on_action(window.listener_for(entity, InputBaseState::delete))
+                    .on_action(
+                        window.listener_for(entity, InputBaseState::delete_to_beginning_of_line),
+                    )
+                    .on_action(window.listener_for(entity, InputBaseState::delete_to_end_of_line))
+                    .on_action(window.listener_for(entity, InputBaseState::delete_previous_word))
+                    .on_action(window.listener_for(entity, InputBaseState::delete_next_word))
+                    .on_action(window.listener_for(entity, InputBaseState::enter))
+                    .on_action(window.listener_for(entity, InputBaseState::escape))
+                    .on_action(window.listener_for(entity, InputBaseState::paste))
+                    .on_action(window.listener_for(entity, InputBaseState::cut))
+                    .on_action(window.listener_for(entity, InputBaseState::undo))
+                    .on_action(window.listener_for(entity, InputBaseState::redo))
+                    .when(self.is_multi_line(), |this| {
+                        this.on_action(window.listener_for(entity, InputBaseState::indent_inline))
+                            .on_action(window.listener_for(entity, InputBaseState::outdent_inline))
+                            .on_action(window.listener_for(entity, InputBaseState::indent_block))
+                            .on_action(window.listener_for(entity, InputBaseState::outdent_block))
+                    })
+            })
+            .on_action(window.listener_for(entity, InputBaseState::left))
+            .on_action(window.listener_for(entity, InputBaseState::right))
+            .on_action(window.listener_for(entity, InputBaseState::select_left))
+            .on_action(window.listener_for(entity, InputBaseState::select_right))
+            .when(self.is_multi_line(), |this| {
+                this.on_action(window.listener_for(entity, InputBaseState::up))
+                    .on_action(window.listener_for(entity, InputBaseState::down))
+                    .on_action(window.listener_for(entity, InputBaseState::select_up))
+                    .on_action(window.listener_for(entity, InputBaseState::select_down))
+                    .on_action(window.listener_for(entity, InputBaseState::page_up))
+                    .on_action(window.listener_for(entity, InputBaseState::page_down))
+            })
+            .on_action(window.listener_for(entity, InputBaseState::on_action_select_all))
+            .on_action(window.listener_for(entity, InputBaseState::select_to_start_of_line))
+            .on_action(window.listener_for(entity, InputBaseState::select_to_end_of_line))
+            .on_action(window.listener_for(entity, InputBaseState::select_to_previous_word))
+            .on_action(window.listener_for(entity, InputBaseState::select_to_next_word))
+            .on_action(window.listener_for(entity, InputBaseState::home))
+            .on_action(window.listener_for(entity, InputBaseState::end))
+            .on_action(window.listener_for(entity, InputBaseState::move_to_start))
+            .on_action(window.listener_for(entity, InputBaseState::move_to_end))
+            .on_action(window.listener_for(entity, InputBaseState::move_to_previous_word))
+            .on_action(window.listener_for(entity, InputBaseState::move_to_next_word))
+            .on_action(window.listener_for(entity, InputBaseState::select_to_start))
+            .on_action(window.listener_for(entity, InputBaseState::select_to_end))
+            .on_action(window.listener_for(entity, InputBaseState::show_character_palette))
+            .on_action(window.listener_for(entity, InputBaseState::copy))
+            .on_action(window.listener_for(entity, InputBaseState::on_action_search))
+            .on_action(window.listener_for(entity, InputBaseState::on_action_replace))
+            .on_key_down(window.listener_for(entity, InputBaseState::on_key_down))
+            .on_mouse_down(
+                MouseButton::Left,
+                window.listener_for(entity, InputBaseState::on_mouse_down),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                window.listener_for(entity, InputBaseState::on_mouse_down),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                window.listener_for(entity, InputBaseState::on_mouse_up),
+            )
+            .on_mouse_up(
+                MouseButton::Right,
+                window.listener_for(entity, InputBaseState::on_mouse_up),
+            )
+            .on_mouse_move(window.listener_for(entity, InputBaseState::on_mouse_move))
+            .on_scroll(window.listener_for(entity, InputBaseState::on_scroll))
+            .when(!self.disabled, |this| this.cursor_text())
+            .flex_1()
+            .when(self.is_multi_line(), |this| this.h_full())
+            .flex_grow_1()
+            .overflow_x_hidden()
+            .when(self.is_multi_line(), |this| {
+                this.pt(self.editor_paddings.top)
+                    .pr(self.editor_paddings.right)
+                    .pb(self.editor_paddings.bottom)
+                    .pl(self.editor_paddings.left)
+            })
+            .child(TextElement::new(entity.clone()).placeholder(self.placeholder.clone()))
+            .when(self.shows_scrollbar(), |this| {
+                this.child(EditorScrollbar::new(entity.clone()))
+            })
+    }
+}
+
 impl<M: InputModeKind> Render for InputBaseState<M> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Before anything reads it: the element resolves this style during
@@ -3170,95 +3266,7 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
             self._pending_update = false;
         }
 
-        let element = div()
-            .id("input-state")
-            .key_context(CONTEXT)
-            .track_focus(&self.focus_handle)
-            .when(self.is_editable(), |this| {
-                this.on_action(window.listener_for(&entity, InputBaseState::backspace))
-                    .on_action(window.listener_for(&entity, InputBaseState::delete))
-                    .on_action(
-                        window.listener_for(&entity, InputBaseState::delete_to_beginning_of_line),
-                    )
-                    .on_action(window.listener_for(&entity, InputBaseState::delete_to_end_of_line))
-                    .on_action(window.listener_for(&entity, InputBaseState::delete_previous_word))
-                    .on_action(window.listener_for(&entity, InputBaseState::delete_next_word))
-                    .on_action(window.listener_for(&entity, InputBaseState::enter))
-                    .on_action(window.listener_for(&entity, InputBaseState::escape))
-                    .on_action(window.listener_for(&entity, InputBaseState::paste))
-                    .on_action(window.listener_for(&entity, InputBaseState::cut))
-                    .on_action(window.listener_for(&entity, InputBaseState::undo))
-                    .on_action(window.listener_for(&entity, InputBaseState::redo))
-                    .when(self.is_multi_line(), |this| {
-                        this.on_action(window.listener_for(&entity, InputBaseState::indent_inline))
-                            .on_action(window.listener_for(&entity, InputBaseState::outdent_inline))
-                            .on_action(window.listener_for(&entity, InputBaseState::indent_block))
-                            .on_action(window.listener_for(&entity, InputBaseState::outdent_block))
-                    })
-            })
-            .on_action(window.listener_for(&entity, InputBaseState::left))
-            .on_action(window.listener_for(&entity, InputBaseState::right))
-            .on_action(window.listener_for(&entity, InputBaseState::select_left))
-            .on_action(window.listener_for(&entity, InputBaseState::select_right))
-            .when(self.is_multi_line(), |this| {
-                this.on_action(window.listener_for(&entity, InputBaseState::up))
-                    .on_action(window.listener_for(&entity, InputBaseState::down))
-                    .on_action(window.listener_for(&entity, InputBaseState::select_up))
-                    .on_action(window.listener_for(&entity, InputBaseState::select_down))
-                    .on_action(window.listener_for(&entity, InputBaseState::page_up))
-                    .on_action(window.listener_for(&entity, InputBaseState::page_down))
-            })
-            .on_action(window.listener_for(&entity, InputBaseState::on_action_select_all))
-            .on_action(window.listener_for(&entity, InputBaseState::select_to_start_of_line))
-            .on_action(window.listener_for(&entity, InputBaseState::select_to_end_of_line))
-            .on_action(window.listener_for(&entity, InputBaseState::select_to_previous_word))
-            .on_action(window.listener_for(&entity, InputBaseState::select_to_next_word))
-            .on_action(window.listener_for(&entity, InputBaseState::home))
-            .on_action(window.listener_for(&entity, InputBaseState::end))
-            .on_action(window.listener_for(&entity, InputBaseState::move_to_start))
-            .on_action(window.listener_for(&entity, InputBaseState::move_to_end))
-            .on_action(window.listener_for(&entity, InputBaseState::move_to_previous_word))
-            .on_action(window.listener_for(&entity, InputBaseState::move_to_next_word))
-            .on_action(window.listener_for(&entity, InputBaseState::select_to_start))
-            .on_action(window.listener_for(&entity, InputBaseState::select_to_end))
-            .on_action(window.listener_for(&entity, InputBaseState::show_character_palette))
-            .on_action(window.listener_for(&entity, InputBaseState::copy))
-            .on_action(window.listener_for(&entity, InputBaseState::on_action_search))
-            .on_action(window.listener_for(&entity, InputBaseState::on_action_replace))
-            .on_key_down(window.listener_for(&entity, InputBaseState::on_key_down))
-            .on_mouse_down(
-                MouseButton::Left,
-                window.listener_for(&entity, InputBaseState::on_mouse_down),
-            )
-            .on_mouse_down(
-                MouseButton::Right,
-                window.listener_for(&entity, InputBaseState::on_mouse_down),
-            )
-            .on_mouse_up(
-                MouseButton::Left,
-                window.listener_for(&entity, InputBaseState::on_mouse_up),
-            )
-            .on_mouse_up(
-                MouseButton::Right,
-                window.listener_for(&entity, InputBaseState::on_mouse_up),
-            )
-            .on_mouse_move(window.listener_for(&entity, InputBaseState::on_mouse_move))
-            .on_scroll(window.listener_for(&entity, InputBaseState::on_scroll))
-            .when(!self.disabled, |this| this.cursor_text())
-            .flex_1()
-            .when(self.is_multi_line(), |this| this.h_full())
-            .flex_grow_1()
-            .overflow_x_hidden()
-            .when(self.is_multi_line(), |this| {
-                this.pt(self.editor_paddings.top)
-                    .pr(self.editor_paddings.right)
-                    .pb(self.editor_paddings.bottom)
-                    .pl(self.editor_paddings.left)
-            })
-            .child(TextElement::new(entity.clone()).placeholder(self.placeholder.clone()))
-            .when(self.shows_scrollbar(), |this| {
-                this.child(EditorScrollbar::new(entity.clone()))
-            });
+        let element = self.render_element(&entity, window);
 
         // Actions only one mode handles are registered by that mode, where
         // `Self` is concrete enough to name its own entity type.
