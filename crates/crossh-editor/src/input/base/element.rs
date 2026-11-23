@@ -835,23 +835,32 @@ impl<M: InputModeKind> TextElement<M> {
             return None;
         }
 
-        let line_height = last_layout.line_height;
-        let visible_top = last_layout.visible_top;
-        let lines = &last_layout.lines;
         let line_number_width = last_layout.line_number_width;
+        let mut line_corners = Self::match_range_corners(range.start, range.end, last_layout);
+        if line_corners.is_empty() {
+            return None;
+        }
 
-        let start_ix = range.start;
-        let end_ix = range.end;
+        Self::corners_to_selection_path(&mut line_corners, bounds, line_number_width)
+    }
+
+    /// Collect per-row selection corners for `start_ix..end_ix` over the visible lines.
+    fn match_range_corners(
+        start_ix: usize,
+        end_ix: usize,
+        last_layout: &LastLayout,
+    ) -> Vec<Corners<Point<Pixels>>> {
+        let line_height = last_layout.line_height;
 
         // Start from visible_top (which already accounts for all lines before visible range)
-        let mut offset_y = visible_top;
+        let mut offset_y = last_layout.visible_top;
         let mut line_corners = vec![];
 
         // Iterate only over visible (non-hidden) buffer lines
         for (prev_lines_offset, line) in last_layout
             .visible_line_byte_offsets
             .iter()
-            .zip(lines.iter())
+            .zip(last_layout.lines.iter())
         {
             let prev_lines_offset = *prev_lines_offset;
             let line_size = line.size(line_height);
@@ -926,20 +935,26 @@ impl<M: InputModeKind> TextElement<M> {
             offset_y += line_size.height;
         }
 
+        line_corners
+    }
+
+    /// Convert selection corners into a fill path anchored at `bounds.origin`.
+    fn corners_to_selection_path(
+        line_corners: &mut [Corners<Point<Pixels>>],
+        bounds: &Bounds<Pixels>,
+        line_number_width: Pixels,
+    ) -> Option<Path<Pixels>> {
         let mut points = vec![];
-        if line_corners.is_empty() {
-            return None;
-        }
 
         // Fix corners to make sure the left to right direction
-        for corners in &mut line_corners {
+        for corners in line_corners.iter_mut() {
             if corners.top_left.x > corners.top_right.x {
                 std::mem::swap(&mut corners.top_left, &mut corners.top_right);
                 std::mem::swap(&mut corners.bottom_left, &mut corners.bottom_right);
             }
         }
 
-        for corners in &line_corners {
+        for corners in line_corners.iter() {
             points.push(corners.top_right);
             points.push(corners.bottom_right);
             points.push(corners.bottom_left);
