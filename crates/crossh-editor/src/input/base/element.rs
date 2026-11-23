@@ -387,6 +387,14 @@ struct FoldIconLayout {
     icons: Vec<(usize, bool, gpui::AnyElement)>,
 }
 
+/// A fold icon candidate collected from the visible lines during prepaint.
+struct FoldInfo {
+    buffer_line: usize,
+    is_folded: bool,
+    display_row: usize,
+    offset_y: Pixels,
+}
+
 pub(super) struct TextElement<M: InputModeKind> {
     pub(crate) state: Entity<InputBaseState<M>>,
     placeholder: SharedString,
@@ -1541,14 +1549,6 @@ impl<M: InputModeKind> TextElement<M> {
         window: &mut Window,
         cx: &mut App,
     ) -> FoldIconLayout {
-        // First pass: collect fold information from state
-        struct FoldInfo {
-            buffer_line: usize,
-            is_folded: bool,
-            display_row: usize,
-            offset_y: Pixels,
-        }
-
         let line_number_hitbox = window.insert_hitbox(
             Bounds::new(
                 point(origin_x, bounds.origin.y + last_layout.visible_top),
@@ -1562,37 +1562,10 @@ impl<M: InputModeKind> TextElement<M> {
             icons: vec![],
         };
 
-        let fold_infos: Vec<FoldInfo> = {
-            let state = self.state.read(cx);
-            if !state.mode.is_folding() {
-                return icon_layout;
-            }
+        let Some(fold_infos) = Self::collect_fold_infos(self.state.read(cx), last_layout) else {
+            return icon_layout;
+        };
 
-            let mut infos = Vec::with_capacity(last_layout.visible_buffer_lines.len());
-            let mut offset_y = last_layout.visible_top;
-
-            for (line, &buffer_line) in last_layout
-                .lines
-                .iter()
-                .zip(last_layout.visible_buffer_lines.iter())
-            {
-                if state.display_map.is_fold_candidate(buffer_line) {
-                    let is_folded = state.display_map.is_folded_at(buffer_line);
-                    infos.push(FoldInfo {
-                        buffer_line,
-                        is_folded,
-                        display_row: buffer_line,
-                        offset_y,
-                    });
-                }
-
-                offset_y += line.wrapped_lines.len() * last_layout.line_height;
-            }
-
-            infos
-        }; // state is dropped here
-
-        // Second pass: create and prepaint icons
         let line_height = last_layout.line_height;
         let line_number_width =
             last_layout.line_number_width - LINE_NUMBER_RIGHT_MARGIN - FOLD_ICON_HITBOX_WIDTH;
@@ -1612,55 +1585,7 @@ impl<M: InputModeKind> TextElement<M> {
                 size(FOLD_ICON_HITBOX_WIDTH, line_height),
             );
 
-            // Create and prepaint icon
-            let child = self
-                .state
-                .read(cx)
-                .editor_style
-                .fold_icon_renderer
-                .as_ref()
-                .map(|render| render(ix, info.is_folded))
-                .unwrap_or_else(|| {
-                    let (path, svg) = if info.is_folded {
-                        ("input-fold-chevron-right", FOLD_CHEVRON_RIGHT_SVG)
-                    } else {
-                        ("input-fold-chevron-down", FOLD_CHEVRON_DOWN_SVG)
-                    };
-                    gpui::canvas(
-                        |_, _, _| {},
-                        move |bounds, _, window, cx| {
-                            let color = window.text_style().color;
-                            let _ = window.paint_svg(
-                                bounds,
-                                path.into(),
-                                Some(svg),
-                                gpui::TransformationMatrix::default(),
-                                color,
-                                cx,
-                            );
-                        },
-                    )
-                    .size(FOLD_ICON_WIDTH)
-                    .into_any_element()
-                });
-            let mut icon = gpui::div()
-                .id(("fold", ix))
-                .size(FOLD_ICON_WIDTH)
-                .child(child)
-                .on_mouse_down(MouseButton::Left, {
-                    let state = self.state.clone();
-                    let buffer_line = info.buffer_line;
-                    move |_, _: &mut Window, cx: &mut App| {
-                        cx.stop_propagation();
-
-                        state.update(cx, |state, cx| {
-                            state.display_map.toggle_fold(buffer_line);
-                            cx.notify();
-                        });
-                    }
-                })
-                .into_any_element();
-
+            let mut icon = self.fold_icon_element(ix, info, cx);
             icon.prepaint_as_root(
                 fold_icon_bounds.origin,
                 fold_icon_bounds.size.into(),
@@ -1674,6 +1599,95 @@ impl<M: InputModeKind> TextElement<M> {
         }
 
         icon_layout
+    }
+
+    /// Collect fold icon candidates for the visible lines.
+    ///
+    /// Returns `None` when folding is disabled, so the caller can return an
+    /// icon layout containing only the gutter hitbox.
+    fn collect_fold_infos(
+        state: &InputBaseState<M>,
+        last_layout: &LastLayout,
+    ) -> Option<Vec<FoldInfo>> {
+        if !state.mode.is_folding() {
+            return None;
+        }
+
+        let mut infos = Vec::with_capacity(last_layout.visible_buffer_lines.len());
+        let mut offset_y = last_layout.visible_top;
+
+        for (line, &buffer_line) in last_layout
+            .lines
+            .iter()
+            .zip(last_layout.visible_buffer_lines.iter())
+        {
+            if state.display_map.is_fold_candidate(buffer_line) {
+                let is_folded = state.display_map.is_folded_at(buffer_line);
+                infos.push(FoldInfo {
+                    buffer_line,
+                    is_folded,
+                    display_row: buffer_line,
+                    offset_y,
+                });
+            }
+
+            offset_y += line.wrapped_lines.len() * last_layout.line_height;
+        }
+
+        Some(infos)
+    }
+
+    /// Build one fold icon: a custom renderer when configured, otherwise the
+    /// default chevron canvas, wrapped in a clickable fixed-size container.
+    fn fold_icon_element(&self, ix: usize, info: &FoldInfo, cx: &mut App) -> AnyElement {
+        let child = self
+            .state
+            .read(cx)
+            .editor_style
+            .fold_icon_renderer
+            .as_ref()
+            .map(|render| render(ix, info.is_folded))
+            .unwrap_or_else(|| {
+                let (path, svg) = if info.is_folded {
+                    ("input-fold-chevron-right", FOLD_CHEVRON_RIGHT_SVG)
+                } else {
+                    ("input-fold-chevron-down", FOLD_CHEVRON_DOWN_SVG)
+                };
+                gpui::canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, cx| {
+                        let color = window.text_style().color;
+                        let _ = window.paint_svg(
+                            bounds,
+                            path.into(),
+                            Some(svg),
+                            gpui::TransformationMatrix::default(),
+                            color,
+                            cx,
+                        );
+                    },
+                )
+                .size(FOLD_ICON_WIDTH)
+                .into_any_element()
+            });
+
+        gpui::div()
+            .id(("fold", ix))
+            .size(FOLD_ICON_WIDTH)
+            .child(child)
+            .on_mouse_down(MouseButton::Left, {
+                let state = self.state.clone();
+                let buffer_line = info.buffer_line;
+                move |_, _: &mut Window, cx: &mut App| {
+                    cx.stop_propagation();
+
+                    state.update(cx, |state, cx| {
+                        state.display_map.toggle_fold(buffer_line);
+                        cx.notify();
+                    });
+                }
+            })
+            .into_any_element()
     }
 
     /// Paint fold icons using prepaint hitboxes.
