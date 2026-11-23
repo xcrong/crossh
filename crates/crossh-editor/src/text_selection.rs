@@ -820,6 +820,23 @@ impl SelectionEndpoint {
     }
 }
 
+#[derive(Default)]
+struct EndpointCandidates {
+    hit: Option<(
+        WeakEntity<SelectableTextState>,
+        Rc<TextSelectionRegistration>,
+        f32,
+    )>,
+    predecessor: Option<(
+        WeakEntity<SelectableTextState>,
+        Rc<TextSelectionRegistration>,
+    )>,
+    first: Option<(
+        WeakEntity<SelectableTextState>,
+        Rc<TextSelectionRegistration>,
+    )>,
+}
+
 /// Window-local generic text-selection state.
 #[derive(Default)]
 struct WindowSelectionState {
@@ -1266,27 +1283,12 @@ impl WindowSelectionState {
         self.publish_snapshots(cx);
     }
 
-    fn endpoint(
-        &mut self,
+    fn endpoint_candidates(
+        &self,
         position: Point<Pixels>,
         window: Option<&Window>,
-        cx: &App,
-    ) -> SelectionEndpoint {
-        self.prune_dead_participants();
-        let mut hit: Option<(
-            WeakEntity<SelectableTextState>,
-            Rc<TextSelectionRegistration>,
-            f32,
-        )> = None;
-        let mut predecessor: Option<(
-            WeakEntity<SelectableTextState>,
-            Rc<TextSelectionRegistration>,
-        )> = None;
-        let mut first: Option<(
-            WeakEntity<SelectableTextState>,
-            Rc<TextSelectionRegistration>,
-        )> = None;
-
+    ) -> EndpointCandidates {
+        let mut candidates = EndpointCandidates::default();
         for registration in self.participants.values() {
             if registration.registration.scope != self.active_scope
                 || registration.participant.upgrade().is_none()
@@ -1301,12 +1303,12 @@ impl WindowSelectionState {
             if hovered {
                 let area = f32::from(participant_geometry.bounds.size.width)
                     * f32::from(participant_geometry.bounds.size.height);
-                if hit.as_ref().is_none_or(|(_, best, best_area)| {
+                if candidates.hit.as_ref().is_none_or(|(_, best, best_area)| {
                     area < *best_area
                         || (area == *best_area
                             && participant_geometry.document_order < best.document_order)
                 }) {
-                    hit = Some((
+                    candidates.hit = Some((
                         registration.participant.clone(),
                         participant_geometry.clone(),
                         area,
@@ -1314,28 +1316,43 @@ impl WindowSelectionState {
                 }
             }
             if participant_geometry.bounds.top() <= position.y
-                && predecessor.as_ref().is_none_or(|(_, best)| {
+                && candidates.predecessor.as_ref().is_none_or(|(_, best)| {
                     participant_geometry.bounds.top() > best.bounds.top()
                         || (participant_geometry.bounds.top() == best.bounds.top()
                             && participant_geometry.document_order < best.document_order)
                 })
             {
-                predecessor = Some((
+                candidates.predecessor = Some((
                     registration.participant.clone(),
                     participant_geometry.clone(),
                 ));
             }
-            if first.as_ref().is_none_or(|(_, best)| {
+            if candidates.first.as_ref().is_none_or(|(_, best)| {
                 participant_geometry.bounds.top() < best.bounds.top()
                     || (participant_geometry.bounds.top() == best.bounds.top()
                         && participant_geometry.document_order < best.document_order)
             }) {
-                first = Some((
+                candidates.first = Some((
                     registration.participant.clone(),
                     participant_geometry.clone(),
                 ));
             }
         }
+        candidates
+    }
+
+    fn endpoint(
+        &mut self,
+        position: Point<Pixels>,
+        window: Option<&Window>,
+        cx: &App,
+    ) -> SelectionEndpoint {
+        self.prune_dead_participants();
+        let EndpointCandidates {
+            hit,
+            predecessor,
+            first,
+        } = self.endpoint_candidates(position, window);
 
         let selection = hit
             .map(|(participant, registration, _)| (participant, registration, true))
