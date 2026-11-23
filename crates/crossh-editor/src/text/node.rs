@@ -7,7 +7,7 @@ use std::{
 use gpui::{
     AnyElement, App, DefiniteLength, Div, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla,
     Image, ImageFormat, InteractiveElement as _, IntoElement, Length, ObjectFit, Overflow,
-    ParentElement, Pixels, ScrollHandle, SharedString, SharedUri, Stateful,
+    ParentElement, Pixels, Rems, ScrollHandle, SharedString, SharedUri, Stateful,
     StatefulInteractiveElement, StyleRefinement, Styled, StyledImage as _, WhiteSpace, Window, div,
     img, prelude::FluentBuilder as _, px, relative, rems,
 };
@@ -2448,51 +2448,10 @@ impl BlockNode {
                 .into_any_element(),
             BlockNode::Heading {
                 level, children, ..
-            } => {
-                let (text_size, font_weight) = match level {
-                    1 => (rems(2.), FontWeight::BOLD),
-                    2 => (rems(1.5), FontWeight::SEMIBOLD),
-                    3 => (rems(1.25), FontWeight::SEMIBOLD),
-                    4 => (rems(1.125), FontWeight::SEMIBOLD),
-                    5 => (rems(1.), FontWeight::SEMIBOLD),
-                    6 => (rems(1.), FontWeight::MEDIUM),
-                    _ => (rems(1.), FontWeight::NORMAL),
-                };
-
-                let mut text_size = text_size.to_pixels(node_cx.style.heading_base_font_size());
-                if let Some(size) = node_cx.style.heading_font_size(*level) {
-                    text_size = size;
-                }
-
-                div()
-                    .id(SharedString::from(format!("h{}-{}", level, ix)))
-                    .pb(rems(0.3))
-                    .whitespace_normal()
-                    .text_size(text_size)
-                    .font_weight(font_weight)
-                    .child(children.render(node_cx, window, cx))
-                    .into_any_element()
+            } => Self::render_heading(*level, children, ix, node_cx, window, cx),
+            BlockNode::Blockquote { children, .. } => {
+                Self::render_blockquote(children, ix, mb, options, node_cx, window, cx)
             }
-            BlockNode::Blockquote { children, .. } => div()
-                .w_full()
-                .pb(mb)
-                .child(
-                    div()
-                        .id(("blockquote", ix))
-                        .w_full()
-                        .text_color(node_cx.style.muted_foreground())
-                        .border_l_3()
-                        .border_color(node_cx.style.border())
-                        .px_4()
-                        .children({
-                            let children_len = children.len();
-                            children.into_iter().enumerate().map(move |(index, c)| {
-                                let is_last = index == children_len - 1;
-                                c.render_block(options.is_last(is_last), node_cx, window, cx)
-                            })
-                        }),
-                )
-                .into_any_element(),
             BlockNode::List {
                 children, ordered, ..
             } => v_flex()
@@ -2557,6 +2516,74 @@ impl BlockNode {
                 div().into_any_element()
             }
         }
+    }
+
+    /// Render a heading block: level-dependent size/weight, optionally
+    /// overridden by the active style's heading font sizes.
+    fn render_heading(
+        level: u8,
+        children: &Paragraph,
+        ix: usize,
+        node_cx: &NodeContext,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
+        let (text_size, font_weight) = match level {
+            1 => (rems(2.), FontWeight::BOLD),
+            2 => (rems(1.5), FontWeight::SEMIBOLD),
+            3 => (rems(1.25), FontWeight::SEMIBOLD),
+            4 => (rems(1.125), FontWeight::SEMIBOLD),
+            5 => (rems(1.), FontWeight::SEMIBOLD),
+            6 => (rems(1.), FontWeight::MEDIUM),
+            _ => (rems(1.), FontWeight::NORMAL),
+        };
+
+        let mut text_size = text_size.to_pixels(node_cx.style.heading_base_font_size());
+        if let Some(size) = node_cx.style.heading_font_size(level) {
+            text_size = size;
+        }
+
+        div()
+            .id(SharedString::from(format!("h{}-{}", level, ix)))
+            .pb(rems(0.3))
+            .whitespace_normal()
+            .text_size(text_size)
+            .font_weight(font_weight)
+            .child(children.render(node_cx, window, cx))
+            .into_any_element()
+    }
+
+    /// Render a blockquote: a left-bordered container whose children only
+    /// suppress their bottom margin on the last line.
+    fn render_blockquote(
+        children: &[BlockNode],
+        ix: usize,
+        mb: Rems,
+        options: NodeRenderOptions,
+        node_cx: &NodeContext,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
+        div()
+            .w_full()
+            .pb(mb)
+            .child(
+                div()
+                    .id(("blockquote", ix))
+                    .w_full()
+                    .text_color(node_cx.style.muted_foreground())
+                    .border_l_3()
+                    .border_color(node_cx.style.border())
+                    .px_4()
+                    .children({
+                        let children_len = children.len();
+                        children.iter().enumerate().map(move |(index, c)| {
+                            let is_last = index == children_len - 1;
+                            c.render_block(options.is_last(is_last), node_cx, window, cx)
+                        })
+                    }),
+            )
+            .into_any_element()
     }
 }
 
