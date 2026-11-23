@@ -1,4 +1,7 @@
-use crate::input::{InputEditorStyle, InputExtras as _, InputModeKind, Selection};
+use crate::input::{
+    HighlightStyleResolver, InputEditorStyle, InputExtras as _, InputHighlighter, InputModeKind,
+    Selection,
+};
 use gpui::Corners;
 use gpui::Half;
 use gpui::{
@@ -101,6 +104,80 @@ fn compose_decoration_collections<'a>(
     }
 
     (!styles.is_empty()).then_some(styles)
+}
+
+/// Highlights the visible buffer lines one contiguous group at a time.
+///
+/// Returns the grouped `styles` alongside the byte ranges of the flushed
+/// groups; callers clip the composed styles to these so the resulting runs
+/// cover exactly the visible (non-folded) lines' bytes.
+fn highlight_visible_ranges(
+    highlighter: &dyn InputHighlighter,
+    text: &Rope,
+    visible_buffer_lines: &[usize],
+    is_multi_line: bool,
+    resolver: &dyn HighlightStyleResolver,
+) -> (Vec<(Range<usize>, HighlightStyle)>, Vec<Range<usize>>) {
+    let mut styles = Vec::with_capacity(visible_buffer_lines.len());
+    // Byte ranges of the flushed line groups; the composed styles are
+    // clipped to these at the end so the resulting runs cover exactly the
+    // visible (non-folded) lines' bytes.
+    let mut group_ranges: Vec<Range<usize>> = Vec::new();
+
+    // Helper to flush a contiguous range of lines. These ranges are disjoint,
+    // so appending avoids repeatedly cloning and recombining prior styles.
+    let mut flush_range = |start_line: usize, end_line: usize, skip: bool, styles: &mut Vec<_>| {
+        let byte_start = text.line_start_offset(start_line);
+        let byte_end = if is_multi_line {
+            // +1 for `\n`
+            text.line_start_offset(end_line + 1)
+        } else {
+            text.line_end_offset(end_line)
+        };
+        let range_styles = if skip {
+            vec![(byte_start..byte_end, HighlightStyle::default())]
+        } else {
+            highlighter.styles(&(byte_start..byte_end), resolver)
+        };
+
+        group_ranges.push(byte_start..byte_end);
+        styles.extend(range_styles);
+    };
+
+    // Group contiguous visible lines into ranges and call styles() once per range
+    let mut visible_iter = visible_buffer_lines.iter().peekable();
+    let mut range_start: Option<usize> = None;
+
+    while let Some(&line) = visible_iter.next() {
+        // Check if this line is too long for highlighting
+        let line_len = text.slice_line(line).len();
+        if line_len > MAX_HIGHLIGHT_LINE_LENGTH {
+            // Flush any accumulated range first
+            if let Some(start) = range_start.take() {
+                flush_range(start, line - 1, false, &mut styles);
+            }
+
+            flush_range(line, line, true, &mut styles);
+            continue;
+        }
+
+        range_start.get_or_insert(line);
+
+        // Check if next line is contiguous, if so keep accumulating
+        if visible_iter
+            .peek()
+            .map(|&&next| next == line + 1)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+
+        // Flush the contiguous range
+        let start_line = range_start.take().unwrap();
+        flush_range(start_line, line, false, &mut styles);
+    }
+
+    (styles, group_ranges)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1999,68 +2076,13 @@ impl<M: InputModeKind> TextElement<M> {
                 .flatten();
         };
 
-        let mut styles = Vec::with_capacity(visible_buffer_lines.len());
-        // Byte ranges of the flushed line groups; the composed styles are
-        // clipped to these at the end so the resulting runs cover exactly the
-        // visible (non-folded) lines' bytes.
-        let mut group_ranges: Vec<Range<usize>> = Vec::new();
-
-        // Helper to flush a contiguous range of lines. These ranges are disjoint,
-        // so appending avoids repeatedly cloning and recombining prior styles.
-        let mut flush_range =
-            |start_line: usize, end_line: usize, skip: bool, styles: &mut Vec<_>| {
-                let byte_start = text.line_start_offset(start_line);
-                let byte_end = if is_multi_line {
-                    // +1 for `\n`
-                    text.line_start_offset(end_line + 1)
-                } else {
-                    text.line_end_offset(end_line)
-                };
-                let range_styles = if skip {
-                    vec![(byte_start..byte_end, HighlightStyle::default())]
-                } else {
-                    highlighter.styles(
-                        &(byte_start..byte_end),
-                        state.editor_style.highlight_styles.as_ref(),
-                    )
-                };
-
-                group_ranges.push(byte_start..byte_end);
-                styles.extend(range_styles);
-            };
-
-        // Group contiguous visible lines into ranges and call styles() once per range
-        let mut visible_iter = visible_buffer_lines.iter().peekable();
-        let mut range_start: Option<usize> = None;
-
-        while let Some(&line) = visible_iter.next() {
-            // Check if this line is too long for highlighting
-            let line_len = text.slice_line(line).len();
-            if line_len > MAX_HIGHLIGHT_LINE_LENGTH {
-                // Flush any accumulated range first
-                if let Some(start) = range_start.take() {
-                    flush_range(start, line - 1, false, &mut styles);
-                }
-
-                flush_range(line, line, true, &mut styles);
-                continue;
-            }
-
-            range_start.get_or_insert(line);
-
-            // Check if next line is contiguous, if so keep accumulating
-            if visible_iter
-                .peek()
-                .map(|&&next| next == line + 1)
-                .unwrap_or(false)
-            {
-                continue;
-            }
-
-            // Flush the contiguous range
-            let start_line = range_start.take().unwrap();
-            flush_range(start_line, line, false, &mut styles);
-        }
+        let (mut styles, group_ranges) = highlight_visible_ranges(
+            highlighter.as_ref(),
+            text,
+            visible_buffer_lines,
+            is_multi_line,
+            state.editor_style.highlight_styles.as_ref(),
+        );
 
         let diagnostic_styles: Vec<_> = diagnostics
             .range(visible_byte_range.clone())
