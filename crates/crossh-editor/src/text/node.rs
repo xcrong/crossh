@@ -182,18 +182,8 @@ impl BlockNode {
             BlockNode::Heading {
                 level, children, ..
             } => {
-                let block_text = match kind {
-                    BlockTextKind::All => children.text(),
-                    BlockTextKind::Selected => children.selected_text(),
-                    BlockTextKind::SelectedSource => children.selected_source(),
-                };
+                let block_text = Self::heading_text(*level, children, kind);
                 if !block_text.is_empty() {
-                    // In source mode, prefix the heading marker so a selected
-                    // heading round-trips as Markdown (e.g. `## Title`).
-                    if matches!(kind, BlockTextKind::SelectedSource) {
-                        text.push_str(&"#".repeat(*level as usize));
-                        text.push(' ');
-                    }
                     text.push_str(&block_text);
                     text.push('\n');
                 }
@@ -213,59 +203,16 @@ impl BlockNode {
                 text.push_str(&Self::children_text(children, kind));
             }
             BlockNode::Blockquote { children, .. } => {
-                let block_text = Self::children_text(children, kind);
-
-                if !block_text.is_empty() {
-                    if matches!(kind, BlockTextKind::SelectedSource) {
-                        // Prefix every line with `> ` so a selected blockquote
-                        // round-trips as Markdown.
-                        let quoted = block_text
-                            .trim_end_matches('\n')
-                            .lines()
-                            .map(|line| {
-                                if line.is_empty() {
-                                    ">".to_string()
-                                } else {
-                                    format!("> {}", line)
-                                }
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        text.push_str(&quoted);
-                    } else {
-                        text.push_str(&block_text);
-                    }
+                if let Some(block_text) = Self::blockquote_text(children, kind) {
+                    text.push_str(&block_text);
                     text.push('\n');
                 }
             }
             BlockNode::Table(table) => {
-                if matches!(kind, BlockTextKind::SelectedSource) {
-                    let block_text = table_selected_source(table);
-                    if !block_text.is_empty() {
-                        text.push_str(&block_text);
-                        text.push('\n');
-                    }
-                } else {
-                    let mut block_text = String::new();
-                    for row in table.children.iter() {
-                        let mut row_texts = vec![];
-                        for cell in row.children.iter() {
-                            row_texts.push(match kind {
-                                BlockTextKind::All => cell.children.text(),
-                                // Source is handled above; only Selected reaches here.
-                                _ => cell.children.selected_text(),
-                            });
-                        }
-                        if !row_texts.is_empty() {
-                            block_text.push_str(&row_texts.join(" "));
-                            block_text.push('\n');
-                        }
-                    }
-
-                    if !block_text.is_empty() {
-                        text.push_str(&block_text);
-                        text.push('\n');
-                    }
+                let block_text = Self::table_text(table, kind);
+                if !block_text.is_empty() {
+                    text.push_str(&block_text);
+                    text.push('\n');
                 }
             }
             BlockNode::CodeBlock(code_block) => {
@@ -295,6 +242,88 @@ impl BlockNode {
         }
 
         text
+    }
+
+    /// The content a heading appends: its rendered or selected text, with the
+    /// `#` marker in source mode. Returns an empty string when there is nothing
+    /// to append, so the marker never appears on its own.
+    fn heading_text(level: u8, children: &Paragraph, kind: BlockTextKind) -> String {
+        let block_text = match kind {
+            BlockTextKind::All => children.text(),
+            BlockTextKind::Selected => children.selected_text(),
+            BlockTextKind::SelectedSource => children.selected_source(),
+        };
+        if block_text.is_empty() {
+            return block_text;
+        }
+
+        // In source mode, prefix the heading marker so a selected heading
+        // round-trips as Markdown (e.g. `## Title`).
+        if matches!(kind, BlockTextKind::SelectedSource) {
+            let mut text = "#".repeat(level as usize);
+            text.push(' ');
+            text.push_str(&block_text);
+            text
+        } else {
+            block_text
+        }
+    }
+
+    /// The content a blockquote appends. `None` when the children are empty, so
+    /// no trailing newline is added; source mode prefixes every line with
+    /// `> `, turning empty lines into a bare `>`.
+    fn blockquote_text(children: &[BlockNode], kind: BlockTextKind) -> Option<String> {
+        let block_text = Self::children_text(children, kind);
+        if block_text.is_empty() {
+            return None;
+        }
+        if !matches!(kind, BlockTextKind::SelectedSource) {
+            return Some(block_text);
+        }
+
+        // Prefix every line with `> ` so a selected blockquote round-trips as
+        // Markdown.
+        Some(
+            block_text
+                .trim_end_matches('\n')
+                .lines()
+                .map(|line| {
+                    if line.is_empty() {
+                        ">".to_string()
+                    } else {
+                        format!("> {}", line)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    }
+
+    /// The content a table appends. Source mode rebuilds the selected cells as
+    /// Markdown; otherwise each row joins its cell text with a space and a
+    /// trailing newline.
+    fn table_text(table: &Table, kind: BlockTextKind) -> String {
+        if matches!(kind, BlockTextKind::SelectedSource) {
+            return table_selected_source(table);
+        }
+
+        let mut block_text = String::new();
+        for row in table.children.iter() {
+            let mut row_texts = vec![];
+            for cell in row.children.iter() {
+                row_texts.push(match kind {
+                    BlockTextKind::All => cell.children.text(),
+                    // Source is handled above; only Selected reaches here.
+                    _ => cell.children.selected_text(),
+                });
+            }
+            if !row_texts.is_empty() {
+                block_text.push_str(&row_texts.join(" "));
+                block_text.push('\n');
+            }
+        }
+
+        block_text
     }
 
     fn children_text(children: &[BlockNode], kind: BlockTextKind) -> String {
