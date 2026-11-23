@@ -320,7 +320,6 @@ where
 
     /// Determines if start and end tags can be omitted.
     /// Whitespace rules are ignored if `collapse_whitespace` is enabled.
-    #[allow(clippy::too_many_lines)]
     fn omit_tags(
         &self,
         ctx: &Option<Context>,
@@ -329,124 +328,136 @@ where
         empty_attributes: bool,
     ) -> (bool, bool) {
         ctx.as_ref().map_or((false, false), |ctx| match name {
-            "html" => {
-                // The end tag may be omitted if the <html> element is not immediately followed by a comment.
-                let omit_end = ctx.right.map_or(true, |right| !self.next_is_comment(right));
-                // The start tag may be omitted if the first thing inside the <html> element is not a comment.
-                let omit_start =
-                    empty_attributes && omit_end && !self.next_is_comment(&*node.children.borrow());
-
-                (omit_start, omit_end)
-            }
-            "head" => {
-                // The end tag may be omitted if the first thing following the <head> element is not a space character or a comment.
-                let omit_end = ctx.right.map_or(true, |right| {
-                    right
-                        .iter()
-                        .find_map(|node| match &node.data {
-                            NodeData::Text { contents } => self.is_whitespace(contents),
-                            NodeData::Comment { .. } => {
-                                if self.preserve_comments {
-                                    Some(false)
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => Some(true),
-                        })
-                        .unwrap_or(true)
-                });
-                // The start tag may be omitted if the first thing inside the <head> element is an element.
-                let omit_start = empty_attributes
-                    && omit_end
-                    && node
-                        .children
-                        .borrow()
-                        .iter()
-                        .find_map(|node| match &node.data {
-                            NodeData::Text { contents } => self.is_whitespace(contents),
-                            NodeData::Element { .. } => Some(true),
-                            NodeData::Comment { .. } => {
-                                if self.preserve_comments {
-                                    Some(false)
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => Some(false),
-                        })
-                        .unwrap_or(true);
-
-                (omit_start, omit_end)
-            }
-            "body" => {
-                // The start tag may be omitted if the first thing inside it is not a space character, comment, <script> element or <style> element.
-                let omit_start = empty_attributes
-                    && node
-                        .children
-                        .borrow()
-                        .iter()
-                        .find_map(|node| match &node.data {
-                            NodeData::Text { contents } => self.is_whitespace(contents),
-                            NodeData::Element { name, .. } => {
-                                Some(!matches!(name.local.as_ref(), "script" | "style"))
-                            }
-                            NodeData::Comment { .. } => {
-                                if self.preserve_comments {
-                                    Some(false)
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => Some(true),
-                        })
-                        .unwrap_or(true);
-                // The end tag may be omitted if the <body> element has contents or has a start tag, and is not immediately followed by a comment.
-                let omit_end = ctx.right.map_or(true, |right| !self.next_is_comment(right));
-
-                (omit_start && omit_end, omit_end)
-            }
-            "p" => {
-                let omit_end = ctx.next_element().map_or(true, |node| {
-                    if let NodeData::Element { name, .. } = &node.data {
-                        matches!(
-                            name.local.as_ref().to_ascii_lowercase().as_str(),
-                            "address"
-                                | "article"
-                                | "aside"
-                                | "blockquote"
-                                | "div"
-                                | "dl"
-                                | "fieldset"
-                                | "footer"
-                                | "form"
-                                | "h1"
-                                | "h2"
-                                | "h3"
-                                | "h4"
-                                | "h5"
-                                | "h6"
-                                | "header"
-                                | "hr"
-                                | "menu"
-                                | "nav"
-                                | "ol"
-                                | "p"
-                                | "pre"
-                                | "section"
-                                | "table"
-                                | "ul"
-                        )
-                    } else {
-                        false
-                    }
-                });
-
-                (false, omit_end)
-            }
+            "html" => self.omit_html_tag(ctx, node, empty_attributes),
+            "head" => self.omit_head_tag(ctx, node, empty_attributes),
+            "body" => self.omit_body_tag(ctx, node, empty_attributes),
+            "p" => self.omit_p_tag(ctx),
             // TODO: comprehensive handling of optional end element rules
             _ => (false, optional_end_tag(name)),
         })
+    }
+
+    /// Determines if the `<html>` start and end tags can be omitted.
+    fn omit_html_tag(&self, ctx: &Context, node: &Node, empty_attributes: bool) -> (bool, bool) {
+        // The end tag may be omitted if the <html> element is not immediately followed by a comment.
+        let omit_end = ctx.right.map_or(true, |right| !self.next_is_comment(right));
+        // The start tag may be omitted if the first thing inside the <html> element is not a comment.
+        let omit_start =
+            empty_attributes && omit_end && !self.next_is_comment(&*node.children.borrow());
+
+        (omit_start, omit_end)
+    }
+
+    /// Determines if the `<head>` start and end tags can be omitted.
+    fn omit_head_tag(&self, ctx: &Context, node: &Node, empty_attributes: bool) -> (bool, bool) {
+        // The end tag may be omitted if the first thing following the <head> element is not a space character or a comment.
+        let omit_end = ctx.right.map_or(true, |right| {
+            right
+                .iter()
+                .find_map(|node| match &node.data {
+                    NodeData::Text { contents } => self.is_whitespace(contents),
+                    NodeData::Comment { .. } => {
+                        if self.preserve_comments {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => Some(true),
+                })
+                .unwrap_or(true)
+        });
+        // The start tag may be omitted if the first thing inside the <head> element is an element.
+        let omit_start = empty_attributes
+            && omit_end
+            && node
+                .children
+                .borrow()
+                .iter()
+                .find_map(|node| match &node.data {
+                    NodeData::Text { contents } => self.is_whitespace(contents),
+                    NodeData::Element { .. } => Some(true),
+                    NodeData::Comment { .. } => {
+                        if self.preserve_comments {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => Some(false),
+                })
+                .unwrap_or(true);
+
+        (omit_start, omit_end)
+    }
+
+    /// Determines if the `<body>` start and end tags can be omitted.
+    fn omit_body_tag(&self, ctx: &Context, node: &Node, empty_attributes: bool) -> (bool, bool) {
+        // The start tag may be omitted if the first thing inside it is not a space character, comment, <script> element or <style> element.
+        let omit_start = empty_attributes
+            && node
+                .children
+                .borrow()
+                .iter()
+                .find_map(|node| match &node.data {
+                    NodeData::Text { contents } => self.is_whitespace(contents),
+                    NodeData::Element { name, .. } => {
+                        Some(!matches!(name.local.as_ref(), "script" | "style"))
+                    }
+                    NodeData::Comment { .. } => {
+                        if self.preserve_comments {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => Some(true),
+                })
+                .unwrap_or(true);
+        // The end tag may be omitted if the <body> element has contents or has a start tag, and is not immediately followed by a comment.
+        let omit_end = ctx.right.map_or(true, |right| !self.next_is_comment(right));
+
+        (omit_start && omit_end, omit_end)
+    }
+
+    /// Determines if the `<p>` end tag can be omitted.
+    fn omit_p_tag(&self, ctx: &Context) -> (bool, bool) {
+        let omit_end = ctx.next_element().map_or(true, |node| {
+            if let NodeData::Element { name, .. } = &node.data {
+                matches!(
+                    name.local.as_ref().to_ascii_lowercase().as_str(),
+                    "address"
+                        | "article"
+                        | "aside"
+                        | "blockquote"
+                        | "div"
+                        | "dl"
+                        | "fieldset"
+                        | "footer"
+                        | "form"
+                        | "h1"
+                        | "h2"
+                        | "h3"
+                        | "h4"
+                        | "h5"
+                        | "h6"
+                        | "header"
+                        | "hr"
+                        | "menu"
+                        | "nav"
+                        | "ol"
+                        | "p"
+                        | "pre"
+                        | "section"
+                        | "table"
+                        | "ul"
+                )
+            } else {
+                false
+            }
+        });
+
+        (false, omit_end)
     }
 
     #[allow(clippy::needless_pass_by_value)]
