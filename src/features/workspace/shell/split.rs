@@ -226,6 +226,11 @@ impl AppShell {
     }
 
     fn split_active_pane(&mut self, axis: Axis, cx: &mut Context<Self>) {
+        // Scratch 悬浮时不拆背后终端：焦点在临时终端内，cmd-d 冒泡到 #app-shell
+        // 也应直接丢弃，避免误拆工作区分屏。
+        if self.scratch_visible {
+            return;
+        }
         let Some(tab) = self.workspace.active_tab() else {
             return;
         };
@@ -252,6 +257,9 @@ impl AppShell {
     }
 
     fn toggle_split(&mut self, axis: Axis, cx: &mut Context<Self>) {
+        if self.scratch_visible {
+            return;
+        }
         let Some(tab) = self.workspace.active_tab() else {
             return;
         };
@@ -278,6 +286,9 @@ impl AppShell {
     }
 
     pub(crate) fn move_split_focus(&mut self, direction: Direction, cx: &mut Context<Self>) {
+        if self.scratch_visible {
+            return;
+        }
         let Some(tab) = self.workspace.active_tab() else {
             return;
         };
