@@ -10,6 +10,11 @@ fn main() {
     // Windows GUI 子系统下无控制台：挂回父控制台，保证 --help/错误输出可见。
     crossh_core::process::attach_parent_console();
 
+    // 独立子进程不经过根 bin 的 `app::bootstrap::init()`：不在这里初始化，
+    // 本进程里所有 `log::warn!` 都没有 sink，panic 也没有 hook 落盘 run.log。
+    // 必须早于 `parse_cli`（任何 warn 都要有 sink）。
+    crossh_core::logging::init();
+
     let args = std::env::args().skip(1);
     let command = match git_launcher::parse_cli(
         args,
