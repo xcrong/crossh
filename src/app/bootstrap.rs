@@ -1,7 +1,7 @@
-//! Application bootstrap: process-wide logging and tokio runtime.
+//! 应用启动装配：进程级日志与 tokio 运行时。
 //!
-//! Extracted from `src/infrastructure/{logging,runtime}.rs` to keep `main.rs`
-//! thin while co-locating startup concerns under `app::`.
+//! 从 `src/infrastructure/{logging,runtime}.rs` 抽出，保持 `main.rs`
+//! 轻薄，把启动相关的装配集中在 `app::` 下。
 //!
 //! 日志本体（路径、裁剪、tee 到文件）与 panic hook 在 `crossh_core::logging`：
 //! 独立子进程 `crossh-note` 也要用同一份实现。

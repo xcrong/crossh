@@ -71,7 +71,7 @@ crates/
   crossh-ui-component/        通用 GPUI 控件（按钮、徽章、头像、分隔线等）
 src/
   main.rs                     入口编排：窗口、快捷键、启动顺序
-  infrastructure/logging.rs  日志、panic hook、日志裁剪
+  crossh-core/src/logging.rs        日志、panic hook、日志裁剪
   features/                   GPUI feature views 和跨 crate adapters
     terminal/                 Zed terminal 的终端视图宿主
     git/                      Git Viewer 窗口与变更操作

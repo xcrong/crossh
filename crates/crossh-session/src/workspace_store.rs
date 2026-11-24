@@ -233,19 +233,25 @@ fn sync_dir(path: &Path) -> io::Result<()> {
 
 /// 把格式过新等启动失败写入 `daemon.error`；失败只记日志。
 pub fn write_daemon_error(reason: &str) {
+    // 配置根不可用时无处可写：带上原因记日志，方便按配置根排查。
     let Some(path) = crossh_core::config::daemon_error_path() else {
         log::warn!("daemon error (no config root): {reason}");
         return;
     };
     if let Some(parent) = path.parent() {
         if let Err(error) = std::fs::create_dir_all(parent) {
-            log::warn!("failed to create daemon error dir: {error}");
+            // 带上配置根派生的完整路径，否则只看目录名定位不到是哪个配置根。
+            log::warn!(
+                "failed to create daemon error dir {}: {error}",
+                path.display()
+            );
             return;
         }
         let _ = crossh_core::config::restrict_dir(parent);
     }
     if let Err(error) = std::fs::write(&path, format!("{reason}\n")) {
-        log::warn!("failed to write daemon.error: {error}");
+        // 同上：写失败必须带路径，否则多配置根并存时无法区分。
+        log::warn!("failed to write daemon.error {}: {error}", path.display());
         return;
     }
     let _ = crossh_core::config::restrict_file(&path);
@@ -259,7 +265,11 @@ pub fn clear_daemon_error() {
     if let Err(error) = std::fs::remove_file(&path)
         && error.kind() != io::ErrorKind::NotFound
     {
-        log::warn!("failed to remove stale daemon.error: {error}");
+        // 带上完整路径：陈旧文件删不掉会影响下次状态展示，需按配置根定位。
+        log::warn!(
+            "failed to remove stale daemon.error {}: {error}",
+            path.display()
+        );
     }
 }
 

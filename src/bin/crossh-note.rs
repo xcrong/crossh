@@ -1,4 +1,4 @@
-//! Standalone Note Viewer entry point.
+//! 独立笔记查看器入口。
 //!
 //! 纯装配层：窗口内容来自 `crossh-note-view`，存储层来自 `crossh-note`，
 //! 文本编辑语义与启动器来自 `crossh-core`，主题来自 `crossh-ui`。
