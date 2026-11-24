@@ -1,6 +1,8 @@
 //! Settings persistence. Domain validation stays in the owning features.
 
 use std::fs;
+use std::io;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -63,9 +65,10 @@ pub(crate) fn load() -> SettingsSnapshot {
         Some(path) => match fs::read_to_string(&path) {
             Ok(contents) => match toml::from_str::<SettingsFile>(&contents) {
                 Ok(settings) => settings.into(),
+                // 单字段类型错不应丢整份配置：按节回退，未知/错字段只影响本节。
                 Err(error) => {
-                    log::warn!("failed to parse settings: {error}");
-                    SettingsFile::default().into()
+                    log::warn!("failed to parse settings, falling back per section: {error}");
+                    load_per_section(&contents)
                 }
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -79,6 +82,32 @@ pub(crate) fn load() -> SettingsSnapshot {
     }
 }
 
+/// 整份解析失败时的按节回退：每节独立反序列化，失败只默认本节。
+fn load_per_section(contents: &str) -> SettingsSnapshot {
+    let table: toml::Table = match toml::from_str(contents) {
+        Ok(table) => table,
+        Err(_) => return SettingsFile::default().into(),
+    };
+    let language: LanguagePreference = table
+        .get("language")
+        .and_then(|value| value.clone().try_into().ok())
+        .unwrap_or_default();
+    let terminal: TerminalSettings = table.clone().try_into().unwrap_or_default();
+    let updates = UpdateSettings {
+        check_on_startup: table
+            .get("updates_check_on_startup")
+            .and_then(|value| value.as_bool())
+            .unwrap_or_else(|| UpdateSettings::default().check_on_startup),
+    };
+    let workspace: WorkspaceSettings = table.try_into().unwrap_or_default();
+    SettingsSnapshot {
+        language,
+        terminal: terminal.normalized(),
+        updates,
+        workspace: workspace.normalized(),
+    }
+}
+
 pub(crate) fn save(snapshot: &SettingsSnapshot) -> std::io::Result<()> {
     let Some(path) = crossh_core::config::settings_path() else {
         return Ok(());
@@ -89,8 +118,40 @@ pub(crate) fn save(snapshot: &SettingsSnapshot) -> std::io::Result<()> {
     }
     let contents =
         toml::to_string_pretty(&SettingsFile::from(snapshot)).map_err(std::io::Error::other)?;
-    fs::write(&path, contents)?;
-    let _ = crossh_core::config::restrict_file(&path);
+    save_atomic(&path, contents.as_bytes())
+}
+
+// ponytail: 与 workspace_store::save_atomic 同模式的最小复制（tmp+sync+bak+rename+目录同步），
+// 不跨 crate 抽公共 helper；上限是两处副本，第三处再统一。
+fn save_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let tmp = path.with_extension("toml.tmp");
+    {
+        use std::io::Write;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+    if path.is_file() {
+        let backup = path.with_extension("toml.bak");
+        // Windows 的 rename 不覆盖目标文件；先删旧备份。
+        let _ = fs::remove_file(&backup);
+        fs::rename(path, &backup)?;
+    }
+    fs::rename(&tmp, path)?;
+    let _ = crossh_core::config::restrict_file(path);
+    #[cfg(unix)]
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
     Ok(())
 }
 
@@ -180,6 +241,17 @@ mod tests {
             snapshot.terminal.scrollback,
             crossh_terminal::MAX_SCROLLBACK
         );
+    }
+
+    #[test]
+    fn corrupt_terminal_field_falls_back_per_section() {
+        // terminal_scrollback 类型错：terminal 节回默认，其他节保留。
+        let snapshot = super::load_per_section(
+            "language = \"zh-CN\"\nterminal_scrollback = \"huge\"\nshow_host_sidebar = false\n",
+        );
+        assert_eq!(snapshot.language, LanguagePreference::SimplifiedChinese);
+        assert_eq!(snapshot.terminal, TerminalSettings::default());
+        assert!(!snapshot.workspace.show_host_sidebar);
     }
 
     #[test]

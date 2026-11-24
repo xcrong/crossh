@@ -184,6 +184,14 @@ pub fn decode_frame(buf: &[u8]) -> io::Result<(MessageKind, Vec<u8>)> {
 
 /// 会话级请求/应答载荷（`serde_json` 编码，字段只增不改）。
 /// 全部 `deny_unknown_fields` 缺席：旧端忽略新字段（与能力协商一致）。
+fn default_cols() -> u16 {
+    80
+}
+
+fn default_rows() -> u16 {
+    24
+}
+
 /// 建会话请求（`Create`）。
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct CreateRequest {
@@ -193,7 +201,9 @@ pub struct CreateRequest {
     /// 初始工作目录（`None` = daemon 当前目录）。
     #[serde(default)]
     pub cwd: Option<String>,
+    #[serde(default = "default_cols")]
     pub cols: u16,
+    #[serde(default = "default_rows")]
     pub rows: u16,
     /// 非空时直接执行该命令（`[程序, 参数...]`），不装配交互 shell 集成
     /// 脚本（`run --` 一次性命令用；无 prompt、无 cwd 嗅探）。
