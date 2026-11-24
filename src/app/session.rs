@@ -148,8 +148,7 @@ pub(crate) fn run_daemon_command(action: DaemonAction) -> i32 {
             match crossh_session::probe_daemon().await {
                 DaemonState::Ready(addr) => {
                     let connected = async {
-                        let mut client =
-                            crossh_session::Client::connect_to(&addr).await?;
+                        let mut client = crossh_session::Client::connect_to(&addr).await?;
                         let sessions = client.list().await?;
                         let workspace = client.workspace_get().await?;
                         Ok::<_, std::io::Error>((sessions, workspace))

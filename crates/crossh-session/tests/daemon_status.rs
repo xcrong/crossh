@@ -90,10 +90,11 @@ async fn fake_daemon(reply_version: u32) -> (u16, tokio::task::JoinHandle<()>) {
 }
 
 // 同一二进制内用 env 隔离：两用例串行拿锁，避免 CROSSH_CACHE_DIR 竞态。
-fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-    use std::sync::{Mutex, OnceLock};
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    L.get_or_init(|| Mutex::new(())).lock().unwrap()
+// 用 tokio::sync::Mutex，守卫可持跨 await；std MutexGuard 跨 await 会触发 clippy::await_holding_lock。
+async fn env_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    use std::sync::OnceLock;
+    static L: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    L.get_or_init(|| tokio::sync::Mutex::new(())).lock().await
 }
 
 /// 只回非版本错误帧的假 listener：覆盖握手失败分支（超时/令牌错/欢迎帧损坏同路）。
@@ -118,7 +119,7 @@ async fn serve_handshake_failure(listener: tokio::net::TcpListener) {
 
 #[tokio::test]
 async fn probe_reports_three_states_without_side_effects() {
-    let _env = env_lock();
+    let _env = env_lock().await;
     let root = temp_root();
     let config = root.join("config");
     std::fs::create_dir_all(&config).unwrap();
@@ -194,7 +195,7 @@ async fn probe_reports_three_states_without_side_effects() {
 /// 端口文件逐字节不变；ensure 直接报错，不删文件、不拉新 daemon。
 #[tokio::test]
 async fn handshake_failure_is_absent_not_stale_without_side_effects() {
-    let _env = env_lock();
+    let _env = env_lock().await;
     let root = temp_root();
     let config = root.join("config");
     std::fs::create_dir_all(&config).unwrap();

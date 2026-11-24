@@ -162,11 +162,7 @@ fn compose_ime_overlap(
     let (ime_s, ime_e) = ctx.ime_replacement?;
     // ponytail: 补 ime_e 下界校验，否则 `ime_e.min(l_end) - l_start` 在区间
     // 完全位于行首之前时下溢 panic。
-    if !ctx.ime_marked_text.is_empty()
-        && ime_s <= l_end
-        && ime_e >= l_start
-        && ime_s <= ime_e
-    {
+    if !ctx.ime_marked_text.is_empty() && ime_s <= l_end && ime_e >= l_start && ime_s <= ime_e {
         let start = ime_s.max(l_start) - l_start;
         let end = ime_e.min(l_end).max(ime_s.max(l_start)) - l_start;
         Some((start, end))

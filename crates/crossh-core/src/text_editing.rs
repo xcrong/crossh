@@ -35,7 +35,9 @@ pub fn byte_index_for_utf16(text: &str, offset: usize) -> usize {
 }
 
 pub fn utf16_offset_for_byte(text: &str, byte_index: usize) -> usize {
-    text[..clip_offset_left(text, byte_index)].encode_utf16().count()
+    text[..clip_offset_left(text, byte_index)]
+        .encode_utf16()
+        .count()
 }
 
 pub fn utf16_slice(text: &str, range: Range<usize>) -> String {

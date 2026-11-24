@@ -1180,18 +1180,14 @@ fn render_commit_editor_text(editor: &CommitEditor, focused: bool) -> AnyElement
                 })
                 .child(text_span(&editor.state.value[selected_end..line_end]));
         } else if (line_start..=line_end).contains(&cursor) {
-            row = row.child(text_span(
-                &editor.state.value[line_start..cursor],
-            ));
+            row = row.child(text_span(&editor.state.value[line_start..cursor]));
             if focused {
                 row = row.child(text_caret(px(15.)));
             }
             if !editor.state.ime_marked_text.is_empty() {
                 row = row.child(marked_text_span(editor.state.ime_marked_text.as_str()));
             }
-            row = row.child(text_span(
-                &editor.state.value[cursor..line_end],
-            ));
+            row = row.child(text_span(&editor.state.value[cursor..line_end]));
         } else {
             row = row.child(text_span(line));
         }
