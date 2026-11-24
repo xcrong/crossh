@@ -145,6 +145,18 @@ fn validate_remote_url(url: &str) -> Result<(), GitError> {
     if url.starts_with('-') || url.bytes().any(|byte| byte.is_ascii_control()) {
         return Err(GitError::CommandFailed("远端地址无效".to_string()));
     }
+    // 拦截可执行任意命令的 remote helper：ext:: / fd::（大小写不敏感，前导空格也不放过）。
+    let lower = url.trim_start().to_ascii_lowercase();
+    if lower.starts_with("ext::") || lower.starts_with("fd::") {
+        return Err(GitError::CommandFailed("远端地址无效".to_string()));
+    }
+    // 防 --upload-pack / --receive-pack / --exec= 子串绕过（正常 URL 不会包含这些）。
+    if lower.contains("--upload-pack")
+        || lower.contains("--receive-pack")
+        || lower.contains("--exec=")
+    {
+        return Err(GitError::CommandFailed("远端地址无效".to_string()));
+    }
     Ok(())
 }
 
@@ -272,6 +284,33 @@ mod tests {
         assert!(remove_remote(&work, "").is_err());
         assert!(validate_remote_url("https://github.com/crossh/crossh.git").is_ok());
         assert!(validate_remote_url("git@github.com:crossh/crossh.git").is_ok());
+        assert!(validate_remote_url("ssh://git@github.com/crossh/crossh.git").is_ok());
+    }
+
+    #[test]
+    fn rejects_command_execution_remote_urls() {
+        // ext:: / fd:: 可在 fetch 时执行任意命令，必须拦截（含大小写变体）。
+        for url in [
+            "ext::touch /tmp/pwned",
+            "EXT::touch /tmp/pwned",
+            "Ext::sh -c id",
+            "  ext::sh -c id",
+            "fd::17/output",
+            "FD::17/output",
+            "https://example.com/x--upload-pack=evil",
+            "https://example.com/x --receive-pack=evil",
+            "https://example.com/x--exec=evil",
+        ] {
+            assert!(validate_remote_url(url).is_err(), "{url:?}");
+        }
+        // 正常地址仍放行。
+        for url in [
+            "https://github.com/crossh/crossh.git",
+            "git@github.com:crossh/crossh.git",
+            "ssh://git@github.com/crossh/crossh.git",
+        ] {
+            assert!(validate_remote_url(url).is_ok(), "{url:?}");
+        }
     }
 
     #[test]
