@@ -9,6 +9,7 @@ use std::fs::{self, File};
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -167,13 +168,7 @@ where
     let arguments = parse_arguments(args)?;
     wait_for_process(arguments.pid)?;
 
-    let staging = std::env::temp_dir().join(format!(
-        "crossh-update-{}-{}",
-        arguments.pid,
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&staging);
-    fs::create_dir_all(&staging)?;
+    let staging = create_staging_dir(arguments.pid)?;
 
     let install_result = (|| match arguments.format {
         ArtifactFormat::AppImage => replace_file(&arguments.package, &arguments.target),
@@ -195,6 +190,33 @@ where
     let _ = fs::remove_dir_all(&staging);
     launch(&arguments.launch)?;
     Ok(())
+}
+
+/// 独占创建 staging 目录：名可预测（pid 双拼）会被抢占，这里混入 `getrandom`
+/// 熵并用 `create_dir` 独占创建，撞名就换后缀重试（`getrandom` 已是本 crate 依赖）。
+fn create_staging_dir(pid: u32) -> Result<PathBuf, InstallerError> {
+    static NEXT_STAGING: AtomicU64 = AtomicU64::new(1);
+    for _ in 0..100 {
+        let mut entropy = [0u8; 8];
+        if getrandom::fill(&mut entropy).is_err() {
+            return Err(InstallerError::InvalidArguments(
+                "could not randomize staging directory".into(),
+            ));
+        }
+        let suffix = u64::from_le_bytes(entropy)
+            ^ u64::from(pid)
+            ^ (u64::from(std::process::id()) << 32)
+            ^ NEXT_STAGING.fetch_add(1, Ordering::Relaxed);
+        let staging = std::env::temp_dir().join(format!("crossh-update-{suffix:016x}"));
+        match fs::create_dir(&staging) {
+            Ok(()) => return Ok(staging),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(InstallerError::InvalidArguments(
+        "could not create a unique staging directory".into(),
+    ))
 }
 
 fn parse_arguments<I>(args: I) -> Result<UpdaterArguments, InstallerError>
@@ -266,7 +288,12 @@ fn wait_for_process(pid: u32) -> Result<(), InstallerError> {
 
 #[cfg(unix)]
 fn process_is_running(pid: u32) -> bool {
-    let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    // `kill(0, …)` 查的是进程组、`kill(-1, …)` 会广播，越界/0 一律按已退出处理。
+    let pid: libc::pid_t = match i32::try_from(pid) {
+        Ok(pid) if pid > 0 => pid as libc::pid_t,
+        _ => return false,
+    };
+    let result = unsafe { libc::kill(pid, 0) };
     result == 0 || io::Error::last_os_error().kind() == io::ErrorKind::PermissionDenied
 }
 
@@ -358,6 +385,9 @@ fn extract_tar_gz(package: &Path, destination: &Path) -> Result<(), InstallerErr
 }
 
 fn is_safe_relative_path(path: &Path) -> bool {
+    if path.as_os_str().is_empty() {
+        return false;
+    }
     path.components()
         .all(|component| matches!(component, Component::Normal(_)))
 }
@@ -601,6 +631,7 @@ mod tests {
     #[test]
     fn archive_paths_cannot_escape_staging() {
         assert!(is_safe_relative_path(Path::new("crossh/bin")));
+        assert!(!is_safe_relative_path(Path::new("")));
         assert!(!is_safe_relative_path(Path::new("../crossh")));
         assert!(!is_safe_relative_path(Path::new("/tmp/crossh")));
     }

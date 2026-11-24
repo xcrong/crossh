@@ -53,32 +53,46 @@ check_absent \
 
 check_absent \
     "logic crates import the application or shared UI crate" \
-    'crossh_ui|crossh::|crate::features|crate::shared' \
+    'crossh_ui|crossh::|crate::features|crate::app' \
     "$repo_root/crates/crossh-core" \
     "$repo_root/crates/crossh-assets" \
     "$repo_root/crates/crossh-terminal" \
     "$repo_root/crates/crossh-session" \
     "$repo_root/crates/crossh-update"
 
+# pane 身份是 daemon 快照的 `PaneId` + `PaneStatus`，工作区只按 id 持有视图，
+# 不再定义具体 pane 枚举。
 check_absent \
-    "workspace matches over concrete pane variants" \
-    'enum[[:space:]]+Pane|Pane::Terminal' \
+    "workspace defines a concrete Pane enum" \
+    'enum[[:space:]]+Pane([^a-zA-Z]|$)' \
     "$repo_root/src/features/workspace"
 
 check_absent \
-    "shared i18n owns persisted application settings" \
+    "core i18n owns persisted application settings" \
     'AppSettings|std::fs|std::path|settings\.toml' \
-    "$repo_root/src/shared/i18n.rs"
+    "$repo_root/crates/crossh-core/src/i18n.rs"
 
 check_absent \
-    "shared application logic imports GPUI or the UI crate" \
+    "application bootstrap imports GPUI or the UI crate" \
     '(use|extern crate).*gpui|gpui::|crossh_ui' \
-    "$repo_root/src/shared"
+    "$repo_root/src/app"
 
 check_absent \
     "standalone binaries include application source with #[path]" \
     '#\[path' \
     "$repo_root/src/bin"
+
+# `#[path]` 在 src 下仅允许两处：shell 的平台二选一（link_preview）
+# 与 settings 窗口的同名 render 模块；其他新增一律视为回抄。
+path_uses=$(rg -n --glob '*.rs' '#\[path' "$repo_root/src" 2>/dev/null || true)
+if [ -n "$path_uses" ]; then
+    unexpected=$(printf '%s\n' "$path_uses" | rg -v 'src/features/workspace/shell/mod\.rs|src/features/settings/window\.rs' || true)
+    if [ -n "$unexpected" ]; then
+        printf '%s\n' "architecture violation: unexpected #[path] under src (allowed: shell/mod.rs link_preview gate, settings/window.rs render)"
+        printf '%s\n' "$unexpected"
+        failure=1
+    fi
+fi
 
 check_absent \
     "crossh-ui-base imports upper layers" \

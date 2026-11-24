@@ -4,7 +4,7 @@
 //! 并按 `PaneId` 持有终端视图。渲染与连接的拆分见兄弟模块。
 
 use std::cell::Cell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -556,6 +556,14 @@ impl AppShell {
 
     fn pane_cwd(&self, pane_id: PaneId) -> Option<PathBuf> {
         self.workspace.pane(pane_id).map(|pane| pane.cwd.clone())
+    }
+
+    /// daemon 快照删 pane 时同步清理外壳侧的 pane 键状态，避免已删 pane 的
+    /// 同步/抓取标记泄漏（`WorkspaceState::retain_panes` 只管注册表内映射）。
+    pub(crate) fn retain_live_panes(&mut self, live: &BTreeSet<PaneId>) {
+        self.workspace.retain_panes(live);
+        self.git_sync.retain(|pane_id, _| live.contains(pane_id));
+        self.git_fetching.retain(|pane_id| live.contains(pane_id));
     }
 
     fn refresh_git_status(&mut self, pane_id: PaneId, clear_stale: bool, cx: &mut Context<Self>) {

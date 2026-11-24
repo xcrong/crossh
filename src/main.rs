@@ -45,6 +45,7 @@ fn main() {
         std::env::current_dir().map_err(|error| error.to_string()),
     );
     // 各 CLI 分支返回 `true` 表示落到 GUI 启动；`process::exit` 分支类型为 `!`。
+    // 会话执行收敛在 `app::session`，main 只做装配。
     let continue_gui = match cli {
         app::cli::CliCommand::Help => {
             app::cli::print_help();
@@ -54,117 +55,32 @@ fn main() {
             println!("crossh {}", env!("CARGO_PKG_VERSION"));
             false
         }
-        app::cli::CliCommand::Git(result) => dispatch_git(result),
-        app::cli::CliCommand::Note(result) => dispatch_note(result),
-        app::cli::CliCommand::Daemon(action) => std::process::exit(run_daemon_command(action)),
-        app::cli::CliCommand::Ls => std::process::exit(run_ls_command()),
+        app::cli::CliCommand::Git(result) => app::session::dispatch_git(result),
+        app::cli::CliCommand::Note(result) => app::session::dispatch_note(result),
+        app::cli::CliCommand::Daemon(action) => {
+            std::process::exit(app::session::run_daemon_command(action))
+        }
+        app::cli::CliCommand::Ls => std::process::exit(app::session::run_ls_command()),
         app::cli::CliCommand::Run(argv) => {
             if argv.is_empty() {
                 eprintln!("usage: crossh run -- <command> [args...]");
                 std::process::exit(2);
             }
-            std::process::exit(run_run_command(&argv));
+            std::process::exit(app::session::run_run_command(&argv));
         }
-        app::cli::CliCommand::Capture(id) => std::process::exit(run_capture_command(&id)),
+        app::cli::CliCommand::Capture(id) => {
+            std::process::exit(app::session::run_capture_command(&id))
+        }
         app::cli::CliCommand::Unknown(argument) => {
             eprintln!("unknown argument: {argument}\n");
             eprintln!("try `crossh open <path>` or `crossh --help`");
             std::process::exit(2);
         }
-        app::cli::CliCommand::Open(raw) => dispatch_open(raw),
-        app::cli::CliCommand::Main => dispatch_main(),
+        app::cli::CliCommand::Open(raw) => app::session::dispatch_open(raw),
+        app::cli::CliCommand::Main => app::session::dispatch_main(),
     };
     if continue_gui {
         run_gui();
-    }
-}
-
-/// `crossh git`：成功后已交由子进程处理，主进程退出；返回 `false` 阻止 GUI 启动。
-fn dispatch_git(result: Result<crossh_core::git_launcher::GitCliCommand, String>) -> bool {
-    match result {
-        Ok(crossh_core::git_launcher::GitCliCommand::Open(cwd)) => {
-            if let Err(error) = crossh_core::git_launcher::spawn_git_process(&cwd) {
-                eprintln!("crossh git: failed to start crossh-git: {error}");
-                std::process::exit(1);
-            }
-            false
-        }
-        Ok(crossh_core::git_launcher::GitCliCommand::Help) => {
-            crossh_core::git_launcher::print_help("crossh git");
-            false
-        }
-        Err(error) => {
-            eprintln!("crossh git: {error}\n");
-            crossh_core::git_launcher::print_help("crossh git");
-            std::process::exit(2);
-        }
-    }
-}
-
-/// `crossh note`：与 [`dispatch_git`] 同语义。
-fn dispatch_note(result: Result<crossh_core::note_launcher::NoteCliCommand, String>) -> bool {
-    match result {
-        Ok(crossh_core::note_launcher::NoteCliCommand::Open) => {
-            if let Err(error) = crossh_core::note_launcher::spawn_note_process() {
-                eprintln!("crossh note: failed to start crossh-note: {error}");
-                std::process::exit(1);
-            }
-            false
-        }
-        Ok(crossh_core::note_launcher::NoteCliCommand::Help) => {
-            crossh_core::note_launcher::print_help("crossh note");
-            false
-        }
-        Err(error) => {
-            eprintln!("crossh note: {error}\n");
-            crossh_core::note_launcher::print_help("crossh note");
-            std::process::exit(2);
-        }
-    }
-}
-
-/// `crossh open <path>`：daemon 打开项目后尝试转发；`true` 表示本地启动 GUI。
-fn dispatch_open(raw: std::path::PathBuf) -> bool {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
-    let directory = match app::single_instance::resolve_open_path(&raw, &cwd) {
-        Ok(directory) => directory,
-        Err(error) => {
-            eprintln!("crossh: {error}");
-            std::process::exit(2);
-        }
-    };
-    if let Err(error) = run_open_command(directory.clone()) {
-        eprintln!("crossh open: {error}");
-        std::process::exit(1);
-    }
-    match app::single_instance::try_forward(None) {
-        app::single_instance::ForwardOutcome::Forwarded => {
-            println!(
-                "crossh: opened {} in the running instance",
-                directory.display()
-            );
-            false
-        }
-        app::single_instance::ForwardOutcome::Rejected(error) => {
-            eprintln!("crossh: {error}");
-            std::process::exit(2);
-        }
-        app::single_instance::ForwardOutcome::NoInstance => true,
-    }
-}
-
-/// 无子命令启动：已有实例则转发并退出，否则返回 `true` 继续 GUI。
-fn dispatch_main() -> bool {
-    match app::single_instance::try_forward(None) {
-        app::single_instance::ForwardOutcome::Forwarded => {
-            println!("crossh is already running");
-            false
-        }
-        app::single_instance::ForwardOutcome::Rejected(error) => {
-            eprintln!("crossh: {error}");
-            std::process::exit(2);
-        }
-        app::single_instance::ForwardOutcome::NoInstance => true,
     }
 }
 
@@ -189,7 +105,10 @@ fn run_gui() {
         cx.set_app_identity("me.xcrong.crossh", "Crossh");
         cx.init_colors();
         crossh_ui::theme::install_crossh_theme(cx);
-        crossh_ui::assets::load_fonts(cx).expect("Crossh fonts should load");
+        // ponytail: 字体加载失败只记日志回退系统字体，不阻断启动。
+        if let Err(error) = crossh_ui::assets::load_fonts(cx) {
+            log::warn!("Crossh fonts unavailable, falling back to system fonts: {error:#}");
+        }
         features::settings::init();
         crossh_terminal_view::set_text_resolver(crossh_core::i18n::text);
         crossh_terminal_view::init(cx);
@@ -217,205 +136,4 @@ fn run_gui() {
         infrastructure::app_menu::show_main_window(cx);
         infrastructure::app_menu::serve_project_requests(cx, open_rx);
     });
-}
-
-/// 会话类 CLI 的 tokio 执行器（一次性短进程，current-thread 即可）。
-fn session_runtime() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("session cli runtime")
-}
-
-fn run_open_command(root: std::path::PathBuf) -> Result<(), String> {
-    use crossh_session::protocol::WorkspaceMutateRequest;
-    use crossh_session::workspace::{MutateOutcome, WorkspaceOp};
-
-    let rt = session_runtime();
-    rt.block_on(async move {
-        let addr = crossh_session::ensure_daemon()
-            .await
-            .map_err(|error| error.to_string())?;
-        let mut client = crossh_session::Client::connect_to(&addr)
-            .await
-            .map_err(|error| error.to_string())?;
-        let reply = client
-            .workspace_mutate(WorkspaceMutateRequest {
-                request_id: 1,
-                expected_revision: None,
-                op: WorkspaceOp::OpenProject { root },
-            })
-            .await
-            .map_err(|error| error.to_string())?;
-        match reply.outcome {
-            MutateOutcome::Applied | MutateOutcome::Unchanged => Ok(()),
-            MutateOutcome::Rejected | MutateOutcome::Conflict => Err(reply
-                .error
-                .map(|error| error.message)
-                .unwrap_or_else(|| format!("workspace mutation {:?}", reply.outcome))),
-        }
-    })
-}
-
-fn run_daemon_command(action: app::cli::DaemonAction) -> i32 {
-    use app::cli::DaemonAction;
-    use crossh_session::DaemonState;
-    let rt = session_runtime();
-    match action {
-        DaemonAction::Status => match rt.block_on(crossh_session::probe_daemon()) {
-            DaemonState::Ready(addr) => {
-                let connected = rt.block_on(async {
-                    let mut client = crossh_session::Client::connect_to(&addr).await?;
-                    let sessions = client.list().await?;
-                    let workspace = client.workspace_get().await?;
-                    Ok::<_, std::io::Error>((sessions, workspace))
-                });
-                match connected {
-                    Ok((sessions, workspace)) => {
-                        println!("running ({} sessions, port {})", sessions.len(), addr.port);
-                        let tabs = workspace
-                            .projects
-                            .iter()
-                            .map(|project| project.tabs.len())
-                            .sum::<usize>();
-                        let panes = workspace
-                            .projects
-                            .iter()
-                            .flat_map(|project| &project.tabs)
-                            .map(|tab| tab.layout.leaves().count())
-                            .sum::<usize>();
-                        println!(
-                            "workspace: {} projects, {} tabs, {} panes",
-                            workspace.projects.len(),
-                            tabs,
-                            panes
-                        );
-                        0
-                    }
-                    Err(error) => {
-                        eprintln!("crossh daemon: {error}");
-                        1
-                    }
-                }
-            }
-            DaemonState::Absent { stale } => {
-                let base = if stale {
-                    "not running (stale port file)"
-                } else {
-                    "not running"
-                };
-                match crossh_session::workspace_store::read_daemon_error() {
-                    Some(reason) => println!("{base}: {reason}"),
-                    None => match crossh_session::workspace_store::workspace_format_too_new() {
-                        Some(found) => println!(
-                            "{base}: workspace format v{found} is newer than supported v{}; upgrade crossh",
-                            crossh_session::workspace::WORKSPACE_FORMAT_VERSION
-                        ),
-                        None => println!("{base}"),
-                    },
-                }
-                1
-            }
-            DaemonState::Incompatible { message } => {
-                let found = {
-                    let rest = message.split("daemon ").nth(1).unwrap_or_default();
-                    rest.split(|c: char| !c.is_ascii_digit())
-                        .next()
-                        .filter(|digits| !digits.is_empty())
-                        .map(|digits| format!("v{digits}"))
-                        .unwrap_or_else(|| "unknown".to_string())
-                };
-                println!(
-                    "incompatible: found {found}, expected v{}; run crossh daemon stop",
-                    crossh_session::handshake::PROTOCOL_VERSION
-                );
-                1
-            }
-        },
-        DaemonAction::Start => match rt.block_on(crossh_session::ensure_daemon()) {
-            Ok(addr) => {
-                println!("started (port {})", addr.port);
-                0
-            }
-            Err(error) => {
-                eprintln!("crossh daemon: {error}");
-                1
-            }
-        },
-        DaemonAction::Stop => match rt.block_on(crossh_session::daemon_stop()) {
-            Ok(()) => {
-                println!("stopped");
-                0
-            }
-            Err(error) => {
-                eprintln!("crossh daemon: {error}");
-                1
-            }
-        },
-    }
-}
-
-fn run_ls_command() -> i32 {
-    let rt = session_runtime();
-    let mut client = match rt.block_on(crossh_session::Client::connect()) {
-        Ok(client) => client,
-        Err(error) => {
-            eprintln!("crossh ls: {error}");
-            return 1;
-        }
-    };
-    match rt.block_on(client.list()) {
-        Ok(sessions) => {
-            println!(
-                "{:<8} {:<10} {:<5} {:<7} {:<8} {:<8} {:<8} CWD",
-                "ID", "ROLE", "ALIVE", "PROGRAM", "PROJECT", "TAB", "PANE"
-            );
-            for session in &sessions {
-                let id_or_dash = |id: Option<u64>| {
-                    id.map(|id| id.to_string())
-                        .unwrap_or_else(|| "-".to_string())
-                };
-                println!(
-                    "{:<8} {:<10} {:<5} {:<7} {:<8} {:<8} {:<8} {}",
-                    session.id,
-                    crossh_session::role_of(session, client.client_id),
-                    session.alive,
-                    session.program.as_deref().unwrap_or("-"),
-                    id_or_dash(session.project_id),
-                    id_or_dash(session.tab_id),
-                    id_or_dash(session.pane_id),
-                    session.cwd.as_deref().unwrap_or("-"),
-                );
-            }
-            0
-        }
-        Err(error) => {
-            eprintln!("crossh ls: {error}");
-            1
-        }
-    }
-}
-
-fn run_run_command(argv: &[String]) -> i32 {
-    let rt = session_runtime();
-    let mut out = std::io::stdout().lock();
-    match rt.block_on(crossh_session::run_command(argv, &mut out)) {
-        Ok(code) => code,
-        Err(error) => {
-            eprintln!("crossh run: {error}");
-            1
-        }
-    }
-}
-
-fn run_capture_command(id: &str) -> i32 {
-    let rt = session_runtime();
-    let mut out = std::io::stdout().lock();
-    match rt.block_on(crossh_session::capture_session(id, &mut out)) {
-        Ok(_) => 0,
-        Err(error) => {
-            eprintln!("crossh capture: {error}");
-            1
-        }
-    }
 }

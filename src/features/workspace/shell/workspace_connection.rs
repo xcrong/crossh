@@ -77,19 +77,14 @@ impl AppShell {
                 if let Some(connection) = connected {
                     let mut snapshots = connection.snapshots();
                     loop {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(100))
-                            .await;
-                        match snapshots.has_changed() {
-                            Ok(false) => continue,
-                            Ok(true) => {
-                                let snapshot = snapshots.borrow_and_update().clone();
-                                let _ = weak.update(cx, |this, cx| {
-                                    this.apply_workspace_snapshot((*snapshot).clone(), cx);
-                                });
-                            }
-                            Err(_) => break,
+                        // ponytail: 事件驱动等 watch 推送，不再 100ms 空转轮询。
+                        if snapshots.changed().await.is_err() {
+                            break;
                         }
+                        let snapshot = snapshots.borrow_and_update().clone();
+                        let _ = weak.update(cx, |this, cx| {
+                            this.apply_workspace_snapshot((*snapshot).clone(), cx);
+                        });
                     }
                     let _ = weak.update(cx, |this, cx| {
                         this.workspace.connection =
@@ -125,7 +120,7 @@ impl AppShell {
     /// 按快照对齐终端视图：会话 id 变化（daemon 重启）时重建同一 pane 的视图。
     fn sync_pane_views(&mut self, cx: &mut Context<Self>) {
         let live = self.workspace.live_panes();
-        self.workspace.retain_panes(&live);
+        self.retain_live_panes(&live);
 
         let panes = self
             .workspace
