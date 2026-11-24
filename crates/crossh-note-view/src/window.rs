@@ -92,6 +92,9 @@ const AUTOSAVE_DEBOUNCE: Duration = Duration::from_millis(800);
 // 软删行的保留期（秒）。撤销只保留一层且只在本次会话有效，30 天足够兜住「按错了」，
 // 又不至于让按错留下的垃圾永久占库。
 const SOFT_DELETE_RETENTION_SECS: i64 = 30 * 86400;
+/// 编辑器主题与笔记壳静态对齐（深色 graphite/mint），不随帧变化。
+/// 唯一写入点为 `new_uncoupled`（构造时一次）；禁止在 `render` 内每帧重写
+/// 10+ 个 `Hsla` 字段，既浪费又违反唯一写入点规范。
 fn sync_editor_theme(cx: &mut App) {
     let theme = crossh_editor::theme::Theme::global_mut(cx);
     theme.appearance = crossh_editor::theme::ThemeAppearance::Dark;
@@ -256,6 +259,7 @@ impl NoteWindow {
     /// 构造窗口但**不打开笔记库**，`new` 与 `new_for_test` 共用。
     /// 调用方负责按需挂 store 并决定是否 `reload_notes`。
     fn new_uncoupled(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // 主题静态不变，构造时同步一次即可；本文件无外观切换监听，无需第二写入点。
         sync_editor_theme(cx);
         let search_focus = cx.focus_handle();
         let content_state = cx.new(|cx| {
@@ -1755,8 +1759,7 @@ impl Focusable for NoteWindow {
 
 impl gpui::Render for NoteWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        sync_editor_theme(cx);
-
+        // 主题已在 new_uncoupled 同步（静态深色固定），render 内不再每帧重写全局主题。
         let list = self.render_note_list_pane(cx);
         let right = self.render_note_right_pane(cx);
 
