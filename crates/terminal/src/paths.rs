@@ -298,7 +298,16 @@ impl PathWithPosition {
                 let row = maybe_row.parse::<u32>().ok();
                 let column = maybe_column.parse::<u32>().ok();
 
-                let (_, suffix) = trimmed.split_once(file_name).unwrap();
+                // 中文：file_name 来自正则捕获组，理论上是 trimmed 的子串，
+                // 但大小写/Unicode 归一化漂移时 split_once 可能返回 None，
+                // 此处用 let-Some-else 回退为无行列路径，避免 unwrap 导致生产 panic。
+                let Some((_, suffix)) = trimmed.split_once(file_name) else {
+                    return Self {
+                        path: Path::new(trimmed).to_path_buf(),
+                        row: None,
+                        column: None,
+                    };
+                };
                 let path_without_suffix = &trimmed[..trimmed.len() - suffix.len()];
 
                 Self {
@@ -346,6 +355,37 @@ impl PathWithPosition {
                     column,
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 中文：正常行号后缀解析保持不变。
+    #[test]
+    fn parse_str_normal_row_suffix_unchanged() {
+        let parsed = PathWithPosition::parse_str("foo/bar.py:12");
+        assert_eq!(parsed.path, PathBuf::from("foo/bar.py"));
+        assert_eq!(parsed.row, Some(12));
+        assert_eq!(parsed.column, None);
+    }
+
+    // 中文：大小写/Unicode 归一化漂移类输入不得 panic。
+    #[test]
+    fn parse_str_case_and_unicode_drift_no_panic() {
+        for input in [
+            "foo/BAR.PY:12",
+            "FOO/bar.py:12:34",
+            "foo/bär.py:12",
+            // 中文：é 的预组合形式 (U+00E9) 与分解形式 (e + U+0301)。
+            "foo/bare\u{301}.py:12",
+            "foo/bar.py(12,34)",
+        ] {
+            let parsed = PathWithPosition::parse_str(input);
+            // 中文：只断言不 panic 且路径非空；行列按现有逻辑自然解析。
+            assert!(!parsed.path.as_os_str().is_empty(), "输入：{input}");
         }
     }
 }
