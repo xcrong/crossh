@@ -126,9 +126,18 @@ where
             div()
                 .flex_1()
                 .min_h_0()
-                .p(px(6.))
+                .w_full()
+                .flex()
+                .flex_col()
                 .bg(theme::canvas())
-                .child(term.into_any_element()),
+                .overflow_hidden()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .w_full()
+                        .child(term.into_any_element()),
+                ),
         )
         .child(
             SplitResizer::new("scratch-resizer", dragging.clone(), height_cell.clone())
