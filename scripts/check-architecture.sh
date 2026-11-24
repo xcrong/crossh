@@ -1,5 +1,6 @@
 #!/bin/sh
 # Enforce the layering rules that are easy to break during feature work.
+# POSIX sh + grep/find/wc/awk only: CI runners must not install ripgrep.
 
 set -eu
 
@@ -34,7 +35,7 @@ check_absent() {
     pattern=$2
     shift 2
 
-    matches=$(rg -n --glob '*.rs' "$pattern" "$@" 2>/dev/null || true)
+    matches=$(grep -R -n -E --include='*.rs' -- "$pattern" "$@" 2>/dev/null || true)
     if [ -n "$matches" ]; then
         printf '%s\n' "architecture violation: $label"
         printf '%s\n' "$matches"
@@ -84,9 +85,9 @@ check_absent \
 
 # `#[path]` 在 src 下仅允许两处：shell 的平台二选一（link_preview）
 # 与 settings 窗口的同名 render 模块；其他新增一律视为回抄。
-path_uses=$(rg -n --glob '*.rs' '#\[path' "$repo_root/src" 2>/dev/null || true)
+path_uses=$(grep -R -n --include='*.rs' -- '#\[path' "$repo_root/src" 2>/dev/null || true)
 if [ -n "$path_uses" ]; then
-    unexpected=$(printf '%s\n' "$path_uses" | rg -v 'src/features/workspace/shell/mod\.rs|src/features/settings/window\.rs' || true)
+    unexpected=$(printf '%s\n' "$path_uses" | grep -v -E 'src/features/workspace/shell/mod\.rs|src/features/settings/window\.rs' || true)
     if [ -n "$unexpected" ]; then
         printf '%s\n' "architecture violation: unexpected #[path] under src (allowed: shell/mod.rs link_preview gate, settings/window.rs render)"
         printf '%s\n' "$unexpected"
@@ -111,7 +112,7 @@ check_absent \
 
 check_absent \
     "crossh-ui-base abbreviates context as ctx" \
-    '\bctx\b' \
+    '(^|[^a-zA-Z0-9_])ctx([^a-zA-Z0-9_]|$)' \
     "$repo_root/crates/crossh-ui-base/src"
 
 check_absent \
@@ -123,8 +124,12 @@ check_absent \
 
 # Cargo only applies workspace lints to packages that opt in. Keep new members
 # from silently dropping the shared baseline in the root manifest.
+# Requires the exact two-line block `[lints]` + `workspace = true`.
+has_workspace_lints() {
+    awk 'prev == "[lints]" && $0 == "workspace = true" { found = 1 } { prev = $0 } END { exit !found }' "$1"
+}
 for manifest in "$repo_root/Cargo.toml" "$repo_root"/crates/*/Cargo.toml; do
-    if ! rg -q -U '^\[lints\]\nworkspace = true' "$manifest"; then
+    if ! has_workspace_lints "$manifest"; then
         printf '%s\n' "architecture violation: manifest does not inherit workspace lints: ${manifest#"$repo_root"/}"
         failure=1
     fi
