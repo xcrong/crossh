@@ -451,6 +451,23 @@ fn rank_notes(notes: Vec<Note>, terms: &[String]) -> Vec<Note> {
     ranked.into_iter().map(|(_, note)| note).collect()
 }
 
+/// Unix 下把目录权限收敛为 `0700` / 文件为 `0600`。
+/// 与 `crossh-core::config::restrict_dir` 同语义，本地实现以避免给纯逻辑库加依赖。
+/// 私有笔记在 umask 022 下新建会得到 0755/0644，同机其他用户可读，必须在打开后收敛；
+/// 老库已存在也要 chmod，否则历史文件永远保持宽松权限。
+#[cfg(unix)]
+fn restrict_dir(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
+/// Unix 下把文件权限收敛为 `0600`（见 [`restrict_dir`] 的原因）。
+#[cfg(unix)]
+fn restrict_file(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
 pub struct NoteStore {
     pub path: PathBuf,
     /// 本次打开时若把损坏的旧库备份走了，这里是被备份文件的实际路径
@@ -508,6 +525,17 @@ impl NoteStore {
                 }
                 None => format!("note.db ensure_schema failed: {}", e),
             });
+        }
+        // 私有笔记落盘即收敛权限：umask 022 下新目录默认 0755、新库默认 0644，
+        // 同机其他用户可读。放在 open 成功后统一收敛，新库老库都覆盖。
+        #[cfg(unix)]
+        {
+            if let Some(parent) = path.parent() {
+                restrict_dir(parent)
+                    .map_err(|e| format!("note.db restrict dir failed: {}", e))?;
+            }
+            restrict_file(&path)
+                .map_err(|e| format!("note.db restrict file failed: {}", e))?;
         }
         Ok(Self {
             path,
@@ -1894,5 +1922,42 @@ mod tests {
         store.create("new note").unwrap();
         assert_eq!(store.list().unwrap().len(), 2);
         assert!(corrupt_backups(dir.path()).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spec_20261124_note__open_restricts_permissions() {
+        // 私有笔记在 umask 022 下新建会得到 0755/0644，同机其他用户可读。
+        // open 成功后必须收敛为目录 0700、文件 0600，老库重开也要 chmod。
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        // 模拟宽松的父目录（umask 022 的效果），断言 open 会收紧它。
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = dir.path().join("note.db");
+        let store = NoteStore::open(&path).unwrap();
+        store.create("secret").unwrap();
+        drop(store);
+        let dir_mode = std::fs::metadata(dir.path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        let file_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700, "note dir must be 0700, got {:o}", dir_mode);
+        assert_eq!(file_mode, 0o600, "note.db must be 0600, got {:o}", file_mode);
+        // 老库被外部改回宽松权限，重开也要收敛。
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let reopened = NoteStore::open(&path).unwrap();
+        assert_eq!(reopened.list().unwrap().len(), 1);
+        drop(reopened);
+        let dir_mode = std::fs::metadata(dir.path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        let file_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700, "reopen must chmod dir, got {:o}", dir_mode);
+        assert_eq!(file_mode, 0o600, "reopen must chmod file, got {:o}", file_mode);
     }
 }
