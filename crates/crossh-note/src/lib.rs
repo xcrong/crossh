@@ -400,8 +400,12 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
 }
 
 /// 把查询按空白切成检索词；纯空白返回空列表（= 不检索）。
+/// 词数上限 32：粘贴几千词会撞 SQLITE_LIMIT_VARIABLE_NUMBER（LIKE 每词一个 ?），
+/// 超出的词直接丢掉——多搜少搜都只是少命中几条，不值得让整条查询报错。
 fn search_terms(query: &str) -> Vec<String> {
-    query.split_whitespace().map(str::to_string).collect()
+    let mut terms: Vec<String> = query.split_whitespace().map(str::to_string).collect();
+    terms.truncate(32);
+    terms
 }
 
 /// LIKE 通配符按字面匹配（反斜杠先转义，否则 `ESCAPE '\\'` 会被查询里的 `\` 破坏）。
@@ -606,7 +610,16 @@ impl NoteStore {
             }
         };
         let mut seen: HashSet<i64> = notes.iter().map(|note| note.id).collect();
-        for note in self.search_like(&terms)? {
+        // LIKE 失败与 FTS 对称：warn 后回退空集。FTS 坏了靠 LIKE 兜底，反过来也一样；
+        // 任一路径整错上抛都会让整条查询报错，用户只看到失败看不到另一路径的结果。
+        let like_notes = match self.search_like(&terms) {
+            Ok(found) => found,
+            Err(error) => {
+                log::warn!("note like query failed, using fts results only: {error}");
+                Vec::new()
+            }
+        };
+        for note in like_notes {
             if seen.insert(note.id) {
                 notes.push(note);
             }
