@@ -83,6 +83,7 @@ pub fn render_main(
             &tab.layout,
             available_width,
             available_height,
+            false,
             cx,
         ),
         None => empty_state::render(shell, available_width, cx),
@@ -174,12 +175,18 @@ fn render_pane_node(
     node: &PaneNodeSnapshot,
     width: Pixels,
     height: Pixels,
+    // 紧贴上下分栏线下方的窗格不再画顶边框，分栏线本身就是那条线。
+    hide_top_border: bool,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
     match node {
-        PaneNodeSnapshot::Leaf(pane) => {
-            render_pane_leaf(shell, pane, tab.active_pane == Some(pane.id), cx)
-        }
+        PaneNodeSnapshot::Leaf(pane) => render_pane_leaf(
+            shell,
+            pane,
+            tab.active_pane == Some(pane.id),
+            hide_top_border,
+            cx,
+        ),
         PaneNodeSnapshot::Split {
             id,
             axis,
@@ -220,6 +227,13 @@ fn render_pane_node(
 
             let ((first_width, first_height), (second_width, second_height)) =
                 split_child_sizes(is_row, width, height, total, ratio);
+            // 上下分栏：下半窗格的顶边框会和分栏线叠成双线，隐藏它，分栏线即分隔线；
+            // 下半部分含焦点窗格时分栏线用 accent，保证焦点信号不丢。
+            let second_hide_top_border = if is_row { hide_top_border } else { true };
+            let divider_highlight = !is_row
+                && tab
+                    .active_pane
+                    .is_some_and(|id| subtree_contains(second, id));
             container
                 .child(first_wrapper.child(render_pane_node(
                     shell,
@@ -227,10 +241,17 @@ fn render_pane_node(
                     first,
                     first_width,
                     first_height,
+                    hide_top_border,
                     cx,
                 )))
                 .child(render_split_divider(
-                    shell, *id, *axis, width, height, ratio,
+                    shell,
+                    *id,
+                    *axis,
+                    width,
+                    height,
+                    ratio,
+                    divider_highlight,
                 ))
                 .child(second_wrapper.child(render_pane_node(
                     shell,
@@ -238,6 +259,7 @@ fn render_pane_node(
                     second,
                     second_width,
                     second_height,
+                    second_hide_top_border,
                     cx,
                 )))
                 .into_any_element()
@@ -262,6 +284,16 @@ fn split_child_sizes(
     }
 }
 
+/// 子树是否包含指定窗格；上下分栏线含焦点时用 accent 高亮。
+fn subtree_contains(node: &PaneNodeSnapshot, pane: PaneId) -> bool {
+    match node {
+        PaneNodeSnapshot::Leaf(p) => p.id == pane,
+        PaneNodeSnapshot::Split { first, second, .. } => {
+            subtree_contains(first, pane) || subtree_contains(second, pane)
+        }
+    }
+}
+
 /// 分屏手柄：8px 命中区内的 1px 分隔线，按下时写入 `SplitDrag` 供全局监听换算比例。
 fn render_split_divider(
     shell: &AppShell,
@@ -270,6 +302,7 @@ fn render_split_divider(
     width: Pixels,
     height: Pixels,
     ratio: f32,
+    highlight: bool,
 ) -> impl IntoElement {
     let drag_cell = shell.workspace.split_drag_cell.clone();
     if axis == Axis::Row {
@@ -317,7 +350,11 @@ fn render_split_divider(
                 div()
                     .h(px(1.))
                     .w_full()
-                    .bg(theme::border())
+                    .bg(if highlight {
+                        theme::accent()
+                    } else {
+                        theme::border()
+                    })
                     .hover(|style| style.bg(theme::accent())),
             )
             .on_mouse_down(
@@ -341,6 +378,7 @@ fn render_pane_leaf(
     shell: &AppShell,
     pane: &PaneSnapshot,
     active: bool,
+    hide_top_border: bool,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
     let content = match shell.workspace.pane_view(pane.id) {
@@ -348,40 +386,43 @@ fn render_pane_leaf(
         None => render_pane_placeholder(shell, pane, cx),
     };
     let pane_id = pane.id;
-    div()
+    let mut leaf = div()
         .id(("pane-leaf", pane.id.0))
         .relative()
         .size_full()
         .min_w_0()
         .min_h_0()
-        .overflow_hidden()
-        .border_t_1()
-        .border_color(if active {
+        .overflow_hidden();
+    // 顶边框同时是焦点指示（active 用 accent）。紧贴上下分栏线时隐藏，
+    // 那条线由分栏线绘制（含焦点高亮），避免双横线。
+    if !hide_top_border {
+        leaf = leaf.border_t_1().border_color(if active {
             theme::accent()
         } else {
             theme::border()
-        })
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |this, _event, _window, cx| {
+        });
+    }
+    leaf.on_mouse_down(
+        MouseButton::Left,
+        cx.listener(move |this, _event, _window, cx| {
+            this.focus_pane(pane_id, cx);
+        }),
+    )
+    .on_mouse_move(
+        cx.listener(move |this, event: &MouseMoveEvent, _window, cx| {
+            let already_focused = this.workspace.focused_pane() == Some(pane_id);
+            let is_plain_hover = event.pressed_button.is_none() && !cx.has_active_drag();
+            if hover_should_switch_focus(
+                this.workspace_settings.focus_follows_mouse,
+                already_focused,
+                is_plain_hover,
+            ) {
                 this.focus_pane(pane_id, cx);
-            }),
-        )
-        .on_mouse_move(
-            cx.listener(move |this, event: &MouseMoveEvent, _window, cx| {
-                let already_focused = this.workspace.focused_pane() == Some(pane_id);
-                let is_plain_hover = event.pressed_button.is_none() && !cx.has_active_drag();
-                if hover_should_switch_focus(
-                    this.workspace_settings.focus_follows_mouse,
-                    already_focused,
-                    is_plain_hover,
-                ) {
-                    this.focus_pane(pane_id, cx);
-                }
-            }),
-        )
-        .child(content)
-        .into_any_element()
+            }
+        }),
+    )
+    .child(content)
+    .into_any_element()
 }
 
 fn render_pane_placeholder(
