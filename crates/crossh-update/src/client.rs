@@ -146,7 +146,13 @@ pub async fn fetch_manifest(url: &str) -> Result<UpdateManifest, UpdateError> {
             }
         }
     }
-    Err(last_error.expect("candidate list is never empty"))
+    // 候选非空且至少跑一轮：必有传输错误兜底；panic=abort 下不用 expect，不可达则降级。
+    let Some(error) = last_error else {
+        debug_assert!(false, "update candidates must record an error");
+        log::error!("update: no transport error recorded for {url}");
+        return Err(UpdateError::Disabled);
+    };
+    Err(error)
 }
 
 #[cfg(not(feature = "network"))]
@@ -239,7 +245,13 @@ pub async fn download_artifact_with_progress(
             }
         }
     }
-    Err(last_error.expect("candidate list is never empty"))
+    // 候选非空且至少跑一轮：必有传输错误兜底；panic=abort 下不用 expect，不可达则降级。
+    let Some(error) = last_error else {
+        debug_assert!(false, "update candidates must record an error");
+        log::error!("update: no transport error recorded for {}", artifact.url);
+        return Err(UpdateError::Disabled);
+    };
+    Err(error)
 }
 
 #[cfg(not(feature = "network"))]

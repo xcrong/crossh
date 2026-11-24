@@ -50,10 +50,15 @@ pub(crate) fn spawn(cx: &mut App) {
         log::warn!("tray: menu build failed");
         return;
     }
+    // 首帧图标构造失败只记日志，tray 整体降级，绝不阻塞应用启动。
+    let Some(initial_icon) = status_icon(false) else {
+        log::warn!("tray: initial icon unavailable, tray disabled");
+        return;
+    };
     let icon = match TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip(status_stopped())
-        .with_icon(status_icon(false))
+        .with_icon(initial_icon)
         .build()
     {
         Ok(icon) => icon,
@@ -101,7 +106,7 @@ fn status_running(alive: usize) -> String {
 /// 品牌 glyph（`assets/appicon/icon-master.svg` 的准星本体，透明底）：
 /// 薄荷绿 = daemon 可达，灰 = 未运行。几何按 master 等比缩到 32px
 ///（圆环 r=210/1024、线宽 64/1024、中心圆点 r=44/1024）。
-fn status_icon(running: bool) -> Icon {
+fn status_icon(running: bool) -> Option<Icon> {
     const SIZE: usize = 32;
     const S: f32 = SIZE as f32 / 1024.0;
     const CENTER: f32 = 512.0 * S;
@@ -139,7 +144,15 @@ fn status_icon(running: bool) -> Icon {
             }
         }
     }
-    Icon::from_rgba(rgba, SIZE as u32, SIZE as u32).expect("tray icon rgba")
+    // RGBA 由本函数按 SIZE 构造，理论恒合法；失败记错并返回 None，调用方降级。
+    match Icon::from_rgba(rgba, SIZE as u32, SIZE as u32) {
+        Ok(icon) => Some(icon),
+        Err(error) => {
+            log::warn!("tray: icon rgba invalid: {error}");
+            debug_assert!(false, "tray icon rgba must be valid");
+            None
+        }
+    }
 }
 
 /// 点到线段距离（tray glyph tick 光栅化用）。
@@ -180,13 +193,23 @@ impl State {
                 let text = status_running(alive);
                 self.status.set_text(text.clone());
                 let _ = self.icon.set_tooltip(Some(text));
-                let _ = self.icon.set_icon(Some(status_icon(true)));
+                // 图标刷新失败只记日志，保留旧图标，不影响轮询。
+                if let Some(icon) = status_icon(true) {
+                    let _ = self.icon.set_icon(Some(icon));
+                } else {
+                    log::warn!("tray: running icon refresh failed");
+                }
                 self.stop.set_enabled(true);
             }
             None => {
                 self.status.set_text(status_stopped());
                 let _ = self.icon.set_tooltip(Some(status_stopped()));
-                let _ = self.icon.set_icon(Some(status_icon(false)));
+                // 图标刷新失败只记日志，保留旧图标，不影响轮询。
+                if let Some(icon) = status_icon(false) {
+                    let _ = self.icon.set_icon(Some(icon));
+                } else {
+                    log::warn!("tray: stopped icon refresh failed");
+                }
                 self.stop.set_enabled(false);
             }
         }

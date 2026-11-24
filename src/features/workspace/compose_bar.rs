@@ -217,11 +217,17 @@ fn render_compose_line_row(
                 line.len()
             };
             // 处理 IME 位于光标处的情况
-            if let Some((ime_s, _)) = ime_in_line {
+            // 窗口/IME 竞态：重叠计算后替换区已提交则退化为普通光标行，不再 panic。
+            if ime_in_line.is_some() && ctx.ime_replacement.is_none() {
+                log::warn!("compose: ime replacement cleared mid-render, fallback to cursor");
+            }
+            if let Some((ime_s, _)) = ime_in_line
+                && let Some((_, ime_e)) = ctx.ime_replacement
+            {
                 // IME 替换区起点即光标位置
                 // ponytail: `get` 回退空串，陈旧 IME 区间不再 panic。
                 let before = line.get(..ime_s).unwrap_or("");
-                let after_start = ctx.ime_replacement.unwrap().1.min(l_end) - l_start;
+                let after_start = ime_e.min(l_end).max(l_start) - l_start;
                 let after = line.get(after_start.min(line.len())..).unwrap_or("");
                 row = row.child(text_span(before.to_string()));
                 if !ctx.ime_marked_text.is_empty() {

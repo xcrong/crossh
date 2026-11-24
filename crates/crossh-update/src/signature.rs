@@ -16,10 +16,13 @@ use crate::model::{ManifestError, UpdateManifest};
 /// Generated with `crossh-sign-manifest generate` on 2026-08-18.
 pub const DEFAULT_PUBLIC_KEY: &str = "2ruoNty5NOSLRAHeHqchPsXYnCjZ9vfUfyUBZT/kHQs=";
 
-pub(crate) fn canonical_bytes(manifest: &UpdateManifest) -> Vec<u8> {
+pub(crate) fn canonical_bytes(manifest: &UpdateManifest) -> Result<Vec<u8>, ManifestError> {
     let mut copy = manifest.clone();
     copy.signature = None;
-    serde_json::to_vec(&copy).expect("manifest serialization cannot fail")
+    // 派生 Serialize 理论恒可序列化；panic=abort 下改走 Result，调用方按验签失败收敛。
+    let bytes = serde_json::to_vec(&copy).map_err(ManifestError::Json)?;
+    debug_assert!(!bytes.is_empty(), "canonical manifest must not be empty");
+    Ok(bytes)
 }
 
 pub fn verify_manifest_signature_with_key(
@@ -41,7 +44,7 @@ pub fn verify_manifest_signature_with_key(
         ))
     })?;
     let signature = Signature::from_bytes(&bytes);
-    key.verify_strict(&canonical_bytes(manifest), &signature)
+    key.verify_strict(&canonical_bytes(manifest)?, &signature)
         .map_err(|error| {
             ManifestError::InvalidSignature(format!("signature verification failed: {error}"))
         })
@@ -80,7 +83,8 @@ pub fn sign_manifest(
     signing_key: &SigningKey,
 ) -> Result<UpdateManifest, Box<dyn Error>> {
     let mut signed = manifest.clone();
-    let signature = signing_key.sign(&canonical_bytes(manifest));
+    // 序列化失败直接返回错误，绝不在 panic=abort 下崩溃。
+    let signature = signing_key.sign(&canonical_bytes(manifest)?);
     signed.signature = Some(base64::engine::general_purpose::STANDARD.encode(signature.to_bytes()));
     Ok(signed)
 }

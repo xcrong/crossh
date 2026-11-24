@@ -161,7 +161,11 @@ pub(crate) fn refresh(cx: &App) {
 
 fn defer_open_settings(section: SettingsSection, check_for_updates: bool, cx: &mut App) {
     cx.defer(move |cx| {
-        let shell = ensure_main_shell(cx);
+        // 主窗口重建失败则跳过本次设置页请求，不再 panic。
+        let Some(shell) = ensure_main_shell(cx) else {
+            log::warn!("app_menu: skip open settings, main shell unavailable");
+            return;
+        };
         if check_for_updates {
             let updates = shell.read(cx).updates.clone();
             updates.update(cx, |updates, cx| updates.check(cx));
@@ -197,13 +201,18 @@ fn defer_active_window_action(cx: &mut App, action: fn(&Window)) {
     });
 }
 
-fn ensure_main_shell(cx: &mut App) -> Entity<AppShell> {
+fn ensure_main_shell(cx: &mut App) -> Option<Entity<AppShell>> {
     if let Some(shell) = find_main_shell(cx) {
-        return shell;
+        return Some(shell);
     }
 
     open_main_window(cx);
-    find_main_shell(cx).expect("main window should contain an AppShell")
+    // 重建窗口后仍无 AppShell（窗口创建竞态）：记错并返回 None，调用方降级。
+    let Some(shell) = find_main_shell(cx) else {
+        log::warn!("app_menu: main window has no AppShell after reopen");
+        return None;
+    };
+    Some(shell)
 }
 
 fn find_main_shell(cx: &App) -> Option<Entity<AppShell>> {
@@ -220,7 +229,10 @@ fn find_main_window(cx: &App) -> Option<gpui::WindowHandle<AppShell>> {
 /// 项目激活由 `crossh open` 在 daemon 中完成，GUI attach 后自然收敛。
 pub(crate) fn show_main_window(cx: &mut App) {
     cx.activate(true);
-    let _ = ensure_main_shell(cx);
+    // 重建失败只记日志，无窗口时跳过激活，绝不 panic。
+    if ensure_main_shell(cx).is_none() {
+        log::warn!("app_menu: main shell unavailable after reopen");
+    }
     if let Some(window) = find_main_window(cx) {
         let _ = window.update(cx, |_, window, _| window.activate_window());
     }
@@ -236,7 +248,11 @@ pub(crate) fn serve_project_requests(
     cx: &mut App,
     mut open_rx: tokio::sync::mpsc::UnboundedReceiver<Option<PathBuf>>,
 ) {
-    let shell = ensure_main_shell(cx);
+    // 主窗口不可用则不挂载投递循环，只记日志，绝不 panic。
+    let Some(shell) = ensure_main_shell(cx) else {
+        log::warn!("app_menu: skip project requests, main shell unavailable");
+        return;
+    };
     shell.update(cx, |_, cx| {
         cx.spawn(async move |_, cx| {
             while open_rx.recv().await.is_some() {
@@ -270,8 +286,13 @@ mod tests {
     #[gpui::test]
     fn deferred_menu_work_can_read_the_dispatching_window(cx: &mut TestAppContext) {
         let window = cx.update(|cx| {
-            cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| TestRoot))
-                .unwrap()
+            let opened = cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| TestRoot));
+            // 测试窗口必须建成：建失败记错后失败，保持测试语义，不再裸 unwrap。
+            let Some(window) = opened.ok() else {
+                log::error!("app_menu test: open_window failed");
+                panic!("test window should open");
+            };
+            window
         });
         let did_read = Rc::new(Cell::new(false));
         let did_read_in_handler = did_read.clone();
@@ -280,9 +301,11 @@ mod tests {
             cx.on_action(move |_: &ReadDispatchingWindow, cx| {
                 let did_read = did_read_in_handler.clone();
                 cx.defer(move |cx| {
-                    window
-                        .entity(cx)
-                        .expect("dispatching window should be readable after defer");
+                    // defer 回调里窗口仍应可读：读不到记错后失败，保持测试语义。
+                    let Ok(_) = window.entity(cx) else {
+                        log::error!("app_menu test: dispatching window unreadable after defer");
+                        panic!("dispatching window should be readable after defer");
+                    };
                     did_read.set(true);
                 });
             });

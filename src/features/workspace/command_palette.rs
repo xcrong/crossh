@@ -711,10 +711,14 @@ mod tests {
 
     #[test]
     fn palette_max_matches_zoom_window() {
-        let zoom = palette_commands()
+        let found = palette_commands()
             .into_iter()
-            .find(|cmd| cmd.kind == PaletteCommandKind::ZoomWindow)
-            .expect("zoom command should exist");
+            .find(|cmd| cmd.kind == PaletteCommandKind::ZoomWindow);
+        // 静态命令表缺 zoom 属于编程错误：记错后失败，保持测试语义。
+        let Some(zoom) = found else {
+            log::error!("palette test: zoom command missing");
+            panic!("zoom command should exist");
+        };
         // 英文关键词接线：中文环境下输入 max/zoom 也能命中。
         assert_eq!(zoom.keywords, &["maximize", "zoom"]);
         for query in ["max", "MAX", "zoom", "window"] {
@@ -743,10 +747,12 @@ mod tests {
     fn palette_directions_match_split_commands() {
         let commands = palette_commands();
         let find = |kind| {
-            commands
-                .iter()
-                .find(|cmd| cmd.kind == kind)
-                .unwrap_or_else(|| panic!("missing palette command {kind:?}"))
+            // 静态命令表缺项属于编程错误：记错后失败，保持测试语义。
+            let Some(cmd) = commands.iter().find(|cmd| cmd.kind == kind) else {
+                log::error!("palette test: missing command {kind:?}");
+                panic!("missing palette command {kind:?}");
+            };
+            cmd
         };
         let horizontal = find(PaletteCommandKind::SplitHorizontal);
         let vertical = find(PaletteCommandKind::SplitVertical);
@@ -776,10 +782,12 @@ mod tests {
     fn palette_git_and_notes_match_keywords() {
         let commands = palette_commands();
         let find = |kind| {
-            commands
-                .iter()
-                .find(|cmd| cmd.kind == kind)
-                .unwrap_or_else(|| panic!("missing palette command {kind:?}"))
+            // 静态命令表缺项属于编程错误：记错后失败，保持测试语义。
+            let Some(cmd) = commands.iter().find(|cmd| cmd.kind == kind) else {
+                log::error!("palette test: missing command {kind:?}");
+                panic!("missing palette command {kind:?}");
+            };
+            cmd
         };
         // 英文关键词接线：中文环境下输入 git/note 也能命中。
         let git = find(PaletteCommandKind::OpenGitViewer);
