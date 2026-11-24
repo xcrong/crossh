@@ -136,9 +136,18 @@ fn shell_lifecycle_markers(
     )
 }
 
-fn open_navigation_target(target: &zed_terminal::MaybeNavigationTarget, cx: &mut App) {
+fn open_navigation_target(
+    target: &zed_terminal::MaybeNavigationTarget,
+    kind: zed_terminal::LinkOpenKind,
+    cx: &mut App,
+) {
     if let zed_terminal::MaybeNavigationTarget::Url(url) = target {
-        crate::link_opener::open_link(url, cx);
+        match kind {
+            // 生态惯例：cmd/ctrl+点击直达外部浏览器，不经应用层拦截。
+            zed_terminal::LinkOpenKind::External => cx.open_url(url),
+            // shift+点击走应用层：mac/Win 进内置预览，Linux/非 http(s) 回退外部。
+            zed_terminal::LinkOpenKind::Preview => crate::link_opener::open_link(url, cx),
+        }
     }
 }
 
@@ -545,7 +554,9 @@ impl TerminalView {
                 zed_terminal::Event::Wakeup => {
                     this.pending_timestamp = Some(timestamp_now());
                 }
-                zed_terminal::Event::Open(target) => open_navigation_target(target, cx),
+                zed_terminal::Event::Open(target, kind) => {
+                    open_navigation_target(target, *kind, cx)
+                }
                 zed_terminal::Event::SelectionsChanged
                 | zed_terminal::Event::NewNavigationTarget(_) => {}
             }
@@ -1228,15 +1239,38 @@ mod tests {
     }
 
     #[gpui::test]
-    fn terminal_url_navigation_uses_platform_opener(cx: &mut gpui::TestAppContext) {
+    fn terminal_url_navigation_external_uses_platform_opener(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             open_navigation_target(
                 &zed_terminal::MaybeNavigationTarget::Url("https://example.com/docs".into()),
+                zed_terminal::LinkOpenKind::External,
                 cx,
             );
         });
 
         assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/docs"));
+    }
+
+    #[gpui::test]
+    fn terminal_url_navigation_preview_prefers_link_opener(cx: &mut gpui::TestAppContext) {
+        use std::rc::Rc;
+        cx.update(|cx| {
+            crate::link_opener::set_link_opener(
+                crate::link_opener::LinkOpener(Rc::new(|url, _| {
+                    assert_eq!(url, "https://example.com/docs");
+                    true
+                })),
+                cx,
+            );
+            open_navigation_target(
+                &zed_terminal::MaybeNavigationTarget::Url("https://example.com/docs".into()),
+                zed_terminal::LinkOpenKind::Preview,
+                cx,
+            );
+        });
+
+        // 被 LinkOpener 接管后不再走系统浏览器。
+        assert_eq!(cx.opened_url(), None);
     }
 
     #[gpui::test]
@@ -1247,6 +1281,7 @@ mod tests {
                     maybe_path: "/tmp/example.rs:12".into(),
                     working_directory: Some(PathBuf::from("/tmp")),
                 }),
+                zed_terminal::LinkOpenKind::External,
                 cx,
             );
         });

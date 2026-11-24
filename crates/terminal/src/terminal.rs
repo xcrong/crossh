@@ -669,7 +669,15 @@ pub enum Event {
     BlinkChanged(bool),
     SelectionsChanged,
     NewNavigationTarget(Option<MaybeNavigationTarget>),
-    Open(MaybeNavigationTarget),
+    Open(MaybeNavigationTarget, LinkOpenKind),
+}
+
+/// 链接点开后的去向：`cmd/ctrl+点击` 走外部浏览器，`shift+点击` 走内置预览。
+/// 修饰键在鼠标事件里捕获、随事件 plumbing 到视图层（事件之外查不到实时修饰键）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkOpenKind {
+    External,
+    Preview,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -700,8 +708,8 @@ enum InternalEvent {
     ScrollToPoint(Point),
     SetSelection(Option<Selection>),
     UpdateSelection(GpuiPoint<Pixels>),
-    FindHyperlink(GpuiPoint<Pixels>, bool),
-    ProcessHyperlink(HyperlinkMatch, bool),
+    FindHyperlink(GpuiPoint<Pixels>, Option<LinkOpenKind>),
+    ProcessHyperlink(HyperlinkMatch, Option<LinkOpenKind>),
     // Whether keep selection when copy
     Copy(Option<bool>),
     // Vi mode events
@@ -2202,7 +2210,7 @@ impl Terminal {
     fn process_hyperlink(
         &mut self,
         hyperlink: HyperlinkMatch,
-        open: bool,
+        open: Option<LinkOpenKind>,
         history_size: usize,
         cx: &mut Context<Self>,
     ) {
@@ -2235,8 +2243,8 @@ impl Terminal {
             })
         };
 
-        if open {
-            cx.emit(Event::Open(target));
+        if let Some(kind) = open {
+            cx.emit(Event::Open(target, kind));
         } else {
             self.update_selected_word(prev_hovered_word, range, maybe_url_or_path, target, cx);
         }
@@ -2824,13 +2832,27 @@ impl Terminal {
         self.last_content.mode.intersects(Modes::MOUSE_MODE) && !shift
     }
 
+    /// 链接打开手势的修饰键口径：`shift+悬停/点击` 与 `secondary(cmd/ctrl)+悬停/点击`
+    /// 高亮一致，去向不同——`shift` 进内置预览优先，其次 `secondary` 进外部浏览器，
+    /// 都不按则不是链接手势（选中/上报照旧）。
+    fn link_open_kind(modifiers: &Modifiers, cx: &App) -> Option<LinkOpenKind> {
+        if modifiers.shift {
+            Some(LinkOpenKind::Preview)
+        } else if modifiers.secondary(cx) {
+            Some(LinkOpenKind::External)
+        } else {
+            None
+        }
+    }
+
     pub fn mouse_move(&mut self, e: &MouseMoveEvent, cx: &mut Context<Self>) {
         let position = e.position - self.last_content.terminal_bounds.bounds.origin;
         if self.mouse_mode(e.modifiers.shift) {
-            // A ctrl/cmd press on a link suppressed its button-press report in
-            // `mouse_down`. Since the app never saw the press, we must swallow
-            // the whole gesture rather than forward later motion/release
-            // reports, which would be a press-less (malformed) sequence.
+            // A link-modifier (cmd/ctrl/shift) press on a link suppressed its
+            // button-press report in `mouse_down`. Since the app never saw the
+            // press, we must swallow the whole gesture rather than forward
+            // later motion/release reports, which would be a press-less
+            // (malformed) sequence.
             // `mouse_up` resolves it: release on the same link opens it,
             // otherwise the gesture is dropped.
             if self.mouse_down_hyperlink.is_none() {
@@ -2866,7 +2888,7 @@ impl Terminal {
         cx: &mut Context<Self>,
     ) {
         if self.selection_phase == SelectionPhase::Selecting
-            || !modifiers.secondary(cx)
+            || Self::link_open_kind(&modifiers, cx).is_none()
             || !self.last_content.terminal_bounds.bounds.contains(&position)
         {
             self.clear_hyperlink(cx);
@@ -2901,7 +2923,7 @@ impl Terminal {
         self.last_hyperlink_search_position = Some(position);
         self.events.push_back(InternalEvent::FindHyperlink(
             position - self.last_content.terminal_bounds.bounds.origin,
-            false,
+            None,
         ));
         cx.notify();
     }
@@ -2997,7 +3019,7 @@ impl Terminal {
         );
 
         if e.button == MouseButton::Left
-            && e.modifiers.secondary(cx)
+            && Self::link_open_kind(&e.modifiers, cx).is_some()
             && (TerminalSettings::get_global(cx).open_links_in_mouse_mode
                 || !self.mouse_mode(e.modifiers.shift))
         {
@@ -3084,8 +3106,13 @@ impl Terminal {
                 .find_hyperlink_at_point(point)
                 .is_some_and(|mouse_up_hyperlink| mouse_up_hyperlink == mouse_down_hyperlink)
             {
-                self.events
-                    .push_back(InternalEvent::ProcessHyperlink(mouse_down_hyperlink, true));
+                // 按下时已确认为链接手势；去向按松开时的修饰键定，shift 优先预览，
+                // 键都松了则回退外部（与按下时多半是 cmd 一致）。
+                let kind = Self::link_open_kind(&e.modifiers, cx).unwrap_or(LinkOpenKind::External);
+                self.events.push_back(InternalEvent::ProcessHyperlink(
+                    mouse_down_hyperlink,
+                    Some(kind),
+                ));
                 self.selection_phase = SelectionPhase::Ended;
                 self.last_mouse = None;
                 self.mouse_down_position = None;
@@ -3129,13 +3156,16 @@ impl Terminal {
                     .and_then(|cell| cell.hyperlink())
                 {
                     // OSC 8 链接同样清洗尾部标点/不平衡括号，与悬停预览共用一套口径；
-                    // 由视图层决定开在预览器还是系统浏览器。
-                    cx.emit(Event::Open(MaybeNavigationTarget::Url(
-                        sanitize_url_text(link.uri()).into_owned(),
-                    )));
-                } else if e.modifiers.secondary(cx) {
+                    // 裸点击不再直开，必须带 cmd（外部）或 shift（预览）才开。
+                    if let Some(kind) = Self::link_open_kind(&e.modifiers, cx) {
+                        cx.emit(Event::Open(
+                            MaybeNavigationTarget::Url(sanitize_url_text(link.uri()).into_owned()),
+                            kind,
+                        ));
+                    }
+                } else if let Some(kind) = Self::link_open_kind(&e.modifiers, cx) {
                     self.events
-                        .push_back(InternalEvent::FindHyperlink(position, true));
+                        .push_back(InternalEvent::FindHyperlink(position, Some(kind)));
                 }
             }
         }
@@ -5227,6 +5257,41 @@ mod tests {
             terminal.mouse_up(&mouse_up, cx);
         }
 
+        fn shift_mouse_down_at(
+            terminal: &mut Terminal,
+            position: GpuiPoint<Pixels>,
+            cx: &mut Context<Terminal>,
+        ) {
+            let mouse_down = MouseDownEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Modifiers {
+                    shift: true,
+                    ..Modifiers::none()
+                },
+                click_count: 1,
+                first_mouse: true,
+            };
+            terminal.mouse_down(&mouse_down, cx);
+        }
+
+        fn shift_mouse_up_at(
+            terminal: &mut Terminal,
+            position: GpuiPoint<Pixels>,
+            cx: &mut Context<Terminal>,
+        ) {
+            let mouse_up = MouseUpEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Modifiers {
+                    shift: true,
+                    ..Modifiers::none()
+                },
+                click_count: 1,
+            };
+            terminal.mouse_up(&mouse_up, cx);
+        }
+
         macro_rules! any_event_matches {
             ($terminal:ident, $event:pat) => {
                 $terminal.events.iter().any(|event| matches!(event, $event))
@@ -5243,10 +5308,57 @@ mod tests {
                 ctrl_mouse_up_at(terminal, click_position, cx);
 
                 assert!(
-                    any_event_matches!(terminal, InternalEvent::ProcessHyperlink(_, true)),
+                    any_event_matches!(
+                        terminal,
+                        InternalEvent::ProcessHyperlink(_, Some(LinkOpenKind::External))
+                    ),
                     "Should have ProcessHyperlink event when ctrl+clicking on same hyperlink position"
                 );
             });
+        }
+
+        #[gpui::test]
+        async fn test_shift_click_same_position_opens_preview(cx: &mut TestAppContext) {
+            let terminal = init_terminal_test(cx, b"Visit https://zed.dev/ for more\r\n");
+
+            terminal.update(cx, |terminal, cx| {
+                let click_position = point(px(80.0), px(10.0));
+                shift_mouse_down_at(terminal, click_position, cx);
+                shift_mouse_up_at(terminal, click_position, cx);
+
+                assert!(
+                    any_event_matches!(
+                        terminal,
+                        InternalEvent::ProcessHyperlink(_, Some(LinkOpenKind::Preview))
+                    ),
+                    "Should have Preview ProcessHyperlink event when shift+clicking on same hyperlink position"
+                );
+            });
+        }
+
+        #[gpui::test]
+        async fn test_hyperlink_shift_click_same_position_in_mouse_mode(cx: &mut TestAppContext) {
+            let terminal = init_terminal_test(cx, b"Visit https://zed.dev/ for more\r\n");
+
+            terminal.update(cx, |terminal, cx| {
+            terminal.last_content.mode = Modes::MOUSE_MODE;
+
+            let click_position = point(px(80.0), px(10.0));
+            shift_mouse_down_at(terminal, click_position, cx);
+            shift_mouse_up_at(terminal, click_position, cx);
+
+            assert!(
+                any_event_matches!(
+                    terminal,
+                    InternalEvent::ProcessHyperlink(_, Some(LinkOpenKind::Preview))
+                ),
+                "Should have Preview ProcessHyperlink event when shift+clicking on same hyperlink position in mouse mode"
+            );
+            assert!(
+                terminal.take_pty_write_log().is_empty(),
+                "a consumed link click must not be reported to the PTY"
+            );
+        });
         }
 
         #[gpui::test]
@@ -5261,7 +5373,10 @@ mod tests {
             ctrl_mouse_up_at(terminal, click_position, cx);
 
             assert!(
-                any_event_matches!(terminal, InternalEvent::ProcessHyperlink(_, true)),
+                any_event_matches!(
+                    terminal,
+                    InternalEvent::ProcessHyperlink(_, Some(LinkOpenKind::External))
+                ),
                 "Should have ProcessHyperlink event when ctrl+clicking on same hyperlink position in mouse mode"
             );
             assert!(
@@ -5430,7 +5545,10 @@ mod tests {
                 ctrl_mouse_up_at(terminal, up_position, cx);
 
                 assert!(
-                    any_event_matches!(terminal, InternalEvent::ProcessHyperlink(_, true)),
+                    any_event_matches!(
+                        terminal,
+                        InternalEvent::ProcessHyperlink(_, Some(LinkOpenKind::External))
+                    ),
                     "Should have ProcessHyperlink event when dragging within hyperlink bounds"
                 );
             });
