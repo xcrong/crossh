@@ -59,7 +59,7 @@ pub(crate) fn parse(source: &str, cx: &mut NodeContext) -> Result<ParsedDocument
         ..Default::default()
     };
 
-    let bytes = cleanup_html(&source);
+    let bytes = cleanup_html(source);
     let mut cursor = std::io::Cursor::new(bytes);
     // Ref
     // https://github.com/servo/html5ever/blob/main/rcdom/examples/print-rcdom.rs
@@ -198,10 +198,10 @@ fn attr_width_height(
     if width.is_none() || height.is_none() {
         let styles = style_attrs(attrs);
         if width.is_none() {
-            width = styles.get("width").and_then(|v| value_to_length(&v));
+            width = styles.get("width").and_then(|v| value_to_length(v));
         }
         if height.is_none() {
-            height = styles.get("height").and_then(|v| value_to_length(&v));
+            height = styles.get("height").and_then(|v| value_to_length(v));
         }
     }
 
@@ -260,10 +260,8 @@ fn trim_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
 
     for (i, c) in text.chars().enumerate() {
-        if c.is_whitespace() {
-            if i > 0 && out.ends_with(' ') {
-                continue;
-            }
+        if c.is_whitespace() && i > 0 && out.ends_with(' ') {
+            continue;
         }
         out.push(c);
     }
@@ -301,7 +299,7 @@ fn merge_children_with_mark(node: &Node, paragraph: &mut Paragraph, new_mark: Op
 
     for child in node.children.borrow().iter() {
         let mut child_paragraph = Paragraph::default();
-        parse_paragraph(&mut child_paragraph, &child);
+        parse_paragraph(&mut child_paragraph, child);
 
         for node in child_paragraph.children {
             let offset = merged_text.len();
@@ -334,7 +332,7 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &Rc<Node>) {
     match &node.data {
         NodeData::Text { contents } => {
             let part = &contents.borrow();
-            paragraph.push_str(&part);
+            paragraph.push_str(part);
         }
         NodeData::Element { name, attrs, .. } => match name.local {
             local_name!("em") | local_name!("i") => {
@@ -357,7 +355,7 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &Rc<Node>) {
                 merge_children_with_mark(node, paragraph, Some(TextMark::default().code()));
             }
             local_name!("mark") => {
-                let color = mark_color(&attrs).unwrap_or_else(|| gpui::rgb(0xfef08a).into());
+                let color = mark_color(attrs).unwrap_or_else(|| gpui::rgb(0xfef08a).into());
                 merge_children_with_mark(
                     node,
                     paragraph,
@@ -366,10 +364,10 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &Rc<Node>) {
             }
             local_name!("a") => {
                 let link_mark = LinkMark {
-                    url: attr_value(&attrs, local_name!("href"))
+                    url: attr_value(attrs, local_name!("href"))
                         .unwrap_or_default()
                         .into(),
-                    title: attr_value(&attrs, local_name!("title")).map(Into::into),
+                    title: attr_value(attrs, local_name!("title")).map(Into::into),
                     ..Default::default()
                 };
 
@@ -418,7 +416,7 @@ fn parse_node(
     match node.data {
         NodeData::Text { ref contents } => {
             let text = contents.borrow().to_string();
-            if text.len() > 0 {
+            if !text.is_empty() {
                 paragraph.push_str(&text);
             }
 
@@ -496,7 +494,7 @@ fn parse_heading(node: &Rc<Node>, paragraph: &mut Paragraph, name: &QualName) ->
         children: paragraph,
         span: None,
     };
-    if children.len() > 0 {
+    if !children.is_empty() {
         children.push(heading);
 
         Some(BlockNode::Root {
@@ -536,7 +534,7 @@ fn parse_image(
         height,
     });
 
-    if children.len() > 0 {
+    if !children.is_empty() {
         children.push(BlockNode::Paragraph(paragraph));
         Some(BlockNode::Root {
             children,
@@ -562,11 +560,11 @@ fn parse_list_item(
         }
         if child_paragraph.text_len() > 0 {
             // If last child is paragraph, merge child
-            if let Some(last_child) = children.last_mut() {
-                if let BlockNode::Paragraph(last_paragraph) = last_child {
-                    last_paragraph.merge(child_paragraph);
-                    continue;
-                }
+            if let Some(last_child) = children.last_mut()
+                && let BlockNode::Paragraph(last_paragraph) = last_child
+            {
+                last_paragraph.merge(child_paragraph);
+                continue;
             }
 
             children.push(BlockNode::Paragraph(child_paragraph));
@@ -594,18 +592,18 @@ fn parse_table(node: &Rc<Node>, paragraph: &mut Paragraph) -> Option<BlockNode> 
                 if name.local == local_name!("tbody") || name.local == local_name!("thead") =>
             {
                 for sub_child in child.children.borrow().iter() {
-                    parse_table_row(&mut table, &sub_child);
+                    parse_table_row(&mut table, sub_child);
                 }
             }
             _ => {
-                parse_table_row(&mut table, &child);
+                parse_table_row(&mut table, child);
             }
         }
     }
     consume_paragraph(&mut children, paragraph);
 
     let table = BlockNode::Table(table);
-    if children.len() > 0 {
+    if !children.is_empty() {
         children.push(table);
         Some(BlockNode::Root {
             children,

@@ -1,3 +1,6 @@
+// 可调面板的渲染回调嵌套深，为 GPUI 布局惯用写法；拆别名会扩散到调用点，
+// 仅豁免本文件的复杂度 lint。
+#![allow(clippy::type_complexity)]
 use std::{
     ops::{Deref, Range},
     rc::Rc,
@@ -413,7 +416,6 @@ impl Element for ResizePanelGroupElement {
         _window: &mut Window,
         _cx: &mut App,
     ) -> Self::PrepaintState {
-        ()
     }
 
     fn paint(

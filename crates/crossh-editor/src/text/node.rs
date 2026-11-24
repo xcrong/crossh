@@ -139,7 +139,7 @@ impl BlockNode {
             BlockNode::Break { span, .. } => *span,
             BlockNode::HorizontalRule { span, .. } => *span,
             BlockNode::Definition { span, .. } => *span,
-            BlockNode::Unknown { .. } => None,
+            BlockNode::Unknown => None,
         }
     }
 
@@ -238,7 +238,7 @@ impl BlockNode {
             BlockNode::Definition { .. }
             | BlockNode::Break { .. }
             | BlockNode::HorizontalRule { .. }
-            | BlockNode::Unknown { .. } => {}
+            | BlockNode::Unknown => {}
         }
 
         text
@@ -365,7 +365,7 @@ impl BlockNode {
             | BlockNode::Definition { .. }
             | BlockNode::Break { .. }
             | BlockNode::HorizontalRule { .. }
-            | BlockNode::Unknown { .. } => false,
+            | BlockNode::Unknown => false,
         }
     }
 
@@ -393,7 +393,7 @@ impl BlockNode {
             | BlockNode::Definition { .. }
             | BlockNode::Break { .. }
             | BlockNode::HorizontalRule { .. }
-            | BlockNode::Unknown { .. } => {}
+            | BlockNode::Unknown => {}
         }
     }
 }
@@ -1339,7 +1339,7 @@ impl CodeBlock {
                     .font_family(cx.theme().tokens.typography.mono.clone())
                     .text_size(cx.theme().tokens.typography.mono_md.size)
                     .relative()
-                    .refine_style(&style.code_block())
+                    .refine_style(style.code_block())
                     .child(Inline::new(
                         "code",
                         self.state.clone(),
@@ -1360,7 +1360,7 @@ impl CodeBlock {
                                 .right_2()
                                 .bg(style.code_background())
                                 .rounded(cx.theme().tokens.radius.md)
-                                .child(actions(&self, window, cx)),
+                                .child(actions(self, window, cx)),
                         )
                     }),
             )
@@ -1442,7 +1442,7 @@ impl Paragraph {
         }
 
         // Add the last text node
-        if text.len() > 0 {
+        if !text.is_empty() {
             if let Ok(mut state) = self.state.lock() {
                 state.set_text(text.into());
             }
@@ -1478,7 +1478,7 @@ impl Paragraph {
             return;
         };
 
-        if text.len() > 0 {
+        if !text.is_empty() {
             if let Ok(mut state) = inline_node.state.lock() {
                 state.set_text(text.clone().into());
             }
@@ -1582,10 +1582,10 @@ impl Paragraph {
                 });
 
                 // convert link references, replace link
-                if let Some(identifier) = link_mark.identifier.as_ref() {
-                    if let Some(mark) = node_cx.link_refs.get(identifier) {
-                        link_mark = mark.clone();
-                    }
+                if let Some(identifier) = link_mark.identifier.as_ref()
+                    && let Some(mark) = node_cx.link_refs.get(identifier)
+                {
+                    link_mark = mark.clone();
                 }
 
                 links.push((inner_range.clone(), link_mark));
@@ -1852,7 +1852,7 @@ impl BlockNode {
                     format!("[{}]: {}", identifier, url)
                 }
             }
-            BlockNode::Unknown { .. } => "".to_string(),
+            BlockNode::Unknown => "".to_string(),
         }
         .trim()
         .to_string()
@@ -1975,15 +1975,13 @@ impl BlockNode {
                     // Continuation paragraph — stack vertically below
                     // the previous row, indented to align with the text
                     // column (past bullet/number prefix).
-                    if last_not_list {
-                        if let Some(preceding_row) = items.pop() {
-                            items.push(
-                                v_flex().child(preceding_row).child(
-                                    div().w_full().pl(rems(1.)).overflow_hidden().child(text),
-                                ),
-                            );
-                            continue;
-                        }
+                    if last_not_list && let Some(preceding_row) = items.pop() {
+                        items.push(
+                            v_flex()
+                                .child(preceding_row)
+                                .child(div().w_full().pl(rems(1.)).overflow_hidden().child(text)),
+                        );
+                        continue;
                     }
 
                     items.push(Self::render_list_item_row(
@@ -2299,7 +2297,7 @@ impl BlockNode {
                         .when(!is_last_col, |this| {
                             this.border_r_1().border_color(style.border())
                         })
-                        .refine_style(&style.table_cell())
+                        .refine_style(style.table_cell())
                         .child(cell.children.render(node_cx, window, cx)),
                 );
             }
@@ -2317,7 +2315,7 @@ impl BlockNode {
                     .when(row_ix == 0, |this| {
                         this.bg(style.code_background())
                             .text_color(style.foreground())
-                            .refine_style(&style.table_head())
+                            .refine_style(style.table_head())
                     })
                     .children(cells),
             );
@@ -2365,7 +2363,7 @@ impl BlockNode {
                         .when(!is_last_col, |this| {
                             this.border_r_1().border_color(style.border())
                         })
-                        .refine_style(&style.table_cell())
+                        .refine_style(style.table_cell())
                         .child(cell.children.render(node_cx, window, cx)),
                 );
             }
@@ -2384,7 +2382,7 @@ impl BlockNode {
                     .when(row_ix == 0, |this| {
                         this.bg(style.code_background())
                             .text_color(style.foreground())
-                            .refine_style(&style.table_head())
+                            .refine_style(style.table_head())
                     })
                     .children(cells),
             );
@@ -2402,7 +2400,7 @@ impl BlockNode {
                     .border_color(style.border())
                     .overflow_hidden()
                     .children(rows)
-                    .refine_style(&style.table()),
+                    .refine_style(style.table()),
             )
             // Custom actions row (e.g. copy / download) rendered below the
             // table. The hook's element spans full width; alignment is up to
@@ -2437,7 +2435,7 @@ impl BlockNode {
         match self {
             BlockNode::Root { children, .. } => div()
                 .id(("div", ix))
-                .children(children.into_iter().enumerate().map(move |(ix, node)| {
+                .children(children.iter().enumerate().map(move |(ix, node)| {
                     node.render_block(NodeRenderOptions { ix, ..options }, node_cx, window, cx)
                 }))
                 .into_any_element(),
@@ -2462,7 +2460,7 @@ impl BlockNode {
                 .children({
                     let mut items = Vec::with_capacity(children.len());
                     let mut item_index = 0;
-                    for (ix, item) in children.into_iter().enumerate() {
+                    for (ix, item) in children.iter().enumerate() {
                         let is_item = item.is_list_item();
 
                         items.push(Self::render_list_item(
@@ -2507,7 +2505,7 @@ impl BlockNode {
                 )
                 .into_any_element(),
             BlockNode::Break { .. } => div().id("break").into_any_element(),
-            BlockNode::Unknown { .. } | BlockNode::Definition { .. } => div().into_any_element(),
+            BlockNode::Unknown | BlockNode::Definition { .. } => div().into_any_element(),
             _ => {
                 if cfg!(debug_assertions) {
                     tracing::warn!("unknown implementation: {:?}", self);

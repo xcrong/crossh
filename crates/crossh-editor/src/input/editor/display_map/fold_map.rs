@@ -311,7 +311,13 @@ impl FoldMap {
 
         // Scan all wrap rows and filter out hidden ones
         let mut display_row = 0;
-        let mut hidden_iter = merged_hidden.chunks_exact(2);
+        // 展平的起止对必成对出现，用数组块迭代避免余数分支。
+        let (hidden_chunks, hidden_remainder) = merged_hidden.as_chunks::<2>();
+        debug_assert!(
+            hidden_remainder.is_empty(),
+            "合并后的隐藏区间恒为起止成对，不应有余数"
+        );
+        let mut hidden_iter = hidden_chunks.iter();
         let mut current_hidden = hidden_iter.next();
 
         for wrap_row in 0..wrap_row_count {

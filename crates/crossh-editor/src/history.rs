@@ -31,6 +31,15 @@ pub struct History<I: HistoryItem> {
     unique: bool,
 }
 
+impl<I> Default for History<I>
+where
+    I: HistoryItem,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<I> History<I>
 where
     I: HistoryItem,
@@ -258,7 +267,7 @@ mod tests {
         let changes = history.undo().unwrap();
         assert_eq!(changes[0].tab_index, 0);
 
-        assert_eq!(history.undo().is_none(), true);
+        assert!(history.undo().is_none());
     }
 
     #[test]

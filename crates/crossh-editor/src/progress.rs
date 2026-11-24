@@ -104,6 +104,13 @@ macro_rules! progress_part {
             }
         }
 
+        impl Default for $name {
+            // 三个进度部件均可由空容器默认构造，与 `new()` 等价。
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
         impl Styled for $name {
             fn style(&mut self) -> &mut StyleRefinement {
                 &mut self.style

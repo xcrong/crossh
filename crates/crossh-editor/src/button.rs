@@ -1,3 +1,5 @@
+// 测试脚手架返回的多元组类型较长，仅用于测试；拆别名收益小，仅豁免本文件。
+#![allow(clippy::type_complexity)]
 use std::rc::Rc;
 
 use gpui::{

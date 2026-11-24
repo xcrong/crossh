@@ -1,3 +1,5 @@
+// 拖拽回调类型嵌套深，为 GPUI 惯用写法；拆别名收益小，仅豁免本文件。
+#![allow(clippy::type_complexity)]
 use std::{cell::Cell, rc::Rc};
 
 use gpui::{
@@ -249,7 +251,7 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
         request_layout.paint(window, cx);
 
         window.with_element_state(id.unwrap(), |state: Option<ResizeHandleState>, window| {
-            let state = state.unwrap_or(ResizeHandleState::default());
+            let state = state.unwrap_or_default();
 
             window.on_mouse_event({
                 let state = state.clone();

@@ -15,7 +15,7 @@ use crate::text::{
 /// Parse Markdown into a tree of nodes.
 pub(crate) fn parse(source: &str, cx: &mut NodeContext) -> Result<ParsedDocument, SharedString> {
     let options = cx.markdown_extensions.parse_options();
-    markdown::to_mdast(&source, &options)
+    markdown::to_mdast(source, &options)
         .map(|n| ast_to_document(source, n, cx))
         .map_err(|e| e.to_string().into())
 }
@@ -23,11 +23,8 @@ pub(crate) fn parse(source: &str, cx: &mut NodeContext) -> Result<ParsedDocument
 fn parse_table_row(table: &mut Table, node: &mdast::TableRow, cx: &mut NodeContext) {
     let mut row = TableRow::default();
     node.children.iter().for_each(|c| {
-        match c {
-            Node::TableCell(cell) => {
-                parse_table_cell(&mut row, cell, cx);
-            }
-            _ => {}
+        if let Node::TableCell(cell) = c {
+            parse_table_cell(&mut row, cell, cx);
         };
     });
     table.children.push(row);
@@ -405,13 +402,16 @@ fn ast_mdx_paragraph(
 }
 
 fn ast_table(val: mdast::Table, cx: &mut NodeContext) -> BlockNode {
-    let mut table = Table::default();
-    table.column_aligns = val
-        .align
-        .clone()
-        .into_iter()
-        .map(|align| align.into())
-        .collect();
+    let mut table = Table {
+        // 对齐列与子节点解析分离：先收集对齐，再逐行填充单元格。
+        column_aligns: val
+            .align
+            .clone()
+            .into_iter()
+            .map(|align| align.into())
+            .collect(),
+        ..Default::default()
+    };
     val.children.iter().for_each(|c| {
         if let Node::TableRow(row) = c {
             parse_table_row(&mut table, row, cx);

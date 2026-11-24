@@ -406,7 +406,7 @@ impl TextWrapper {
     ///
     /// If the `text` is the same as the current text, do nothing.
     fn update_all(&mut self, text: &Rope, cx: &mut App) {
-        self.update(text, &(0..text.len()), &text, cx);
+        self.update(text, &(0..text.len()), text, cx);
     }
 
     /// Return display point (with soft wrap) from the given byte offset in the text.
@@ -456,7 +456,7 @@ impl TextWrapper {
         // Otherwise return the eof of the line.
         let last_range = line.wrapped_lines.last().unwrap_or(&(0..0));
         let ix = line.lines_len().saturating_sub(1);
-        return WrapDisplayPoint::new(wrapped_row + ix, ix, last_range.len());
+        WrapDisplayPoint::new(wrapped_row + ix, ix, last_range.len())
     }
 
     /// Return byte offset in the text from the given display point (with soft wrap).
@@ -1054,6 +1054,8 @@ mod tests {
         );
     }
 
+    // 单区间数组是刻意构造的最小用例：空文档恰好只有一段包裹行。
+    #[allow(clippy::single_range_in_vec_init)]
     fn update_remove_all<F>(text: &mut Rope, wrapper: &mut TextWrapper, wrap: &mut F)
     where
         F: FnMut(&str, Pixels) -> Vec<Boundary>,
@@ -1114,6 +1116,8 @@ mod tests {
     }
 
     /// Editing the last line and deleting everything must keep the tree consistent.
+    // 单区间数组是刻意构造的最小用例：删空后恰好只剩一段包裹行。
+    #[allow(clippy::single_range_in_vec_init)]
     #[test]
     fn test_edit_last_line_and_full_delete() {
         let mut wrapper = TextWrapper::new(test_font(), px(14.), None);

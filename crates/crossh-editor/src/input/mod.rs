@@ -4,6 +4,9 @@
 //! A `pub` on an item behind a private module says something the module path
 //! contradicts, and it hides the real API surface from anyone reading it.
 #![warn(unreachable_pub)]
+// `mod input` 与父模块同名是刻意的 `#[path]` 重映射布局（input/mod.rs 聚合
+// input/*.rs），改名会破坏既有路径；仅豁免本文件的模块同名 lint。
+#![allow(clippy::module_inception)]
 
 use gpui::App;
 

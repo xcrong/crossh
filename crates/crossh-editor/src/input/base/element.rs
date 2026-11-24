@@ -1,3 +1,6 @@
+// GPUI 高亮回调签名复杂（多层泛型+回调），拆别名会扩散到全部调用点；
+// 上游派生代码维持现状，仅豁免本文件的复杂度 lint。
+#![allow(clippy::type_complexity)]
 use crate::input::{
     HighlightStyleResolver, InputEditorStyle, InputExtras as _, InputHighlighter, InputModeKind,
     Selection,
@@ -283,8 +286,10 @@ impl<M: InputModeKind> Element for EditorScrollbar<M> {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut style = Style::default();
-        style.position = Position::Absolute;
+        let mut style = Style {
+            position: Position::Absolute,
+            ..Default::default()
+        };
         style.size.width = relative(1.).into();
         style.size.height = relative(1.).into();
 
@@ -301,9 +306,7 @@ impl<M: InputModeKind> Element for EditorScrollbar<M> {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let state = self.state.read(cx);
-        let Some(snapshot) = state.editor_scrollbar_snapshot.get() else {
-            return None;
-        };
+        let snapshot = state.editor_scrollbar_snapshot.get()?;
         let scroll_handle = state.scroll_handle.clone();
 
         if scroll_handle.offset() != snapshot.cursor_scroll_offset {
@@ -592,7 +595,7 @@ impl<M: InputModeKind> TextElement<M> {
 
         // Calculate the width of the line numbers
         let (line_number_width, line_number_len) =
-            Self::layout_line_numbers(&state, &text, text_size, &text_style, window);
+            Self::layout_line_numbers(state, &text, text_size, &text_style, window);
 
         let wrap_width = if multi_line && state.soft_wrap {
             Some(bounds.size.width - line_number_width - RIGHT_MARGIN)
@@ -782,7 +785,7 @@ impl<M: InputModeKind> TextElement<M> {
             bounds.size.height,
         );
 
-        bounds.origin = bounds.origin + scroll_offset;
+        bounds.origin += scroll_offset;
 
         (cursor_bounds, scroll_offset, current_row)
     }
@@ -1048,17 +1051,17 @@ impl<M: InputModeKind> TextElement<M> {
         let mut rev_line_corners = line_corners.iter().rev().peekable();
         while let Some(corners) = rev_line_corners.next() {
             points.push(corners.top_left);
-            if let Some(next) = rev_line_corners.peek() {
-                if next.top_left.x != corners.top_left.x {
-                    points.push(point(next.top_left.x, corners.top_left.y));
-                }
+            if let Some(next) = rev_line_corners.peek()
+                && next.top_left.x != corners.top_left.x
+            {
+                points.push(point(next.top_left.x, corners.top_left.y));
             }
         }
 
         // print_points_as_svg_path(&line_corners, &points);
 
         let path_origin = bounds.origin + point(line_number_width, px(0.));
-        let first_p = *points.get(0).unwrap();
+        let first_p = *points.first().unwrap();
         let mut builder = gpui::PathBuilder::fill();
         builder.move_to(path_origin + first_p);
         for p in points.iter().skip(1) {
@@ -1098,9 +1101,7 @@ impl<M: InputModeKind> TextElement<M> {
         cx: &mut App,
     ) -> Option<Path<Pixels>> {
         let state = self.state.read(cx);
-        let Some(symbol_range) = state.extras.hover_symbol_range() else {
-            return None;
-        };
+        let symbol_range = state.extras.hover_symbol_range()?;
 
         Self::layout_match_range(symbol_range, last_layout, bounds)
     }
@@ -1186,10 +1187,10 @@ impl<M: InputModeKind> TextElement<M> {
         }
 
         let mut selected_range = state.selected_range;
-        if let Some(ime_marked_range) = &state.ime_marked_range {
-            if !ime_marked_range.is_empty() {
-                selected_range = (ime_marked_range.end..ime_marked_range.end).into();
-            }
+        if let Some(ime_marked_range) = &state.ime_marked_range
+            && !ime_marked_range.is_empty()
+        {
+            selected_range = (ime_marked_range.end..ime_marked_range.end).into();
         }
         if selected_range.is_empty() {
             return None;
@@ -1209,7 +1210,7 @@ impl<M: InputModeKind> TextElement<M> {
         let range = start_ix.max(last_layout.visible_range_offset.start)
             ..end_ix.min(last_layout.visible_range_offset.end);
 
-        Self::layout_match_range(range, &last_layout, bounds)
+        Self::layout_match_range(range, last_layout, bounds)
     }
 
     /// Calculate the visible range of lines in the viewport.
@@ -1459,12 +1460,11 @@ impl<M: InputModeKind> TextElement<M> {
             };
 
             let mut sub_lines: SmallVec<[ShapedLine; 1]> = SmallVec::new();
-            sub_lines.push(window.text_system().shape_line(
-                line_no,
-                display.text_size,
-                &runs,
-                None,
-            ));
+            sub_lines.push(
+                window
+                    .text_system()
+                    .shape_line(line_no, display.text_size, runs, None),
+            );
             for _ in 0..line.wrapped_lines.len().saturating_sub(1) {
                 sub_lines.push(ShapedLine::default());
             }
@@ -1865,7 +1865,7 @@ impl<M: InputModeKind> TextElement<M> {
             let mut line_has_background = false;
 
             for range in &line_item.wrapped_lines {
-                let line_runs = runs_for_range(runs, run_offset, &range);
+                let line_runs = runs_for_range(runs, run_offset, range);
                 let line_runs = if bg_segments.is_empty() {
                     line_runs
                 } else {
@@ -2057,7 +2057,7 @@ impl<M: InputModeKind> TextElement<M> {
                     .then(|| {
                         compose_decoration_collections(
                             Vec::new(),
-                            state.extras.decoration_layers().into_iter(),
+                            state.extras.decoration_layers(),
                             visible_byte_range,
                         )
                     })
@@ -2069,7 +2069,7 @@ impl<M: InputModeKind> TextElement<M> {
                 .then(|| {
                     compose_decoration_collections(
                         Vec::new(),
-                        state.extras.decoration_layers().into_iter(),
+                        state.extras.decoration_layers(),
                         visible_byte_range,
                     )
                 })
@@ -2114,7 +2114,7 @@ impl<M: InputModeKind> TextElement<M> {
         if !state.masked {
             styles = compose_decoration_collections(
                 styles,
-                state.extras.decoration_layers().into_iter(),
+                state.extras.decoration_layers(),
                 visible_byte_range.clone(),
             )
             .unwrap_or_default();
@@ -2182,10 +2182,7 @@ impl<M: InputModeKind> IntoElement for TextElement<M> {
 
 /// A debug function to print points as SVG path.
 #[allow(unused)]
-fn print_points_as_svg_path(
-    line_corners: &Vec<gpui::Corners<Pixels>>,
-    points: &Vec<Point<Pixels>>,
-) {
+fn print_points_as_svg_path(line_corners: &[gpui::Corners<Pixels>], points: &[Point<Pixels>]) {
     for corners in line_corners {
         println!(
             "tl: ({}, {}), tr: ({}, {}), bl: ({}, {}), br: ({}, {})",
@@ -2200,7 +2197,7 @@ fn print_points_as_svg_path(
         );
     }
 
-    if points.len() > 0 {
+    if !points.is_empty() {
         println!(
             "M{},{}",
             points[0].x.as_f32() as i32,
@@ -2268,7 +2265,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
 
         let state = self.state.read(cx);
         let line_height = window.line_height();
-        let visible = self.visible_lines(&state, &display.text, line_height, bounds.size.height);
+        let visible = self.visible_lines(state, &display.text, line_height, bounds.size.height);
         let visible_byte_range = visible.byte_range.clone();
         let highlight_styles =
             self.highlight_lines(&visible.buffer_lines, visible.top, visible_byte_range, cx);
@@ -2286,7 +2283,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
         );
 
         let (document_colors, longest_line_width) = Self::layout_content(
-            &state,
+            state,
             &display,
             &display_text,
             &mut last_layout,
@@ -2296,7 +2293,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
         );
 
         let (ghost_first_line, ghost_lines) = Self::layout_inline_completion(
-            &state,
+            state,
             &last_layout.visible_range,
             display.text_size,
             window,
@@ -2304,7 +2301,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
         );
         let ghost_lines_height = ghost_lines.len() as f32 * line_height;
         let scroll_size = Self::editor_scroll_size(
-            &state,
+            state,
             &display,
             longest_line_width,
             line_height,
@@ -2329,7 +2326,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
 
         let state = self.state.read(cx);
         let line_numbers =
-            Self::shape_line_numbers(&state, &last_layout, overlays.current_row, &display, window);
+            Self::shape_line_numbers(state, &last_layout, overlays.current_row, &display, window);
 
         let hover_definition_hitbox = M::hover_definition_hitbox(state, window, cx);
         let indent_guides_path =
@@ -2449,7 +2446,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
         self.update_painted_state(prepaint, input_bounds, selected_range, cx);
 
         if let Some(hitbox) = prepaint.hover_definition_hitbox.as_ref() {
-            window.set_cursor_style(gpui::CursorStyle::PointingHand, &hitbox);
+            window.set_cursor_style(gpui::CursorStyle::PointingHand, hitbox);
         }
 
         // Paint inline completion first line suffix (after cursor on same line)
@@ -2568,13 +2565,11 @@ fn paint_active_line_background(
             let p = point(geometry.input_bounds.origin.x, geometry.origin.y + offset_y);
             let height = geometry.line_height * lines.len() as f32;
             // Paint the current line background
-            if is_active {
-                if let Some(bg_color) = colors.active_line_color {
-                    window.paint_quad(fill(
-                        Bounds::new(p, size(geometry.bounds.size.width, height)),
-                        bg_color,
-                    ));
-                }
+            if is_active && let Some(bg_color) = colors.active_line_color {
+                window.paint_quad(fill(
+                    Bounds::new(p, size(geometry.bounds.size.width, height)),
+                    bg_color,
+                ));
             }
             offset_y += height;
         }
@@ -2694,7 +2689,7 @@ fn paint_text_and_ghost_lines(
         );
 
         // Paint the actual line
-        _ = line.paint(
+        line.paint(
             p,
             geometry.line_height,
             geometry.text_align,
@@ -2750,10 +2745,11 @@ fn paint_cursor(
     show_cursor: bool,
     window: &mut Window,
 ) {
-    if focused && show_cursor {
-        if let Some(cursor_bounds) = prepaint.cursor_bounds_with_scroll() {
-            window.paint_quad(fill(cursor_bounds, editor_style.caret));
-        }
+    if focused
+        && show_cursor
+        && let Some(cursor_bounds) = prepaint.cursor_bounds_with_scroll()
+    {
+        window.paint_quad(fill(cursor_bounds, editor_style.caret));
     }
 }
 
@@ -2795,16 +2791,14 @@ fn paint_line_numbers(
 
         let height = geometry.line_height * lines.len() as f32;
         // paint active line number background
-        if is_active {
-            if let Some(bg_color) = colors.active_line_color {
-                window.paint_quad(fill(
-                    Bounds::new(
-                        point(gutter_bounds.origin.x, p.y),
-                        size(gutter_bounds.size.width, height),
-                    ),
-                    bg_color,
-                ));
-            }
+        if is_active && let Some(bg_color) = colors.active_line_color {
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(gutter_bounds.origin.x, p.y),
+                    size(gutter_bounds.size.width, height),
+                ),
+                bg_color,
+            ));
         }
 
         for line in lines {
@@ -3542,6 +3536,8 @@ mod tests {
         );
 
         // Styles fully inside the ranges are unchanged.
+        // 单区间切片是刻意构造的边界用例：验证单可见区直通不断裂。
+        #[allow(clippy::single_range_in_vec_init)]
         let clipped = clip_styles_to_ranges(styles.clone(), &[0..20]);
         assert_eq!(
             clipped

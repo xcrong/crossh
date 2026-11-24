@@ -1,3 +1,6 @@
+// 步进回调类型（Rc<dyn Fn…>)是 GPUI 惯用写法，拆别名收益小；
+// 仅豁免本文件的复杂度 lint。
+#![allow(clippy::type_complexity)]
 use crate::input::InputState;
 use std::rc::Rc;
 

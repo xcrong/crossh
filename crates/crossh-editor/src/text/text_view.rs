@@ -101,7 +101,7 @@ pub(crate) fn handle_link_click(
 /// ## Goals
 ///
 /// - Provide a rich text rendering component for such as Markdown or HTML,
-/// used to display rich text in GPUI application (e.g., Help messages, Release notes)
+///   used to display rich text in GPUI application (e.g., Help messages, Release notes)
 /// - Support Markdown GFM and HTML (Simple HTML like Safari Reader Mode) for showing most common used markups.
 /// - Support Heading, Paragraph, Bold, Italic, StrikeThrough, Code, Link, Image, Blockquote, List, Table, HorizontalRule, CodeBlock ...
 ///
@@ -289,7 +289,7 @@ impl TextView {
         E: IntoElement,
     {
         self.code_block_actions = Some(Arc::new(move |code_block, window, cx| {
-            f(&code_block, window, cx).into_any_element()
+            f(code_block, window, cx).into_any_element()
         }));
         self
     }
@@ -880,7 +880,7 @@ mod tests {
         cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
         cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
 
-        assert!(cx.update(|window, cx| crate::TextSelection::has_selection(window, cx)));
+        assert!(cx.update(crate::TextSelection::has_selection));
         assert_eq!(
             cx.update(|window, cx| window.simulate_next_frame(cx)),
             0,
@@ -1422,8 +1422,10 @@ mod tests {
         });
         let cx: &mut VisualTestContext = cx;
 
-        let mut modifiers = Modifiers::default();
-        modifiers.control = true;
+        let modifiers = Modifiers {
+            control: true,
+            ..Default::default()
+        };
         cx.simulate_click(point(px(10.), px(10.)), modifiers);
         cx.simulate_mouse_down(
             point(px(10.), px(10.)),

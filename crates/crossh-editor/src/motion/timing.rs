@@ -167,7 +167,7 @@ impl Timing {
             PlaybackDirection::Normal => false,
             PlaybackDirection::Reverse => true,
             PlaybackDirection::Alternate => iteration % 2 == 1,
-            PlaybackDirection::AlternateReverse => iteration % 2 == 0,
+            PlaybackDirection::AlternateReverse => iteration.is_multiple_of(2),
         };
         if reverse { 1.0 - progress } else { progress }
     }

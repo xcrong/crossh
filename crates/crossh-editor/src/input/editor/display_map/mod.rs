@@ -1,3 +1,6 @@
+// `mod display_map` 与父模块同名是刻意的分层门面布局（mod.rs 聚合子模块），
+// 改名会破坏既有路径；仅豁免本文件的模块同名 lint。
+#![allow(clippy::module_inception)]
 /// Display mapping system for Editor/Input.
 ///
 /// This module implements a layered display mapping architecture:

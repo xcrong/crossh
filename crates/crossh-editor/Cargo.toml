@@ -62,6 +62,5 @@ indoc = "2"
 
 [lints]
 workspace = true
-# `lib.rs` intentionally allows the clippy groups for this upstream-derived
-# editor foundation. The exception stays at the source root so the manifest
-# still inherits every other workspace lint.
+# 上游派生的编辑器基础库：不再设全局 clippy 豁免；个别结构性 lint
+#（如 type_complexity、module_inception）仅在单文件顶部注明中文理由后豁免。

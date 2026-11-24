@@ -143,11 +143,13 @@ impl<H: ScrollbarHandle + Clone> Element for ScrollableMask<H> {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut style = Style::default();
-        // Set the layout style relative to the table view to get same size.
-        style.position = Position::Absolute;
-        style.flex_grow = 1.0;
-        style.flex_shrink = 1.0;
+        let mut style = Style {
+            position: Position::Absolute,
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
+            ..Default::default()
+        };
+        // 与表格视图同尺寸的相对布局。
         style.size.width = relative(1.).into();
         style.size.height = relative(1.).into();
 

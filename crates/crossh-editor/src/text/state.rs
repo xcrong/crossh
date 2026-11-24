@@ -27,7 +27,7 @@ use crate::{
     v_flex,
 };
 
-const CONTEXT: &'static str = "TextView";
+const CONTEXT: &str = "TextView";
 // Keep coalescing bounded so sustained streams still render intermediate updates.
 const MAX_COALESCED_UPDATES_PER_PARSE: usize = 64;
 // Preserve exact first-layout height for small documents while bounding the
@@ -218,7 +218,7 @@ impl TextViewState {
             _parse_task,
             _receive_task,
         };
-        this.increment_update(&text, false, cx);
+        this.increment_update(text, false, cx);
         this
     }
 
