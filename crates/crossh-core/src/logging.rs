@@ -25,6 +25,22 @@ pub fn init() {
     let path = Path::new(LOG_PATH);
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
+        // ponytail: /tmp 世界可写，目录不收成 0700 就裸奔；收失败只告警，日志不能拦启动。
+        if let Err(error) = restrict_dir(parent) {
+            eprintln!("[crossh] 日志目录收权失败: {error}");
+        }
+        // ponytail: 预建软链一点就写进受害文件，目录是软链就弃文件只留 stderr；TOCTOU 残留，升级路径是 O_NOFOLLOW。
+        if is_symlink(parent) {
+            eprintln!("[crossh] 日志目录是软链，跳过文件日志: {}", parent.display());
+            init_stderr_only();
+            return;
+        }
+    }
+    // ponytail: 文件软链同理，弃文件保平安，失败只 warn 不崩。
+    if is_symlink(path) {
+        eprintln!("[crossh] 日志文件是软链，跳过文件日志: {}", path.display());
+        init_stderr_only();
+        return;
     }
     // ponytail: 裁剪只在进程启动做一次；两个进程同时启动时可能丢掉几行日志，日志不是数据，升级路径是加文件锁或改用 logrotate。
     trim_log_if_needed(path);
@@ -39,6 +55,39 @@ pub fn init() {
     }
     let _ = builder.try_init();
     // 放在 sink 之后：hook 里那行 `log::error!` 要能落到 run.log。
+    install_panic_hook();
+}
+
+// ponytail: 只抄 config::restrict_dir 的 0700，不跨模块拿，避免日志层倒挂配置层。
+#[cfg(unix)]
+fn restrict_dir(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+fn restrict_dir(_path: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+// ponytail: 只拦 Unix 软链，其他平台 symlink_metadata 语义不值钱，直接放行。
+#[cfg(unix)]
+fn is_symlink(path: &Path) -> bool {
+    fs::symlink_metadata(path).map(|m| m.file_type().is_symlink()).unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_symlink(_path: &Path) -> bool {
+    false
+}
+
+// ponytail: 目录/文件被软链顶包时只留 stderr；warn 要有 sink 才看得见，先装再 warn。
+fn init_stderr_only() {
+    let mut builder =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
+    builder.write_style(env_logger::WriteStyle::Never);
+    let _ = builder.try_init();
+    log::warn!("日志文件/目录是软链或不可信，已降级为仅 stderr");
     install_panic_hook();
 }
 
