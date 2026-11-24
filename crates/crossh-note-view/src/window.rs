@@ -1590,6 +1590,9 @@ impl NoteWindow {
 }
 
 impl EntityInputHandler for NoteWindow {
+    // 搜索框与查找框共用窗口级 IME 入口：按焦点分发到各自的 TextEditingState。
+    // 搜索聚焦走 search_query，查找聚焦走 find_query；两者都没聚焦才返回 None。
+    // 顺序固定为搜索优先：两框不会同时聚焦，搜索在前只是保持旧行为不变。
     fn text_for_range(
         &mut self,
         range: Range<usize>,
@@ -1597,10 +1600,13 @@ impl EntityInputHandler for NoteWindow {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<String> {
-        if !self.search_focus.is_focused(window) {
-            return None;
+        if self.search_focus.is_focused(window) {
+            return Some(utf16_slice(&self.search_query.value, range));
         }
-        Some(utf16_slice(&self.search_query.value, range))
+        if self.find_focus.is_focused(window) {
+            return Some(utf16_slice(&self.find_query.value, range));
+        }
+        None
     }
 
     fn selected_text_range(
@@ -1609,14 +1615,21 @@ impl EntityInputHandler for NoteWindow {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
-        if !self.search_focus.is_focused(window) {
-            return None;
+        if self.search_focus.is_focused(window) {
+            let selection = editing_selected_range(&self.search_query);
+            return Some(UTF16Selection {
+                range: selection.range,
+                reversed: selection.reversed,
+            });
         }
-        let selection = editing_selected_range(&self.search_query);
-        Some(UTF16Selection {
-            range: selection.range,
-            reversed: selection.reversed,
-        })
+        if self.find_focus.is_focused(window) {
+            let selection = editing_selected_range(&self.find_query);
+            return Some(UTF16Selection {
+                range: selection.range,
+                reversed: selection.reversed,
+            });
+        }
+        None
     }
 
     fn marked_text_range(
@@ -1624,16 +1637,23 @@ impl EntityInputHandler for NoteWindow {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
-        if !self.search_focus.is_focused(window) {
-            return None;
+        if self.search_focus.is_focused(window) {
+            return editing_marked_range(&self.search_query);
         }
-        editing_marked_range(&self.search_query)
+        if self.find_focus.is_focused(window) {
+            return editing_marked_range(&self.find_query);
+        }
+        None
     }
 
     fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.search_focus.is_focused(window) {
             editing_unmark(&mut self.search_query);
             self.on_search_changed(cx);
+        } else if self.find_focus.is_focused(window) {
+            // 查找分支只重跑匹配，不走搜索防抖查库，两边不混写。
+            editing_unmark(&mut self.find_query);
+            self.apply_find_query(cx);
         }
         window.invalidate_character_coordinates();
         cx.notify();
@@ -1646,11 +1666,15 @@ impl EntityInputHandler for NoteWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.search_focus.is_focused(window) {
+        if self.search_focus.is_focused(window) {
+            editing_replace(&mut self.search_query, replacement_range, text);
+            self.on_search_changed(cx);
+        } else if self.find_focus.is_focused(window) {
+            editing_replace(&mut self.find_query, replacement_range, text);
+            self.apply_find_query(cx);
+        } else {
             return;
         }
-        editing_replace(&mut self.search_query, replacement_range, text);
-        self.on_search_changed(cx);
         window.invalidate_character_coordinates();
         cx.notify();
     }
@@ -1663,11 +1687,15 @@ impl EntityInputHandler for NoteWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.search_focus.is_focused(window) {
+        if self.search_focus.is_focused(window) {
+            editing_mark_text(&mut self.search_query, new_text);
+            self.on_search_changed(cx);
+        } else if self.find_focus.is_focused(window) {
+            editing_mark_text(&mut self.find_query, new_text);
+            self.apply_find_query(cx);
+        } else {
             return;
         }
-        editing_mark_text(&mut self.search_query, new_text);
-        self.on_search_changed(cx);
         window.invalidate_character_coordinates();
         cx.notify();
     }
@@ -1679,14 +1707,20 @@ impl EntityInputHandler for NoteWindow {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        if !self.search_focus.is_focused(window) {
+        // 候选窗跟随各自输入框的光标：取对应 query 的前缀算 caret 位置。
+        let prefix: &str = if self.search_focus.is_focused(window) {
+            let cursor = byte_index_for_utf16(&self.search_query.value, range.start);
+            &self.search_query.value[..cursor]
+        } else if self.find_focus.is_focused(window) {
+            let cursor = byte_index_for_utf16(&self.find_query.value, range.start);
+            &self.find_query.value[..cursor]
+        } else {
             return None;
-        }
-        let cursor = byte_index_for_utf16(&self.search_query.value, range.start);
+        };
         Some(ime_caret_bounds(
             window,
             element_bounds,
-            &self.search_query.value[..cursor],
+            prefix,
             px(12.),
             px(30.),
             px(0.),
@@ -1703,10 +1737,13 @@ impl EntityInputHandler for NoteWindow {
     }
 
     fn text_length_utf16(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> Option<usize> {
-        if !self.search_focus.is_focused(window) {
-            return None;
+        if self.search_focus.is_focused(window) {
+            return Some(utf16_len(&self.search_query.value));
         }
-        Some(utf16_len(&self.search_query.value))
+        if self.find_focus.is_focused(window) {
+            return Some(utf16_len(&self.find_query.value));
+        }
+        None
     }
 }
 
