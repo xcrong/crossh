@@ -303,6 +303,14 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
     // 快路径：结构已是最新就一条 DDL 都不发。DROP + CREATE trigger 是写事务，
     // 多窗口同时启动时会互相抢写锁，是 `database is locked` 的主要来源。
     if version == SCHEMA_VERSION && schema_is_current(conn)? {
+        // 高频查询索引：list / search_fts / search_like 三处都是
+        // WHERE deleted_at IS NULL ORDER BY pinned DESC, updated_at DESC, id DESC，
+        // 无索引时 notes>10k 即全表扫 + 排序。IF NOT EXISTS 原地补建，老库不升版也能用上。
+        // 注意 LIKE '%term%' 前缀通配无法用索引，中文检索仍走 FTS 主路径 + 子串并集，这里只加速过滤与排序。
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_notes_list ON notes(deleted_at, pinned DESC, updated_at DESC, id DESC);",
+        )
+        .map_err(|e| e.to_string())?;
         return Ok(());
     }
 
@@ -372,6 +380,13 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
     // 注意得在建好 notes_fts 之后：SQLite 建 trigger 时会校验引用对象存在。
     conn.execute_batch(CREATE_FTS_TRIGGERS)
         .map_err(|e| e.to_string())?;
+
+    // 高频查询索引：与快路径同一定義，老库走慢迁移时在此补齐；新库建表后在此落地。
+    // LIKE '%term%' 无法用索引，保持 FTS 主路径不变。
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_notes_list ON notes(deleted_at, pinned DESC, updated_at DESC, id DESC);",
+    )
+    .map_err(|e| e.to_string())?;
 
     // 版本号最后写，写之前复核列：任何一步静默失败都不许把库标成新版，
     // 否则后续查询撞 `no such column`，且版本已满、永远不再重试。
