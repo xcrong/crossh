@@ -20,7 +20,7 @@ pub use client::{
 };
 pub use feed::{FeedState, FeedUpdate, program_state_name};
 pub use handshake::{HandshakeError, HandshakeRequest, HandshakeResult, verify_handshake};
-pub use instance::{Claim, claim_instance, remove_port_file};
+pub use instance::{Claim, claim_instance, remove_port_file, remove_port_file_if_matches};
 pub use protocol::{MAX_FRAME, MessageKind, decode_frame, encode_frame, write_frame_vectored};
 pub use session::{Ownership, OwnershipEvent, ReplayRing, SessionMeta, SessionOwner};
 pub use spawn::{ChildSession, OutputChunk, SpawnOptions};

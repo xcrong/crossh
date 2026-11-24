@@ -94,21 +94,23 @@ pub enum Claim {
 }
 
 /// 尝试成为会话属主。`token` 为本进程生成的随机令牌。
-/// 陈旧文件（连不上）删除后重试一次；仍失败则返回 IO 错误。
+/// 陈旧文件（连不上）只删自己探活过的旧地址后重试一次；仍失败则返回 IO 错误。
 pub fn claim_instance(token: &str) -> std::io::Result<Claim> {
-    match try_claim_once(token)? {
-        Some(claim) => Ok(claim),
-        None => {
-            // 可能是陈旧文件：删掉再试一次。
-            let _ = std::fs::remove_file(daemon_port_file_path());
-            try_claim_once(token)?.ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::AddrInUse, "daemon already running")
-            })
-        }
+    let (claim, stale) = try_claim_once(token)?;
+    if let Some(claim) = claim {
+        return Ok(claim);
     }
+    // 只删自己探活过的旧地址：期间新主人若已重写文件则不动，
+    // 重试一次后仍抢不到就报“已有属主”，不误删。
+    if let Some(addr) = stale {
+        remove_port_file_if_matches(&addr);
+    }
+    let (claim, _) = try_claim_once(token)?;
+    claim
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::AddrInUse, "daemon already running"))
 }
 
-fn try_claim_once(token: &str) -> std::io::Result<Option<Claim>> {
+fn try_claim_once(token: &str) -> std::io::Result<(Option<Claim>, Option<DaemonAddr>)> {
     let dir = daemon_dir();
     std::fs::create_dir_all(&dir)?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
@@ -116,11 +118,14 @@ fn try_claim_once(token: &str) -> std::io::Result<Option<Claim>> {
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
     match write_daemon_addr(port, token) {
-        Ok(()) => Ok(Some(Claim::Owner { listener })),
+        Ok(()) => Ok((Some(Claim::Owner { listener }), None)),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             // 已有文件：读地址并探活。赢家可能正在 `write_all`（半截文件）
             // 或刚落盘监听尚未就绪：给一次 50ms 重读机会再判陈旧，
             // 否则并发占位会误删属主文件造出多个 Owner。
+            // 只做 TCP 连接探活，不做握手：daemon 慢启动时握手可能超时，
+            // 在这里判陈旧会扩大误删窗口（握手区分只在客户端探活做）。
+            let mut stale = None;
             for _ in 0..2 {
                 if let Some(addr) = read_daemon_addr() {
                     let probe = format!("127.0.0.1:{}", addr.port);
@@ -134,13 +139,15 @@ fn try_claim_once(token: &str) -> std::io::Result<Option<Claim>> {
                         }
                     };
                     if TcpStream::connect_timeout(&parsed, CONNECT_TIMEOUT).is_ok() {
-                        return Ok(Some(Claim::Existing(addr)));
+                        return Ok((Some(Claim::Existing(addr)), None));
                     }
+                    // 连不上：记下这个旧地址，调用方比对一致后才删。
+                    stale = Some(addr);
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            // 两次都连不上 → 陈旧文件，返回 None 让上层删除重试。
-            Ok(None)
+            // 两次都连不上 → 陈旧文件，返回探活过的旧地址让上层条件删除后重试。
+            Ok((None, stale))
         }
         Err(e) => Err(e),
     }
@@ -148,6 +155,18 @@ fn try_claim_once(token: &str) -> std::io::Result<Option<Claim>> {
 
 pub fn remove_port_file() {
     let _ = std::fs::remove_file(daemon_port_file_path());
+}
+
+/// 条件删除：只有文件内容仍等于 `expected`（端口+令牌都相等）才删。
+/// 收窄 ABA 窗口：值比对一致才删；读比对→unlink 非原子，仍有极小竞态。
+pub fn remove_port_file_if_matches(expected: &DaemonAddr) -> bool {
+    match read_daemon_addr() {
+        Some(current) if current == *expected => {
+            let _ = std::fs::remove_file(daemon_port_file_path());
+            true
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]

@@ -25,6 +25,7 @@ use crate::feed::program_state_name;
 use crate::handshake::{
     ErrorPayload, HandshakeRequest, PROTOCOL_VERSION, capabilities, verify_handshake,
 };
+use crate::instance::{DaemonAddr, remove_port_file_if_matches};
 use crate::protocol::{
     AttachRequest, AttachedReply, CloseRequest, CreateRequest, CreatedReply, ExitedNotice,
     ListReply, MAX_FRAME, MessageKind, ReplayEndMarker, ResizeRequest, SessionInfo,
@@ -183,6 +184,12 @@ pub async fn run(
         snapshots: handle.snapshots,
         mirror,
     };
+    // 自己的认领地址：退出时只删“仍是自己”的端口文件，
+    // 避免 6s flush 窗口内新 daemon 已认领时误删新主人的文件。
+    let own_addr = DaemonAddr {
+        port: listener.local_addr().expect("daemon listener addr").port(),
+        token: token.clone(),
+    };
     loop {
         let Ok((sock, _)) = listener.accept().await else {
             continue;
@@ -191,8 +198,9 @@ pub async fn run(
         let sessions = sessions.clone();
         let token = token.clone();
         let runtime = runtime.clone();
+        let own_addr = own_addr.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_conn(sock, sessions, token, runtime).await {
+            if let Err(e) = handle_conn(sock, sessions, token, runtime, own_addr).await {
                 log::debug!("conn ended: {e}");
             }
         });
@@ -320,6 +328,7 @@ async fn handle_conn(
     sessions: Sessions,
     token: String,
     runtime: WorkspaceRuntime,
+    own_addr: DaemonAddr,
 ) -> io::Result<()> {
     let client_id: ControllerId = NEXT_CLIENT.fetch_add(1, Ordering::Relaxed);
     let (mut reader, writer) = sock.into_split();
@@ -355,7 +364,7 @@ async fn handle_conn(
             MessageKind::Input => handle_input(&state, &writer, &payload).await?,
             MessageKind::Resize => handle_resize(&state, &runtime, &payload).await?,
             MessageKind::Close => handle_close(&sessions, &runtime, &payload).await?,
-            MessageKind::Shutdown => handle_shutdown(&runtime).await,
+            MessageKind::Shutdown => handle_shutdown(&runtime, &own_addr).await,
             MessageKind::WorkspaceGet => handle_workspace_get(&writer, &runtime).await?,
             MessageKind::WorkspaceAttach => {
                 handle_workspace_attach(&mut state, &writer, &runtime).await?;
@@ -614,13 +623,14 @@ async fn handle_close(
     Ok(())
 }
 
-async fn handle_shutdown(runtime: &WorkspaceRuntime) {
-    // 显式停止：flush 工作区、投递关闭效果、删端口文件后退出。
+async fn handle_shutdown(runtime: &WorkspaceRuntime, own: &DaemonAddr) {
+    // 显式停止：flush 工作区、投递关闭效果；只删仍属于自己的端口文件
+    // （flush 窗口内新 daemon 若已认领，文件已是新主人的，直接退出）。
     log::info!("shutdown requested, exiting");
     let (reply, wait) = oneshot::channel();
     let _ = runtime.commands.send(WorkspaceCommand::Shutdown { reply });
     let _ = tokio::time::timeout(std::time::Duration::from_secs(6), wait).await;
-    crate::instance::remove_port_file();
+    remove_port_file_if_matches(own);
     std::process::exit(0);
 }
 

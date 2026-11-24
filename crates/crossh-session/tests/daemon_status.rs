@@ -89,8 +89,36 @@ async fn fake_daemon(reply_version: u32) -> (u16, tokio::task::JoinHandle<()>) {
     (port, tokio::spawn(serve_once(listener, reply_version)))
 }
 
+// 同一二进制内用 env 隔离：两用例串行拿锁，避免 CROSSH_CACHE_DIR 竞态。
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::{Mutex, OnceLock};
+    static L: OnceLock<Mutex<()>> = OnceLock::new();
+    L.get_or_init(|| Mutex::new(())).lock().unwrap()
+}
+
+/// 只回非版本错误帧的假 listener：覆盖握手失败分支（超时/令牌错/欢迎帧损坏同路）。
+async fn serve_handshake_failure(listener: tokio::net::TcpListener) {
+    loop {
+        let Ok((mut sock, _)) = listener.accept().await else {
+            return;
+        };
+        let Ok((kind, _)) = read_frame(&mut sock).await else {
+            continue;
+        };
+        if kind != MessageKind::Hello {
+            continue;
+        };
+        let error = ErrorPayload {
+            code: "auth".to_string(),
+            message: "bad token".to_string(),
+        };
+        let _ = write_frame(&mut sock, MessageKind::Error, &json(&error)).await;
+    }
+}
+
 #[tokio::test]
 async fn probe_reports_three_states_without_side_effects() {
+    let _env = env_lock();
     let root = temp_root();
     let config = root.join("config");
     std::fs::create_dir_all(&config).unwrap();
@@ -159,5 +187,37 @@ async fn probe_reports_three_states_without_side_effects() {
     server.await.unwrap();
     assert!(!error_file.exists(), "probe must not write daemon.error");
 
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 握手失败不断定陈旧：只回错误帧不断 Welcome，探测为 Absent{stale:false}，
+/// 端口文件逐字节不变；ensure 直接报错，不删文件、不拉新 daemon。
+#[tokio::test]
+async fn handshake_failure_is_absent_not_stale_without_side_effects() {
+    let _env = env_lock();
+    let root = temp_root();
+    let config = root.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    // SAFETY: 持 env 锁期间独占设置，只读使用。
+    unsafe {
+        std::env::set_var("CROSSH_CACHE_DIR", &root);
+        std::env::set_var("CROSSH_CONFIG_DIR", &config);
+    }
+    let port_file = daemon_port_file_path();
+    std::fs::create_dir_all(port_file.parent().unwrap()).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve_handshake_failure(listener));
+    let before = format!("{port}\ntoken\n").into_bytes();
+    std::fs::write(&port_file, &before).unwrap();
+    assert!(matches!(
+        crossh_session::probe_daemon().await,
+        DaemonState::Absent { stale: false }
+    ));
+    assert_eq!(std::fs::read(&port_file).unwrap(), before);
+    let err = crossh_session::ensure_daemon().await.unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::ConnectionRefused);
+    assert_eq!(std::fs::read(&port_file).unwrap(), before);
+    server.abort();
     let _ = std::fs::remove_dir_all(root);
 }

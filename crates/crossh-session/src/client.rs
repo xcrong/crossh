@@ -19,7 +19,9 @@ use tokio::sync::{Mutex, oneshot, watch};
 use crate::handshake::{
     ErrorPayload, HandshakeOk, HandshakeRequest, PROTOCOL_VERSION, capabilities,
 };
-use crate::instance::{DaemonAddr, daemon_port_file_path, read_daemon_addr};
+use crate::instance::{
+    DaemonAddr, daemon_port_file_path, read_daemon_addr, remove_port_file_if_matches,
+};
 use crate::protocol::{
     AttachRequest, AttachedReply, CloseRequest, CreateRequest, CreatedReply, ExitedNotice,
     ListReply, MAX_FRAME, MessageKind, ReplayEndMarker, ResizeRequest, SessionInfo,
@@ -148,7 +150,11 @@ fn client_capabilities() -> Vec<String> {
 #[derive(Debug)]
 enum ProbeError {
     Version(String),
-    Other(io::Error),
+    /// TCP 连不上（拒绝/超时）：端口真死，文件可视为陈旧。
+    Connect(io::Error),
+    /// 已连上但握手失败（超时/令牌不对/欢迎帧损坏等）：对端还活着，
+    /// MUST NOT 删文件、MUST NOT 拉新 daemon。
+    Handshake(io::Error),
 }
 
 async fn probe_version(
@@ -162,12 +168,12 @@ async fn probe_version(
     )
     .await
     .map_err(|_| {
-        ProbeError::Other(io::Error::new(
+        ProbeError::Connect(io::Error::new(
             io::ErrorKind::TimedOut,
             "daemon connect timeout",
         ))
     })?
-    .map_err(ProbeError::Other)?;
+    .map_err(ProbeError::Connect)?;
     let (mut r, mut w) = sock.into_split();
     let hello = HandshakeRequest {
         version,
@@ -176,16 +182,16 @@ async fn probe_version(
     };
     send_frame(&mut w, MessageKind::Hello, &json(&hello))
         .await
-        .map_err(ProbeError::Other)?;
+        .map_err(ProbeError::Handshake)?;
     let (kind, payload) = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_frame(&mut r))
         .await
         .map_err(|_| {
-            ProbeError::Other(io::Error::new(
+            ProbeError::Handshake(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "daemon handshake timeout",
             ))
         })?
-        .map_err(ProbeError::Other)?;
+        .map_err(ProbeError::Handshake)?;
     if kind != MessageKind::Welcome {
         let msg = serde_json::from_slice::<ErrorPayload>(&payload)
             .map(|e| e.message)
@@ -193,16 +199,22 @@ async fn probe_version(
         if msg.contains("protocol version mismatch") {
             return Err(ProbeError::Version(msg));
         }
-        return Err(ProbeError::Other(io::Error::new(
+        return Err(ProbeError::Handshake(io::Error::new(
             io::ErrorKind::PermissionDenied,
             msg,
         )));
     }
-    serde_json::from_slice(&payload)
-        .map_err(|_| ProbeError::Other(io::Error::new(io::ErrorKind::InvalidData, "bad welcome")))
+    serde_json::from_slice(&payload).map_err(|_| {
+        ProbeError::Handshake(io::Error::new(io::ErrorKind::InvalidData, "bad welcome"))
+    })
 }
 
-/// daemon 状态三态；`probe_daemon` 无副作用。
+/// daemon 状态三态；`probe_daemon` 无副作用（不删文件、不 spawn）。
+///
+/// 只有“端口连不上”才算陈旧；连上但握手失败说明有活进程在听，
+/// 归为 `Absent { stale: false }`（`ensure_daemon` 见到有文件残留会
+/// 直接报错，不删不拉；`status` 沿用“not running”文案）。
+/// 活着但握手失败时 `status` 显示 not running 是已知近似（无副作用、安全方向）。
 #[derive(Debug)]
 pub enum DaemonState {
     /// 无端口文件，或端口不可连接（`stale = true`）。
@@ -221,7 +233,8 @@ pub async fn probe_daemon() -> DaemonState {
     match probe_version(&addr, PROTOCOL_VERSION, client_capabilities()).await {
         Ok(_) => DaemonState::Ready(addr),
         Err(ProbeError::Version(message)) => DaemonState::Incompatible { message },
-        Err(ProbeError::Other(_)) => DaemonState::Absent { stale: true },
+        Err(ProbeError::Connect(_)) => DaemonState::Absent { stale: true },
+        Err(ProbeError::Handshake(_)) => DaemonState::Absent { stale: false },
     }
 }
 
@@ -248,6 +261,8 @@ pub fn incompatible_message(found: Option<u32>) -> String {
 /// （旧 daemon 的会话随之结束，工作区布局在 Shutdown 时落盘）。
 pub async fn ensure_daemon() -> io::Result<DaemonAddr> {
     let mut stop_failure = None;
+    // 探活前快照：条件删除只认这个地址；期间文件被新主人替换则不动。
+    let probed_addr = read_daemon_addr();
     match probe_daemon().await {
         DaemonState::Ready(addr) => return Ok(addr),
         DaemonState::Incompatible { message } => {
@@ -271,7 +286,21 @@ pub async fn ensure_daemon() -> io::Result<DaemonAddr> {
         }
         DaemonState::Absent { stale } => {
             if stale {
-                let _ = std::fs::remove_file(daemon_port_file_path());
+                // 真死（端口连不上）：只有文件仍等于探活快照才删，
+                // 避免 ABA 删掉新主人刚写的文件。
+                if let Some(addr) = probed_addr {
+                    remove_port_file_if_matches(&addr);
+                }
+            } else if read_daemon_addr().is_some() {
+                // 有文件但不断定陈旧 = 连上却握手失败，对端还活着
+                // （忙/慢/令牌过期）：不删文件、不拉新实例，直接返回可执行错误。
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    format!(
+                        "daemon is running but not responding to handshake (it may be busy, or the port file is outdated); retry, or run `crossh daemon stop` then retry ({})",
+                        daemon_port_file_path().display()
+                    ),
+                ));
             }
         }
     }
@@ -666,10 +695,14 @@ pub async fn daemon_stop() -> io::Result<()> {
             match probe_version(&addr, found, Vec::new()).await {
                 Ok(_) => found,
                 Err(ProbeError::Version(message)) => return Err(stop_error(&message)),
-                Err(ProbeError::Other(error)) => return Err(stop_io_error(error)),
+                Err(ProbeError::Connect(error)) | Err(ProbeError::Handshake(error)) => {
+                    return Err(stop_io_error(error));
+                }
             }
         }
-        Err(ProbeError::Other(error)) => return Err(stop_io_error(error)),
+        Err(ProbeError::Connect(error)) | Err(ProbeError::Handshake(error)) => {
+            return Err(stop_io_error(error));
+        }
     };
     shutdown_daemon(&addr, version).await
 }
@@ -686,7 +719,9 @@ async fn stop_incompatible_daemon(addr: &DaemonAddr, found: Option<u32>) -> io::
     match probe_version(addr, version, Vec::new()).await {
         Ok(_) => shutdown_daemon(addr, version).await,
         Err(ProbeError::Version(message)) => Err(stop_error(&message)),
-        Err(ProbeError::Other(error)) => Err(stop_io_error(error)),
+        Err(ProbeError::Connect(error)) | Err(ProbeError::Handshake(error)) => {
+            Err(stop_io_error(error))
+        }
     }
 }
 
