@@ -31,7 +31,10 @@ pub fn init() {
         }
         // ponytail: 预建软链一点就写进受害文件，目录是软链就弃文件只留 stderr；TOCTOU 残留，升级路径是 O_NOFOLLOW。
         if is_symlink(parent) {
-            eprintln!("[crossh] 日志目录是软链，跳过文件日志: {}", parent.display());
+            eprintln!(
+                "[crossh] 日志目录是软链，跳过文件日志: {}",
+                parent.display()
+            );
             init_stderr_only();
             return;
         }
@@ -73,7 +76,9 @@ fn restrict_dir(_path: &Path) -> io::Result<()> {
 // ponytail: 只拦 Unix 软链，其他平台 symlink_metadata 语义不值钱，直接放行。
 #[cfg(unix)]
 fn is_symlink(path: &Path) -> bool {
-    fs::symlink_metadata(path).map(|m| m.file_type().is_symlink()).unwrap_or(false)
+    fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
 }
 
 #[cfg(not(unix))]

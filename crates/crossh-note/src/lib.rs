@@ -550,11 +550,9 @@ impl NoteStore {
         #[cfg(unix)]
         {
             if let Some(parent) = path.parent() {
-                restrict_dir(parent)
-                    .map_err(|e| format!("note.db restrict dir failed: {}", e))?;
+                restrict_dir(parent).map_err(|e| format!("note.db restrict dir failed: {}", e))?;
             }
-            restrict_file(&path)
-                .map_err(|e| format!("note.db restrict file failed: {}", e))?;
+            restrict_file(&path).map_err(|e| format!("note.db restrict file failed: {}", e))?;
         }
         Ok(Self {
             path,
@@ -1965,27 +1963,27 @@ mod tests {
         let store = NoteStore::open(&path).unwrap();
         store.create("secret").unwrap();
         drop(store);
-        let dir_mode = std::fs::metadata(dir.path())
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777;
+        let dir_mode = std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777;
         let file_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(dir_mode, 0o700, "note dir must be 0700, got {:o}", dir_mode);
-        assert_eq!(file_mode, 0o600, "note.db must be 0600, got {:o}", file_mode);
+        assert_eq!(
+            file_mode, 0o600,
+            "note.db must be 0600, got {:o}",
+            file_mode
+        );
         // 老库被外部改回宽松权限，重开也要收敛。
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         let reopened = NoteStore::open(&path).unwrap();
         assert_eq!(reopened.list().unwrap().len(), 1);
         drop(reopened);
-        let dir_mode = std::fs::metadata(dir.path())
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777;
+        let dir_mode = std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777;
         let file_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(dir_mode, 0o700, "reopen must chmod dir, got {:o}", dir_mode);
-        assert_eq!(file_mode, 0o600, "reopen must chmod file, got {:o}", file_mode);
+        assert_eq!(
+            file_mode, 0o600,
+            "reopen must chmod file, got {:o}",
+            file_mode
+        );
     }
 }
