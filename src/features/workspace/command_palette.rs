@@ -581,7 +581,14 @@ fn render_palette_list(
 }
 
 /// 面板遮罩：点击背景关闭面板，卡片内点击阻止冒泡。
-fn render_palette_scrim(card: impl IntoElement, cx: &mut Context<AppShell>) -> AnyElement {
+/// 顶部偏移随视口缩放并钳制，最小窗口下卡片不再被顶出可视区。
+fn render_palette_scrim(
+    card: impl IntoElement,
+    viewport: gpui::Size<gpui::Pixels>,
+    cx: &mut Context<AppShell>,
+) -> AnyElement {
+    // 视口高度 15% 作为顶部偏移，上下钳制避免过小贴边或过大溢出。
+    let top = (viewport.height.as_f32() * 0.15).clamp(16., 120.);
     div()
         .id("command-palette-scrim")
         .absolute()
@@ -589,7 +596,7 @@ fn render_palette_scrim(card: impl IntoElement, cx: &mut Context<AppShell>) -> A
         .flex()
         .items_start()
         .justify_center()
-        .pt(px(120.))
+        .pt(px(top))
         .bg(theme::scrim())
         .on_mouse_down(
             gpui::MouseButton::Left,
@@ -611,9 +618,32 @@ fn render_palette_scrim(card: impl IntoElement, cx: &mut Context<AppShell>) -> A
         .into_any_element()
 }
 
+/// 弹窗卡片：视口相对尺寸，最小窗口下不溢出。
+/// 列表内部保持纵向滚动，卡片自身只做视口钳制。
+fn palette_modal_card(
+    header: impl IntoElement,
+    list: impl IntoElement,
+    viewport: gpui::Size<gpui::Pixels>,
+) -> impl IntoElement {
+    div()
+        .w(px(560.))
+        .max_w(px(viewport.width.as_f32() * 0.9))
+        .max_h(px(viewport.height.as_f32() * 0.7))
+        .flex()
+        .flex_col()
+        .bg(theme::surface())
+        .border_1()
+        .border_color(theme::border_strong())
+        .rounded(px(theme::RADIUS_MD))
+        .shadow_lg()
+        .child(header)
+        .child(div().h(px(1.)).w_full().flex_shrink_0().bg(theme::border()))
+        .child(list)
+}
+
 pub(crate) fn render_command_palette(
     shell: &mut AppShell,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
     let Some(palette) = shell.command_palette.as_ref() else {
@@ -634,21 +664,10 @@ pub(crate) fn render_command_palette(
 
     let header = div().flex_shrink_0().px_3().pt_3().pb_2().child(input);
 
-    let card = div()
-        .w(px(560.))
-        .max_h(px(420.))
-        .flex()
-        .flex_col()
-        .bg(theme::surface())
-        .border_1()
-        .border_color(theme::border_strong())
-        .rounded(px(theme::RADIUS_MD))
-        .shadow_lg()
-        .child(header)
-        .child(div().h(px(1.)).w_full().flex_shrink_0().bg(theme::border()))
-        .child(list);
+    let viewport = window.viewport_size();
+    let card = palette_modal_card(header, list, viewport);
 
-    render_palette_scrim(card, cx)
+    render_palette_scrim(card, viewport, cx)
 }
 
 #[cfg(test)]
