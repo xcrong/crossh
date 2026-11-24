@@ -286,7 +286,10 @@ impl AppShell {
             &answers,
             cx,
         );
-        cx.spawn_in(window, async move |this, cx| {
+        // ponytail: 用实体级 `spawn` 而非 `spawn_in(window)`——窗口关闭不再取消
+        // 等待中的 prompt 任务，`answer` 以 Err 落地，flag 照常复位，
+        // 下次关闭标签仍能弹出确认框。
+        cx.spawn(async move |this, cx| {
             let confirmed = answer.await == Ok(0);
             let _ = this.update(cx, |this, cx| {
                 this.tab_close_confirmation_open = false;

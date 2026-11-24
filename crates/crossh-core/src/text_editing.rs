@@ -35,7 +35,7 @@ pub fn byte_index_for_utf16(text: &str, offset: usize) -> usize {
 }
 
 pub fn utf16_offset_for_byte(text: &str, byte_index: usize) -> usize {
-    text[..byte_index].encode_utf16().count()
+    text[..clip_offset_left(text, byte_index)].encode_utf16().count()
 }
 
 pub fn utf16_slice(text: &str, range: Range<usize>) -> String {
@@ -546,6 +546,7 @@ fn clip_offset_left(text: &str, offset: usize) -> usize {
 
 /// `cursor` 前一个 UTF-8 字符边界的字节索引；光标已在开头则返回 0。
 pub fn previous_char_boundary(text: &str, cursor: usize) -> usize {
+    let cursor = clip_offset_left(text, cursor);
     text[..cursor]
         .char_indices()
         .next_back()
@@ -553,8 +554,9 @@ pub fn previous_char_boundary(text: &str, cursor: usize) -> usize {
         .unwrap_or(0)
 }
 
-/// `cursor` 处字符的下一个 UTF-8 字符边界的字节索引；光标已在结尾则返回 `cursor`。
+/// `cursor` 处字符的下一个 UTF-8 字符边界的字节索引；光标已在结尾则返回钳位后的 `cursor`。
 pub fn next_char_boundary(text: &str, cursor: usize) -> usize {
+    let cursor = clip_offset_left(text, cursor);
     text[cursor..]
         .chars()
         .next()
@@ -574,6 +576,7 @@ pub fn selection_bounds(anchor: Option<usize>, cursor: usize) -> Option<(usize, 
 
 /// 当前光标所在行的字节边界 `[start, end)`（不含换行符）。
 pub fn line_bounds(text: &str, cursor: usize) -> (usize, usize) {
+    let cursor = clip_offset_left(text, cursor);
     let start = text[..cursor].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
     let end = text[cursor..]
         .find('\n')
@@ -584,7 +587,7 @@ pub fn line_bounds(text: &str, cursor: usize) -> (usize, usize) {
 
 /// 计算垂直移动的目标光标；到达首/末行或列相同则返回 `None`，供 `State` 与自由函数复用。
 fn vertical_target(text: &str, cursor: usize, direction: i8) -> Option<usize> {
-    debug_assert!(text.is_char_boundary(cursor));
+    let cursor = clip_offset_left(text, cursor);
     let (line_start, line_end) = line_bounds(text, cursor);
     let column = text[line_start..cursor].chars().count();
     let target_start = if direction < 0 {

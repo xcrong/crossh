@@ -70,7 +70,10 @@ fn main() {
         cx.set_app_identity("me.xcrong.crossh.note", "Crossh Note");
         cx.init_colors();
         crossh_ui::theme::install_crossh_theme(cx);
-        crossh_ui::assets::load_fonts(cx).expect("Crossh fonts should load");
+        // ponytail: 字体加载失败只记日志回退系统字体，不阻断启动。
+        if let Err(error) = crossh_ui::assets::load_fonts(cx) {
+            log::warn!("Crossh fonts unavailable, falling back to system fonts: {error:#}");
+        }
         note::init(cx);
         note::open_note_window(cx);
         // 单实例投递桥：监听线程只做阻塞收包，前台任务经 open_note_window 落地

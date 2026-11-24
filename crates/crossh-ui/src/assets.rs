@@ -27,21 +27,21 @@ impl AssetSource for UiAssetSource {
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        if let Some(store) = &self.external {
-            return Ok(store
-                .list(path)
+        // ponytail: 与 `load` 两级回退对齐——外部缺字体时仍列出内嵌字体，
+        // 否则 `load_fonts` 看到空列表直接零字体启动。
+        let mut paths: Vec<String> = self
+            .external
+            .as_ref()
+            .map(|store| store.list(path))
+            .unwrap_or_default();
+        paths.extend(
+            embedded_font_paths()
                 .into_iter()
-                .map(SharedString::from)
-                .collect());
-        }
-        // Crossh single truth: fonts are always bundled in `crossh-assets`,
-        // so Lilex resolves in every build without an external AssetStore.
-        // (`list` is only ever called with `"fonts"`; icons resolve via `load`.)
-        Ok(embedded_font_paths()
-            .into_iter()
-            .filter(|font| font.starts_with(path))
-            .map(SharedString::from)
-            .collect())
+                .filter(|font| font.starts_with(path)),
+        );
+        paths.sort();
+        paths.dedup();
+        Ok(paths.into_iter().map(SharedString::from).collect())
     }
 }
 
@@ -50,11 +50,12 @@ pub fn load_fonts(cx: &App) -> Result<()> {
     let mut embedded_fonts = Vec::new();
     for font_path in font_paths {
         if font_path.ends_with(".ttf") {
-            let font_bytes = cx
-                .asset_source()
-                .load(&font_path)?
-                .expect("asset source should return listed fonts");
-            embedded_fonts.push(font_bytes);
+            match cx.asset_source().load(&font_path)? {
+                Some(font_bytes) => embedded_fonts.push(font_bytes),
+                // ponytail: 单个字体缺失只记日志回退系统字体，不 panic；
+                // 上层调用点同样只记日志（见 main.rs / crossh-git.rs / crossh-note.rs）。
+                None => log::warn!("font listed but not loadable, skipped: {font_path}"),
+            }
         }
     }
     cx.text_system().add_fonts(embedded_fonts)

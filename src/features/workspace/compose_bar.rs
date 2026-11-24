@@ -160,8 +160,16 @@ fn compose_ime_overlap(
 ) -> Option<(usize, usize)> {
     let (l_start, l_end) = range;
     let (ime_s, ime_e) = ctx.ime_replacement?;
-    if !ctx.ime_marked_text.is_empty() && ime_s >= l_start && ime_s <= l_end {
-        Some((ime_s - l_start, ime_e.min(l_end) - l_start))
+    // ponytail: 补 ime_e 下界校验，否则 `ime_e.min(l_end) - l_start` 在区间
+    // 完全位于行首之前时下溢 panic。
+    if !ctx.ime_marked_text.is_empty()
+        && ime_s <= l_end
+        && ime_e >= l_start
+        && ime_s <= ime_e
+    {
+        let start = ime_s.max(l_start) - l_start;
+        let end = ime_e.min(l_end).max(ime_s.max(l_start)) - l_start;
+        Some((start, end))
     } else {
         None
     }
@@ -169,16 +177,19 @@ fn compose_ime_overlap(
 
 /// 选区高亮段：before + highlighted + after。
 fn compose_selection_spans(mut row: Div, line: &str, (s, e): (usize, usize)) -> Div {
-    row = row.child(text_span(line[..s].to_string()));
+    // ponytail: `get` 回退空串，陈旧选区区间不再 panic。
+    let s = s.min(line.len());
+    let e = e.min(line.len()).max(s);
+    row = row.child(text_span(line.get(..s).unwrap_or("").to_string()));
     row = row.child(
         div()
             .flex_shrink_0()
             .whitespace_nowrap()
             .bg(theme::accent_soft())
             .text_color(theme::text())
-            .child(SharedString::from(line[s..e].to_string())),
+            .child(SharedString::from(line.get(s..e).unwrap_or("").to_string())),
     );
-    row.child(text_span(line[e..].to_string()))
+    row.child(text_span(line.get(e..).unwrap_or("").to_string()))
 }
 
 /// 渲染一行：光标行按选区/IME/普通拆分，非光标行仅处理跨行选区高亮。
@@ -212,9 +223,10 @@ fn render_compose_line_row(
             // 处理 IME 位于光标处的情况
             if let Some((ime_s, _)) = ime_in_line {
                 // IME 替换区起点即光标位置
-                let before = &line[..ime_s];
+                // ponytail: `get` 回退空串，陈旧 IME 区间不再 panic。
+                let before = line.get(..ime_s).unwrap_or("");
                 let after_start = ctx.ime_replacement.unwrap().1.min(l_end) - l_start;
-                let after = &line[after_start..];
+                let after = line.get(after_start.min(line.len())..).unwrap_or("");
                 row = row.child(text_span(before.to_string()));
                 if !ctx.ime_marked_text.is_empty() {
                     row = row.child(marked_text_span(ctx.ime_marked_text));
@@ -224,8 +236,12 @@ fn render_compose_line_row(
                     // IME 时 caret 隐藏，待提交后显示
                 }
             } else {
-                let cursor_byte = cursor_col_byte.min(line.len());
-                row = row.child(text_span(line[..cursor_byte].to_string()));
+                // ponytail: 退到上一个字符边界，陈旧光标不再 panic。
+                let mut cursor_byte = cursor_col_byte.min(line.len());
+                while !line.is_char_boundary(cursor_byte) {
+                    cursor_byte -= 1;
+                }
+                row = row.child(text_span(line.get(..cursor_byte).unwrap_or("").to_string()));
                 if ctx.focused {
                     row = row.child(text_caret(px(20.)));
                 }
@@ -233,7 +249,7 @@ fn render_compose_line_row(
                     // 非替换区的 IME（光标处直接插入）
                     row = row.child(marked_text_span(ctx.ime_marked_text));
                 }
-                row = row.child(text_span(line[cursor_byte..].to_string()));
+                row = row.child(text_span(line.get(cursor_byte..).unwrap_or("").to_string()));
             }
         }
     } else if let Some((s, e)) = sel_in_line {

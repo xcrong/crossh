@@ -186,17 +186,25 @@ impl UpdateController {
                     break;
                 }
                 let got = downloaded.load(Ordering::Relaxed);
-                let _ = weak.update(cx, |this, cx| {
-                    if let UpdateStatus::Downloading {
-                        downloaded: current,
-                        ..
-                    } = &mut this.status
-                        && *current != got
-                    {
-                        *current = got;
-                        cx.notify();
-                    }
-                });
+                // ponytail: 窗口/实体已释放即 abort 下载并结束轮询，
+                // 避免关窗后白跑写半包；`join.await` 的取消错误不再回写死实体。
+                if weak
+                    .update(cx, |this, cx| {
+                        if let UpdateStatus::Downloading {
+                            downloaded: current,
+                            ..
+                        } = &mut this.status
+                            && *current != got
+                        {
+                            *current = got;
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    join.abort();
+                    return;
+                }
                 cx.background_executor()
                     .timer(Duration::from_millis(120))
                     .await;

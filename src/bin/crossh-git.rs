@@ -58,7 +58,10 @@ fn main() {
     app.run(move |cx: &mut App| {
         cx.set_app_identity("me.xcrong.crossh.git", "Crossh Git");
         cx.init_colors();
-        crossh_ui::assets::load_fonts(cx).expect("Crossh fonts should load");
+        // ponytail: 字体加载失败只记日志回退系统字体，不阻断启动。
+        if let Err(error) = crossh_ui::assets::load_fonts(cx) {
+            log::warn!("Crossh fonts unavailable, falling back to system fonts: {error:#}");
+        }
         git::init(cx);
         git::open_git_window(cwd.clone(), cx);
         // 单实例投递桥：监听线程只做阻塞收包，前台任务经 open_git_window 落地

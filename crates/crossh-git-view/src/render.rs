@@ -1150,6 +1150,17 @@ fn render_commit_editor_text(editor: &CommitEditor, focused: bool) -> AnyElement
     }
 
     let selection = editor.state.selection();
+    let value_len = editor.state.value.len();
+    // ponytail: 陈旧 cursor/selection 先钳到文本内字符边界，再按行切分，不 panic。
+    let clip = |mut offset: usize| -> usize {
+        offset = offset.min(value_len);
+        while !editor.state.value.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        offset
+    };
+    let selection = selection.map(|(start, end)| (clip(start), clip(end)));
+    let cursor = clip(editor.state.cursor);
     let mut content = div().flex().flex_col();
     let mut line_start = 0;
     for line in editor.state.value.split('\n') {
@@ -1168,9 +1179,9 @@ fn render_commit_editor_text(editor: &CommitEditor, focused: bool) -> AnyElement
                     ))
                 })
                 .child(text_span(&editor.state.value[selected_end..line_end]));
-        } else if (line_start..=line_end).contains(&editor.state.cursor) {
+        } else if (line_start..=line_end).contains(&cursor) {
             row = row.child(text_span(
-                &editor.state.value[line_start..editor.state.cursor],
+                &editor.state.value[line_start..cursor],
             ));
             if focused {
                 row = row.child(text_caret(px(15.)));
@@ -1179,7 +1190,7 @@ fn render_commit_editor_text(editor: &CommitEditor, focused: bool) -> AnyElement
                 row = row.child(marked_text_span(editor.state.ime_marked_text.as_str()));
             }
             row = row.child(text_span(
-                &editor.state.value[editor.state.cursor..line_end],
+                &editor.state.value[cursor..line_end],
             ));
         } else {
             row = row.child(text_span(line));

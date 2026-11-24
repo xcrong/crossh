@@ -1634,6 +1634,7 @@ version = "0.45.3"
 dependencies = [
  "crossh-assets",
  "gpui",
+ "log",
  "terminal",
 ]
 
