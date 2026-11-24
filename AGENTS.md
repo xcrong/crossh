@@ -75,6 +75,8 @@
 - For routine changes, run targeted tests only: the crate or module directly affected (`cargo test -p <crate>`, `cargo test --lib <filter>`, or a single test binary). Choose the smallest scope that covers the changed behavior.
 - Documentation-only, formatting, or single-file mechanical refactors do not require a test run; rely on `cargo fmt --check` / `cargo clippy` / `scripts/check-architecture.sh` instead.
 - When a full green suite is required as a hard gate, treat that as an explicit exception and state the reason when running it.
+- For any Rust change, run `cargo fmt --all -- --check` before commit (same as the CI macos-quality Format check). Do not substitute `cargo fmt -p <crate>` — CI checks `--all`.
+- No `rust-toolchain.toml` is pinned; CI uses latest stable (`dtolnay/rust-toolchain@stable`). If local passes but CI fails, sync the toolchain then re-run `cargo fmt`.
 
 ## Local Workspace and Platform Responsibility
 
