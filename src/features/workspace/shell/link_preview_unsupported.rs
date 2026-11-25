@@ -31,6 +31,9 @@ impl AppShell {
     }
 
     pub(crate) fn hide_link_preview(&mut self, _cx: &mut Context<Self>) {}
+
+    /// 占位门面：本平台从不创建原生预览，显式释放同样是空操作。
+    pub(crate) fn close_link_preview(&mut self, _cx: &mut Context<Self>) {}
 }
 
 pub(crate) fn render_status_toggle(

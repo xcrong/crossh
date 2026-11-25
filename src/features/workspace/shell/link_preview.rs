@@ -483,6 +483,19 @@ impl AppShell {
         cx.notify();
     }
 
+    /// X 按钮的显式释放：wry 0.57 没有 close API，drop 最后一个 `Rc<WebView>`
+    /// 即销毁原生子视图。下次打开走 `open_link_preview` 的 `None` 分支重建。
+    /// 点外 / Esc 只走 `hide_link_preview`（保留页面，下次直接重显）。
+    pub(crate) fn close_link_preview(&mut self, cx: &mut Context<Self>) {
+        if self.link_preview.is_none() && !self.link_preview_visible {
+            return;
+        }
+        self.link_preview.take();
+        self.link_preview_visible = false;
+        self.refocus_active_terminal(cx);
+        cx.notify();
+    }
+
     /// 状态栏入口：显示/隐藏上一次的链接预览；还没有预览时开一个起始页。
     pub(crate) fn toggle_link_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.link_preview_visible {
@@ -688,7 +701,7 @@ fn render_link_preview_header(
                 .child(
                     icon_button("link-preview-close", icons::IconName::X).on_click(cx.listener(
                         |this, _ev, _window, cx| {
-                            this.hide_link_preview(cx);
+                            this.close_link_preview(cx);
                         },
                     )),
                 ),
