@@ -6,7 +6,7 @@
 
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, Read as _};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,6 +20,10 @@ use super::model::{ArtifactFormat, MAX_DOWNLOAD_BYTES, UpdateResult, record_upda
 
 const UPDATE_WAIT: Duration = Duration::from_millis(250);
 const UPDATE_WAIT_ATTEMPTS: usize = 480;
+
+/// ponytail: staging 预算只留这一处可调项；64MiB headroom 给小 /tmp 留余量，
+/// 上限就是已有的 1GiB（单文件/总额复用同一值，不新增阈值）。
+const STAGING_HEADROOM_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum InstallerError {
@@ -314,7 +318,103 @@ fn process_is_running(_pid: u32) -> bool {
     false
 }
 
+/// ponytail: 预算 = min(1GiB, 可用 - 64MiB)；小 /tmp 按可用量收紧，不再一律放行 1GiB。
+fn budget_for_available(available: u64) -> u64 {
+    available
+        .saturating_sub(STAGING_HEADROOM_BYTES)
+        .min(MAX_DOWNLOAD_BYTES)
+}
+
+fn extraction_budget(destination: &Path) -> u64 {
+    available_space(destination)
+        .map(budget_for_available)
+        .unwrap_or(MAX_DOWNLOAD_BYTES)
+}
+
+#[cfg(unix)]
+fn available_space(path: &Path) -> io::Result<u64> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let ancestor = path.ancestors().find(|candidate| candidate.exists());
+    let ancestor = ancestor.unwrap_or(path);
+    let bytes = ancestor.as_os_str().as_bytes();
+    if bytes.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path contains NUL",
+        ));
+    }
+    let c_path = CString::new(bytes)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `c_path` 以 NUL 结尾且在调用期间有效；`stat` 指向有效可写内存，
+    // `statvfs` 不保留指针。
+    if unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(stat.f_bavail as u64 * stat.f_frsize as u64)
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetDiskFreeSpaceExW(
+        directory: *const u16,
+        free_to_caller: *mut u64,
+        total: *mut u64,
+        free: *mut u64,
+    ) -> i32;
+}
+
+#[cfg(windows)]
+fn available_space(path: &Path) -> io::Result<u64> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let ancestor = path.ancestors().find(|candidate| candidate.exists());
+    let ancestor = ancestor.unwrap_or(path);
+    let wide: Vec<u16> = ancestor
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut free_to_caller: u64 = 0;
+    // SAFETY: `wide` 以 NUL 结尾且在调用期间有效；传出的只是栈上 u64 指针。
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut free_to_caller,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(free_to_caller)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn available_space(_path: &Path) -> io::Result<u64> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "free space query unsupported",
+    ))
+}
+
 fn extract_zip(package: &Path, destination: &Path) -> Result<(), InstallerError> {
+    let budget = extraction_budget(destination);
+    extract_zip_with_limit(package, destination, budget)
+}
+
+fn extract_zip_with_limit(
+    package: &Path,
+    destination: &Path,
+    budget: u64,
+) -> Result<(), InstallerError> {
+    if budget == 0 {
+        return Err(InstallerError::ArchiveTooLarge);
+    }
     let file = File::open(package)?;
     let mut archive = zip::ZipArchive::new(file)?;
     let mut extracted = 0u64;
@@ -338,22 +438,46 @@ fn extract_zip(package: &Path, destination: &Path) -> Result<(), InstallerError>
             fs::create_dir_all(path)?;
             continue;
         }
-        extracted = extracted
-            .checked_add(entry.size())
-            .ok_or(InstallerError::ArchiveTooLarge)?;
-        if extracted > MAX_DOWNLOAD_BYTES {
+        // 单文件上限：声明值先卡一次，注定超限的文件不分配写入。
+        if entry.size() > budget {
+            return Err(InstallerError::ArchiveTooLarge);
+        }
+        let remaining = budget - extracted;
+        if entry.size() > remaining {
             return Err(InstallerError::ArchiveTooLarge);
         }
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let mut output = File::create(path)?;
-        io::copy(&mut entry, &mut output)?;
+        let mut output = File::create(&path)?;
+        // 写入字节复核：头里的 size 可伪造，以实际写入 n 为准；Take(limit + 1)
+        // 让超限恰好多写 1 字节即被发现，不会把整个炸弹写满磁盘。
+        let mut source = (&mut entry).take(remaining.saturating_add(1));
+        let written = io::copy(&mut source, &mut output)?;
+        drop(source);
+        drop(output);
+        if written > remaining {
+            let _ = fs::remove_file(&path);
+            return Err(InstallerError::ArchiveTooLarge);
+        }
+        extracted += written;
     }
     Ok(())
 }
 
 fn extract_tar_gz(package: &Path, destination: &Path) -> Result<(), InstallerError> {
+    let budget = extraction_budget(destination);
+    extract_tar_gz_with_limit(package, destination, budget)
+}
+
+fn extract_tar_gz_with_limit(
+    package: &Path,
+    destination: &Path,
+    budget: u64,
+) -> Result<(), InstallerError> {
+    if budget == 0 {
+        return Err(InstallerError::ArchiveTooLarge);
+    }
     let file = File::open(package)?;
     let decoder = GzDecoder::new(file);
     let mut archive = tar::Archive::new(decoder);
@@ -367,19 +491,46 @@ fn extract_tar_gz(package: &Path, destination: &Path) -> Result<(), InstallerErr
             ));
         }
         let entry_type = entry.header().entry_type();
-        if !(entry_type.is_file() || entry_type.is_dir()) {
+        if entry_type.is_dir() {
+            entry.unpack_in(destination).map_err(InstallerError::Tar)?;
+            continue;
+        }
+        if !(entry_type.is_file()) {
             return Err(InstallerError::Tar(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "tar archive contains an unsupported entry type",
             )));
         }
-        extracted = extracted
-            .checked_add(entry.size())
-            .ok_or(InstallerError::ArchiveTooLarge)?;
-        if extracted > MAX_DOWNLOAD_BYTES {
+        if entry.size() > budget {
             return Err(InstallerError::ArchiveTooLarge);
         }
-        entry.unpack_in(destination).map_err(InstallerError::Tar)?;
+        let remaining = budget - extracted;
+        if entry.size() > remaining {
+            return Err(InstallerError::ArchiveTooLarge);
+        }
+        let destination_path = destination.join(&path);
+        if let Some(parent) = destination_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        #[cfg(unix)]
+        let mode = entry.header().mode().map_err(InstallerError::Tar)?;
+        let mut output = File::create(&destination_path)?;
+        let mut source = (&mut entry).take(remaining.saturating_add(1));
+        let written = io::copy(&mut source, &mut output)?;
+        drop(source);
+        drop(output);
+        if written > remaining {
+            let _ = fs::remove_file(&destination_path);
+            return Err(InstallerError::ArchiveTooLarge);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let permissions = fs::Permissions::from_mode(mode);
+            let _ = fs::set_permissions(&destination_path, permissions);
+        }
+        extracted += written;
     }
     Ok(())
 }
@@ -709,14 +860,20 @@ mod tests {
     }
 
     fn create_tar_gz(path: &Path, name: &str, contents: &[u8]) {
+        create_tar_gz_entries(path, &[(name, contents)]);
+    }
+
+    fn create_tar_gz_entries(path: &Path, entries: &[(&str, &[u8])]) {
         let file = File::create(path).unwrap();
         let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
         let mut archive = tar::Builder::new(encoder);
-        let mut header = tar::Header::new_gnu();
-        header.set_size(contents.len() as u64);
-        header.set_mode(0o755);
-        header.set_cksum();
-        archive.append_data(&mut header, name, contents).unwrap();
+        for (name, contents) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(contents.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            archive.append_data(&mut header, name, *contents).unwrap();
+        }
         archive.into_inner().unwrap().finish().unwrap();
     }
 
@@ -987,6 +1144,104 @@ mod tests {
         assert!(
             !install.join(".crossh.exe.crossh-old").exists(),
             "history temp files must not be carried into the new install"
+        );
+    }
+
+    #[test]
+    fn extraction_budget_leaves_headroom() {
+        assert_eq!(budget_for_available(0), 0);
+        assert_eq!(budget_for_available(STAGING_HEADROOM_BYTES), 0);
+        assert_eq!(budget_for_available(STAGING_HEADROOM_BYTES + 1), 1);
+        assert_eq!(
+            budget_for_available(MAX_DOWNLOAD_BYTES + STAGING_HEADROOM_BYTES),
+            MAX_DOWNLOAD_BYTES
+        );
+        assert_eq!(budget_for_available(u64::MAX), MAX_DOWNLOAD_BYTES);
+    }
+
+    #[test]
+    fn available_space_reports_temp_dir() {
+        let free = available_space(&std::env::temp_dir()).expect("temp dir must be statable");
+        assert!(free > 0, "free space must be positive");
+    }
+
+    #[test]
+    fn zero_budget_writes_nothing() {
+        let root = TestDir::new("budget-zero");
+        let package = root.0.join("update.zip");
+        create_zip(&package, "crossh", b"payload");
+        let staging = root.0.join("staging");
+        fs::create_dir_all(&staging).unwrap();
+
+        assert!(matches!(
+            extract_zip_with_limit(&package, &staging, 0),
+            Err(InstallerError::ArchiveTooLarge)
+        ));
+        assert!(matches!(
+            extract_tar_gz_with_limit(&package, &staging, 0),
+            Err(InstallerError::ArchiveTooLarge)
+        ));
+        assert!(
+            fs::read_dir(&staging).unwrap().next().is_none(),
+            "zero budget must not write any payload byte"
+        );
+    }
+
+    #[test]
+    fn zip_budget_counts_actual_bytes_and_drops_partial_file() {
+        let root = TestDir::new("zip-budget");
+        let package = root.0.join("update.zip");
+        create_zip_entries(
+            &package,
+            &[
+                ("first", b"0123456789abcdef"),
+                ("second", b"0123456789abcdef"),
+            ],
+        );
+        let staging = root.0.join("staging");
+        fs::create_dir_all(&staging).unwrap();
+
+        // 预算 20 字节：第一个 16 字节能写下，第二个声明 16 字节但只剩 4 字节，
+        // 声明值预检即拒绝；即使走到写入，Take(limit + 1) 复核也会按实际字节拒绝。
+        assert!(matches!(
+            extract_zip_with_limit(&package, &staging, 20),
+            Err(InstallerError::ArchiveTooLarge)
+        ));
+        assert_eq!(
+            fs::read(staging.join("first")).unwrap(),
+            b"0123456789abcdef"
+        );
+        assert!(
+            !staging.join("second").exists(),
+            "over-budget entry must not leave a partial file"
+        );
+    }
+
+    #[test]
+    fn tar_budget_counts_actual_bytes_and_drops_partial_file() {
+        let root = TestDir::new("tar-budget");
+        let package = root.0.join("update.tar.gz");
+        create_tar_gz_entries(
+            &package,
+            &[
+                ("first", b"0123456789abcdef"),
+                ("second", b"0123456789abcdef"),
+            ],
+        );
+        let staging = root.0.join("staging");
+        fs::create_dir_all(&staging).unwrap();
+
+        assert!(matches!(
+            extract_tar_gz_with_limit(&package, &staging, 20),
+            Err(InstallerError::ArchiveTooLarge)
+        ));
+        assert_eq!(
+            fs::read(staging.join("first")).unwrap(),
+            b"0123456789abcdef"
+        );
+        assert!(
+            !staging.join("second").exists(),
+            "over-budget entry must not leave a partial file"
         );
     }
 }
