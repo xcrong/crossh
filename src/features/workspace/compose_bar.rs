@@ -30,7 +30,9 @@ pub(crate) fn render_compose_bar(
     let ime_marked_text = compose_state.ime_marked_text.clone();
     let ime_replacement = compose_state.ime_replacement;
     let selection = compose_state.selection();
-    let cursor = compose_state.cursor;
+    // 陈旧光标/选区可能越界或落在多字节字符中间，直接按字节切分会 panic；
+    // 统一钳到字符边界后再使用。
+    let cursor = clamp_to_char_boundary(&value, compose_state.cursor);
 
     // 自动滚动到光标：单行用 x，多行用 y
     scroll.scroll_to_item(1);
@@ -70,9 +72,18 @@ pub(crate) fn render_compose_bar(
         input = input.child(render_compose_empty_row(focused, &ime_marked_text));
     } else {
         // 按 \n 拆行，逐行渲染，正确处理选区/光标跨行
-        let cursor_line = value[..cursor].chars().filter(|c| *c == '\n').count();
+        // 越界或非字符边界的陈旧光标用 get 退避为 0 行，不再 panic。
+        let cursor_line = value
+            .get(..cursor)
+            .map(|s| s.chars().filter(|c| *c == '\n').count())
+            .unwrap_or(0);
         let (sel_start, sel_end) = selection
-            .map(|(a, b)| if a < b { (a, b) } else { (b, a) })
+            .map(|(a, b)| {
+                // 选区端点同样钳到字符边界，避免按行切分时落到字符中间被静默丢字。
+                let a = clamp_to_char_boundary(&value, a);
+                let b = clamp_to_char_boundary(&value, b);
+                if a < b { (a, b) } else { (b, a) }
+            })
             .unwrap_or((cursor, cursor));
         let ctx = ComposeLineContext {
             cursor_line,
@@ -139,6 +150,15 @@ fn render_compose_empty_row(focused: bool, ime_marked_text: &str) -> Div {
     row
 }
 
+/// 将字节下标钳到字符串的字符边界：越界截断，非边界向前退避到上一个边界。
+fn clamp_to_char_boundary(s: &str, idx: usize) -> usize {
+    let mut idx = idx.min(s.len());
+    while !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
 /// 该行与选区的重叠区间（行内字节偏移）。
 fn compose_sel_overlap(
     range: (usize, usize),
@@ -173,9 +193,10 @@ fn compose_ime_overlap(
 
 /// 选区高亮段：before + highlighted + after。
 fn compose_selection_spans(mut row: Div, line: &str, (s, e): (usize, usize)) -> Div {
-    // ponytail: `get` 回退空串，陈旧选区区间不再 panic。
-    let s = s.min(line.len());
-    let e = e.min(line.len()).max(s);
+    // 行内偏移同样钳到字符边界：直接 `get(..s)` 在非边界时返回 None，
+    // 旧逻辑 `unwrap_or("")` 会静默丢字，钳制后不再丢字也不 panic。
+    let s = clamp_to_char_boundary(line, s);
+    let e = clamp_to_char_boundary(line, e).max(s);
     row = row.child(text_span(line.get(..s).unwrap_or("").to_string()));
     row = row.child(
         div()
@@ -238,11 +259,8 @@ fn render_compose_line_row(
                     // IME 时 caret 隐藏，待提交后显示
                 }
             } else {
-                // ponytail: 退到上一个字符边界，陈旧光标不再 panic。
-                let mut cursor_byte = cursor_col_byte.min(line.len());
-                while !line.is_char_boundary(cursor_byte) {
-                    cursor_byte -= 1;
-                }
+                // 陈旧光标统一用 helper 退到字符边界，不再 panic。
+                let cursor_byte = clamp_to_char_boundary(line, cursor_col_byte);
                 row = row.child(text_span(line.get(..cursor_byte).unwrap_or("").to_string()));
                 if ctx.focused {
                     row = row.child(text_caret(px(20.)));
