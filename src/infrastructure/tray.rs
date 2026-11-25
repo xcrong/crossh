@@ -175,11 +175,25 @@ impl State {
     /// 只连不建：无端口文件 / 连不上 = 未运行，不触发拉起。
     /// 跑在 background 线程，可阻塞。
     fn snapshot() -> Option<usize> {
-        let addr = read_daemon_addr()?;
+        let Some(addr) = read_daemon_addr() else {
+            log::debug!("tray: snapshot no daemon addr");
+            return None;
+        };
         crate::app::bootstrap::runtime().block_on(async {
-            let mut client = Client::connect_to(&addr).await.ok()?;
-            let sessions = client.list().await.ok()?;
-            Some(sessions.iter().filter(|s| s.alive).count())
+            let mut client = match Client::connect_to(&addr).await {
+                Ok(client) => client,
+                Err(error) => {
+                    log::debug!("tray: snapshot connect failed: {error}");
+                    return None;
+                }
+            };
+            match client.list().await {
+                Ok(sessions) => Some(sessions.iter().filter(|s| s.alive).count()),
+                Err(error) => {
+                    log::debug!("tray: snapshot list failed: {error}");
+                    None
+                }
+            }
         })
     }
 
@@ -234,8 +248,11 @@ impl State {
                 // quit 挂前台任务（AsyncApp 非 Send进不了 background）。
                 let stopping = cx.background_executor().spawn(async move {
                     if read_daemon_addr().is_some() {
-                        let _ = crate::app::bootstrap::runtime()
-                            .block_on(crossh_session::daemon_stop());
+                        if let Err(error) =
+                            crate::app::bootstrap::runtime().block_on(crossh_session::daemon_stop())
+                        {
+                            log::warn!("tray: daemon stop failed: {error}");
+                        }
                     }
                 });
                 let foreground = cx.foreground_executor().clone();
