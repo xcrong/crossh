@@ -654,73 +654,55 @@ fn render_link_preview_header(
                 .items_center()
                 .gap_1()
                 .child(
-                    icon_button(
-                        "link-preview-back",
-                        icons::IconName::ArrowLeft,
-                        "link_preview.back",
-                    )
-                    .on_click(move |_ev, _window, _cx| {
-                        let _ = back.go_back();
-                    }),
+                    icon_button("link-preview-back", icons::IconName::ArrowLeft).on_click(
+                        move |_ev, _window, _cx| {
+                            let _ = back.go_back();
+                        },
+                    ),
                 )
                 .child(
-                    icon_button(
-                        "link-preview-forward",
-                        icons::IconName::ArrowRight,
-                        "link_preview.forward",
-                    )
-                    .on_click(move |_ev, _window, _cx| {
-                        let _ = forward.go_forward();
-                    }),
+                    icon_button("link-preview-forward", icons::IconName::ArrowRight).on_click(
+                        move |_ev, _window, _cx| {
+                            let _ = forward.go_forward();
+                        },
+                    ),
                 )
                 // 刷新与停止占同一个位置：加载中没有进度可展示，只换图标。
                 .child(if loading {
-                    icon_button(
-                        "link-preview-stop",
-                        icons::IconName::CircleX,
-                        "link_preview.stop",
+                    icon_button("link-preview-stop", icons::IconName::CircleX).on_click(
+                        cx.listener(|this, _ev, _window, cx| {
+                            this.stop_link_preview_loading(cx);
+                        }),
                     )
-                    .on_click(cx.listener(|this, _ev, _window, cx| {
-                        this.stop_link_preview_loading(cx);
-                    }))
                 } else {
-                    icon_button(
-                        "link-preview-reload",
-                        icons::IconName::RefreshCw,
-                        "link_preview.reload",
+                    icon_button("link-preview-reload", icons::IconName::RefreshCw).on_click(
+                        move |_ev, _window, _cx| {
+                            let _ = reload.reload();
+                        },
                     )
-                    .on_click(move |_ev, _window, _cx| {
-                        let _ = reload.reload();
-                    })
                 })
                 .child(
-                    icon_button(
-                        "link-preview-external",
-                        icons::IconName::ExternalLink,
-                        "link_preview.open_in_browser",
-                    )
-                    .on_click(move |_ev, _window, cx| cx.open_url(external.as_ref())),
+                    icon_button("link-preview-external", icons::IconName::ExternalLink)
+                        .on_click(move |_ev, _window, cx| cx.open_url(external.as_ref())),
                 )
                 .child(
-                    icon_button(
-                        "link-preview-close",
-                        icons::IconName::X,
-                        "link_preview.close",
-                    )
-                    .on_click(cx.listener(|this, _ev, _window, cx| {
-                        this.hide_link_preview(cx);
-                    })),
+                    icon_button("link-preview-close", icons::IconName::X).on_click(cx.listener(
+                        |this, _ev, _window, cx| {
+                            this.hide_link_preview(cx);
+                        },
+                    )),
                 ),
         )
         .into_any_element()
 }
 
-fn icon_button(id: &'static str, icon: icons::IconName, tooltip: &'static str) -> Button {
+// 顶栏按钮不用 `.tooltip`：全局 tooltip 默认往右下弹，会落进下方 wry
+// 原生矩形被盖住（原生视图恒在 GPUI 之上），不如直接去掉。
+fn icon_button(id: &'static str, icon: icons::IconName) -> Button {
     Button::new(id)
         .size(ButtonSize::Icon(px(22.)))
         .variant(ButtonVariant::Ghost)
         .icon(icons::icon(icon, 12.).text_color(theme::muted_text()))
-        .tooltip(i18n::text(tooltip))
 }
 
 /// 地址栏字号/内边距：渲染与 IME caret 定位共用同一组值。
