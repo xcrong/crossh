@@ -64,7 +64,7 @@ updater 找到当前 `.app` 根目录，复制新 bundle 到同一目录下的�
 
 ### Linux
 
-AppImage 通过 `APPIMAGE` 环境变量定位当前文件，直接替换 AppImage。tar.gz 安装方式替换当前目录中的 `crossh` 二进制。包内同时放置 `crossh-updater`。
+AppImage 通过 `APPIMAGE` 环境变量定位当前文件，直接替换 AppImage。tar.gz 安装方式把载荷根（版本包装目录内与 `crossh` 同级的 `crossh-daemon`、`crossh-updater`、`crossh-git`、`crossh-note`、`resources/` 等）整体合并进 `crossh` 所在安装目录，与 Windows zip 同策略走整树原子替换；只换主程序会留下旧 daemon/旧资源导致协议握手失败，所以不再只替换 `crossh` 二进制。
 
 ### Windows
 

@@ -703,12 +703,31 @@ fn is_swap_temp(file_name: &std::ffi::OsStr) -> bool {
     name.starts_with('.') && (name.ends_with(".crossh-new") || name.ends_with(".crossh-old"))
 }
 
+/// Linux tar.gz 的顶层结构（`crossh`、`crossh-git`、`crossh-note`、
+/// `crossh-updater`、`crossh-daemon`、`resources/`、README、LICENSE）与安装目录一一对应，
+/// 见 `scripts/package-linux.sh` 的 tar.gz 小节。只换主程序会让 daemon 等附属二进制
+/// 停在旧版本、协议升级时新旧握手失败，因此与 Windows zip 一样做整树合并替换。
 fn install_tar_payload(staging: &Path, target: &Path) -> Result<(), InstallerError> {
     let name = target
         .file_name()
         .ok_or_else(|| InstallerError::MissingPayload(target.display().to_string()))?;
-    let source = find_named_path(staging, name)?;
-    replace_file(&source, target)
+    // 先确认主程序在包里：缺失/重名歧义直接报错，安装目录保持不动。
+    // tar 包带一层版本包装目录（`crossh-<version>-linux-<arch>/`），主程序的父目录
+    // 即载荷根；不用 staging 本身，避免把包装目录名带进安装目录。
+    let main_path = find_named_path(staging, name)?;
+    let payload_root = main_path
+        .parent()
+        .ok_or_else(|| InstallerError::MissingPayload(target.display().to_string()))?;
+    let install = target
+        .parent()
+        .ok_or_else(|| InstallerError::MissingPayload(target.display().to_string()))?;
+    // 快照载荷根清单：一次性读完，建树失败前不碰安装目录（半更新防护同 Windows）。
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(payload_root)? {
+        let entry = entry?;
+        entries.push((entry.file_name(), entry.path(), entry.file_type()?));
+    }
+    swap_install_tree(&entries, install)
 }
 
 fn find_named_path(root: &Path, name: impl AsRef<Path>) -> Result<PathBuf, InstallerError> {
@@ -1220,6 +1239,79 @@ mod tests {
         assert!(
             !install.join(".crossh.exe.crossh-old").exists(),
             "history temp files must not be carried into the new install"
+        );
+    }
+
+    // ── Linux tar.gz 全量替换（与 Windows zip 同策略）─────────────────────────
+
+    #[test]
+    fn linux_tar_payload_replaces_every_top_level_entry() {
+        let root = TestDir::new("tar-payload");
+        let install = root.0.join("install");
+        fs::create_dir_all(install.join("resources")).unwrap();
+        fs::write(install.join("crossh"), b"old-app").unwrap();
+        fs::write(install.join("crossh-daemon"), b"old-daemon").unwrap();
+        fs::write(install.join("crossh-updater"), b"old-updater").unwrap();
+        fs::write(install.join("resources/old.svg"), b"old-icon").unwrap();
+
+        // 真实包带一层版本包装目录：staging/crossh-<ver>-linux-<arch>/…
+        let staging = root.0.join("staging");
+        let payload = staging.join("crossh-0.0.0-linux-x86_64");
+        fs::create_dir_all(payload.join("resources")).unwrap();
+        fs::write(payload.join("crossh"), b"new-app").unwrap();
+        fs::write(payload.join("crossh-daemon"), b"new-daemon").unwrap();
+        fs::write(payload.join("crossh-updater"), b"new-updater").unwrap();
+        fs::write(payload.join("crossh-git"), b"new-git").unwrap();
+        fs::write(payload.join("resources/new.svg"), b"new-icon").unwrap();
+
+        install_tar_payload(&staging, &install.join("crossh")).unwrap();
+
+        assert_eq!(fs::read(install.join("crossh")).unwrap(), b"new-app");
+        assert_eq!(
+            fs::read(install.join("crossh-daemon")).unwrap(),
+            b"new-daemon"
+        );
+        assert_eq!(
+            fs::read(install.join("crossh-updater")).unwrap(),
+            b"new-updater"
+        );
+        assert_eq!(fs::read(install.join("crossh-git")).unwrap(), b"new-git");
+        assert_eq!(
+            fs::read(install.join("resources/new.svg")).unwrap(),
+            b"new-icon"
+        );
+        assert!(
+            !install.join("resources/old.svg").exists(),
+            "replaced resources must not keep the previous tree"
+        );
+    }
+
+    #[test]
+    fn linux_tar_payload_without_main_binary_is_rejected() {
+        let root = TestDir::new("tar-payload-missing");
+        let install = root.0.join("install");
+        fs::create_dir_all(&install).unwrap();
+        fs::write(install.join("crossh"), b"old-app").unwrap();
+        fs::write(install.join("crossh-daemon"), b"old-daemon").unwrap();
+
+        let staging = root.0.join("staging");
+        let payload = staging.join("crossh-0.0.0-linux-x86_64");
+        fs::create_dir_all(&payload).unwrap();
+        fs::write(payload.join("crossh-daemon"), b"new-daemon").unwrap();
+
+        assert!(matches!(
+            install_tar_payload(&staging, &install.join("crossh")),
+            Err(InstallerError::MissingPayload(_))
+        ));
+        assert_eq!(
+            fs::read(install.join("crossh")).unwrap(),
+            b"old-app",
+            "a payload without the main binary must leave the install untouched"
+        );
+        assert_eq!(
+            fs::read(install.join("crossh-daemon")).unwrap(),
+            b"old-daemon",
+            "nothing may be replaced before the payload is validated"
         );
     }
 
