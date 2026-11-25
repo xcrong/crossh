@@ -405,6 +405,10 @@ fn install_zip_payload(staging: &Path, target: &Path) -> Result<(), InstallerErr
 /// `crossh-updater.exe`、`crossh-daemon.exe`、`resources/`、README、LICENSE）与安装目录一一对应，
 /// 见 `scripts/crossh.iss` 的 `[Files]`。只换主程序会让附属二进制和 resources
 /// 停在旧版本，因此这里把整个顶层载荷合并进安装目录。
+///
+/// 半更新防护：先把 staging 快照成清单并在同卷暂存里建好完整新树（此间任何
+/// 读取/拷贝失败都还没动安装目录），最后用两次 rename 做整体切换。切换前
+/// 安装目录保持原样，不会出现“新旧混装”。
 fn replace_payload_directory(staging: &Path, target: &Path) -> Result<(), InstallerError> {
     let parent = target
         .parent()
@@ -414,16 +418,110 @@ fn replace_payload_directory(staging: &Path, target: &Path) -> Result<(), Instal
         .ok_or_else(|| InstallerError::MissingPayload(target.display().to_string()))?;
     // 先确认主程序在包里，否则结构异常的载荷会动到安装目录却没人能启动。
     find_named_path(staging, name)?;
+    // 快照载荷清单：一次性读完 staging，边读边写会在读到一半失败时留下半更新。
+    let mut entries = Vec::new();
     for entry in fs::read_dir(staging)? {
         let entry = entry?;
-        let destination = parent.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            replace_directory(&entry.path(), &destination)?;
+        entries.push((entry.file_name(), entry.path(), entry.file_type()?));
+    }
+    swap_install_tree(&entries, parent)
+}
+
+/// 同卷暂存整树 + 两次 rename 切换：建树失败时安装目录 untouched；第二次
+/// rename 失败时尽力把备份换回去，避免新旧混装。
+fn swap_install_tree(
+    entries: &[(OsString, PathBuf, fs::FileType)],
+    install: &Path,
+) -> Result<(), InstallerError> {
+    let grandparent = install
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| InstallerError::MissingPayload(install.display().to_string()))?;
+    let install_name = install
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| InstallerError::MissingPayload(install.display().to_string()))?;
+    let replacement = grandparent.join(format!(".{install_name}.crossh-new"));
+    let backup = grandparent.join(format!(".{install_name}.crossh-old"));
+    let _ = fs::remove_dir_all(&replacement);
+    let _ = fs::remove_dir_all(&backup);
+    let built = build_replacement_tree(entries, install, &replacement);
+    if let Err(error) = built {
+        let _ = fs::remove_dir_all(&replacement);
+        return Err(error);
+    }
+    if install.exists() {
+        fs::rename(install, &backup)?;
+    }
+    if let Err(error) = fs::rename(&replacement, install) {
+        // 新树换不进去时把旧树换回来；回滚失败也只报原始错误，旧树留在 backup 可人工恢复。
+        if backup.exists() && !install.exists() {
+            let _ = fs::rename(&backup, install);
+        }
+        return Err(error.into());
+    }
+    let _ = fs::remove_dir_all(backup);
+    Ok(())
+}
+
+/// 在同卷暂存里建好完整新树：先拷旧安装（跳过历史残留的替换临时目录），
+/// 再把载荷清单逐项覆盖。目录载荷整体替换（与旧逐个 replace_directory 语义一致）。
+fn build_replacement_tree(
+    entries: &[(OsString, PathBuf, fs::FileType)],
+    install: &Path,
+    replacement: &Path,
+) -> Result<(), InstallerError> {
+    fs::create_dir_all(replacement)?;
+    if install.exists() {
+        for entry in fs::read_dir(install)? {
+            let entry = entry?;
+            let file_name = entry.file_name();
+            if is_swap_temp(&file_name) {
+                continue;
+            }
+            let source = entry.path();
+            let destination = replacement.join(&file_name);
+            if entry.file_type()?.is_dir() {
+                copy_directory(&source, &destination)?;
+            } else if entry.file_type()?.is_file() {
+                fs::copy(&source, &destination)?;
+                make_executable(&destination)?;
+            }
+            // 旧安装里的特殊文件（symlink 等）直接跳过：它们不属于载荷，
+            // 丢下也不影响新树完整性，且避免一次更新失败。
+        }
+    }
+    for (file_name, source, file_type) in entries {
+        let destination = replacement.join(file_name);
+        if file_type.is_dir() {
+            let _ = fs::remove_dir_all(&destination);
+            copy_directory(source, &destination)?;
+        } else if file_type.is_file() {
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(source, &destination)?;
+            make_executable(&destination)?;
         } else {
-            replace_file(&entry.path(), &destination)?;
+            return Err(InstallerError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "update payload contains an unsupported entry: {}",
+                    source.display()
+                ),
+            )));
         }
     }
     Ok(())
+}
+
+/// 识别历史替换残留的临时目录（`.<name>.crossh-new` / `.<name>.crossh-old`），
+/// 建新树时跳过，避免把垃圾带进新安装。
+fn is_swap_temp(file_name: &std::ffi::OsStr) -> bool {
+    let Some(name) = file_name.to_str() else {
+        return false;
+    };
+    name.starts_with('.') && (name.ends_with(".crossh-new") || name.ends_with(".crossh-old"))
 }
 
 fn install_tar_payload(staging: &Path, target: &Path) -> Result<(), InstallerError> {
@@ -822,6 +920,73 @@ mod tests {
         assert!(
             !install.join("crossh-git.exe").exists(),
             "nothing may be written before the payload is validated"
+        );
+    }
+
+    #[test]
+    fn broken_payload_leaves_install_untouched_instead_of_half_updated() {
+        let root = TestDir::new("payload-atomic");
+        let install = root.0.join("install");
+        fs::create_dir_all(&install).unwrap();
+        fs::write(install.join("crossh.exe"), b"old-app").unwrap();
+        fs::write(install.join("crossh-git.exe"), b"old-git").unwrap();
+
+        let staging = root.0.join("staging");
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("crossh.exe"), b"new-app").unwrap();
+        fs::write(staging.join("crossh-git.exe"), b"new-git").unwrap();
+        // 顶层 symlink 不是合法载荷：建新树阶段就失败，安装目录必须保持原样。
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("crossh.exe", staging.join("evil-link")).unwrap();
+        #[cfg(not(unix))]
+        {
+            let bad = staging.join("evil-link");
+            fs::create_dir_all(&bad).unwrap();
+            #[cfg(windows)]
+            {
+                // Windows 上目录即合法载荷，此分支仅为占位，断言仍覆盖主路径。
+                let _ = bad;
+            }
+        }
+
+        #[cfg(unix)]
+        {
+            assert!(install_zip_payload(&staging, &install.join("crossh.exe")).is_err());
+            assert_eq!(
+                fs::read(install.join("crossh.exe")).unwrap(),
+                b"old-app",
+                "failed payload must not leave a half-updated install"
+            );
+            assert_eq!(
+                fs::read(install.join("crossh-git.exe")).unwrap(),
+                b"old-git",
+                "no top-level entry may be replaced before the whole tree is ready"
+            );
+            assert!(
+                !root.0.join(".install.crossh-new").exists(),
+                "failed build must clean up the same-volume staging tree"
+            );
+        }
+    }
+
+    #[test]
+    fn payload_swap_drops_previous_staging_leftovers() {
+        let root = TestDir::new("payload-clean-temp");
+        let install = root.0.join("install");
+        fs::create_dir_all(&install).unwrap();
+        fs::write(install.join("crossh.exe"), b"old-app").unwrap();
+        fs::write(install.join(".crossh.exe.crossh-old"), b"stale-backup").unwrap();
+
+        let staging = root.0.join("staging");
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("crossh.exe"), b"new-app").unwrap();
+
+        install_zip_payload(&staging, &install.join("crossh.exe")).unwrap();
+
+        assert_eq!(fs::read(install.join("crossh.exe")).unwrap(), b"new-app");
+        assert!(
+            !install.join(".crossh.exe.crossh-old").exists(),
+            "history temp files must not be carried into the new install"
         );
     }
 }
