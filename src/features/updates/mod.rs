@@ -121,8 +121,11 @@ impl UpdateController {
             cx.notify();
             return;
         };
-        let current = Version::parse(env!("CARGO_PKG_VERSION"))
-            .expect("CARGO_PKG_VERSION must be valid semver");
+        let Ok(current) = Version::parse(env!("CARGO_PKG_VERSION")) else {
+            self.status = UpdateStatus::Failed("current version is not valid semver".into());
+            cx.notify();
+            return;
+        };
         let manifest_url = option_env!("CROSSH_UPDATE_MANIFEST_URL")
             .unwrap_or(DEFAULT_MANIFEST_URL)
             .to_owned();
