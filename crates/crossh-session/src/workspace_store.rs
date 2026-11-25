@@ -322,7 +322,7 @@ pub fn clear_daemon_error() {
     }
 }
 
-/// 读取 `daemon.error`（CLI/状态展示用）。
+/// 读取 `daemon.error`（CLI/状态展示用）。缺失/不可读/空白文件一律返回 `None`（空文件无可展示原因，`Some("")` 永不出现）。
 pub fn read_daemon_error() -> Option<String> {
     let path = crossh_core::config::daemon_error_path()?;
     std::fs::read_to_string(path)

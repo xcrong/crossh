@@ -20,6 +20,7 @@ pub(crate) fn render_compose_bar(
     let focus = shell.compose_focus.clone();
     let scroll = shell.compose_scroll.clone();
     let focused = focus.is_focused(window);
+    // ponytail: compose 输入框极小（单行文本），clone 整份 state 是为尽早释放 workspace 借用，比传引用便宜且避免 borrow 冲突。
     let compose_state = shell
         .workspace
         .focused_pane()

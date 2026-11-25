@@ -654,6 +654,7 @@ impl NoteStore {
     }
 
     /// 子串路径：任一词出现在正文即命中（`OR`）。中文在 FTS 上零命中，靠这条路径。
+    /// 全表扫描但有界：词数上限 32（见 [`search_terms`]）、单条最多 1MiB（见 [`MAX_CONTENT_BYTES`]），个人库规模够用。
     fn search_like(&self, terms: &[String]) -> Result<Vec<Note>, String> {
         let conn = self.conn.lock();
         let clause = vec!["content LIKE ? ESCAPE '\\'"; terms.len()].join(" OR ");

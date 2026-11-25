@@ -120,6 +120,7 @@ fn updater_path(current_exe: &Path) -> PathBuf {
 }
 
 fn install_paths(current_exe: &Path) -> Result<(PathBuf, PathBuf), InstallerError> {
+    // ponytail: target/launch 只接受 spawn_updater 从 current_exe 派生的安装布局（macOS bundle / AppImage / 同目录二进制），手动传参属于未支持用法；相对路径一律拒绝。
     #[cfg(target_os = "macos")]
     {
         let bundle = current_exe
@@ -275,8 +276,29 @@ where
             .ok_or_else(|| InstallerError::InvalidArguments("missing package".into()))?,
         format: format.ok_or_else(|| InstallerError::InvalidArguments("missing format".into()))?,
         pid: pid.ok_or_else(|| InstallerError::InvalidArguments("missing pid".into()))?,
-        target: target.ok_or_else(|| InstallerError::InvalidArguments("missing target".into()))?,
-        launch: launch.ok_or_else(|| InstallerError::InvalidArguments("missing launch".into()))?,
+        target: target
+            .ok_or_else(|| InstallerError::InvalidArguments("missing target".into()))
+            .and_then(|path| {
+                // updater 会 rename/copy 到 target 并拉起 launch：相对路径的语义取决于 updater 的 cwd，必须拒绝。
+                if path.is_absolute() {
+                    Ok(path)
+                } else {
+                    Err(InstallerError::InvalidArguments(
+                        "target must be an absolute path".into(),
+                    ))
+                }
+            })?,
+        launch: launch
+            .ok_or_else(|| InstallerError::InvalidArguments("missing launch".into()))
+            .and_then(|path| {
+                if path.is_absolute() {
+                    Ok(path)
+                } else {
+                    Err(InstallerError::InvalidArguments(
+                        "launch must be an absolute path".into(),
+                    ))
+                }
+            })?,
     })
 }
 
@@ -303,14 +325,20 @@ fn process_is_running(pid: u32) -> bool {
 
 #[cfg(windows)]
 fn process_is_running(pid: u32) -> bool {
-    // 等待循环每 250ms 调用一次：tasklist 是控制台子系统，不加会持续闪黑窗。
+    // tasklist 是控制台子系统，不加会持续闪黑窗；等待循环每 250ms 调用一次。
     let Ok(output) = no_window(&mut Command::new("tasklist"))
-        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
         .output()
     else {
         return true;
     };
-    String::from_utf8_lossy(&output.stdout).contains(&pid.to_string())
+    // ponytail: 子串匹配会把 pid 123 误判到 1234；CSV 第二列精确比对，解析失败按存活处理（宁可多等一轮）。
+    let want = pid.to_string();
+    String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+        line.split(',')
+            .nth(1)
+            .is_some_and(|field| field.trim_matches(['"', ' ', '\r']) == want)
+    })
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -685,20 +713,28 @@ fn install_tar_payload(staging: &Path, target: &Path) -> Result<(), InstallerErr
 
 fn find_named_path(root: &Path, name: impl AsRef<Path>) -> Result<PathBuf, InstallerError> {
     let name = name.as_ref();
+    // ponytail: 同名载荷出现两次时首命中是文件系统顺序、不可复现；直接报歧义而不猜一个。
+    let mut found: Option<PathBuf> = None;
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
         for entry in fs::read_dir(directory)? {
             let entry = entry?;
             let path = entry.path();
             if path.file_name() == name.file_name() {
-                return Ok(path);
+                if found.is_some() {
+                    return Err(InstallerError::MissingPayload(format!(
+                        "ambiguous payload entry for {}",
+                        name.display()
+                    )));
+                }
+                found = Some(path.clone());
             }
             if entry.file_type()?.is_dir() {
                 pending.push(path);
             }
         }
     }
-    Err(InstallerError::MissingPayload(name.display().to_string()))
+    found.ok_or_else(|| InstallerError::MissingPayload(name.display().to_string()))
 }
 
 fn replace_file(source: &Path, target: &Path) -> Result<(), InstallerError> {
@@ -902,9 +938,9 @@ mod tests {
                 "--pid",
                 "42",
                 "--target",
-                "crossh",
+                "/tmp/crossh",
                 "--launch",
-                "crossh",
+                "/tmp/crossh",
             ]
             .map(OsString::from),
         )
@@ -912,7 +948,47 @@ mod tests {
         assert_eq!(arguments.package, PathBuf::from("update.zip"));
         assert_eq!(arguments.format, ArtifactFormat::Zip);
         assert_eq!(arguments.pid, 42);
-        assert_eq!(arguments.target, PathBuf::from("crossh"));
+        assert_eq!(arguments.target, PathBuf::from("/tmp/crossh"));
+    }
+
+    #[test]
+    fn duplicate_basename_is_ambiguous_not_first_hit() {
+        let root = TestDir::new("ambiguous");
+        let staging = root.0.join("staging");
+        fs::create_dir_all(staging.join("a")).unwrap();
+        fs::create_dir_all(staging.join("b")).unwrap();
+        fs::write(staging.join("a/crossh"), b"one").unwrap();
+        fs::write(staging.join("b/crossh"), b"two").unwrap();
+        // 同名载荷出现两次：文件系统顺序不可复现，首命中会随机挑一个，必须报错。
+        assert!(matches!(
+            find_named_path(&staging, "crossh"),
+            Err(InstallerError::MissingPayload(message)) if message.contains("ambiguous")
+        ));
+    }
+
+    #[test]
+    fn relative_target_and_launch_are_rejected() {
+        let arguments = || {
+            parse_arguments(
+                [
+                    "--package",
+                    "update.zip",
+                    "--format",
+                    "zip",
+                    "--pid",
+                    "42",
+                    "--target",
+                    "relative/crossh",
+                    "--launch",
+                    "/tmp/crossh",
+                ]
+                .map(OsString::from),
+            )
+        };
+        assert!(matches!(
+            arguments(),
+            Err(InstallerError::InvalidArguments(_))
+        ));
     }
 
     #[test]
