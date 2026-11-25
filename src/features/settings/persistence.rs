@@ -60,25 +60,52 @@ impl From<&SettingsSnapshot> for SettingsFile {
 }
 
 pub(crate) fn load() -> SettingsSnapshot {
-    match crossh_core::config::settings_read_path() {
-        None => SettingsFile::default().into(),
-        Some(path) => match fs::read_to_string(&path) {
-            Ok(contents) => match toml::from_str::<SettingsFile>(&contents) {
-                Ok(settings) => settings.into(),
-                // 单字段类型错不应丢整份配置：按节回退，未知/错字段只影响本节。
-                Err(error) => {
-                    log::warn!("failed to parse settings, falling back per section: {error}");
-                    load_per_section(&contents)
-                }
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                SettingsFile::default().into()
-            }
+    let Some(path) = crossh_core::config::settings_read_path() else {
+        return SettingsFile::default().into();
+    };
+    match fs::read_to_string(&path) {
+        Ok(contents) => match toml::from_str::<SettingsFile>(&contents) {
+            Ok(settings) => settings.into(),
+            // 单字段类型错不应丢整份配置：按节回退，未知/错字段只影响本节。
+            // 整份都解不出表结构时主文件已损坏：读 .bak 兜底（与 workspace_store 一致）。
             Err(error) => {
-                log::warn!("failed to read settings: {error}");
-                SettingsFile::default().into()
+                if toml::from_str::<toml::Table>(&contents).is_err() {
+                    log::warn!("settings corrupt, falling back to backup: {error}");
+                    return load_backup(&path);
+                }
+                log::warn!("failed to parse settings, falling back per section: {error}");
+                load_per_section(&contents)
             }
         },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => load_backup(&path),
+        Err(error) => {
+            log::warn!("failed to read settings: {error}");
+            load_backup(&path)
+        }
+    }
+}
+
+/// 主文件缺失/损坏时的 .bak 兜底：覆盖 save_atomic 两次 rename 间崩溃的空窗。
+fn load_backup(path: &Path) -> SettingsSnapshot {
+    let backup = path.with_extension("toml.bak");
+    match fs::read_to_string(&backup) {
+        Ok(contents) => match toml::from_str::<SettingsFile>(&contents) {
+            Ok(settings) => {
+                log::warn!("using backup settings: {}", backup.display());
+                settings.into()
+            }
+            Err(error) => {
+                log::warn!("failed to parse backup settings, falling back per section: {error}");
+                load_per_section(&contents)
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            SettingsFile::default().into()
+        }
+        Err(error) => {
+            log::warn!("failed to read backup settings: {error}");
+            SettingsFile::default().into()
+        }
     }
 }
 
@@ -114,7 +141,12 @@ pub(crate) fn save(snapshot: &SettingsSnapshot) -> std::io::Result<()> {
     };
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
-        let _ = crossh_core::config::restrict_dir(parent);
+        if let Err(error) = crossh_core::config::restrict_dir(parent) {
+            log::warn!(
+                "failed to restrict settings dir {}: {error}",
+                parent.display()
+            );
+        }
     }
     let contents =
         toml::to_string_pretty(&SettingsFile::from(snapshot)).map_err(std::io::Error::other)?;
@@ -145,12 +177,18 @@ fn save_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         fs::rename(path, &backup)?;
     }
     fs::rename(&tmp, path)?;
-    let _ = crossh_core::config::restrict_file(path);
+    if let Err(error) = crossh_core::config::restrict_file(path) {
+        log::warn!(
+            "failed to restrict settings file {}: {error}",
+            path.display()
+        );
+    }
     #[cfg(unix)]
     if let Some(parent) = path.parent()
         && let Ok(dir) = fs::File::open(parent)
+        && let Err(error) = dir.sync_all()
     {
-        let _ = dir.sync_all();
+        log::warn!("failed to sync settings dir {}: {error}", parent.display());
     }
     Ok(())
 }
