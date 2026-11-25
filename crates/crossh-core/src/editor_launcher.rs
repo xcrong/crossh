@@ -3,6 +3,17 @@
 //! 与 `git_launcher.rs` 同级：保持轻量，只承载「解析出哪个编辑器命令」、
 //! 「枚举本机已安装编辑器」和「构造分离进程的 Command」三部分可测逻辑，
 //! GPUI 只出现在调用点。检测候选列表是写死的代码常量，不可被设置覆盖。
+//!
+//! 信任边界（低严重度 #5 显性化）：
+//!
+//! - `editor_command` 设置值可指向任意二进制，属于「本地用户自身信任」。
+//!   它只来自本机设置文件，不接受远端/项目/剪贴板等外部输入，
+//!   因此不做 allowlist 限制，也不做可执行签名校验。
+//! - 本模块不经过 shell 解析（`Command::new` 直接传参），不存在 shell 注入；
+//!   但配置指向恶意二进制仍会直接执行，调用方应在设置页展示完整命令，
+//!   用户首次使用新命令时自行确认后再启动。
+//! - 每次构造启动命令都会经 `format_editor_command` 写一条 `log::info!`，
+//!   完整命令可在 `/tmp/crossh/run.log` 中审计。
 
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
@@ -143,10 +154,12 @@ pub fn detect_editors(path_env: &OsStr, exists: impl Fn(&Path) -> bool) -> Vec<S
 
 /// 解析实际使用的编辑器命令。
 ///
-/// - `configured` 非空白时直接采用（不参与检测，也不做存在性校验，
-///   由 spawn 失败错误提示引导用户修正配置）；
-/// - 否则按 [`DEFAULT_EDITOR_PRIORITY`] 候选顺序，在 `path_env` 的每个
-///   PATH 目录中查找第一个存在且可执行的文件，返回其完整路径。
+/// 信任边界：`configured` 非空白时直接采用，不参与检测，也不做存在性校验，
+/// 由 spawn 失败错误提示引导用户修正配置。该值可指向任意二进制，
+/// 属于本地用户自身信任（仅来自本机设置文件，不接受远端输入），
+/// 调用方展示完整命令（见 [`format_editor_command`]）供用户确认后再启动。
+/// 自动检测分支按 [`DEFAULT_EDITOR_PRIORITY`] 候选顺序，在 `path_env` 的每个
+/// PATH 目录中查找第一个存在且可执行的文件，返回其完整路径。
 ///
 /// `exists` 是平台相关的可执行判定，注入以便纯逻辑测试。
 pub fn resolve_editor(
@@ -196,8 +209,30 @@ fn is_batch_binary(binary: &str) -> bool {
     let lower = binary.to_ascii_lowercase();
     lower.ends_with(".cmd") || lower.ends_with(".bat")
 }
+/// 格式化待执行的完整命令，仅用于日志与问题排查展示，不参与实际执行。
+/// Windows 上 `.cmd`/`.bat` 会经 `cmd /C` 包装，格式化结果如实反映该包装。
+/// 调用方在设置页/首次使用新命令确认时应展示该字符串。
+pub fn format_editor_command(binary: &str, directory: &Path) -> String {
+    let quote = |s: &str| {
+        shlex::try_quote(s)
+            .map(|c| c.into_owned())
+            .unwrap_or_else(|_| s.to_string())
+    };
+    let dir = quote(&directory.to_string_lossy());
+    #[cfg(windows)]
+    {
+        if is_batch_binary(binary) {
+            return format!("cmd /C {} {dir}", quote(binary));
+        }
+    }
+    format!("{} {dir}", quote(binary))
+}
+
 /// 构造「以 `directory` 为参数与工作目录」的分离进程命令。
 /// 命令本身不执行；Windows 上 `.cmd`/`.bat` 批处理经 `cmd /C` 包装。
+/// 不经过 shell 解析（直接 `Command::new` + 单个参数），不存在 shell 注入；
+/// 但 `binary` 仍是受信任的用户配置，可指向任意可执行文件，构造时即写一条
+/// `log::info!` 记录完整命令，便于审计与排查误配。
 pub fn editor_process_command(binary: &str, directory: &Path) -> Command {
     #[cfg(windows)]
     let mut command = if is_batch_binary(binary) {
@@ -219,6 +254,11 @@ pub fn editor_process_command(binary: &str, directory: &Path) -> Command {
     command.current_dir(directory);
     crate::process::null_stdio(&mut command);
     crate::process::detach(&mut command);
+    // ponytail: 最懒可用——不做 UI 确认/allowlist，只把完整命令写进日志供审计。
+    log::info!(
+        "启动外部编辑器：{}",
+        format_editor_command(binary, directory)
+    );
     command
 }
 
@@ -227,7 +267,10 @@ mod tests {
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
 
-    use super::{DEFAULT_EDITOR_PRIORITY, detect_editors, editor_process_command, resolve_editor};
+    use super::{
+        DEFAULT_EDITOR_PRIORITY, detect_editors, editor_process_command, format_editor_command,
+        resolve_editor,
+    };
 
     fn exists_named<'a>(names: &'a [&'a str]) -> impl Fn(&Path) -> bool + 'a {
         move |path| names.iter().any(|name| path.ends_with(name))
@@ -259,6 +302,19 @@ mod tests {
             [Path::new("/repo/sub").as_os_str()]
         );
         assert_eq!(command.get_current_dir(), Some(Path::new("/repo/sub")));
+    }
+
+    #[test]
+    fn format_editor_command_covers_binary_and_directory_for_audit() {
+        assert_eq!(
+            format_editor_command("/usr/bin/zed", Path::new("/repo/sub")),
+            "/usr/bin/zed /repo/sub"
+        );
+        // 含空格路径应被引用，日志肉眼可分辨命令边界。
+        assert_eq!(
+            format_editor_command("/usr/bin/zed", Path::new("/repo/my proj")),
+            "/usr/bin/zed '/repo/my proj'"
+        );
     }
 
     #[test]
