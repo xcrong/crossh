@@ -286,14 +286,24 @@ pub fn write_daemon_error(reason: &str) {
             );
             return;
         }
-        let _ = crossh_core::config::restrict_dir(parent);
+        if let Err(error) = crossh_core::config::restrict_dir(parent) {
+            log::warn!(
+                "failed to restrict daemon error dir {}: {error}",
+                parent.display()
+            );
+        }
     }
     if let Err(error) = std::fs::write(&path, format!("{reason}\n")) {
         // 同上：写失败必须带路径，否则多配置根并存时无法区分。
         log::warn!("failed to write daemon.error {}: {error}", path.display());
         return;
     }
-    let _ = crossh_core::config::restrict_file(&path);
+    if let Err(error) = crossh_core::config::restrict_file(&path) {
+        log::warn!(
+            "failed to restrict daemon.error {}: {error}",
+            path.display()
+        );
+    }
 }
 
 /// 成功启动后删除陈旧错误；失败只记日志。
