@@ -33,10 +33,14 @@ where
 }
 
 /// Builds `path -> (insertions, deletions)` map for working-tree scans.
-pub fn numstat_map(output: &[u8]) -> HashMap<String, (usize, usize)> {
+///
+/// Keys are raw `-z` bytes (`Vec<u8>`) so distinct non-UTF8 filenames that share
+/// the same lossy display never collapse into one entry; lossy conversion
+/// happens only at display time in `scan.rs`.
+pub fn numstat_map(output: &[u8]) -> HashMap<Vec<u8>, (usize, usize)> {
     let mut map = HashMap::new();
     parse_numstat_entries(output, |added, deleted, path, _old| {
-        let key = String::from_utf8_lossy(path).into_owned();
+        let key = path.to_vec();
         let insertions = parse_count(added);
         let deletions = parse_count(deleted);
         map.insert(key, (insertions, deletions));
@@ -75,8 +79,24 @@ mod tests {
     fn parses_numstat_with_renames_and_binaries() {
         let bytes = b"2\t1\trenamed.txt\0-\t-\tb.bin\x000\t0\t\0old name\0new name\0";
         let map = numstat_map(bytes);
-        assert_eq!(map.get("renamed.txt"), Some(&(2, 1)));
-        assert_eq!(map.get("new name"), Some(&(0, 0)));
-        assert_eq!(map.get("b.bin"), Some(&(0, 0)));
+        assert_eq!(map.get(b"renamed.txt".as_slice()), Some(&(2, 1)));
+        assert_eq!(map.get(b"new name".as_slice()), Some(&(0, 0)));
+        assert_eq!(map.get(b"b.bin".as_slice()), Some(&(0, 0)));
+    }
+
+    #[test]
+    fn non_utf8_paths_do_not_merge_counts() {
+        // `a\xff` 与 `a\xfe` 的 lossy 显示同为 `a�`，但原始字节不同，统计必须各自保留。
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"2\t1\t");
+        bytes.extend_from_slice(b"a\xff");
+        bytes.push(0);
+        bytes.extend_from_slice(b"3\t4\t");
+        bytes.extend_from_slice(b"a\xfe");
+        bytes.push(0);
+        let map = numstat_map(&bytes);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get(b"a\xff".as_slice()), Some(&(2, 1)));
+        assert_eq!(map.get(b"a\xfe".as_slice()), Some(&(3, 4)));
     }
 }

@@ -33,10 +33,10 @@ mod tests {
     fn parses_numstat_with_renames_and_binaries() {
         let bytes = b"2\t1\trenamed.txt\0-\t-\tb.bin\x000\t0\t\0old name\0new name\0";
         let map = numstat_map(bytes);
-        assert_eq!(map.get("renamed.txt"), Some(&(2, 1)));
-        assert_eq!(map.get("new name"), Some(&(0, 0)));
-        assert_eq!(map.get("b.bin"), Some(&(0, 0)));
-        assert_eq!(map.get("mvsim.txt"), None);
+        assert_eq!(map.get(b"renamed.txt".as_slice()), Some(&(2, 1)));
+        assert_eq!(map.get(b"new name".as_slice()), Some(&(0, 0)));
+        assert_eq!(map.get(b"b.bin".as_slice()), Some(&(0, 0)));
+        assert_eq!(map.get(b"mvsim.txt".as_slice()), None);
     }
 
     #[test]

@@ -68,11 +68,11 @@ fn parse_change_record(
     records: &[&[u8]],
     index: &mut usize,
     changes: &mut Vec<FileChange>,
-    staged_counts: &HashMap<String, (usize, usize)>,
-    working_counts: &HashMap<String, (usize, usize)>,
+    staged_counts: &HashMap<Vec<u8>, (usize, usize)>,
+    working_counts: &HashMap<Vec<u8>, (usize, usize)>,
 ) {
     let field_count = if record[0] == b'2' { 9 } else { 8 };
-    let Some((prefix, path)) = split_after_spaces(record, field_count) else {
+    let Some((prefix, raw_path)) = split_after_spaces(record, field_count) else {
         return;
     };
     let mut fields = prefix.split(|byte| *byte == b' ');
@@ -80,14 +80,13 @@ fn parse_change_record(
     let Some(xy) = fields.next() else {
         return;
     };
-    let path = String::from_utf8_lossy(path).into_owned();
-    let mut orig_path = None;
+    let mut orig_raw = None;
     if record[0] == b'2' {
         // -z 模式下源路径是记录后的下一个 NUL 片段。
         if let Some(extra) = records.get(*index)
             && !extra.is_empty()
         {
-            orig_path = Some(String::from_utf8_lossy(extra).into_owned());
+            orig_raw = Some(*extra);
             *index += 1;
         }
     }
@@ -95,8 +94,8 @@ fn parse_change_record(
     let worktree_status = xy.get(1).copied().unwrap_or(b'.');
     if index_status != b'.' {
         changes.push(file_change(
-            &path,
-            orig_path.clone(),
+            raw_path,
+            orig_raw,
             index_status,
             true,
             staged_counts,
@@ -104,9 +103,9 @@ fn parse_change_record(
     }
     if worktree_status != b'.' {
         changes.push(file_change(
-            &path,
+            raw_path,
             if is_rename(index_status) {
-                orig_path
+                orig_raw
             } else {
                 None
             },
@@ -148,16 +147,17 @@ fn is_rename(status: u8) -> bool {
 }
 
 fn file_change(
-    path: &str,
-    orig_path: Option<String>,
+    raw_path: &[u8],
+    orig_raw: Option<&[u8]>,
     status: u8,
     staged: bool,
-    counts: &HashMap<String, (usize, usize)>,
+    counts: &HashMap<Vec<u8>, (usize, usize)>,
 ) -> FileChange {
-    let (insertions, deletions) = counts.get(path).copied().unwrap_or((0, 0));
+    // 原始字节透传查表，展示才 lossy：不同非 UTF8 文件名不再合流。
+    let (insertions, deletions) = counts.get(raw_path).copied().unwrap_or((0, 0));
     FileChange {
-        path: path.to_string(),
-        orig_path,
+        path: String::from_utf8_lossy(raw_path).into_owned(),
+        orig_path: orig_raw.map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
         status: match status {
             b'A' => ChangeStatus::Added,
             b'D' => ChangeStatus::Deleted,
