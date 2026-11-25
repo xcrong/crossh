@@ -13,8 +13,10 @@ use std::path::PathBuf;
 pub enum ShellMenuAction {
     /// 通过系统目录选择器打开本地项目。
     ChooseLocalProject,
-    /// 激活已记住的项目。
+    /// 激活已记住的项目（只切换，不补 tab）。
     ActivateProject(u64),
+    /// 打开已记住的项目：激活，空项目时补一个 tab；已有 tab 不多建。
+    OpenProjectEntry(u64),
     /// 激活项目内的 tab。
     ActivateTab(u64),
     /// 在项目内新建 tab。

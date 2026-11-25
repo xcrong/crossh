@@ -310,6 +310,8 @@ fn render_rail_add_button(
         )
 }
 
+/// Rail 底部的“+”菜单：最近项目走打开语义（激活＋空则补 tab），
+/// 不用裸 `ActivateProject`，否则空项目会停在空态。
 fn rail_add_menu_entries(projects: &[ProjectSnapshot]) -> Vec<MenuEntry<ShellMenuAction>> {
     let mut entries = vec![
         MenuEntry::SectionHeader(i18n::text("rail_add.open_project")),
@@ -334,7 +336,8 @@ fn rail_add_menu_entries(projects: &[ProjectSnapshot]) -> Vec<MenuEntry<ShellMen
                 shortcut_hint: None,
                 disabled: false,
                 danger: false,
-                action: ShellMenuAction::ActivateProject(project.id.0),
+                // 打开语义：激活＋空项目补 tab；已有 tab 不多建。
+                action: ShellMenuAction::OpenProjectEntry(project.id.0),
             })
         }));
     }
@@ -525,4 +528,72 @@ fn render_project_row(
             this.open_project_entry(project_id, cx);
         }))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossh_session::workspace::ProjectId;
+
+    /// 构造最小项目快照：只关心 id/root/名称与 tab 列表。
+    fn fixture_project(id: u64, root: &str) -> ProjectSnapshot {
+        ProjectSnapshot {
+            id: ProjectId(id),
+            root: PathBuf::from(root),
+            name: None,
+            available: true,
+            active_tab: None,
+            tabs: Vec::new(),
+        }
+    }
+
+    /// 最近项目动作 id 列表（保持插入顺序）。
+    fn recent_actions(entries: &[MenuEntry<ShellMenuAction>]) -> Vec<(String, u64)> {
+        entries
+            .iter()
+            .filter_map(|entry| match entry {
+                MenuEntry::Item(item) if item.id.starts_with("rail-open-project-") => {
+                    match &item.action {
+                        ShellMenuAction::OpenProjectEntry(id) => Some((item.id.clone(), *id)),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn rail_recent_entries_use_open_semantics() {
+        let projects = vec![fixture_project(1, "/tmp/a"), fixture_project(2, "/tmp/b")];
+        let entries = rail_add_menu_entries(&projects);
+        // 最近项目走打开语义：激活＋空则补 tab。
+        assert_eq!(
+            recent_actions(&entries),
+            vec![
+                ("rail-open-project-1".to_string(), 1),
+                ("rail-open-project-2".to_string(), 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn rail_without_projects_has_no_recent_entries() {
+        let entries = rail_add_menu_entries(&[]);
+        assert!(recent_actions(&entries).is_empty());
+        // 只有“打开项目”分组＋本地项目入口，无最近项目分组。
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn project_row_switch_stays_activate_only() {
+        let project = fixture_project(7, "/tmp/c");
+        let entries = project_row_menu_entries(&project, false, PathBuf::from("/tmp/c"));
+        let switch = entries.iter().find_map(|entry| match entry {
+            MenuEntry::Item(item) if item.id == "activate-project" => Some(&item.action),
+            _ => None,
+        });
+        // 行内“切换”保持裸激活语义：只切换，不补 tab。
+        assert!(matches!(switch, Some(ShellMenuAction::ActivateProject(7))));
+    }
 }

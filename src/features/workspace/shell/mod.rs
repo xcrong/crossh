@@ -277,6 +277,10 @@ impl AppShell {
                     cx,
                 );
             }
+            // 收起 rail 最近项目入口：复用打开语义，保证空项目补 tab。
+            ShellMenuAction::OpenProjectEntry(project_id) => {
+                self.open_project_entry(ProjectId(project_id), cx);
+            }
             ShellMenuAction::ActivateTab(tab_id) => {
                 self.activate_tab(TabId(tab_id), cx);
             }
