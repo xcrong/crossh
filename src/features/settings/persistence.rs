@@ -110,28 +110,106 @@ fn load_backup(path: &Path) -> SettingsSnapshot {
 }
 
 /// 整份解析失败时的按节回退：每节独立反序列化，失败只默认本节。
+/// 终端/工作区进一步逐字段提取（仿 updates 写法）：错字段只影响本字段。
+/// 语言回退提示：设置窗口无 toaster，新增一次性 toast 成本大（需跨窗口状态
+/// + 去重），只保留 `log::warn` + 本注释，错值回默认语言。
 fn load_per_section(contents: &str) -> SettingsSnapshot {
     let table: toml::Table = match toml::from_str(contents) {
         Ok(table) => table,
         Err(_) => return SettingsFile::default().into(),
     };
-    let language: LanguagePreference = table
-        .get("language")
-        .and_then(|value| value.clone().try_into().ok())
-        .unwrap_or_default();
-    let terminal: TerminalSettings = table.clone().try_into().unwrap_or_default();
+    let language: LanguagePreference = match table.get("language") {
+        None => LanguagePreference::default(),
+        Some(value) => value.clone().try_into().unwrap_or_else(|_| {
+            log::warn!("invalid settings language, falling back to default");
+            LanguagePreference::default()
+        }),
+    };
+    let terminal_default = TerminalSettings::default();
+    let terminal = TerminalSettings {
+        show_timestamps: bool_field(&table, "show_timestamps", terminal_default.show_timestamps),
+        notifications_enabled: bool_field(
+            &table,
+            "terminal_notifications",
+            terminal_default.notifications_enabled,
+        ),
+        font_size: float_field(&table, "terminal_font_size", terminal_default.font_size),
+        scrollback: usize_field(&table, "terminal_scrollback", terminal_default.scrollback),
+    };
     let updates = UpdateSettings {
         check_on_startup: table
             .get("updates_check_on_startup")
             .and_then(|value| value.as_bool())
             .unwrap_or_else(|| UpdateSettings::default().check_on_startup),
     };
-    let workspace: WorkspaceSettings = table.try_into().unwrap_or_default();
+    let workspace_default = WorkspaceSettings::default();
+    let workspace = WorkspaceSettings {
+        show_host_sidebar: bool_field(
+            &table,
+            "show_host_sidebar",
+            workspace_default.show_host_sidebar,
+        ),
+        editor_command: optional_string_field(&table, "editor_command"),
+        focus_follows_mouse: bool_field(
+            &table,
+            "focus_follows_mouse",
+            workspace_default.focus_follows_mouse,
+        ),
+    };
     SettingsSnapshot {
         language,
         terminal: terminal.normalized(),
         updates,
         workspace: workspace.normalized(),
+    }
+}
+
+fn bool_field(table: &toml::Table, key: &str, default: bool) -> bool {
+    match table.get(key) {
+        None => default,
+        Some(value) => value.as_bool().unwrap_or_else(|| {
+            log::warn!("invalid settings field `{key}`, falling back to default");
+            default
+        }),
+    }
+}
+
+fn float_field(table: &toml::Table, key: &str, default: f32) -> f32 {
+    match table.get(key) {
+        None => default,
+        Some(value) => {
+            if let Some(float) = value.as_float() {
+                float as f32
+            } else if let Some(int) = value.as_integer() {
+                int as f32
+            } else {
+                log::warn!("invalid settings field `{key}`, falling back to default");
+                default
+            }
+        }
+    }
+}
+
+fn usize_field(table: &toml::Table, key: &str, default: usize) -> usize {
+    match table.get(key) {
+        None => default,
+        Some(value) => value
+            .as_integer()
+            .and_then(|int| usize::try_from(int).ok())
+            .unwrap_or_else(|| {
+                log::warn!("invalid settings field `{key}`, falling back to default");
+                default
+            }),
+    }
+}
+
+fn optional_string_field(table: &toml::Table, key: &str) -> Option<String> {
+    match table.get(key) {
+        None => None,
+        Some(value) => value.as_str().map(str::to_string).or_else(|| {
+            log::warn!("invalid settings field `{key}`, falling back to default");
+            None
+        }),
     }
 }
 
@@ -283,13 +361,36 @@ mod tests {
 
     #[test]
     fn corrupt_terminal_field_falls_back_per_section() {
-        // terminal_scrollback 类型错：terminal 节回默认，其他节保留。
+        // terminal_scrollback 类型错：仅该字段回默认，其他节保留。
         let snapshot = super::load_per_section(
             "language = \"zh-CN\"\nterminal_scrollback = \"huge\"\nshow_host_sidebar = false\n",
         );
         assert_eq!(snapshot.language, LanguagePreference::SimplifiedChinese);
         assert_eq!(snapshot.terminal, TerminalSettings::default());
         assert!(!snapshot.workspace.show_host_sidebar);
+    }
+
+    #[test]
+    fn corrupt_terminal_field_preserves_other_terminal_fields() {
+        // 错字段只影响本字段：show_timestamps=false 保留，仅 scrollback 回默认。
+        let snapshot = super::load_per_section(
+            "show_timestamps = false\nterminal_scrollback = \"huge\"\nterminal_font_size = 18.0\n",
+        );
+        assert!(!snapshot.terminal.show_timestamps);
+        assert_eq!(snapshot.terminal.font_size, 18.0);
+        assert_eq!(
+            snapshot.terminal.scrollback,
+            TerminalSettings::default().scrollback
+        );
+    }
+
+    #[test]
+    fn corrupt_workspace_field_preserves_other_workspace_fields() {
+        // show_host_sidebar 类型错：仅该字段回默认，focus_follows_mouse 保留。
+        let snapshot =
+            super::load_per_section("show_host_sidebar = \"nope\"\nfocus_follows_mouse = false\n");
+        assert!(snapshot.workspace.show_host_sidebar);
+        assert!(!snapshot.workspace.focus_follows_mouse);
     }
 
     #[test]
