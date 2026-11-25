@@ -39,6 +39,22 @@ impl AppShell {
         cx.notify();
     }
 
+    /// 退出/关窗口时显式结束临时会话，避免 daemon 侧遗留 `ROLE=none` 会话。
+    /// 隐藏抽屉不走这里：隐藏只改可见性不断链，同一 GUI 内复用同一 PTY。
+    pub(crate) fn close_scratch_for_shutdown(&mut self, cx: &mut Context<Self>) {
+        let Some(terminal) = self.scratch_terminal.take() else {
+            return;
+        };
+        terminal.update(cx, |view, cx| view.request_close(cx));
+        self.scratch_subscription.take();
+        self.scratch_visible = false;
+    }
+
+    /// 退出时只要持有临时终端视图就必须显式 `Close`（纯逻辑判定，供单测锁定语义）。
+    pub(crate) fn scratch_should_close_on_shutdown(has_terminal: bool) -> bool {
+        has_terminal
+    }
+
     fn ensure_scratch_terminal(&mut self, cx: &mut Context<Self>) {
         if self.scratch_terminal.is_some() {
             return;
@@ -111,5 +127,12 @@ mod tests {
         assert!(visible);
         visible = !visible;
         assert!(!visible);
+    }
+
+    #[test]
+    fn scratch_shutdown_closes_only_when_holding_terminal() {
+        // 隐藏复用同一 PTY（不断链），退出有视图才显式 Close，避免 ROLE=none 遗留。
+        assert!(super::AppShell::scratch_should_close_on_shutdown(true));
+        assert!(!super::AppShell::scratch_should_close_on_shutdown(false));
     }
 }

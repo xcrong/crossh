@@ -46,6 +46,9 @@ impl AppShell {
         self.status = Some(i18n::text("quit.closing"));
         // 会话归属 daemon：关窗口/退出 GUI 只 detach，不断开远端，
         // 正在跑的命令随 daemon 存活。显式结束会话走 `close_local_session`。
+        // 例外：临时终端是 AppShell 私有、不进工作区布局，退出必须显式 Close，
+        // 否则 daemon 侧遗留 `ROLE=none` 会话；隐藏抽屉仍只 detach 复用同一 PTY。
+        self.close_scratch_for_shutdown(cx);
         cx.notify();
     }
 }
