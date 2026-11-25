@@ -9,7 +9,8 @@ use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
@@ -76,6 +77,7 @@ impl WorkspaceStore {
     }
 
     pub fn tmp_path(&self) -> PathBuf {
+        // 历史固定后缀保留给外部清理逻辑；实际写入改用唯一 tmp + O_EXCL。
         with_suffix(&self.path, ".tmp")
     }
 
@@ -114,7 +116,20 @@ impl WorkspaceStore {
     }
 
     fn quarantine(&self, path: &Path, tag: &str) {
-        let target = with_suffix(path, &format!(".{tag}-{}", now_secs()));
+        // ponytail: 秒级名同秒覆盖，加 pid/纳秒；极端同纳秒时按存在追加重试后缀。
+        let base = format!(
+            ".{tag}-{}-{}-{}",
+            now_secs(),
+            std::process::id(),
+            now_nanos()
+        );
+        let mut target = with_suffix(path, &base);
+        for retry in 0..8 {
+            if !target.exists() {
+                break;
+            }
+            target = with_suffix(path, &format!("{base}-{retry}"));
+        }
         if let Err(error) = std::fs::rename(path, &target) {
             log::warn!(
                 "failed to quarantine corrupt workspace {}: {error}",
@@ -192,34 +207,58 @@ fn read_workspace(path: &Path) -> Result<ReadOutcome, LoadError> {
     }
 }
 
+fn now_nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0)
+}
+
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn unique_tmp_path(path: &Path) -> PathBuf {
+    let count = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    with_suffix(
+        path,
+        &format!(".tmp-{}-{}-{count}", std::process::id(), now_nanos()),
+    )
+}
+
 fn save_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
     crossh_core::config::restrict_dir(parent)?;
-    let tmp = with_suffix(path, ".tmp");
-    {
-        use std::io::Write;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
+    // ponytail: 固定 `.tmp` 可预测，改唯一后缀 + O_EXCL(create_new)；单写者语义由 WorkspaceWriter 串行保证。
+    let tmp = unique_tmp_path(path);
+    let save_result = (|| {
         {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
+            use std::io::Write;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&tmp)?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
         }
-        let mut file = options.open(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
+        if path.is_file() {
+            let backup = with_suffix(path, ".bak");
+            // Windows 的 rename 不覆盖目标文件；先删旧备份。
+            let _ = std::fs::remove_file(&backup);
+            std::fs::rename(path, &backup)?;
+        }
+        std::fs::rename(&tmp, path)?;
+        crossh_core::config::restrict_file(path)?;
+        sync_dir(parent)?;
+        Ok(())
+    })();
+    if save_result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
-    if path.is_file() {
-        let backup = with_suffix(path, ".bak");
-        // Windows 的 rename 不覆盖目标文件；先删旧备份。
-        let _ = std::fs::remove_file(&backup);
-        std::fs::rename(path, &backup)?;
-    }
-    std::fs::rename(&tmp, path)?;
-    crossh_core::config::restrict_file(path)?;
-    sync_dir(parent)?;
-    Ok(())
+    save_result
 }
 
 fn sync_dir(path: &Path) -> io::Result<()> {
@@ -816,6 +855,51 @@ mod tests {
         ));
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
         assert!(!store.backup_path().exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn quarantine_names_carry_pid_and_avoid_same_second_collision() {
+        let root = temp_root("quarantine-unique");
+        let path = root.join(WORKSPACE_FILE_NAME);
+        let store = WorkspaceStore::new(path.clone());
+        // 同秒内两次隔离：旧 `.{tag}-{secs}` 会直接覆盖，现有 pid/纳秒名必须不同。
+        std::fs::write(&path, b"bad one").unwrap();
+        store.quarantine(&path, "corrupt");
+        std::fs::write(&path, b"bad two").unwrap();
+        store.quarantine(&path, "corrupt");
+        let mut quarantined: Vec<String> = root
+            .read_dir()
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("corrupt"))
+            .collect();
+        quarantined.sort();
+        assert_eq!(quarantined.len(), 2);
+        assert_ne!(quarantined[0], quarantined[1]);
+        let pid = std::process::id().to_string();
+        for name in &quarantined {
+            assert!(name.contains(&pid), "隔离名应携带 pid: {name}");
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn save_leaves_no_predictable_tmp_behind() {
+        let root = temp_root("notmp");
+        let path = root.join(WORKSPACE_FILE_NAME);
+        let store = WorkspaceStore::new(path.clone());
+        store.save(&Workspace::new()).unwrap();
+        // 固定 `.tmp` 不再作为写入载体；唯一 tmp 成功后已 rename、失败已清理。
+        assert!(!store.tmp_path().exists());
+        assert!(
+            !root.read_dir().unwrap().any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".tmp")),
+            "不应残留任何 tmp 文件"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
