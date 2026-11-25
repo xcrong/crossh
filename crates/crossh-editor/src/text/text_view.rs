@@ -391,14 +391,6 @@ impl TextView {
     }
 }
 
-impl IntoElement for TextView {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
 pub struct TextViewLayoutState {
     state: Entity<TextViewState>,
     element: AnyElement,

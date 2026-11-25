@@ -7,9 +7,9 @@ use std::{
 
 use gpui::{
     App, BorderStyle, Bounds, ClickEvent, CursorStyle, Edges, Element, ElementId, EntityId,
-    GlobalElementId, Half, HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId, IntoElement,
-    LayoutId, MouseButton, MouseClickEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Point, SharedString, StyledText, TextLayout, Window, point, px, quad,
+    GlobalElementId, Half, HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId, LayoutId,
+    MouseButton, MouseClickEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
+    SharedString, StyledText, TextLayout, Window, point, px, quad,
 };
 
 use crate::{
@@ -510,14 +510,6 @@ impl Inline {
                 BorderStyle::default(),
             ));
         }
-    }
-}
-
-impl IntoElement for Inline {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
     }
 }
 

@@ -771,14 +771,6 @@ struct WebViewSurface {
     hidden: bool,
 }
 
-impl IntoElement for WebViewSurface {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
 impl Element for WebViewSurface {
     type RequestLayoutState = ();
     type PrepaintState = Option<Hitbox>;

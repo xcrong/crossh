@@ -21,8 +21,8 @@
 
 use gpui::{
     AbsoluteLength, App, Bounds, Entity, FocusHandle, Hitbox, Hsla, InteractiveElement,
-    Interactivity, IntoElement, Pixels, Point as GpuiPoint, StatefulInteractiveElement, TextRun,
-    TextStyle, Window, fill, point, px, size,
+    Interactivity, Pixels, Point as GpuiPoint, StatefulInteractiveElement, TextRun, TextStyle,
+    Window, fill, point, px, size,
 };
 use terminal::result_ext::ResultExt;
 use terminal::{Cell, IndexedCell, Modes, Point, Range, Terminal, TerminalBounds};
@@ -489,13 +489,5 @@ impl TerminalElement {
             interactivity: Default::default(),
         }
         .track_focus(&focus)
-    }
-}
-
-impl IntoElement for TerminalElement {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
     }
 }

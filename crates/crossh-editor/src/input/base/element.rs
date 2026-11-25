@@ -259,14 +259,6 @@ impl<M: InputModeKind> EditorScrollbar<M> {
     }
 }
 
-impl<M: InputModeKind> IntoElement for EditorScrollbar<M> {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
 impl<M: InputModeKind> Element for EditorScrollbar<M> {
     type RequestLayoutState = ();
     type PrepaintState = Option<AnyElement>;
@@ -515,10 +507,10 @@ struct OverlayPaths {
     cursor_bounds: Option<Bounds<Pixels>>,
     cursor_scroll_offset: Point<Pixels>,
     current_row: Option<usize>,
-    search_match_paths: Vec<(Path<Pixels>, bool)>,
-    selection_path: Option<Path<Pixels>>,
-    hover_highlight_path: Option<Path<Pixels>>,
-    document_color_paths: Vec<(Path<Pixels>, Hsla)>,
+    search_match_paths: Vec<(Path, bool)>,
+    selection_path: Option<Path>,
+    hover_highlight_path: Option<Path>,
+    document_color_paths: Vec<(Path, Hsla)>,
 }
 
 // `position_for_index` for example
@@ -912,7 +904,7 @@ impl<M: InputModeKind> TextElement<M> {
         range: Range<usize>,
         last_layout: &LastLayout,
         bounds: &Bounds<Pixels>,
-    ) -> Option<Path<Pixels>> {
+    ) -> Option<Path> {
         if range.is_empty() {
             return None;
         }
@@ -1031,7 +1023,7 @@ impl<M: InputModeKind> TextElement<M> {
         line_corners: &mut [Corners<Point<Pixels>>],
         bounds: &Bounds<Pixels>,
         line_number_width: Pixels,
-    ) -> Option<Path<Pixels>> {
+    ) -> Option<Path> {
         let mut points = vec![];
 
         // Fix corners to make sure the left to right direction
@@ -1076,7 +1068,7 @@ impl<M: InputModeKind> TextElement<M> {
         last_layout: &LastLayout,
         bounds: &Bounds<Pixels>,
         cx: &mut App,
-    ) -> Vec<(Path<Pixels>, bool)> {
+    ) -> Vec<(Path, bool)> {
         let state = self.state.read(cx);
         if !state.search_session.open {
             return vec![];
@@ -1099,7 +1091,7 @@ impl<M: InputModeKind> TextElement<M> {
         last_layout: &LastLayout,
         bounds: &Bounds<Pixels>,
         cx: &mut App,
-    ) -> Option<Path<Pixels>> {
+    ) -> Option<Path> {
         let state = self.state.read(cx);
         let symbol_range = state.extras.hover_symbol_range()?;
 
@@ -1112,7 +1104,7 @@ impl<M: InputModeKind> TextElement<M> {
         last_layout: &LastLayout,
         bounds: &Bounds<Pixels>,
         _cx: &mut App,
-    ) -> Vec<(Path<Pixels>, Hsla)> {
+    ) -> Vec<(Path, Hsla)> {
         let mut paths = vec![];
         for (range, color) in document_colors.iter() {
             if let Some(path) = Self::layout_match_range(range.clone(), last_layout, bounds) {
@@ -1180,7 +1172,7 @@ impl<M: InputModeKind> TextElement<M> {
         bounds: &mut Bounds<Pixels>,
         window: &mut Window,
         cx: &mut App,
-    ) -> Option<Path<Pixels>> {
+    ) -> Option<Path> {
         let state = self.state.read(cx);
         if !state.focus_handle.is_focused(window) {
             return None;
@@ -2145,12 +2137,12 @@ pub(super) struct PrepaintState {
     cursor_scroll_offset: Point<Pixels>,
     /// row index (zero based), no wrap, same line as the cursor.
     current_row: Option<usize>,
-    selection_path: Option<Path<Pixels>>,
-    hover_highlight_path: Option<Path<Pixels>>,
-    search_match_paths: Vec<(Path<Pixels>, bool)>,
-    document_color_paths: Vec<(Path<Pixels>, Hsla)>,
+    selection_path: Option<Path>,
+    hover_highlight_path: Option<Path>,
+    search_match_paths: Vec<(Path, bool)>,
+    document_color_paths: Vec<(Path, Hsla)>,
     hover_definition_hitbox: Option<Hitbox>,
-    indent_guides_path: Option<Path<Pixels>>,
+    indent_guides_path: Option<Path>,
     bounds: Bounds<Pixels>,
     /// Fold icon layout data
     fold_icon_layout: FoldIconLayout,
@@ -2169,14 +2161,6 @@ impl PrepaintState {
             bounds.origin.y += self.cursor_scroll_offset.y;
             bounds
         })
-    }
-}
-
-impl<M: InputModeKind> IntoElement for TextElement<M> {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
     }
 }
 

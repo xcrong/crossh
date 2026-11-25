@@ -1038,7 +1038,8 @@ impl TerminalView {
         if !terminal_notification_tag_matches(cx.entity_id(), response.tag.as_ref()) {
             return None;
         }
-        cx.dismiss_system_notification(response.tag.as_ref());
+        cx.dismiss_system_notification(response.tag.as_ref())
+            .detach();
         Some(true)
     }
 

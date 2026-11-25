@@ -885,14 +885,6 @@ mod tests {
         recorder: Rc<Cell<f32>>,
     }
 
-    impl IntoElement for OriginProbe {
-        type Element = Self;
-
-        fn into_element(self) -> Self::Element {
-            self
-        }
-    }
-
     impl Element for OriginProbe {
         type RequestLayoutState = ();
         type PrepaintState = ();

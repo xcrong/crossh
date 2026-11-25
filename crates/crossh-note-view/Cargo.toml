@@ -10,13 +10,13 @@ crossh-note = { path = "../crossh-note" }
 crossh-editor = { path = "../crossh-editor" }
 crossh-ui = { path = "../crossh-ui" }
 crossh-ui-component = { path = "../crossh-ui-component" }
-gpui = { git = "https://github.com/zed-industries/zed", rev = "1478fb5e60f8b7852a2b0da32aa3da5cd9bb6954" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "2664a0aa1eae5dabf8f8273c03f88d53061ca7dc" }
 log = "0.4"
 rust-i18n = "4"
 
 [dev-dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "1478fb5e60f8b7852a2b0da32aa3da5cd9bb6954", features = ["test-support"] }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1478fb5e60f8b7852a2b0da32aa3da5cd9bb6954", features = ["font-kit", "test-support", "wayland", "x11"] }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "2664a0aa1eae5dabf8f8273c03f88d53061ca7dc", features = ["test-support"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "2664a0aa1eae5dabf8f8273c03f88d53061ca7dc", features = ["font-kit", "test-support", "wayland", "x11"] }
 tempfile = "3"
 
 [lints]
