@@ -41,13 +41,16 @@ impl AppShell {
 
     /// 退出/关窗口时显式结束临时会话，避免 daemon 侧遗留 `ROLE=none` 会话。
     /// 隐藏抽屉不走这里：隐藏只改可见性不断链，同一 GUI 内复用同一 PTY。
-    pub(crate) fn close_scratch_for_shutdown(&mut self, cx: &mut Context<Self>) {
+    /// 返回是否真正发出了 `Close`：调用方据此决定退出是否需要宽限延迟
+    ///（`Close` 只是 mpsc 入队，真关闭需 pump 调度 + TCP roundtrip）。
+    pub(crate) fn close_scratch_for_shutdown(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(terminal) = self.scratch_terminal.take() else {
-            return;
+            return false;
         };
         terminal.update(cx, |view, cx| view.request_close(cx));
         self.scratch_subscription.take();
         self.scratch_visible = false;
+        true
     }
 
     /// 退出时只要持有临时终端视图就必须显式 `Close`（纯逻辑判定，供单测锁定语义）。

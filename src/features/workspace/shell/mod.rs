@@ -863,8 +863,9 @@ impl AppShell {
         if self.shutdown_in_progress {
             return;
         }
-        self.begin_shutdown(cx);
-        cx.quit();
+        // 与正常退出同语义：发过 scratch `Close` 则宽限 1.5s 等 daemon 回执。
+        let needs_grace = self.begin_shutdown(cx);
+        self.quit_now_or_after_grace(cx, needs_grace);
     }
 
     /// 发送布局操作；断开期间禁用并提示重连状态。
