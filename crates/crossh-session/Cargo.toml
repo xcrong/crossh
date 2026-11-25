@@ -26,5 +26,9 @@ portable-pty = "0.9"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[dev-dependencies]
+# 中严重#4：集成测试并行改全局 env 竞态，用跨进程文件锁统一串行改 env 的用例。
+serial_test = { version = "3", features = ["file_locks"] }
+
 [lints]
 workspace = true

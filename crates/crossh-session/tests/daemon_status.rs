@@ -89,13 +89,7 @@ async fn fake_daemon(reply_version: u32) -> (u16, tokio::task::JoinHandle<()>) {
     (port, tokio::spawn(serve_once(listener, reply_version)))
 }
 
-// 同一二进制内用 env 隔离：两用例串行拿锁，避免 CROSSH_CACHE_DIR 竞态。
-// 用 tokio::sync::Mutex，守卫可持跨 await；std MutexGuard 跨 await 会触发 clippy::await_holding_lock。
-async fn env_lock() -> tokio::sync::MutexGuard<'static, ()> {
-    use std::sync::OnceLock;
-    static L: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    L.get_or_init(|| tokio::sync::Mutex::new(())).lock().await
-}
+// 跨进程 env 隔离由 file_serial(crossh_env) 统一保证。
 
 /// 只回非版本错误帧的假 listener：覆盖握手失败分支（超时/令牌错/欢迎帧损坏同路）。
 async fn serve_handshake_failure(listener: tokio::net::TcpListener) {
@@ -118,12 +112,12 @@ async fn serve_handshake_failure(listener: tokio::net::TcpListener) {
 }
 
 #[tokio::test]
+#[serial_test::file_serial(crossh_env)]
 async fn probe_reports_three_states_without_side_effects() {
-    let _env = env_lock().await;
     let root = temp_root();
     let config = root.join("config");
     std::fs::create_dir_all(&config).unwrap();
-    // SAFETY: 本测试二进制只有这一个测试，设置后只读。
+    // SAFETY: 持 file_serial(crossh_env) 跨进程锁期间独占设置，只读使用。
     unsafe {
         std::env::set_var("CROSSH_CACHE_DIR", &root);
         std::env::set_var("CROSSH_CONFIG_DIR", &config);
@@ -194,12 +188,12 @@ async fn probe_reports_three_states_without_side_effects() {
 /// 握手失败不断定陈旧：只回错误帧不断 Welcome，探测为 Absent{stale:false}，
 /// 端口文件逐字节不变；ensure 直接报错，不删文件、不拉新 daemon。
 #[tokio::test]
+#[serial_test::file_serial(crossh_env)]
 async fn handshake_failure_is_absent_not_stale_without_side_effects() {
-    let _env = env_lock().await;
     let root = temp_root();
     let config = root.join("config");
     std::fs::create_dir_all(&config).unwrap();
-    // SAFETY: 持 env 锁期间独占设置，只读使用。
+    // SAFETY: 持 file_serial(crossh_env) 跨进程锁期间独占设置，只读使用。
     unsafe {
         std::env::set_var("CROSSH_CACHE_DIR", &root);
         std::env::set_var("CROSSH_CONFIG_DIR", &config);

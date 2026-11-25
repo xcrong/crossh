@@ -9,21 +9,24 @@ fn version_string() -> String {
     format!("crossh-daemon {}", env!("CARGO_PKG_VERSION"))
 }
 
-#[tokio::main]
-async fn main() -> std::io::Result<()> {
-    // `--version` 先行：不拉起日志/监听。
+fn main() -> std::io::Result<()> {
+    // `--version` 先行：不拉起日志/运行时。
     if std::env::args().any(|a| a == "--version" || a == "-V") {
         println!("{}", version_string());
         return Ok(());
     }
-    crossh_core::logging::init();
+    // runtime 启动前设置进程环境：此时仍是单线程，无并发读写 env 竞态。
     set_locale();
-    run().await
+    crossh_core::logging::init();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run())
 }
 
 fn set_locale() {
     if std::env::var_os("LANG").is_none() {
-        // SAFETY: 启动早期单线程设置进程环境。
+        // SAFETY: main 入口建 tokio runtime 之前调用，仍是单线程，无其他线程读写 env。
         unsafe { std::env::set_var("LANG", "en_US.UTF-8") };
     }
 }

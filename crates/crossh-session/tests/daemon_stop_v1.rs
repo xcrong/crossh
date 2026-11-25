@@ -102,6 +102,7 @@ fn temp_root() -> PathBuf {
 }
 
 #[tokio::test]
+#[serial_test::file_serial(crossh_env)]
 async fn daemon_stop_retries_v1_handshake_and_removes_the_port_file() {
     let root = temp_root();
     let config = root.join("config");

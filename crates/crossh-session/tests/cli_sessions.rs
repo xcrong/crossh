@@ -57,6 +57,7 @@ fn echo_hi() -> Vec<String> {
 }
 
 #[tokio::test]
+#[serial_test::file_serial(crossh_env)]
 async fn cli_full_cycle() {
     let dir = cache_dir();
     let config = dir.join("config");

@@ -45,6 +45,7 @@ fn run_daemon(config: &Path, cache: &Path) -> std::process::ExitStatus {
 }
 
 #[tokio::test]
+#[serial_test::file_serial(crossh_env)]
 async fn too_new_workspace_refuses_start_without_rewriting_it() {
     let root = temp_root();
     let config = root.join("config");

@@ -431,6 +431,7 @@ async fn assert_cd_updates_cwd(
 }
 
 #[tokio::test]
+#[serial_test::file_serial(crossh_env)]
 async fn workspace_lifecycle() {
     let base = temp_base();
     let config = base.join("config");

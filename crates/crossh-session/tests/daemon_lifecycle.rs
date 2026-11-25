@@ -367,6 +367,7 @@ async fn assert_detach_keeps_session(port: u16, token: &str, mut c1: Conn) {
 }
 
 #[tokio::test]
+#[serial_test::file_serial(crossh_env)]
 async fn daemon_full_cycle() {
     let dir = cache_dir();
     let config = dir.join("config");

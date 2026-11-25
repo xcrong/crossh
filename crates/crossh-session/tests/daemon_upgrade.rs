@@ -133,6 +133,7 @@ async fn wait_for_port_file(path: &Path) -> (u16, String) {
 }
 
 #[tokio::test]
+#[serial_test::file_serial(crossh_env)]
 async fn incompatible_daemon_is_stopped_and_replaced() {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
