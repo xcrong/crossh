@@ -1551,6 +1551,7 @@ dependencies = [
  "crossh-ui-component",
  "gpui",
  "gpui_platform",
+ "log",
  "rust-i18n",
 ]
 

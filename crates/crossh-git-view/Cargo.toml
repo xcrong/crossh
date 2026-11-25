@@ -13,6 +13,7 @@ crossh-editor = { path = "../crossh-editor" }
 crossh-ui = { path = "../crossh-ui" }
 crossh-ui-component = { path = "../crossh-ui-component" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1478fb5e60f8b7852a2b0da32aa3da5cd9bb6954" }
+log = "0.4"
 rust-i18n = "4"
 
 [dev-dependencies]

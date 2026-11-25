@@ -1488,7 +1488,7 @@ fn create_git_window(cwd: PathBuf, cx: &mut App) {
         },
         cx,
     );
-    cx.open_window(
+    let window_result = cx.open_window(
         WindowOptions {
             titlebar: Some(TitlebarOptions {
                 title: Some(path_display_name(&cwd).into()),
@@ -1502,8 +1502,12 @@ fn create_git_window(cwd: PathBuf, cx: &mut App) {
             ..Default::default()
         },
         |_window, cx| cx.new(|cx| GitWindow::new(cwd.clone(), cx)),
-    )
-    .expect("Git window should open");
+    );
+    if let Err(error) = window_result {
+        // 无显示或系统资源不足时 open_window 会失败：不应 panic。
+        log::error!("打开 Git 窗口失败: {error}");
+        return;
+    }
     cx.activate(true);
 }
 

@@ -918,7 +918,7 @@ impl AppShell {
 /// 打开主窗口。在 main.rs 中调用。
 pub fn open_main_window(cx: &mut App) {
     let bounds = gpui::Bounds::centered(None, size(px(1100.), px(720.)), cx);
-    cx.open_window(
+    let window_result = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(TitlebarOptions {
@@ -980,7 +980,11 @@ pub fn open_main_window(cx: &mut App) {
             });
             shell
         },
-    )
-    .expect("Failed to open window");
+    );
+    if let Err(error) = window_result {
+        // 无显示或系统资源不足时 open_window 会失败：启动路径不应 panic。
+        log::error!("打开主窗口失败: {error}");
+        return;
+    }
     cx.activate(true);
 }

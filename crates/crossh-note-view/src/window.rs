@@ -1835,23 +1835,29 @@ fn create_note_window(cx: &mut App) {
         },
         cx,
     );
-    let handle = cx
-        .open_window(
-            WindowOptions {
-                titlebar: Some(TitlebarOptions {
-                    title: Some(text("note.title").into()),
-                    ..Default::default()
-                }),
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(Size {
-                    width: px(640.),
-                    height: px(400.),
-                }),
+    let window_result = cx.open_window(
+        WindowOptions {
+            titlebar: Some(TitlebarOptions {
+                title: Some(text("note.title").into()),
                 ..Default::default()
-            },
-            |window, cx| cx.new(|cx| NoteWindow::new(window, cx)),
-        )
-        .expect("Note window should open");
+            }),
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_min_size: Some(Size {
+                width: px(640.),
+                height: px(400.),
+            }),
+            ..Default::default()
+        },
+        |window, cx| cx.new(|cx| NoteWindow::new(window, cx)),
+    );
+    let handle = match window_result {
+        Ok(handle) => handle,
+        // 无显示或系统资源不足时 open_window 会失败：不应 panic。
+        Err(error) => {
+            log::error!("打开 Note 窗口失败: {error}");
+            return;
+        }
+    };
     let _ = handle.update(cx, |note, window, cx| {
         window.focus(&note.content_state.read(cx).focus_handle(cx), cx);
     });
