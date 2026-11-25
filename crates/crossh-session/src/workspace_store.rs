@@ -337,6 +337,7 @@ pub fn migration_source() -> Option<PathBuf> {
         return Some(write);
     }
     if std::env::var_os(crossh_core::config::CONFIG_DIR_ENV).is_some() {
+        log::debug!("跳过旧 settings 迁移：已设置自定义配置根，有意隔离");
         return None;
     }
     crossh_core::config::legacy_settings_path().filter(|path| path.is_file())
