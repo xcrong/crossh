@@ -43,6 +43,7 @@ use crossh_ui::theme;
 use crossh_ui_component::context_menu::{ContextMenuState, MenuEntry, render_context_menu};
 use crossh_ui_component::{TextPointerEvent, TextPointerPhase};
 
+use super::git_cache::GitStatusCache;
 use super::local_paths::{current_local_cwd, normalize_local_cwd};
 
 mod compose;
@@ -167,6 +168,7 @@ pub struct AppShell {
     pub(crate) compose_focus: FocusHandle,
     pub(crate) compose_scroll: gpui::ScrollHandle,
     _git_status_refresh_task: Option<Task<()>>,
+    _git_cache_subscription: Option<Subscription>,
     /// 最近一次状态栏 Git 同步操作的进行/错误状态，按 pane 独立记录。
     pub(crate) git_sync: BTreeMap<PaneId, GitSyncState>,
     git_fetching: HashSet<PaneId>,
@@ -233,6 +235,7 @@ impl AppShell {
                 compose_focus: cx.focus_handle(),
                 compose_scroll: gpui::ScrollHandle::new(),
                 _git_status_refresh_task: None,
+                _git_cache_subscription: None,
                 git_sync: BTreeMap::new(),
                 git_fetching: HashSet::new(),
                 system_monitor: SystemMonitorState::new(),
@@ -256,6 +259,7 @@ impl AppShell {
         updates.update(cx, |updates, cx| updates.start_startup_check(cx));
         shell.update(cx, |shell, cx| {
             shell.start_workspace_connection(cx);
+            shell.observe_git_cache(cx);
             shell.ensure_git_status_refresh_task(cx);
         });
         shell
@@ -570,13 +574,101 @@ impl AppShell {
         self.git_fetching.retain(|pane_id| live.contains(pane_id));
     }
 
+    /// 订阅进程级 Git 共享缓存：别的窗口完成同 cwd 的 `inspect` 后扇出到本窗。
+    fn observe_git_cache(&mut self, cx: &mut Context<Self>) {
+        if self._git_cache_subscription.is_some() {
+            return;
+        }
+        GitStatusCache::ensure(cx);
+        self._git_cache_subscription =
+            Some(cx.observe_global::<GitStatusCache>(|this, cx| this.apply_git_cache(cx)));
+    }
+
+    /// 把共享缓存落到本窗同 cwd 的所有 pane；无变化不 `notify`。
+    fn apply_git_cache(&mut self, cx: &mut Context<Self>) {
+        let mut changed = false;
+        for pane_id in self.workspace.live_panes() {
+            let Some(cwd) = self.pane_cwd(pane_id) else {
+                continue;
+            };
+            let key = GitStatusCache::canonical_key(&cwd);
+            let Some(cached) = GitStatusCache::cached(cx, &key) else {
+                continue;
+            };
+            if self.workspace.git_status.get(&pane_id) != cached.as_ref() {
+                match cached {
+                    Some(status) => {
+                        self.workspace.git_status.insert(pane_id, status);
+                    }
+                    None => {
+                        self.workspace.git_status.remove(&pane_id);
+                    }
+                }
+                self.reconcile_git_sync_error(pane_id);
+                changed = true;
+            }
+        }
+        if changed {
+            cx.notify();
+        }
+    }
+
+    /// 同 cwd 的本窗 pane 共用一次结果：fork 完成后直接扇出，不各自再 fork。
+    fn apply_status_to_same_cwd(
+        &mut self,
+        key: &Path,
+        status: Option<&crossh_core::git_status::GitStatus>,
+    ) -> bool {
+        let mut changed = false;
+        for pane_id in self.workspace.live_panes() {
+            let Some(cwd) = self.pane_cwd(pane_id) else {
+                continue;
+            };
+            if GitStatusCache::canonical_key(&cwd) != key {
+                continue;
+            }
+            if self.workspace.git_status.get(&pane_id) != status {
+                match status {
+                    Some(status) => {
+                        self.workspace.git_status.insert(pane_id, status.clone());
+                    }
+                    None => {
+                        self.workspace.git_status.remove(&pane_id);
+                    }
+                }
+                self.reconcile_git_sync_error(pane_id);
+                changed = true;
+            }
+        }
+        changed
+    }
+
     fn refresh_git_status(&mut self, pane_id: PaneId, clear_stale: bool, cx: &mut Context<Self>) {
         let Some(cwd) = self.pane_cwd(pane_id) else {
             return;
         };
-        let refresh = self.workspace.git_refresh.entry(pane_id).or_default();
+        let key = GitStatusCache::canonical_key(&cwd);
+        // `CwdChanged` 只清本 pane 旧值，不碰共享缓存（其余同仓 pane 仍有效）。
         let status_cleared = clear_stale && self.workspace.git_status.remove(&pane_id).is_some();
+        // 同 cwd 已有在途请求（本窗另一 pane 或别的窗口）：等广播，不再 fork。
+        if GitStatusCache::is_in_flight(cx, &key) {
+            if status_cleared {
+                cx.notify();
+            }
+            return;
+        }
+        let refresh = self.workspace.git_refresh.entry(pane_id).or_default();
         if !refresh.request() {
+            if status_cleared {
+                cx.notify();
+            }
+            return;
+        }
+        if !GitStatusCache::try_start(cx, key.clone()) {
+            // 输掉竞态：撤销本 pane 预占，等赢家的广播。
+            if let Some(refresh) = self.workspace.git_refresh.get_mut(&pane_id) {
+                refresh.finish();
+            }
             if status_cleared {
                 cx.notify();
             }
@@ -601,18 +693,8 @@ impl AppShell {
             let _ = weak.update(cx, |this, cx| {
                 let cwd_unchanged =
                     this.pane_cwd(pane_id).as_deref() == Some(cwd_for_log.as_path());
-                let status_changed =
-                    cwd_unchanged && this.workspace.git_status.get(&pane_id) != status.as_ref();
-                if status_changed {
-                    match &status {
-                        Some(status) => {
-                            this.workspace.git_status.insert(pane_id, status.clone());
-                        }
-                        None => {
-                            this.workspace.git_status.remove(&pane_id);
-                        }
-                    }
-                }
+                GitStatusCache::complete(cx, &key, status.clone());
+                let status_changed = this.apply_status_to_same_cwd(&key, status.as_ref());
                 let refresh_again = this
                     .workspace
                     .git_refresh
@@ -741,7 +823,7 @@ impl AppShell {
         let Some(cwd) = self.pane_cwd(pane_id) else {
             return;
         };
-        // ponytail: 只轮询聚焦 pane，切回来再刷其余 pane，避免多项目同时 fetch 惊群。
+        // ponytail: 按 distinct cwd 调度（见 refresh_all_panes），同仓一次 fetch 即可。
         cx.spawn(async move |weak, cx| {
             let result = cx
                 .background_executor()
@@ -756,6 +838,28 @@ impl AppShell {
             });
         })
         .detach();
+    }
+
+    /// 轮询本窗所有存活 pane：按 canonical cwd 去重，同仓多分屏只刷一次；
+    /// 跨窗口靠共享缓存的在途合并收敛（tick 相位差可接受）。
+    fn refresh_all_panes(&mut self, fetch: bool, cx: &mut Context<Self>) {
+        let mut seen = BTreeSet::new();
+        let mut targets = Vec::new();
+        for pane_id in self.workspace.live_panes() {
+            let Some(cwd) = self.pane_cwd(pane_id) else {
+                continue;
+            };
+            if seen.insert(GitStatusCache::canonical_key(&cwd)) {
+                targets.push(pane_id);
+            }
+        }
+        for pane_id in targets {
+            if fetch {
+                self.fetch_then_refresh_git_status(pane_id, cx);
+            } else {
+                self.refresh_git_status(pane_id, false, cx);
+            }
+        }
     }
 
     fn ensure_git_status_refresh_task(&mut self, cx: &mut Context<Self>) {
@@ -773,13 +877,7 @@ impl AppShell {
 
                 if weak
                     .update(cx, |this, cx| {
-                        if let Some(pane_id) = this.workspace.focused_pane() {
-                            if tick.is_multiple_of(GIT_FETCH_EVERY_TICKS) {
-                                this.fetch_then_refresh_git_status(pane_id, cx);
-                            } else {
-                                this.refresh_git_status(pane_id, false, cx);
-                            }
-                        }
+                        this.refresh_all_panes(tick.is_multiple_of(GIT_FETCH_EVERY_TICKS), cx);
                     })
                     .is_err()
                 {

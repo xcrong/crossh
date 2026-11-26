@@ -3,6 +3,7 @@
 pub(crate) mod command_palette;
 pub(crate) mod compose_bar;
 pub(crate) mod empty_state;
+pub(crate) mod git_cache;
 pub(crate) mod linux_titlebar;
 pub(crate) mod local_paths;
 pub(crate) mod modal_editor;

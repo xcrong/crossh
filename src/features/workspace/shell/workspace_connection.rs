@@ -204,6 +204,8 @@ impl AppShell {
             TerminalEvent::CommandStarted { .. } => {}
             TerminalEvent::CommandFinished { status } => {
                 log::debug!("pane {pane_id} command finished with status {status:?}");
+                // 命令行里的 git commit/push 等同样改变状态；与 PromptReached 合并去重，同时只 fork 一次。
+                self.refresh_git_status(pane_id, false, cx);
             }
             TerminalEvent::ClipboardCopied => {
                 self.show_toast(
