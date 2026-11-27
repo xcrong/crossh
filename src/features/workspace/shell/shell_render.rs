@@ -63,7 +63,12 @@ impl Render for AppShell {
             .flex_row()
             .child(sidebar)
             .child(main_column);
-        let status_bar = render_workspace_status_bar(self, available_main_width, cx);
+        let available_height = px((window.viewport_size().height.as_f32()
+            - theme::TAB_HEIGHT
+            - theme::STATUS_BAR_HEIGHT)
+            .max(120.));
+        let status_bar =
+            render_workspace_status_bar(self, available_main_width, available_height, cx);
         let linux_titlebar =
             crate::features::workspace::linux_titlebar::render_linux_titlebar(window, cx);
 

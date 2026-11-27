@@ -555,6 +555,7 @@ fn render_status_path(cwd: PathBuf, cx: &mut Context<AppShell>) -> AnyElement {
 pub(crate) fn render_workspace_status_bar(
     shell: &AppShell,
     available_width: Pixels,
+    available_height: Pixels,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
     let pane = shell.workspace.active_pane();
@@ -562,6 +563,7 @@ pub(crate) fn render_workspace_status_bar(
         render_status_left_basic(shell, cx),
         shell,
         available_width,
+        available_height,
         pane,
         cx,
     );
@@ -603,6 +605,7 @@ fn render_status_left_pane(
     mut left: gpui::Div,
     shell: &AppShell,
     available_width: Pixels,
+    available_height: Pixels,
     pane: Option<&PaneSnapshot>,
     cx: &mut Context<AppShell>,
 ) -> gpui::Div {
@@ -619,7 +622,12 @@ fn render_status_left_pane(
             AppShell::toggle_timestamps,
             cx,
         ));
-        left = left.child(render_workspace_terminal_toggle(shell, available_width, cx));
+        left = left.child(render_workspace_terminal_toggle(
+            shell,
+            available_width,
+            available_height,
+            cx,
+        ));
         left = left.child(render_status_bar_toggle(
             "status-focus-follows-mouse",
             icons::IconName::Crosshair,
@@ -730,6 +738,7 @@ fn render_status_right(shell: &AppShell, cx: &mut Context<AppShell>) -> gpui::Di
 fn render_workspace_terminal_toggle(
     shell: &AppShell,
     available_width: Pixels,
+    available_height: Pixels,
     cx: &mut Context<AppShell>,
 ) -> AnyElement {
     let Some(tab) = shell.workspace.active_tab() else {
@@ -737,8 +746,7 @@ fn render_workspace_terminal_toggle(
     };
     let has_split = tab.layout.leaves().count() > 1;
     let can_split_horizontal = has_split || terminal_split_available(available_width);
-    let can_split_vertical =
-        has_split || terminal_split_vertical_available(px((available_width.as_f32() - 0.).max(0.)));
+    let can_split_vertical = has_split || terminal_split_vertical_available(available_height);
     div()
         .flex()
         .flex_row()
