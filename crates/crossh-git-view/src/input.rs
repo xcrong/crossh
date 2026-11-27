@@ -199,6 +199,12 @@ impl GitWindow {
                 "right" => {
                     self.commit_editor.state.move_horizontal(1, extend);
                 }
+                "up" => {
+                    self.commit_editor.state.move_vertical(-1, extend);
+                }
+                "down" => {
+                    self.commit_editor.state.move_vertical(1, extend);
+                }
                 "home" => {
                     self.commit_editor.state.move_to_boundary(false, extend);
                 }
