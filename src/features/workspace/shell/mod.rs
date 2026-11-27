@@ -148,6 +148,8 @@ pub struct AppShell {
     pub(crate) search_focus: FocusHandle,
     /// 应用外壳根焦点。
     pub(crate) shell_focus: FocusHandle,
+    /// 每个窗口实例各自认领一次根焦点（模态期间焦点短暂为 None 不抢回）。
+    shell_focus_claimed: bool,
     /// 原生项目目录选择器任务。
     _project_picker: Option<Task<()>>,
     pub(crate) language_preference: LanguagePreference,
@@ -216,6 +218,7 @@ impl AppShell {
                 search_query: TextEditingState::new(String::new()),
                 search_focus: cx.focus_handle(),
                 shell_focus: cx.focus_handle(),
+                shell_focus_claimed: false,
                 _project_picker: None,
                 language_preference,
                 context_menu: None,

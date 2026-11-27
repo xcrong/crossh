@@ -2,12 +2,6 @@ use crate::features::workspace::command_palette::render_command_palette;
 
 use super::*;
 
-/// 根焦点是否已认领过（整个进程一次）。
-///
-/// ponytail: 单窗口假设；若将来支持多窗口，需把该守卫下沉为 `AppShell` 实例字段。
-static SHELL_FOCUS_CLAIMED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
 impl Render for AppShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // compose 展开时自动聚焦输入框（终端级，仅在对应终端可见性翻转时触发）
@@ -23,9 +17,8 @@ impl Render for AppShell {
         // 路径到达 #app-shell 的动作处理器（否则 Cmd+Q 等会被静默丢弃）。
         // 原生文件选择器/模态期间焦点会短暂为 None：若每帧都抢回 shell_focus，
         // 会把焦点从模态上拉走并吞掉 Esc/Cmd+Q，因此只认领一次，后续由系统恢复焦点。
-        if window.focused(cx).is_none()
-            && !SHELL_FOCUS_CLAIMED.swap(true, std::sync::atomic::Ordering::SeqCst)
-        {
+        if window.focused(cx).is_none() && !self.shell_focus_claimed {
+            self.shell_focus_claimed = true;
             self.shell_focus.focus(window, cx);
         }
 
