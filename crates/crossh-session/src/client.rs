@@ -35,22 +35,29 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const SPAWN_WAIT: Duration = Duration::from_secs(10);
 
 async fn read_frame(reader: &mut OwnedReadHalf) -> io::Result<(MessageKind, Vec<u8>)> {
-    let mut head = [0u8; 5];
-    reader.read_exact(&mut head).await?;
-    let len = u32::from_le_bytes([head[0], head[1], head[2], head[3]]) as usize;
-    if !(1..=MAX_FRAME).contains(&len) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "bad frame length",
-        ));
+    // 未知帧循环跳过：新 daemon 的 `Size=22` 等旧端不认得，老读路径不断连。
+    loop {
+        let mut head = [0u8; 5];
+        reader.read_exact(&mut head).await?;
+        let len = u32::from_le_bytes([head[0], head[1], head[2], head[3]]) as usize;
+        if !(1..=MAX_FRAME).contains(&len) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "bad frame length",
+            ));
+        }
+        let mut rest = vec![0u8; len - 1];
+        reader.read_exact(&mut rest).await?;
+        let mut full = Vec::with_capacity(4 + len);
+        full.extend_from_slice(&head[..4]);
+        full.push(head[4]);
+        full.extend_from_slice(&rest);
+        let (kind, payload) = decode_frame(&full)?;
+        if kind == MessageKind::Unknown {
+            continue;
+        }
+        return Ok((kind, payload));
     }
-    let mut rest = vec![0u8; len - 1];
-    reader.read_exact(&mut rest).await?;
-    let mut full = Vec::with_capacity(4 + len);
-    full.extend_from_slice(&head[..4]);
-    full.push(head[4]);
-    full.extend_from_slice(&rest);
-    decode_frame(&full)
 }
 
 async fn send_frame(
@@ -141,6 +148,7 @@ fn client_capabilities() -> Vec<String> {
         capabilities::REPLAY_MARK,
         capabilities::OBSERVER_LOCAL_LAYOUT,
         capabilities::READONLY_BADGE,
+        capabilities::REATTACH_NUDGE_V1,
     ]
     .into_iter()
     .map(str::to_string)
@@ -338,9 +346,17 @@ pub struct Client {
     reader: OwnedReadHalf,
     writer: OwnedWriteHalf,
     pub client_id: u64,
+    /// 握手协商出的生效能力交集（`reattach-nudge-v1` 有无决定回放形态）。
+    capabilities: Vec<String>,
 }
 
 impl Client {
+    /// 是否具备重连自愈能力（双方都声明 `reattach-nudge-v1` 才为真）。
+    pub fn supports_reattach_nudge(&self) -> bool {
+        self.capabilities
+            .iter()
+            .any(|c| c == capabilities::REATTACH_NUDGE_V1)
+    }
     pub async fn connect() -> io::Result<Self> {
         let addr = ensure_daemon().await?;
         Self::connect_to(&addr).await
@@ -365,6 +381,7 @@ impl Client {
             reader,
             writer,
             client_id: ok.client_id,
+            capabilities: ok.capabilities,
         })
     }
 
@@ -467,6 +484,8 @@ impl Client {
                     break;
                 }
                 MessageKind::Error => return Err(client_error(&payload)),
+                // 分段几何：3.2 只单流显示（拼 `Output` 字节），几何留给 4.1 前端。
+                MessageKind::Size => {}
                 _ => {}
             }
         }
@@ -996,5 +1015,108 @@ mod tests {
             shutdown_rx.try_recv().is_err(),
             "a compatible daemon must never receive Shutdown"
         );
+    }
+
+    /// 假 daemon：握手后按给定帧应答一次 `Attach`（回放段由调用方编排）。
+    async fn fake_attach_once(listener: tokio::net::TcpListener, frames: Vec<Vec<u8>>) {
+        use tokio::io::AsyncWriteExt;
+        let (conn, _) = listener.accept().await.expect("accept");
+        let (mut r, mut w) = conn.into_split();
+        let (kind, _) = read_frame(&mut r).await.expect("hello");
+        assert_eq!(kind, MessageKind::Hello);
+        let ok = HandshakeOk {
+            version: PROTOCOL_VERSION,
+            capabilities: vec![],
+            client_id: 7,
+        };
+        send_frame(&mut w, MessageKind::Welcome, &json(&ok))
+            .await
+            .expect("welcome");
+        let (kind, _) = read_frame(&mut r).await.expect("attach");
+        assert_eq!(kind, MessageKind::Attach);
+        for raw in frames {
+            w.write_all(&raw).await.expect("frame");
+        }
+    }
+
+    /// 假 daemon 的 `Attached` 应答帧（`end_seq` 即总流偏移，不含 `Size`）。
+    fn attached_frame(end_seq: u64) -> Vec<u8> {
+        let session = SessionInfo {
+            id: "s1".to_string(),
+            cwd: None,
+            program: None,
+            controller: None,
+            alive: true,
+            exit_code: None,
+            project_id: None,
+            tab_id: None,
+            pane_id: None,
+        };
+        let attached = AttachedReply { session, end_seq };
+        encode_frame(MessageKind::Attached, &json(&attached)).expect("attached")
+    }
+
+    /// 新 daemon → 旧 GUI：`Size` 与未来帧（99）穿插，跳过后仍显示回放。
+    #[tokio::test]
+    async fn attach_skips_size_and_unknown_still_shows_output() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let size = crate::workspace::TermSize {
+            cols: 100,
+            rows: 30,
+        };
+        let out = crate::protocol::encode_output(5, b"hello");
+        let end = ReplayEndMarker { end_seq: 5 };
+        // 未来帧（旧端未知 kind）：裸字节直写，读帧循环跳过。
+        let mut future = (2u32.to_le_bytes()).to_vec();
+        future.push(99u8);
+        future.push(b'z');
+        let frames = vec![
+            attached_frame(5),
+            encode_frame(MessageKind::Size, &json(&size)).unwrap(),
+            future,
+            encode_frame(MessageKind::Output, &out).unwrap(),
+            encode_frame(MessageKind::ReplayEnd, &json(&end)).unwrap(),
+        ];
+        let server = tokio::spawn(fake_attach_once(listener, frames));
+        let mut client = Client::connect_to(&DaemonAddr {
+            port,
+            token: "tok".to_string(),
+        })
+        .await
+        .unwrap();
+        let attached = client.attach("s1").await.unwrap();
+        assert_eq!(attached.replay, b"hello");
+        server.await.unwrap();
+    }
+
+    /// 新 GUI → 旧 daemon：无 `Size` 的旧单流照常退化显示，无需抖动。
+    #[tokio::test]
+    async fn attach_without_size_degrades_to_single_stream() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let out = crate::protocol::encode_output(5, b"hello");
+        let end = ReplayEndMarker { end_seq: 5 };
+        let frames = vec![
+            attached_frame(5),
+            encode_frame(MessageKind::Output, &out).unwrap(),
+            encode_frame(MessageKind::ReplayEnd, &json(&end)).unwrap(),
+        ];
+        let server = tokio::spawn(fake_attach_once(listener, frames));
+        let mut client = Client::connect_to(&DaemonAddr {
+            port,
+            token: "tok".to_string(),
+        })
+        .await
+        .unwrap();
+        let attached = client.attach("s1").await.unwrap();
+        assert_eq!(attached.replay, b"hello");
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn client_declares_reattach_nudge_and_detects_agreement() {
+        // 能力声明：新 GUI 必带 `reattach-nudge-v1`。
+        assert!(client_capabilities().contains(&capabilities::REATTACH_NUDGE_V1.to_string()));
     }
 }

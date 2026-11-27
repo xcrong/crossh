@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{
@@ -31,7 +32,10 @@ use crate::protocol::{
     ListReply, MAX_FRAME, MessageKind, ReplayEndMarker, ResizeRequest, SessionInfo,
     WorkspaceMutateRequest, decode_frame, encode_frame, encode_output,
 };
-use crate::session::{ControllerId, Ownership, OwnershipEvent, SessionMeta};
+use crate::session::{
+    ControllerId, Ownership, OwnershipEvent, REDRAW_NUDGE_SETTLE, RingSegment, SessionMeta,
+    run_redraw_nudge,
+};
 use crate::spawn::{ChildSession, OutputChunk, SpawnOptions};
 use crate::workspace::{SessionId, TermSize, Workspace, WorkspaceSnapshot};
 use crate::workspace_actor::{
@@ -131,22 +135,29 @@ fn refresh_meta(entry: &mut SessionEntry) {
 }
 
 async fn read_frame(r: &mut OwnedReadHalf) -> io::Result<(MessageKind, Vec<u8>)> {
-    let mut head = [0u8; 5];
-    r.read_exact(&mut head).await?;
-    let len = u32::from_le_bytes([head[0], head[1], head[2], head[3]]) as usize;
-    if !(1..=MAX_FRAME).contains(&len) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "bad frame length",
-        ));
+    // 新客户端的未来帧旧 daemon 跳过（与客户端侧对称容错）。
+    loop {
+        let mut head = [0u8; 5];
+        r.read_exact(&mut head).await?;
+        let len = u32::from_le_bytes([head[0], head[1], head[2], head[3]]) as usize;
+        if !(1..=MAX_FRAME).contains(&len) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "bad frame length",
+            ));
+        }
+        let mut rest = vec![0u8; len - 1];
+        r.read_exact(&mut rest).await?;
+        let mut full = Vec::with_capacity(4 + len);
+        full.extend_from_slice(&head[..4]);
+        full.push(head[4]);
+        full.extend_from_slice(&rest);
+        let (kind, payload) = decode_frame(&full)?;
+        if kind == MessageKind::Unknown {
+            continue;
+        }
+        return Ok((kind, payload));
     }
-    let mut rest = vec![0u8; len - 1];
-    r.read_exact(&mut rest).await?;
-    let mut full = Vec::with_capacity(4 + len);
-    full.extend_from_slice(&head[..4]);
-    full.push(head[4]);
-    full.extend_from_slice(&rest);
-    decode_frame(&full)
 }
 
 async fn send_frame(
@@ -256,7 +267,15 @@ fn spawn_effect_runtime(
                     if let Some(handle) = sessions.lock().await.get(&session_id).cloned() {
                         let mut entry = handle.lock().await;
                         if entry.meta.alive {
-                            let _ = entry.child.resize(size.cols.max(1), size.rows.max(1));
+                            let size = TermSize {
+                                cols: size.cols.max(1),
+                                rows: size.rows.max(1),
+                            };
+                            let _ = entry.child.resize(size.cols, size.rows);
+                            // 真实尺寸封段记环（nudge 临时尺寸从不走这里），恢复读最新值用。
+                            if let Ok(mut feed) = entry.child.feed.lock() {
+                                feed.resize(size);
+                            }
                         }
                     }
                 }
@@ -590,7 +609,15 @@ async fn handle_resize(
             // 临时会话不经过工作区 actor，直接调整 PTY。
             let mut e = h.lock().await;
             if e.ownership.accepts_resize(state.client_id) && e.meta.alive {
-                let _ = e.child.resize(req.cols.max(1), req.rows.max(1));
+                let size = TermSize {
+                    cols: req.cols.max(1),
+                    rows: req.rows.max(1),
+                };
+                let _ = e.child.resize(size.cols, size.rows);
+                // 真实尺寸封段记环（nudge 临时尺寸从不走这里），恢复读最新值用。
+                if let Ok(mut feed) = e.child.feed.lock() {
+                    feed.resize(size);
+                }
             }
         }
         // observer 上报静默忽略（尺寸权威在 controller）。
@@ -738,8 +765,75 @@ async fn detach_conn(
     }
 }
 
+/// 接入命中即起 nudge 线程：临时尺寸立刻下 PTY，暂留后读环尾最新尺寸恢复。
+///
+/// - 只动 PTY：不写环分段、不发客户端 `Size`（恢复读环尾，真实 `resize` 已封段）。
+/// - 会话已死/判定不命中一律不打扰；`settled` 拿不到锁或已死则放弃恢复。
+/// - 恢复跑独立线程，`attach` 回放不被暂留挡住；连续接入各起一线程，
+///   都读最新值恢复，以后到者为准自然收敛。
+async fn maybe_nudge_redraw(handle: &Handle, client: ControllerId) {
+    // Windows 无 `tcgetpgrp`：恒按无前台处理，只回放不 nudge。
+    #[cfg(windows)]
+    {
+        let _ = (handle, client);
+        return;
+    }
+    #[cfg(not(windows))]
+    {
+        let ready = {
+            let e = handle.lock().await;
+            let foreground = e.child.foreground_program();
+            let is_observer = e.ownership.controller() != Some(client);
+            let alive = e.meta.alive;
+            let transient = e.child.feed.lock().ok().and_then(|mut f| {
+                f.poll_redraw_nudge(alive, foreground, is_observer, Instant::now())
+            });
+            transient.map(|t| (t, e.child.nudge_resizer(), Arc::clone(&e.child.feed)))
+        };
+        let Some((transient, resizer, feed)) = ready else {
+            return;
+        };
+        let entry = handle.clone();
+        let settled = move || {
+            let size = feed.lock().ok().map(|f| f.current_size())?;
+            // 真实 `resize` 短暂持会话锁时拿不到，按存活处理（尺寸以环为准）；
+            // 拿得到则看 `alive`，死了就放弃恢复。
+            let alive = entry.try_lock().map(|e| e.meta.alive).unwrap_or(true);
+            alive.then_some(size)
+        };
+        if let Err(e) = run_redraw_nudge(transient, REDRAW_NUDGE_SETTLE, resizer, settled) {
+            log::debug!("nudge spawn failed: {e}");
+        }
+    }
+}
+
+/// 分段回放：`Prelude`（复用 `Output` 进当前模式）→ 每段 `Size + Output*`。
+/// `Size` 只做几何标记不占 `seq`；`Output` 的 `seq` 从 `start` 连续递增。
+/// 返回末端 `seq`（应等于 `Attached.end_seq`，调用方保证）。
+async fn send_replay(
+    writer: &Arc<Mutex<OwnedWriteHalf>>,
+    start: u64,
+    prelude: Option<&[u8]>,
+    segments: &[RingSegment],
+) -> io::Result<u64> {
+    let mut cur = start;
+    if let Some(pre) = prelude.filter(|p| !p.is_empty()) {
+        send_frame(writer, MessageKind::Output, &encode_output(cur, pre)).await?;
+    }
+    for seg in segments {
+        let body = serde_json::to_vec(&seg.size).unwrap_or_default();
+        send_frame(writer, MessageKind::Size, &body).await?;
+        for (seq, chunk) in chunk_with_seq(cur, &seg.bytes) {
+            cur = seq;
+            send_frame(writer, MessageKind::Output, &encode_output(seq, &chunk)).await?;
+        }
+    }
+    Ok(cur)
+}
+
 /// 接入并起流：所有权登记 → 订阅 → 快照 → `Attached` → 回放 → `ReplayEnd` →
 /// 起转发任务（只跟进 `seq > end_seq` 的块）。
+/// 回放按段发 `Size + Output*`，先发 `Prelude`（复用 `Output` 进当前模式）。
 async fn attach_and_stream(
     writer: &Arc<Mutex<OwnedWriteHalf>>,
     handle: Handle,
@@ -748,7 +842,7 @@ async fn attach_and_stream(
 ) -> io::Result<tokio::task::JoinHandle<()>> {
     // 订阅与快照之间无 `.await`：读线程"先推进环、再广播"的顺序
     // 保证订阅后到达的块序号一定大于快照序号，不丢不重。
-    let (out_rx, exit_rx, attached, replay) = {
+    let (out_rx, exit_rx, attached, start, prelude, segments) = {
         let mut e = handle.lock().await;
         if e.ownership.on_attach(client)
             == Some(OwnershipEvent::Takeover {
@@ -760,39 +854,46 @@ async fn attach_and_stream(
         let out_rx = e.child.output_tx.subscribe();
         let exit_rx = e.exit_tx.subscribe();
         refresh_meta(&mut e);
-        let (end_seq, bytes) = e
+        let (end_seq, prelude, segs) = e
             .child
             .feed
             .lock()
-            .map(|f| f.snapshot())
+            .map(|mut f| {
+                // 旧查询不补发：脱离期已由读线程代答（无订阅直写 PTY），
+                // 此处取走防堆积；回放字节里的查询由新客户端正常应答。
+                let _ = f.take_queries();
+                (f.seq(), f.replay_prelude(), f.snapshot_segments().1)
+            })
             .unwrap_or_default();
         let attached = AttachedReply {
             session: info_of(&e),
             end_seq,
         };
-        let start = end_seq.saturating_sub(bytes.len() as u64);
-        (out_rx, exit_rx, attached, chunk_with_seq(start, &bytes))
+        let total: usize = segs.iter().map(|s| s.bytes.len()).sum();
+        let start = end_seq.saturating_sub(total as u64);
+        (out_rx, exit_rx, attached, start, prelude, segs)
     };
     let mut attached = attached;
     merge_ownership(&mut attached.session, mirror);
     let id = attached.session.id.clone();
     log::debug!(
-        "attach {id}: alive={} exit={:?} end_seq={} replay={}B",
+        "attach {id}: alive={} exit={:?} end_seq={} replay={}B segs={}",
         attached.session.alive,
         attached.session.exit_code,
         attached.end_seq,
-        replay.iter().map(|(_, chunk)| chunk.len()).sum::<usize>(),
+        segments.iter().map(|s| s.bytes.len()).sum::<usize>(),
+        segments.len(),
     );
     let body = serde_json::to_vec(&attached).unwrap_or_default();
     send_frame(writer, MessageKind::Attached, &body).await?;
-    for (seq, chunk) in &replay {
-        send_frame(writer, MessageKind::Output, &encode_output(*seq, chunk)).await?;
-    }
+    send_replay(writer, start, prelude.as_deref(), &segments).await?;
     let end = serde_json::to_vec(&ReplayEndMarker {
         end_seq: attached.end_seq,
     })
     .unwrap_or_default();
     send_frame(writer, MessageKind::ReplayEnd, &end).await?;
+    // 首画已丢的全屏前台程序：请它重画（只动 PTY，独立线程不挡回放）。
+    maybe_nudge_redraw(&handle, client).await;
     // 退出发在订阅之前或回放期间时，broadcast 不会补发；按会话状态补一条。
     let exit_code = {
         let e = handle.lock().await;
@@ -959,4 +1060,120 @@ async fn spawn_session(req: &CreateRequest) -> io::Result<Handle> {
         meta,
         exit_tx,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::feed::FeedState;
+    use crate::protocol::decode_output;
+    use std::time::Duration;
+
+    /// 首画已丢的 feed：全量在备用屏，环内已无切换（与 `feed.rs` 同构）。
+    fn lost_feed() -> FeedState {
+        let mut feed = FeedState::new();
+        feed.push(b"\x1b[?1049h");
+        feed.push(&vec![b'.'; crate::session::REPLAY_LIMIT_BYTES - 8]);
+        feed.push(b"!");
+        assert!(feed.alt_screen_now());
+        assert!(!feed.alt_screen_in_ring());
+        feed
+    }
+
+    /// 分段回放后跟 `ReplayEnd`，`Size` 不占 `seq`，冷却内只 nudge 一次。
+    #[tokio::test]
+    async fn segmented_replay_ends_with_replay_end_and_nudges_once() {
+        let mut feed = FeedState::new();
+        feed.push(b"a");
+        feed.resize(TermSize {
+            cols: 100,
+            rows: 30,
+        });
+        feed.push(b"b");
+        let (end_seq, segs) = feed.snapshot_segments();
+        assert_eq!((end_seq, segs.len()), (2, 2));
+        assert_eq!(feed.replay_prelude(), None, "主屏无前导");
+        // 走真实 `send_replay` 发帧，对端按序收。
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accept = tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            let (mut r, _) = sock.into_split();
+            // 按序收：`Size, Output(a), Size, Output(b), ReplayEnd`。
+            let mut sizes = Vec::new();
+            let mut bytes = Vec::new();
+            let mut seqs = Vec::new();
+            loop {
+                let (kind, payload) = read_frame(&mut r).await.unwrap();
+                match kind {
+                    MessageKind::Size => {
+                        let s: TermSize = serde_json::from_slice(&payload).unwrap();
+                        sizes.push(s);
+                    }
+                    MessageKind::Output => {
+                        let (seq, chunk) = decode_output(&payload).unwrap();
+                        seqs.push(seq);
+                        bytes.extend_from_slice(&chunk);
+                    }
+                    MessageKind::ReplayEnd => {
+                        let mark: ReplayEndMarker = serde_json::from_slice(&payload).unwrap();
+                        return (sizes, bytes, seqs, mark.end_seq);
+                    }
+                    _ => panic!("回放段只含 Size/Output/ReplayEnd"),
+                }
+            }
+        });
+        let sock = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let (_, w) = sock.into_split();
+        let writer = Arc::new(Mutex::new(w));
+        let total: usize = segs.iter().map(|s| s.bytes.len()).sum();
+        let start = end_seq.saturating_sub(total as u64);
+        let last = send_replay(&writer, start, None, &segs).await.unwrap();
+        assert_eq!(last, end_seq, "`Size` 不占 `seq`，末端即总流偏移");
+        let end = serde_json::to_vec(&ReplayEndMarker { end_seq }).unwrap_or_default();
+        send_frame(&writer, MessageKind::ReplayEnd, &end)
+            .await
+            .unwrap();
+        drop(writer);
+        let (sizes, bytes, seqs, mark_seq) = accept.await.unwrap();
+        assert_eq!(
+            sizes,
+            vec![
+                TermSize::default(),
+                TermSize {
+                    cols: 100,
+                    rows: 30
+                }
+            ]
+        );
+        assert_eq!(bytes, b"ab");
+        assert_eq!(mark_seq, end_seq, "回放后跟 `ReplayEnd`");
+        assert_eq!(seqs, vec![1, 2], "`seq` 只随字节递增");
+        // 冷却内只 nudge 一次：首次命中，500ms 内不再请。
+        let mut nudge = lost_feed();
+        let now = Instant::now();
+        assert!(nudge.poll_redraw_nudge(true, true, false, now).is_some());
+        assert_eq!(
+            nudge.poll_redraw_nudge(true, true, false, now + Duration::from_millis(500)),
+            None
+        );
+    }
+
+    #[test]
+    fn attach_drops_stale_queries_but_keeps_bytes_for_new_client() {
+        // 脱离期已代答的旧查询：attach 取走防堆积，回放字节仍带原文供新客户端应答。
+        let mut feed = FeedState::new();
+        feed.push(b"\x1b[c");
+        // 模拟 `attach_and_stream` 快照时的取走逻辑（与实现同序）。
+        let _ = feed.take_queries();
+        assert!(feed.take_queries().is_empty());
+        let (_, bytes) = feed.snapshot();
+        assert!(bytes.windows(3).any(|w| w == b"\x1b[c"));
+        // 全屏残留 `133;B` + 前台有程序：不采信在提示符，保留重建的屏。
+        let mut full = FeedState::new();
+        full.push(b"\x1b]133;B\x07\x1b[?1049h");
+        assert!(full.stored_at_prompt());
+        assert!(!full.replayed_at_prompt(true));
+        assert!(full.replayed_at_prompt(false));
+    }
 }

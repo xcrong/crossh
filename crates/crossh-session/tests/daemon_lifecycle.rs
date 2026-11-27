@@ -25,17 +25,21 @@ struct Conn {
 }
 
 async fn read_frame(reader: &mut OwnedReadHalf) -> io::Result<(MessageKind, Vec<u8>)> {
-    let mut head = [0u8; 5];
-    reader.read_exact(&mut head).await?;
-    let len = u32::from_le_bytes([head[0], head[1], head[2], head[3]]) as usize;
-    if len < 1 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "bad len"));
+    // 未知帧跳过（新 daemon 的 `Size=22` 等，旧读路径不断连）。
+    loop {
+        let mut head = [0u8; 5];
+        reader.read_exact(&mut head).await?;
+        let len = u32::from_le_bytes([head[0], head[1], head[2], head[3]]) as usize;
+        if len < 1 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "bad len"));
+        }
+        let mut rest = vec![0u8; len - 1];
+        reader.read_exact(&mut rest).await?;
+        match MessageKind::from_u8(head[4]) {
+            Some(kind) => return Ok((kind, rest)),
+            None => continue,
+        }
     }
-    let mut rest = vec![0u8; len - 1];
-    reader.read_exact(&mut rest).await?;
-    let kind = MessageKind::from_u8(head[4])
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad kind"))?;
-    Ok((kind, rest))
 }
 
 async fn send(writer: &mut OwnedWriteHalf, kind: MessageKind, payload: &[u8]) -> io::Result<()> {
@@ -138,6 +142,9 @@ async fn drain_replay(conn: &mut Conn) {
                 conn.out_buf.extend_from_slice(&bytes);
             }
             MessageKind::ReplayEnd => return,
+            // 分段几何只做标记：旧单流测试只拼 `Output` 字节。
+            MessageKind::Size => {}
+            MessageKind::Unknown => {}
             other => panic!("expected replay/output, got {other:?}"),
         }
     }

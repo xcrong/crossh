@@ -23,6 +23,10 @@ pub mod capabilities {
     /// 只读观察者在失去输入权时显示只读标记。
     /// 不支持的对端：不显示标记，输入仍被服务端拒绝。
     pub const READONLY_BADGE: &str = "readonly-badge";
+    /// 重连自愈：daemon 按分段回放 + 条件 nudge（`Size=22` 不占 seq）。
+    /// 不支持的对端：新 daemon 配旧 GUI 靠跳过未知帧单流显示；
+    /// 新 GUI 配旧 daemon 按旧单流解析且不抖（无自愈，需按键）；旧+旧保持现状。
+    pub const REATTACH_NUDGE_V1: &str = "reattach-nudge-v1";
 }
 
 /// 握手请求载荷（`MessageKind::Hello` 的 JSON）。
@@ -164,5 +168,35 @@ mod tests {
         .unwrap();
         assert_eq!(ok.capabilities, vec![capabilities::REPLAY_MARK.to_string()]);
         assert_eq!(ok.client_id, 42);
+    }
+
+    #[test]
+    fn reattach_nudge_agreed_only_when_both_sides_declare() {
+        // 双方都声明才生效：新+新走 daemon nudge，其余退化且不断连。
+        let both = verify_handshake(
+            &req(PROTOCOL_VERSION, "t", &[capabilities::REATTACH_NUDGE_V1]),
+            PROTOCOL_VERSION,
+            "t",
+            &[capabilities::REATTACH_NUDGE_V1.to_string()],
+            1,
+        )
+        .unwrap();
+        assert!(
+            both.capabilities
+                .contains(&capabilities::REATTACH_NUDGE_V1.to_string())
+        );
+        let old_daemon = verify_handshake(
+            &req(PROTOCOL_VERSION, "t", &[capabilities::REATTACH_NUDGE_V1]),
+            PROTOCOL_VERSION,
+            "t",
+            &[],
+            1,
+        )
+        .unwrap();
+        assert!(
+            !old_daemon
+                .capabilities
+                .contains(&capabilities::REATTACH_NUDGE_V1.to_string())
+        );
     }
 }

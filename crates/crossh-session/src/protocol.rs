@@ -57,6 +57,13 @@ pub enum MessageKind {
     WorkspaceSnapshot = 20,
     /// 工作区修改回执（JSON `WorkspaceMutateReply`）。
     WorkspaceMutateReply = 21,
+    /// 分段回放的几何标记（JSON `{cols,rows}`，即 `TermSize`）。
+    /// 只做分段标记，不占 `seq`；`Attached.end_seq` 仍是总流字节偏移。
+    /// 旧端解码为 `Unknown` 后跳过，单流照常显示（C1）。
+    Size = 22,
+    /// 未知帧占位：解码把一切未识别 kind 折到这里，读帧循环跳过。
+    /// 永不编码（`as u8 = 255` 仅占位）；旧端靠它容错新帧。
+    Unknown = 255,
 }
 
 impl MessageKind {
@@ -83,6 +90,8 @@ impl MessageKind {
             19 => Some(Self::WorkspaceMutate),
             20 => Some(Self::WorkspaceSnapshot),
             21 => Some(Self::WorkspaceMutateReply),
+            22 => Some(Self::Size),
+            255 => Some(Self::Unknown),
             _ => None,
         }
     }
@@ -154,6 +163,8 @@ pub fn write_frame_vectored(
 
 /// 解码一帧。输入为完整帧（含 4 字节头）时返回 `(kind, payload)`；
 /// 长度头声明超限返回错误；输入截断返回 `UnexpectedEof`，不 panic。
+/// 未识别 kind 不再报错，而是折成 `MessageKind::Unknown`（调用方跳过），
+/// 旧端收到新帧（如 `Size=22`）不断连，单流照常显示（C1）。
 pub fn decode_frame(buf: &[u8]) -> io::Result<(MessageKind, Vec<u8>)> {
     if buf.len() < 4 {
         return Err(io::Error::new(
@@ -177,8 +188,7 @@ pub fn decode_frame(buf: &[u8]) -> io::Result<(MessageKind, Vec<u8>)> {
             "truncated payload",
         ));
     }
-    let kind = MessageKind::from_u8(buf[4])
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "unknown kind"))?;
+    let kind = MessageKind::from_u8(buf[4]).unwrap_or(MessageKind::Unknown);
     Ok((kind, buf[5..4 + len].to_vec()))
 }
 
@@ -367,6 +377,34 @@ mod tests {
         assert!(decode_frame(&[1, 0]).is_err());
         let frame = encode_frame(MessageKind::Input, b"hi").unwrap();
         assert!(decode_frame(&frame[..frame.len() - 1]).is_err());
+    }
+
+    #[test]
+    fn size_roundtrips_as_term_size() {
+        // `Size=22` 载荷即 `{cols,rows}`，与 `TermSize` 互通。
+        let body = serde_json::to_vec(&crate::workspace::TermSize {
+            cols: 100,
+            rows: 30,
+        })
+        .unwrap();
+        let frame = encode_frame(MessageKind::Size, &body).unwrap();
+        let (kind, back) = decode_frame(&frame).unwrap();
+        assert_eq!(kind, MessageKind::Size);
+        assert_eq!(back, body);
+        let size: crate::workspace::TermSize = serde_json::from_slice(&back).unwrap();
+        assert_eq!(size.cols, 100);
+        assert_eq!(size.rows, 30);
+    }
+
+    #[test]
+    fn unknown_kind_folds_to_skip_not_error() {
+        // 旧端视角：未识别 kind（如未来的 99）折成 `Unknown`，调用方跳过。
+        let mut frame = (2u32.to_le_bytes()).to_vec();
+        frame.push(99u8);
+        frame.push(b'x');
+        let (kind, body) = decode_frame(&frame).unwrap();
+        assert_eq!(kind, MessageKind::Unknown);
+        assert_eq!(body, b"x");
     }
 
     /// 单帧只产生一次 `write_vectored`（自定义 `Write` 计数）。

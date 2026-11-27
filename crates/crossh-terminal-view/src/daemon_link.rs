@@ -26,10 +26,13 @@ pub enum LinkCmd {
 }
 /// pump → UI（视图侧 gpui 任务消费）。
 pub enum UiMsg {
-    /// 接入完成：初始输入权 + cwd。
+    /// 接入完成：初始输入权 + cwd + 是否具备自愈能力。
+    /// `reattach_nudge` 为真 = 新 daemon+新 GUI，daemon 侧已按需 nudge；
+    /// 为假 = 新 GUI+旧 daemon，单流显示且不抖（无自愈，需按键）。
     Attached {
         has_input: bool,
         cwd: Option<String>,
+        reattach_nudge: bool,
     },
     Bytes(Vec<u8>),
     /// 回放喂完（`ReplayEnd` 之后；空回放也发）：视图据此关闭回放抑制，
@@ -43,6 +46,13 @@ pub enum UiMsg {
     },
     /// 链路死亡（daemon 不可达/会话消失），携带原因。
     Dead(String),
+}
+
+/// 回放是否需要前端抖动：新 GUI 永不抖（daemon nudge 或无自愈）。
+/// 旧 daemon 无 `Size` 按单流拼 `Output` 显示；新 daemon 的 `Size` 由
+/// `client.read_attached` 跳过标记后拼字节，几何不影响本地 VT 重建。
+pub(crate) fn replay_done_needs_resize() -> bool {
+    false
 }
 
 pub struct DaemonLink {
@@ -111,9 +121,12 @@ async fn run_link(
         }
     };
     let id = attached.session.id.clone();
+    // 能力门控：新+新走 daemon nudge；新 GUI+旧 daemon 单流显示且不抖。
+    let reattach_nudge = client.supports_reattach_nudge();
     let _ = ui_tx.send(UiMsg::Attached {
         has_input: attached.session.controller == Some(me),
         cwd: attached.session.cwd.clone(),
+        reattach_nudge,
     });
     if !attached.replay.is_empty() {
         let _ = ui_tx.send(UiMsg::Bytes(attached.replay));
@@ -178,5 +191,16 @@ async fn run_link(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replay_done_never_shakes_frontend() {
+        // 新+新走 daemon nudge，新 GUI+旧 daemon 单流显示：两种都不抖。
+        assert!(!replay_done_needs_resize());
     }
 }

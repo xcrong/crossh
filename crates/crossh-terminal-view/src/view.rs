@@ -337,7 +337,11 @@ impl TerminalView {
     /// 处理一条 daemon UI 消息；返回 `true` 表示结束 UI 循环。
     fn handle_ui_message(&mut self, msg: UiMsg, cx: &mut Context<Self>) -> bool {
         match msg {
-            UiMsg::Attached { has_input, cwd } => {
+            UiMsg::Attached {
+                has_input,
+                cwd,
+                reattach_nudge: _,
+            } => {
                 self.has_input_rights = has_input;
                 // 回放开始：抑制重放字节触发的副作用回写。
                 self.zed_terminal.update(cx, |terminal, _| {
@@ -357,18 +361,13 @@ impl TerminalView {
             }
             UiMsg::ReplayDone => {
                 // 回放喂完：恢复查询应答等副作用回写。
+                // 自愈看能力 `reattach-nudge-v1`：新+新走 daemon nudge，
+                // 新 GUI+旧 daemon 单流显示且不抖（无自愈，需按键）；
+                // 两种都不再双 `Resize` 抖动。
                 self.zed_terminal.update(cx, |terminal, _| {
                     terminal.set_remote_replaying(false);
                 });
-                // 重放字节自带旧几何（p10k 右提示绝对定位），首帧可能错位；
-                // 抖一下尺寸逼 shell 重画当前行，无需用户回车。两次上报，
-                // 落点回到真实尺寸（`last_reported_size` 不动，下次 paint 照常用）。
-                if let (Some(link), Some((cols, rows))) =
-                    (&self.daemon_link, self.last_reported_size)
-                {
-                    link.send(LinkCmd::Resize(cols.saturating_add(1), rows));
-                    link.send(LinkCmd::Resize(cols, rows));
-                }
+                debug_assert!(!crate::daemon_link::replay_done_needs_resize());
                 false
             }
             UiMsg::Exited => {

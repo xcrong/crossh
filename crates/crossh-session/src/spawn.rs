@@ -15,7 +15,22 @@ use std::thread;
 use tokio::sync::broadcast;
 
 use crate::feed::FeedState;
+use crate::session::Query;
+#[cfg(unix)]
+use crate::session::foreground_command_running;
+use crate::workspace::TermSize;
 use crossh_core::terminal::{LocalShellEnvironment, insert_zed_terminal_env};
+
+/// 脱离期代答字节：把攒下查询转成固定深色应答（3.3）。
+/// - 空输入回空，不悬挂；调用方在无订阅时直接写回 PTY，有订阅留给客户端。
+/// - 浅色偏差后续真实查询纠正：本次只答固定深色，不记状态。
+pub fn detached_replies(queries: &[Query]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for q in queries {
+        out.extend_from_slice(q.reply_bytes());
+    }
+    out
+}
 
 /// 实时输出块：该块末尾在会话总字节流中的偏移 + 原始字节。
 ///
@@ -187,9 +202,12 @@ pub struct ChildSession {
     pub feed: Arc<Mutex<FeedState>>,
     child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
     reader: Option<thread::JoinHandle<()>>,
-    master: Option<Box<dyn MasterPty + Send>>,
+    /// PTY 主端：`Arc` 共享给 nudge 线程（临时尺寸只动这里，不碰环与客户端）。
+    master: Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>,
     /// 读线程要回写 ConPTY 启动查询，写入端必须共享。
     writer: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
+    /// 建会话时子进程 pid：`tcgetpgrp` 探针对照用（Windows 无探针恒 `None`）。
+    shell_pid: Option<u32>,
     /// 交互 shell 集成脚本守卫（见 `SpawnOptions::shell_env`）。
     _shell_env: Option<LocalShellEnvironment>,
 }
@@ -222,11 +240,20 @@ impl ChildSession {
         let mut reader = master.try_clone_reader().map_err(io_err)?;
         let writer = Arc::new(Mutex::new(master.take_writer().map_err(io_err)?));
         let child = pair.slave.spawn_command(cmd).map_err(io_err)?;
+        let shell_pid = child.process_id();
+        let master = Arc::new(Mutex::new(Some(master)));
         drop(pair.slave);
 
         let (output_tx, _) = broadcast::channel::<OutputChunk>(1024);
         let tx = output_tx.clone();
         let feed = Arc::new(Mutex::new(FeedState::new()));
+        // 建会话几何即环尾：空尾就地记尺寸，不产生分段（nudge 恢复读它）。
+        if let Ok(mut f) = feed.lock() {
+            f.resize(TermSize {
+                cols: opt.cols,
+                rows: opt.rows,
+            });
+        }
         let feed_in = feed.clone();
         let writer_in = writer.clone();
         let owned_id = id.to_string();
@@ -248,13 +275,23 @@ impl ChildSession {
                             if chunk.is_empty() {
                                 continue;
                             }
-                            let seq = match feed_in.lock() {
+                            let (seq, queries) = match feed_in.lock() {
                                 Ok(mut f) => {
                                     f.push(&chunk);
-                                    f.seq()
+                                    let q = f.take_queries();
+                                    let s = f.seq();
+                                    (s, q)
                                 }
                                 Err(_) => break,
                             };
+                            // 脱离期代答：无订阅时直接写回 PTY，不悬挂；
+                            // 有订阅留给客户端应答，此处只取走防堆积。
+                            if !queries.is_empty() && tx.receiver_count() == 0 {
+                                let reply = detached_replies(&queries);
+                                if let Ok(mut w) = writer_in.lock() {
+                                    let _ = w.write_all(&reply);
+                                }
+                            }
                             // 实时广播尽力而为：无订阅/消费慢都不影响回放环。
                             let _ = tx.send((seq, chunk));
                         }
@@ -269,8 +306,9 @@ impl ChildSession {
             feed,
             child: Some(child),
             reader: Some(reader_handle),
-            master: Some(master),
+            master,
             writer: Some(writer),
+            shell_pid,
             _shell_env: opt.shell_env,
         })
     }
@@ -289,8 +327,12 @@ impl ChildSession {
 
     /// 缩放 PTY（尺寸权威在服务端，见 D8）。
     pub fn resize(&mut self, cols: u16, rows: u16) -> std::io::Result<()> {
-        self.master
-            .as_mut()
+        let guard = self
+            .master
+            .lock()
+            .map_err(|_| std::io::Error::other("pty master poisoned"))?;
+        guard
+            .as_ref()
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "pty closed"))?
             .resize(PtySize {
                 rows,
@@ -299,6 +341,40 @@ impl ChildSession {
                 pixel_height: 0,
             })
             .map_err(io_err)
+    }
+
+    /// nudge 专用写盘：只动 PTY 主端，不碰环与客户端（调用方保证 Windows 不调）。
+    pub fn nudge_resizer(&self) -> impl Fn(TermSize) + Send + 'static {
+        let master = Arc::clone(&self.master);
+        move |size: TermSize| {
+            if let Ok(guard) = master.lock()
+                && let Some(m) = guard.as_ref()
+            {
+                let _ = m.resize(PtySize {
+                    rows: size.rows,
+                    cols: size.cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                });
+            }
+        }
+    }
+
+    /// 前台是否有 shell 之外的程序：Unix 问内核，Windows 恒 false 只回放。
+    #[cfg(unix)]
+    pub fn foreground_program(&self) -> bool {
+        let fg = self
+            .master
+            .lock()
+            .ok()
+            .and_then(|m| m.as_ref().and_then(|m| m.process_group_leader()));
+        foreground_command_running(fg, self.shell_pid)
+    }
+
+    /// Windows 无 `tcgetpgrp`：恒按无前台处理，只回放不 nudge。
+    #[cfg(not(unix))]
+    pub fn foreground_program(&self) -> bool {
+        false
     }
 
     /// 非阻塞收割退出码（未退出返回 `None`；句柄已移交返回 `None`）。
@@ -344,7 +420,9 @@ impl Drop for ChildSession {
         }
         // 先关 master/writer，让阻塞的 read 感知到 EOF 再 join，避免悬挂。
         self.writer.take();
-        self.master.take();
+        if let Ok(mut m) = self.master.lock() {
+            m.take();
+        }
         self.join_reader();
     }
 }
@@ -471,6 +549,45 @@ mod tests {
         let _ = sess.wait();
         sess.join_reader();
         assert!(found, "integration markers never appeared");
+    }
+}
+
+/// 脱离期代答纯逻辑：跨平台可测（不依赖 PTY），验证不 hang 与固定深色。
+#[cfg(test)]
+mod detached_tests {
+    use super::*;
+    use crate::session::{DA_REPLY, DARK_THEME_REPLY};
+
+    #[test]
+    fn detached_replies_are_fixed_dark_and_never_block() {
+        // 空输入回空，不悬挂。
+        assert!(detached_replies(&[]).is_empty());
+        // DA 回 `VT102`，主题回深色。
+        assert_eq!(
+            detached_replies(&[Query::DeviceAttributes]),
+            DA_REPLY.to_vec()
+        );
+        assert_eq!(
+            detached_replies(&[Query::ColorScheme]),
+            DARK_THEME_REPLY.to_vec()
+        );
+        // 多查询一次写回，不分次 hang。
+        let both = detached_replies(&[Query::DeviceAttributes, Query::ColorScheme]);
+        let mut expect = DA_REPLY.to_vec();
+        expect.extend_from_slice(DARK_THEME_REPLY);
+        assert_eq!(both, expect);
+    }
+
+    #[test]
+    fn detached_then_later_query_still_correctable() {
+        // 代答后取空，浅色偏差由后续真实查询纠正（新查询仍能识别）。
+        let mut feed = FeedState::new();
+        feed.push(b"\x1b[c");
+        let q = feed.take_queries();
+        assert_eq!(detached_replies(&q), DA_REPLY.to_vec());
+        assert!(feed.take_queries().is_empty());
+        feed.push(b"\x1b[?996n");
+        assert_eq!(feed.take_queries(), vec![Query::ColorScheme]);
     }
 }
 
