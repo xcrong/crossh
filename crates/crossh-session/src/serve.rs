@@ -940,7 +940,13 @@ fn spawn_forwarder(
                     }
                     // 消费慢丢了块：环上限内的数据已在回放里，
                     // 运行中 lag 的丢失区间直接跳过（序号天然对齐）。
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Lagged(lagged)) => {
+                        log::warn!(
+                            "forwarder {id}: lagged by {} chunks, client may need to re-attach to replay missed output",
+                            lagged
+                        );
+                        continue;
+                    }
                     Err(broadcast::error::RecvError::Closed) => break,
                 },
                 code = exit_rx.recv() => {
