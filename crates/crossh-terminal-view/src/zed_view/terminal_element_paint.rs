@@ -305,8 +305,11 @@ fn terminal_dimensions(
 
     let cell_width = text_system
         .advance(font_id, font_pixels, 'm')
-        .unwrap()
-        .width;
+        .map(|advance| advance.width)
+        .unwrap_or_else(|_| {
+            log::warn!("failed to measure terminal cell width; using font size as fallback");
+            font_pixels
+        });
 
     let gutter = if show_timestamps {
         let available = (f32::from(bounds.size.width) - TIMESTAMP_GUTTER_GAP).max(0.0);
@@ -635,7 +638,7 @@ fn terminal_frame_snapshot(
 
 impl Element for TerminalElement {
     type RequestLayoutState = ();
-    type PrepaintState = LayoutState;
+    type PrepaintState = Option<LayoutState>;
 
     fn id(&self) -> Option<ElementId> {
         self.interactivity.element_id.clone()
@@ -686,7 +689,9 @@ impl Element for TerminalElement {
             window,
             cx,
             |_, _, hitbox, window, cx| {
-                let hitbox = hitbox.unwrap();
+                let Some(hitbox) = hitbox else {
+                    return None;
+                };
                 let style = terminal_paint_style(&self.terminal_view, cx);
 
                 let (dimensions, line_height_px) =
@@ -747,7 +752,7 @@ impl Element for TerminalElement {
                     window,
                 );
 
-                LayoutState {
+                Some(LayoutState {
                     hitbox,
                     batched_text_runs,
                     block_element_rects,
@@ -766,7 +771,7 @@ impl Element for TerminalElement {
                     } else {
                         Vec::new()
                     },
-                }
+                })
             },
         )
     }
@@ -781,6 +786,9 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        let Some(layout) = layout.as_mut() else {
+            return;
+        };
         let paint_start = Instant::now();
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             window.paint_quad(fill(bounds, layout.background_color));
