@@ -876,7 +876,11 @@ impl NoteWindow {
         if let Some(store) = &self.store
             && let Some(note) = self.notes.iter().find(|n| n.id == id)
         {
-            let _ = store.set_pinned(id, !note.pinned);
+            if let Err(e) = store.set_pinned(id, !note.pinned) {
+                log::warn!("note persist failed: {e}");
+                self.persist_error = Some(persist_error_message(&e));
+                self.persist_error_code = Some(e);
+            }
             self.reload_notes(cx);
             if self.selected_id.is_some() {
                 window.focus(&self.content_state.read(cx).focus_handle(cx), cx);

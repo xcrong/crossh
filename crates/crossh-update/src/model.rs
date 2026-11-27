@@ -249,11 +249,21 @@ pub(crate) fn record_update_result(result: &UpdateResult) {
 
 pub(crate) fn record_update_result_in(cache_root: &Path, result: &UpdateResult) {
     let path = update_result_path_in(cache_root);
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
+    if let Some(parent) = path.parent()
+        && let Err(e) = fs::create_dir_all(parent)
+    {
+        log::warn!(
+            "update: failed to create result dir {}: {e}",
+            parent.display()
+        );
     }
-    if let Ok(json) = serde_json::to_string(result) {
-        let _ = fs::write(&path, json);
+    match serde_json::to_string(result) {
+        Ok(json) => {
+            if let Err(e) = fs::write(&path, json) {
+                log::warn!("update: failed to write result {}: {e}", path.display());
+            }
+        }
+        Err(e) => log::warn!("update: failed to encode result: {e}"),
     }
 }
 

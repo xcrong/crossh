@@ -417,7 +417,10 @@ async fn handshake(
         client_id,
     ) {
         Ok(ok) => {
-            let body = serde_json::to_vec(&ok).unwrap_or_default();
+            let body = serde_json::to_vec(&ok).unwrap_or_else(|e| {
+                log::error!("failed to encode welcome reply: {e}");
+                Vec::new()
+            });
             send_frame(writer, MessageKind::Welcome, &body).await?;
         }
         Err(e) => {
@@ -450,7 +453,10 @@ async fn handle_list(
     for info in &mut out {
         merge_ownership(info, &runtime.mirror);
     }
-    let body = serde_json::to_vec(&ListReply { sessions: out }).unwrap_or_default();
+    let body = serde_json::to_vec(&ListReply { sessions: out }).unwrap_or_else(|e| {
+        log::error!("failed to encode session list reply: {e}");
+        Vec::new()
+    });
     send_frame(writer, MessageKind::Listed, &body).await
 }
 
@@ -481,7 +487,10 @@ async fn handle_create(
             session: info_of(&e),
         }
     };
-    let body = serde_json::to_vec(&created).unwrap_or_default();
+    let body = serde_json::to_vec(&created).unwrap_or_else(|e| {
+        log::error!("failed to encode created reply: {e}");
+        Vec::new()
+    });
     send_frame(writer, MessageKind::Created, &body).await?;
     state.bound = Some(handle.clone());
     state.fwd = Some(attach_and_stream(writer, handle, state.client_id, &runtime.mirror).await?);
@@ -669,7 +678,10 @@ async fn handle_workspace_get(
     let _ = runtime.commands.send(WorkspaceCommand::Get { reply });
     match wait.await {
         Ok(snapshot) => {
-            let body = serde_json::to_vec(&*snapshot).unwrap_or_default();
+            let body = serde_json::to_vec(&*snapshot).unwrap_or_else(|e| {
+                log::error!("failed to encode workspace snapshot reply: {e}");
+                Vec::new()
+            });
             send_frame(writer, MessageKind::WorkspaceSnapshot, &body).await
         }
         Err(_) => {
@@ -693,7 +705,10 @@ async fn handle_workspace_attach(
     let (reply, wait) = oneshot::channel();
     let _ = runtime.commands.send(WorkspaceCommand::Attach { reply });
     if let Ok(snapshot) = wait.await {
-        let body = serde_json::to_vec(&*snapshot).unwrap_or_default();
+        let body = serde_json::to_vec(&*snapshot).unwrap_or_else(|e| {
+            log::error!("failed to encode workspace snapshot on attach: {e}");
+            Vec::new()
+        });
         send_frame(writer, MessageKind::WorkspaceSnapshot, &body).await?;
     }
     state.workspace_attached = true;
@@ -701,7 +716,10 @@ async fn handle_workspace_attach(
     state.workspace_forward = Some(tokio::spawn(async move {
         while updates.changed().await.is_ok() {
             let snapshot = updates.borrow_and_update().clone();
-            let body = serde_json::to_vec(&*snapshot).unwrap_or_default();
+            let body = serde_json::to_vec(&*snapshot).unwrap_or_else(|e| {
+                log::error!("failed to encode workspace snapshot update: {e}");
+                Vec::new()
+            });
             if send_frame(&forward_writer, MessageKind::WorkspaceSnapshot, &body)
                 .await
                 .is_err()
@@ -726,7 +744,10 @@ async fn handle_workspace_mutate(
         .send(WorkspaceCommand::Mutate { request, reply });
     match wait.await {
         Ok(reply) => {
-            let body = serde_json::to_vec(&reply).unwrap_or_default();
+            let body = serde_json::to_vec(&reply).unwrap_or_else(|e| {
+                log::error!("failed to encode workspace mutate reply: {e}");
+                Vec::new()
+            });
             send_frame(writer, MessageKind::WorkspaceMutateReply, &body).await
         }
         Err(_) => {
@@ -821,7 +842,10 @@ async fn send_replay(
         send_frame(writer, MessageKind::Output, &encode_output(cur, pre)).await?;
     }
     for seg in segments {
-        let body = serde_json::to_vec(&seg.size).unwrap_or_default();
+        let body = serde_json::to_vec(&seg.size).unwrap_or_else(|e| {
+            log::error!("failed to encode replay size frame: {e}");
+            Vec::new()
+        });
         send_frame(writer, MessageKind::Size, &body).await?;
         for (seq, chunk) in chunk_with_seq(cur, &seg.bytes) {
             cur = seq;
@@ -884,13 +908,19 @@ async fn attach_and_stream(
         segments.iter().map(|s| s.bytes.len()).sum::<usize>(),
         segments.len(),
     );
-    let body = serde_json::to_vec(&attached).unwrap_or_default();
+    let body = serde_json::to_vec(&attached).unwrap_or_else(|e| {
+        log::error!("failed to encode attached reply: {e}");
+        Vec::new()
+    });
     send_frame(writer, MessageKind::Attached, &body).await?;
     send_replay(writer, start, prelude.as_deref(), &segments).await?;
     let end = serde_json::to_vec(&ReplayEndMarker {
         end_seq: attached.end_seq,
     })
-    .unwrap_or_default();
+    .unwrap_or_else(|e| {
+        log::error!("failed to encode replay end marker: {e}");
+        Vec::new()
+    });
     send_frame(writer, MessageKind::ReplayEnd, &end).await?;
     // 首画已丢的全屏前台程序：请它重画（只动 PTY，独立线程不挡回放）。
     maybe_nudge_redraw(&handle, client).await;
@@ -900,7 +930,10 @@ async fn attach_and_stream(
         (!e.meta.alive).then(|| e.meta.exit_code.unwrap_or(-1))
     };
     if let Some(code) = exit_code {
-        let body = serde_json::to_vec(&ExitedNotice { id, code }).unwrap_or_default();
+        let body = serde_json::to_vec(&ExitedNotice { id, code }).unwrap_or_else(|e| {
+            log::error!("failed to encode exited notice: {e}");
+            Vec::new()
+        });
         send_frame(writer, MessageKind::Exited, &body).await?;
         return Ok(tokio::spawn(async {}));
     }
@@ -1136,7 +1169,10 @@ mod tests {
         let start = end_seq.saturating_sub(total as u64);
         let last = send_replay(&writer, start, None, &segs).await.unwrap();
         assert_eq!(last, end_seq, "`Size` 不占 `seq`，末端即总流偏移");
-        let end = serde_json::to_vec(&ReplayEndMarker { end_seq }).unwrap_or_default();
+        let end = serde_json::to_vec(&ReplayEndMarker { end_seq }).unwrap_or_else(|e| {
+            log::error!("failed to encode replay end marker: {e}");
+            Vec::new()
+        });
         send_frame(&writer, MessageKind::ReplayEnd, &end)
             .await
             .unwrap();
