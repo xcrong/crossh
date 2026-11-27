@@ -60,6 +60,8 @@ emit_target() {
     emit_target "macos-x86_64" "crossh-$VERSION-x86_64-macos.zip" "zip"
     emit_target "linux-aarch64" "crossh-$VERSION-linux-aarch64.AppImage" "appimage"
     emit_target "linux-x86_64" "crossh-$VERSION-linux-x86_64.AppImage" "appimage"
+    emit_target "linux-aarch64-tarball" "crossh-$VERSION-linux-aarch64.tar.gz" "tar.gz"
+    emit_target "linux-x86_64-tarball" "crossh-$VERSION-linux-x86_64.tar.gz" "tar.gz"
     emit_target "windows-x86_64" "crossh-$VERSION-windows-x86_64.zip" "zip"
 
     optional_windows_arm="crossh-$VERSION-windows-aarch64.zip"

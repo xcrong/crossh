@@ -64,6 +64,8 @@ pub enum UpdateTarget {
     MacosX86_64,
     LinuxAarch64,
     LinuxX86_64,
+    LinuxAarch64Tarball,
+    LinuxX86_64Tarball,
     WindowsAarch64,
     WindowsX86_64,
 }
@@ -75,9 +77,19 @@ impl UpdateTarget {
         } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
             Some(Self::MacosX86_64)
         } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-            Some(Self::LinuxAarch64)
+            // AppImage 启动方式使用单文件替换包；目录安装方式使用完整目录树压缩包。
+            if std::env::var_os("APPIMAGE").is_some() {
+                Some(Self::LinuxAarch64)
+            } else {
+                Some(Self::LinuxAarch64Tarball)
+            }
         } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-            Some(Self::LinuxX86_64)
+            // AppImage 启动方式使用单文件替换包；目录安装方式使用完整目录树压缩包。
+            if std::env::var_os("APPIMAGE").is_some() {
+                Some(Self::LinuxX86_64)
+            } else {
+                Some(Self::LinuxX86_64Tarball)
+            }
         } else if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
             Some(Self::WindowsAarch64)
         } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
@@ -93,6 +105,8 @@ impl UpdateTarget {
             Self::MacosX86_64 => "macos-x86_64",
             Self::LinuxAarch64 => "linux-aarch64",
             Self::LinuxX86_64 => "linux-x86_64",
+            Self::LinuxAarch64Tarball => "linux-aarch64-tarball",
+            Self::LinuxX86_64Tarball => "linux-x86_64-tarball",
             Self::WindowsAarch64 => "windows-aarch64",
             Self::WindowsX86_64 => "windows-x86_64",
         }
@@ -327,6 +341,14 @@ mod tests {
     fn target_mapping_is_stable() {
         assert_eq!(UpdateTarget::MacosAarch64.key(), "macos-aarch64");
         assert_eq!(UpdateTarget::WindowsX86_64.key(), "windows-x86_64");
+        assert_eq!(
+            UpdateTarget::LinuxAarch64Tarball.key(),
+            "linux-aarch64-tarball"
+        );
+        assert_eq!(
+            UpdateTarget::LinuxX86_64Tarball.key(),
+            "linux-x86_64-tarball"
+        );
     }
 
     #[test]
