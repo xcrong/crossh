@@ -689,9 +689,7 @@ impl Element for TerminalElement {
             window,
             cx,
             |_, _, hitbox, window, cx| {
-                let Some(hitbox) = hitbox else {
-                    return None;
-                };
+                let hitbox = hitbox?;
                 let style = terminal_paint_style(&self.terminal_view, cx);
 
                 let (dimensions, line_height_px) =
