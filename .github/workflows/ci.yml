@@ -52,6 +52,9 @@ jobs:
       - name: Terminal replay
         run: cargo test --test terminal_replay
 
+      - name: Workspace tests
+        run: cargo test --workspace
+
   windows-check:
     name: Windows check / test
     runs-on: windows-latest
