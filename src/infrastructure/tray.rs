@@ -247,12 +247,11 @@ impl State {
                 // `daemon stop` 含 10s 等待确认：阻塞段扔 background主线程不卡；
                 // quit 挂前台任务（AsyncApp 非 Send进不了 background）。
                 let stopping = cx.background_executor().spawn(async move {
-                    if read_daemon_addr().is_some() {
-                        if let Err(error) =
+                    if read_daemon_addr().is_some()
+                        && let Err(error) =
                             crate::app::bootstrap::runtime().block_on(crossh_session::daemon_stop())
-                        {
-                            log::warn!("tray: daemon stop failed: {error}");
-                        }
+                    {
+                        log::warn!("tray: daemon stop failed: {error}");
                     }
                 });
                 let foreground = cx.foreground_executor().clone();

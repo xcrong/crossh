@@ -45,7 +45,6 @@ web-time = "1"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 smol = "2"
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "2664a0aa1eae5dabf8f8273c03f88d53061ca7dc", features = ["font-kit", "wayland", "x11"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 async-channel = "2.3.1"
@@ -53,7 +52,6 @@ async-channel = "2.3.1"
 [target.'cfg(target_os = "macos")'.dependencies]
 raw-window-handle = "0.6.2"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSView", "NSWindow"] }
 objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString"] }
 
 [dev-dependencies]
