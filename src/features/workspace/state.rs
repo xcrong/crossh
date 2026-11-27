@@ -11,6 +11,8 @@ pub(crate) struct ComposeEntry {
     pub visible: bool,
     pub state: TextEditingState,
     pub last_visible: bool,
+    /// 上次触发自动滚动的文本，仅文本变化时滚一次，避免每帧把视图拉回导致无法手动滚读。
+    pub last_scrolled_value: String,
 }
 
 impl Default for ComposeEntry {
@@ -19,6 +21,7 @@ impl Default for ComposeEntry {
             visible: false,
             state: TextEditingState::new(String::new()),
             last_visible: false,
+            last_scrolled_value: String::new(),
         }
     }
 }

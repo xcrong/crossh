@@ -35,8 +35,22 @@ pub(crate) fn render_compose_bar(
     // 统一钳到字符边界后再使用。
     let cursor = clamp_to_char_boundary(&value, compose_state.cursor);
 
-    // 自动滚动到光标：单行用 x，多行用 y
-    scroll.scroll_to_item(1);
+    // 光标所在行 = value[..cursor] 中的换行数
+    let cursor_line = value
+        .get(..cursor)
+        .map(|s| s.chars().filter(|c| *c == '\n').count())
+        .unwrap_or(0);
+
+    // 仅文本变化时滚到光标行一次，不再每帧无条件 scroll_to_item(1) 把视图锁在第二行。
+    // ponytail: 不跟随逐字光标移动（value 不变时不滚），上限是需手动滚看非光标行；
+    // 升级路径：光标变化时也更新 last_scrolled_value 并滚到对应行。
+    if let Some(pane_id) = shell.workspace.focused_pane() {
+        let entry = shell.workspace.compose_entry_mut(pane_id);
+        if entry.last_scrolled_value != value {
+            scroll.scroll_to_item(cursor_line);
+            entry.last_scrolled_value = value.clone();
+        }
+    }
 
     let mut input = div()
         .id("compose-input")
@@ -72,12 +86,7 @@ pub(crate) fn render_compose_bar(
         // 空状态：单行，显示 caret + placeholder 或 IME
         input = input.child(render_compose_empty_row(focused, &ime_marked_text));
     } else {
-        // 按 \n 拆行，逐行渲染，正确处理选区/光标跨行
-        // 越界或非字符边界的陈旧光标用 get 退避为 0 行，不再 panic。
-        let cursor_line = value
-            .get(..cursor)
-            .map(|s| s.chars().filter(|c| *c == '\n').count())
-            .unwrap_or(0);
+        // 按 \n 拆行，逐行渲染，正确处理选区/光标跨行（cursor_line 已在上方算好）
         let (sel_start, sel_end) = selection
             .map(|(a, b)| {
                 // 选区端点同样钳到字符边界，避免按行切分时落到字符中间被静默丢字。
