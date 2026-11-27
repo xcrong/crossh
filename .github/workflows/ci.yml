@@ -63,12 +63,17 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
       - name: cargo check
         run: cargo check --target x86_64-pc-windows-msvc
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings --force-warn clippy::too_many_lines
 
       - name: Session tests
         run: cargo test -p crossh-session
@@ -100,8 +105,11 @@ jobs:
       - name: cargo check
         run: cargo check --target x86_64-unknown-linux-gnu
 
+      - name: Check without network updater
+        run: cargo check --no-default-features --features wayland,x11
+
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings --force-warn clippy::too_many_lines
 
       - name: Session tests
         run: cargo test -p crossh-session

@@ -482,7 +482,6 @@ fn extract_zip_with_limit(
         // 让超限恰好多写 1 字节即被发现，不会把整个炸弹写满磁盘。
         let mut source = (&mut entry).take(remaining.saturating_add(1));
         let written = io::copy(&mut source, &mut output)?;
-        drop(source);
         drop(output);
         if written > remaining {
             let _ = fs::remove_file(&path);
@@ -545,7 +544,6 @@ fn extract_tar_gz_with_limit(
         let mut output = File::create(&destination_path)?;
         let mut source = (&mut entry).take(remaining.saturating_add(1));
         let written = io::copy(&mut source, &mut output)?;
-        drop(source);
         drop(output);
         if written > remaining {
             let _ = fs::remove_file(&destination_path);
