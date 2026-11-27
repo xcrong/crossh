@@ -414,16 +414,25 @@ impl ChildSession {
 
 impl Drop for ChildSession {
     fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
+        let mut child = self.child.take();
+        let reader = self.reader.take();
+        if let Some(child) = child.as_mut() {
             let _ = child.kill();
-            let _ = child.wait();
         }
         // 先关 master/writer，让阻塞的 read 感知到 EOF 再 join，避免悬挂。
         self.writer.take();
         if let Ok(mut m) = self.master.lock() {
             m.take();
         }
-        self.join_reader();
+        // ponytail: 后台线程无 runtime 依赖，Drop 不限在 tokio 里，无需 send 到 blocking pool；上限是每次 drop 起一个短命线程，升级路径为 Handle::try_current() 分流到 spawn_blocking。
+        thread::spawn(move || {
+            if let Some(mut child) = child {
+                let _ = child.wait();
+            }
+            if let Some(h) = reader {
+                let _ = h.join();
+            }
+        });
     }
 }
 
